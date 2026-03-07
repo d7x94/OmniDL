@@ -135,6 +135,7 @@ class TestQueueOpenPath:
             # Build a minimal widget without a real Tk root (unit-test safe)
             widget = object.__new__(DownloadItemWidget)
             widget.task = task
+            widget._completed_path = str(final_file)
             widget._open_folder()
 
             assert opened_paths, "_open_folder did not call open_folder at all"
@@ -216,6 +217,7 @@ class TestQueueOpenPath:
         try:
             widget = object.__new__(mod.DownloadItemWidget)
             widget.task = task
+            widget._completed_path = ""
             widget._open_folder()
 
             assert opened_paths, "_open_folder did not open anything when filename is empty"
