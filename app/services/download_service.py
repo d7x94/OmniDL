@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from app.event_bus import EventBus, bus as global_bus
+from app.event_bus import bus as global_bus, EventBus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
 from infrastructure.downloader.download_manager import DownloadManager

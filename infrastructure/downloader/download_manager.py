@@ -11,7 +11,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
-from app.event_bus import EventBus, bus as global_bus
+from app.event_bus import bus as global_bus, EventBus
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager

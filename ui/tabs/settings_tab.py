@@ -89,8 +89,8 @@ def _install_ytdlp_frozen() -> None:
     tmp_whl = override_dir.parent / "yt_dlp_update.whl"
     try:
         req = Request(wheel_url, headers={"User-Agent": "OmniDL-updater/1.0"})
-        with (  # nosec B310
-            urlopen(req, timeout=120) as resp,
+        with (
+            urlopen(req, timeout=120) as resp,  # nosec B310
             open(tmp_whl, "wb") as fout,
         ):
             shutil.copyfileobj(resp, fout)
