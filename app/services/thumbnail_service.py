@@ -184,7 +184,9 @@ class ThumbnailService:
             data = b"".join(
                 itertools.islice(resp.iter_content(8192), _MAX_BYTES // 8192)
             )
-            img = Image.open(io.BytesIO(data)).resize((width, height), Image.Resampling.LANCZOS)
+            img = Image.open(io.BytesIO(data)).resize(
+                (width, height), Image.Resampling.LANCZOS
+            )
             on_done(img)
 
         except Exception as exc:
