@@ -51,6 +51,13 @@ _DEFAULTS: dict[str, Any] = {
 class ConfigManager:
     """Thread-safe configuration manager backed by a JSON file."""
 
+    # Class-level in-memory cache keyed by resolved path string.
+    # Allows a freshly-created instance to see data written by set()/update()
+    # on another instance for the same path, even before the debounced timer
+    # has flushed to disk.
+    _cache: dict[str, dict[str, Any]] = {}
+    _cache_lock: threading.Lock = threading.Lock()
+
     def __init__(self, config_path: Path) -> None:
         self._path = config_path
         self._lock = threading.RLock()
@@ -64,6 +71,12 @@ class ConfigManager:
     # ── Load / Save ──────────────────────────────────────────────────────
 
     def _load(self) -> None:
+        path_key = str(self._path.resolve())
+        with ConfigManager._cache_lock:
+            if path_key in ConfigManager._cache:
+                with self._lock:
+                    self._data.update(ConfigManager._cache[path_key])
+                return
         if not self._path.exists():
             self._save()
             return
@@ -118,12 +131,18 @@ class ConfigManager:
     def set(self, key: str, value: Any) -> None:
         with self._lock:
             self._data[key] = value
-        self._save()
+        path_key = str(self._path.resolve())
+        with ConfigManager._cache_lock:
+            ConfigManager._cache[path_key] = dict(self._data)
+        self._schedule_save()
 
     def update(self, values: dict[str, Any]) -> None:
         with self._lock:
             self._data.update(values)
-        self._save()
+        path_key = str(self._path.resolve())
+        with ConfigManager._cache_lock:
+            ConfigManager._cache[path_key] = dict(self._data)
+        self._schedule_save()
 
     # ── Typed property accessors ─────────────────────────────────────────
 
