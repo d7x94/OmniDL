@@ -1,0 +1,492 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# OmniDL — Build & Release Pipeline
+#
+# TWO DISTINCT TRIGGER PATHS:
+#
+#   push → main branch
+#     1. test     Run the full test suite (fast Ubuntu gate)
+#     2. build-*  Build Windows EXE + macOS .app with PyInstaller
+#     3. Binaries uploaded as Actions artifacts (7-day retention)
+#
+#   push → tag matching v*.*.*  (e.g. v16.0.0)
+#     1. test     Same test gate
+#     2. build-*  Same builds, but artifacts are also zipped as release assets
+#     3. release  Creates a GitHub Release with both platform zips
+#
+#   workflow_dispatch
+#     Allows manually re-triggering any branch or tag build.
+#
+# FFMPEG BUNDLING (users need NOT install FFmpeg):
+#   Binaries are downloaded from official sources during CI, placed in
+#   resources/ffmpeg/, and bundled via --add-data into PyInstaller output.
+#   At runtime, utils/ffmpeg_locator.get_ffmpeg_path() resolves sys._MEIPASS.
+#   The repository NEVER stores FFmpeg — resources/ffmpeg/ is in .gitignore.
+#
+#   Sources:
+#     Windows : https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+#     macOS   : https://evermeet.cx/ffmpeg/  (individual static binaries)
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION:      "3.13"
+  PYINSTALLER_VERSION: "6.19.0"
+  APP_NAME:            "OmniDL"
+
+jobs:
+
+  # ── JOB 1: Test gate ──────────────────────────────────────────────────────
+  test:
+    name: "Test gate"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest pytest-cov
+
+      - name: Run test suite
+        run: |
+          pytest \
+            --ignore=tests/test_e2e.py \
+            --ignore=tests/test_logger_and_manager_extra.py \
+            --tb=short -q \
+            --cov=. \
+            --cov-report=term-missing
+
+  # ── JOB 2: Windows EXE ───────────────────────────────────────────────────
+  build-windows:
+    name: "Build — Windows EXE"
+    runs-on: windows-latest
+    needs: test
+
+    outputs:
+      asset-name: ${{ steps.package.outputs.asset-name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
+        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
+
+      # ── Download & stage FFmpeg (Windows) ──────────────────────────────
+      # Source: gyan.dev canonical Windows FFmpeg builds.
+      # We download the "essentials" zip and extract ONLY ffmpeg.exe and
+      # ffprobe.exe into resources/ffmpeg/.  The directory is gitignored.
+      - name: Download FFmpeg (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $tmp = "$env:RUNNER_TEMP\ffmpeg_extracted"
+
+          Write-Output "Downloading FFmpeg from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+
+          Write-Output "Extracting archive ..."
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          # Locate bin\ folder regardless of the versioned subfolder name
+          # e.g. ffmpeg-7.1-essentials_build\bin\ffmpeg.exe
+          $binDir = Get-ChildItem -Path $tmp -Recurse -Filter "ffmpeg.exe" |
+                      Select-Object -First 1 -ExpandProperty DirectoryName
+          if (-not $binDir) {
+            Write-Error "ffmpeg.exe not found inside the downloaded archive."
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Path "resources\ffmpeg" -Force | Out-Null
+          Copy-Item "$binDir\ffmpeg.exe"  "resources\ffmpeg\ffmpeg.exe"
+          Copy-Item "$binDir\ffprobe.exe" "resources\ffmpeg\ffprobe.exe"
+
+          Remove-Item -Recurse -Force $zip, $tmp
+
+          Write-Output "FFmpeg staged:"
+          Get-Item "resources\ffmpeg\*.exe" |
+            Format-Table Name, @{N="Size";E={"{0:N0} bytes" -f $_.Length}}
+
+      - name: Verify FFmpeg binaries (Windows)
+        shell: pwsh
+        run: |
+          foreach ($bin in @("resources\ffmpeg\ffmpeg.exe","resources\ffmpeg\ffprobe.exe")) {
+            if (-not (Test-Path $bin)) {
+              Write-Error "$bin is missing — download step failed."; exit 1
+            }
+          }
+          & "resources\ffmpeg\ffmpeg.exe"  -version 2>&1 | Select-Object -First 1
+          & "resources\ffmpeg\ffprobe.exe" -version 2>&1 | Select-Object -First 1
+          Write-Output "OK  FFmpeg binaries verified"
+
+      - name: Resolve icon flag
+        id: icon
+        shell: pwsh
+        run: |
+          if (Test-Path "assets/icons/app.ico") {
+            "flag=--icon assets/icons/app.ico" | Out-File -Append $env:GITHUB_OUTPUT
+          } else {
+            "flag=" | Out-File -Append $env:GITHUB_OUTPUT
+          }
+
+      # ── PyInstaller build (Windows) ────────────────────────────────────
+      # --add-data "resources/ffmpeg;ffmpeg"
+      #   Semicolon separator is required on Windows by PyInstaller.
+      #   The dest name "ffmpeg" becomes sys._MEIPASS/ffmpeg/ at runtime.
+      - name: PyInstaller build
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onedir `
+            --windowed `
+            --name "${{ env.APP_NAME }}" `
+            ${{ steps.icon.outputs.flag }} `
+            --add-data "config.json;." `
+            --add-data "resources/ffmpeg;ffmpeg" `
+            --hidden-import multiprocessing `
+            --hidden-import multiprocessing.freeze_support `
+            --hidden-import customtkinter `
+            --hidden-import yt_dlp `
+            --hidden-import PIL `
+            --hidden-import PIL.Image `
+            --hidden-import PIL.ImageTk `
+            --hidden-import requests `
+            --hidden-import packaging `
+            --collect-all customtkinter `
+            --collect-all tkinter `
+            --collect-all yt_dlp `
+            --noupx `
+            --distpath dist `
+            main.py
+
+      - name: Verify EXE and FFmpeg bundle (Windows)
+        shell: pwsh
+        run: |
+          $exe = "dist\${{ env.APP_NAME }}\${{ env.APP_NAME }}.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "${{ env.APP_NAME }}.exe not found."; exit 1
+          }
+          Write-Output ("OK  {0}  ({1:N1} MB)" -f "${{ env.APP_NAME }}.exe",
+                        ((Get-Item $exe).Length / 1MB))
+
+          foreach ($bin in @("dist\${{ env.APP_NAME }}\ffmpeg\ffmpeg.exe",
+                              "dist\${{ env.APP_NAME }}\ffmpeg\ffprobe.exe")) {
+            if (-not (Test-Path $bin)) {
+              Write-Error "Bundled binary missing from dist: $bin"; exit 1
+            }
+            Write-Output ("OK  {0}  ({1:N0} KB)" -f $bin,
+                          ((Get-Item $bin).Length / 1KB))
+          }
+          Write-Output "OK  FFmpeg bundle verified inside dist/"
+
+      - name: Write build-info.txt
+        shell: pwsh
+        run: |
+          $ffVer = (& "dist\${{ env.APP_NAME }}\ffmpeg\ffmpeg.exe" -version 2>&1 |
+                    Select-Object -First 1)
+          @"
+          ${{ env.APP_NAME }} — Build Info
+          ─────────────────────────────────
+          Version : ${{ github.ref_name }}
+          Commit  : ${{ github.sha }}
+          Run     : ${{ github.run_number }}
+          Built   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss' -AsUTC) UTC
+          Runner  : ${{ runner.os }} / ${{ runner.arch }}
+          Python  : $(python --version)
+          FFmpeg  : $ffVer
+          "@ | Out-File -FilePath "dist\${{ env.APP_NAME }}\build-info.txt" -Encoding utf8
+
+      - name: Package distribution folder
+        id: package
+        shell: pwsh
+        run: |
+          $tag  = "${{ github.ref_name }}"
+          $name = "${{ env.APP_NAME }}-${tag}-windows.zip"
+          Compress-Archive -Path "dist\${{ env.APP_NAME }}\*" -DestinationPath $name
+          $mb = [math]::Round((Get-Item $name).Length / 1MB, 1)
+          Write-Output "OK  $name  ($mb MB)"
+          "asset-name=$name" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: ${{ steps.package.outputs.asset-name }}
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── JOB 3: macOS .app ────────────────────────────────────────────────────
+  build-macos:
+    name: "Build — macOS .app"
+    runs-on: macos-latest
+    needs: test
+
+    outputs:
+      asset-name: ${{ steps.package.outputs.asset-name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
+        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
+
+      # ── Download & stage FFmpeg (macOS) ────────────────────────────────
+      # Source: evermeet.cx static builds — each binary is its own zip.
+      # We download ffmpeg and ffprobe separately, extract flat (-j flag),
+      # and make both files executable.  The directory is gitignored.
+      - name: Download FFmpeg (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/ffmpeg
+
+          echo "Downloading ffmpeg ..."
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" \
+            -o /tmp/ffmpeg.zip
+          unzip -jo /tmp/ffmpeg.zip -d resources/ffmpeg
+          rm /tmp/ffmpeg.zip
+
+          echo "Downloading ffprobe ..."
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" \
+            -o /tmp/ffprobe.zip
+          unzip -jo /tmp/ffprobe.zip -d resources/ffmpeg
+          rm /tmp/ffprobe.zip
+
+          chmod +x resources/ffmpeg/ffmpeg resources/ffmpeg/ffprobe
+
+          echo "FFmpeg staged:"
+          ls -lh resources/ffmpeg/
+
+      - name: Verify FFmpeg binaries (macOS)
+        run: |
+          for bin in resources/ffmpeg/ffmpeg resources/ffmpeg/ffprobe; do
+            [ -f "$bin" ] || { echo "ERROR: $bin missing"; exit 1; }
+            "./$bin" -version 2>&1 | head -1
+          done
+          echo "OK  FFmpeg binaries verified"
+
+      - name: Resolve icon flag
+        id: icon
+        run: |
+          if [ -f "assets/icons/app.icns" ]; then
+            echo "flag=--icon assets/icons/app.icns" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── PyInstaller build (macOS) ──────────────────────────────────────
+      # --add-data "resources/ffmpeg:ffmpeg"
+      #   Colon separator is required on POSIX by PyInstaller.
+      #   The dest name "ffmpeg" becomes sys._MEIPASS/ffmpeg/ at runtime.
+      - name: PyInstaller build
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --onedir \
+            --windowed \
+            --name "${{ env.APP_NAME }}" \
+            ${{ steps.icon.outputs.flag }} \
+            --add-data "config.json:." \
+            --add-data "resources/ffmpeg:ffmpeg" \
+            --hidden-import multiprocessing \
+            --hidden-import multiprocessing.freeze_support \
+            --hidden-import customtkinter \
+            --hidden-import yt_dlp \
+            --hidden-import PIL \
+            --hidden-import PIL.Image \
+            --hidden-import PIL.ImageTk \
+            --hidden-import requests \
+            --hidden-import packaging \
+            --collect-all customtkinter \
+            --collect-all tkinter \
+            --collect-all yt_dlp \
+            --noupx \
+            --distpath dist \
+            main.py
+
+      - name: Verify .app and FFmpeg bundle (macOS)
+        run: |
+          [ -d "dist/${{ env.APP_NAME }}.app" ] || {
+            echo "ERROR: .app not found"; exit 1
+          }
+          echo "OK  ${{ env.APP_NAME }}.app  ($(du -sh "dist/${{ env.APP_NAME }}.app" | cut -f1))"
+
+          # PyInstaller --onedir places _MEIPASS contents in .app/Contents/MacOS/
+          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS"
+          for bin in ffmpeg/ffmpeg ffmpeg/ffprobe; do
+            full="$MACOS/$bin"
+            [ -f "$full" ] || { echo "ERROR: $full missing from bundle"; exit 1; }
+            echo "OK  $full  ($(du -sh "$full" | cut -f1))"
+          done
+          echo "OK  FFmpeg bundle verified inside .app"
+
+      - name: Write build-info.txt
+        run: |
+          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS"
+          FF_VER=$("$MACOS/ffmpeg/ffmpeg" -version 2>&1 | head -1 || echo "unknown")
+          cat > "$MACOS/build-info.txt" <<EOF
+          ${{ env.APP_NAME }} — Build Info
+          ─────────────────────────────────
+          Version : ${{ github.ref_name }}
+          Commit  : ${{ github.sha }}
+          Run     : ${{ github.run_number }}
+          Built   : $(date -u '+%Y-%m-%d %H:%M:%S') UTC
+          Runner  : ${{ runner.os }} / ${{ runner.arch }}
+          Python  : $(python --version)
+          FFmpeg  : ${FF_VER}
+          EOF
+
+      # ── Code signing (tag builds only; skipped when cert secrets absent) ──
+      - name: Sign .app bundle
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERT_P12 != '' }}
+        env:
+          APPLE_CERT_P12:      ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_TEAM_ID:       ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "$APPLE_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p "" build.keychain
+          security import cert.p12 \
+            -k build.keychain \
+            -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: -s -k "" build.keychain
+          security default-keychain -s build.keychain
+          codesign \
+            --deep --force --verify --verbose \
+            --sign "Developer ID Application: ${{ env.APP_NAME }} ($APPLE_TEAM_ID)" \
+            --options runtime \
+            "dist/${{ env.APP_NAME }}.app"
+          echo "OK  Code signing complete"
+
+      # ── Notarization (tag builds only; skipped when cert secrets absent) ──
+      - name: Notarize .app bundle
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERT_P12 != '' }}
+        env:
+          APPLE_ID:           ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID:      ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent \
+            "dist/${{ env.APP_NAME }}.app" \
+            "dist/${{ env.APP_NAME }}-notarize.zip"
+          xcrun notarytool submit "dist/${{ env.APP_NAME }}-notarize.zip" \
+            --apple-id   "$APPLE_ID" \
+            --password   "$APPLE_APP_PASSWORD" \
+            --team-id    "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "dist/${{ env.APP_NAME }}.app"
+          rm -f "dist/${{ env.APP_NAME }}-notarize.zip"
+          echo "OK  Notarization and stapling complete"
+
+      - name: Package .app bundle
+        id: package
+        run: |
+          TAG="${{ github.ref_name }}"
+          NAME="${{ env.APP_NAME }}-${TAG}-macos.zip"
+          ditto -c -k --keepParent "dist/${{ env.APP_NAME }}.app" "$NAME"
+          echo "OK  $NAME  ($(du -sh "$NAME" | cut -f1))"
+          echo "asset-name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist
+          path: ${{ steps.package.outputs.asset-name }}
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── JOB 4: GitHub Release (tag builds only) ──────────────────────────────
+  release:
+    name: "GitHub Release — ${{ github.ref_name }}"
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-dist
+          path: release-assets/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dist
+          path: release-assets/
+
+      - name: Verify release assets
+        run: |
+          echo "Staged release assets:"
+          ls -lh release-assets/
+          count=$(find release-assets/ -name "*.zip" | wc -l)
+          if [ "$count" -ne 2 ]; then
+            echo "ERROR: expected 2 zip files, found $count" >&2; exit 1
+          fi
+          echo "OK  Both platform zips present"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:  ${{ github.ref_name }}
+          name:      "${{ env.APP_NAME }} ${{ github.ref_name }}"
+          draft:     false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-assets/*.zip
