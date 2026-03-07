@@ -254,6 +254,8 @@ jobs:
     name: "Build — macOS .app"
     runs-on: macos-latest
     needs: test
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_P12 != '' }}
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -383,7 +385,7 @@ jobs:
 
       # ── Code signing (tag builds only; skipped when cert secrets absent) ──
       - name: Sign .app bundle
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERT_P12 != '' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_CERT_P12:      ${{ secrets.APPLE_CERT_P12 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
@@ -407,7 +409,7 @@ jobs:
 
       # ── Notarization (tag builds only; skipped when cert secrets absent) ──
       - name: Notarize .app bundle
-        if: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERT_P12 != '' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_ID:           ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
