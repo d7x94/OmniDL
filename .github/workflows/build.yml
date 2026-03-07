@@ -358,19 +358,26 @@ jobs:
           }
           echo "OK  ${{ env.APP_NAME }}.app  ($(du -sh "dist/${{ env.APP_NAME }}.app" | cut -f1))"
 
-          # PyInstaller 6+ places _MEIPASS contents in .app/Contents/MacOS/_internal/
-          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS/_internal"
-          for bin in ffmpeg/ffmpeg ffmpeg/ffprobe; do
-            full="$MACOS/$bin"
-            [ -f "$full" ] || { echo "ERROR: $full missing from bundle"; exit 1; }
+          # Use find to locate ffmpeg regardless of PyInstaller version layout
+          # (pre-6: Contents/MacOS/ffmpeg, 6+: Contents/MacOS/_internal/ffmpeg)
+          APP_BUNDLE="dist/${{ env.APP_NAME }}.app"
+          for bin in ffmpeg ffprobe; do
+            full=$(find "$APP_BUNDLE" -name "$bin" -type f | head -1)
+            if [ -z "$full" ]; then
+              echo "ERROR: $bin not found inside $APP_BUNDLE"
+              find "$APP_BUNDLE" -maxdepth 6 -name "ff*" | head -20 || true
+              exit 1
+            fi
             echo "OK  $full  ($(du -sh "$full" | cut -f1))"
           done
           echo "OK  FFmpeg bundle verified inside .app"
 
       - name: Write build-info.txt
         run: |
-          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS/_internal"
-          FF_VER=$("$MACOS/ffmpeg/ffmpeg" -version 2>&1 | head -1 || echo "unknown")
+          APP_BUNDLE="dist/${{ env.APP_NAME }}.app"
+          FFMPEG_BIN=$(find "$APP_BUNDLE" -name "ffmpeg" -type f | head -1)
+          FF_VER=$("$FFMPEG_BIN" -version 2>&1 | head -1 || echo "unknown")
+          MACOS="$APP_BUNDLE/Contents/MacOS"
           cat > "$MACOS/build-info.txt" <<EOF
           ${{ env.APP_NAME }} — Build Info
           ─────────────────────────────────
