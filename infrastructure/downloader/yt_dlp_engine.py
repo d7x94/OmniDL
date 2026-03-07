@@ -163,7 +163,7 @@ class YtDlpEngine:
         if early_msg:
             raise RuntimeError(early_msg)
 
-        opts = {
+        opts: dict[str, object] = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,

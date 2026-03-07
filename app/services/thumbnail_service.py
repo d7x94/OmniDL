@@ -161,7 +161,7 @@ class ThumbnailService:
         on_error: Callable[[str], None],
     ) -> None:
         try:
-            import requests as req_lib
+            import requests as req_lib  # type: ignore[import-untyped]
             from PIL import Image
         except ImportError as exc:
             on_error(f"Optional dependency missing: {exc}")
@@ -184,7 +184,7 @@ class ThumbnailService:
             data = b"".join(
                 itertools.islice(resp.iter_content(8192), _MAX_BYTES // 8192)
             )
-            img = Image.open(io.BytesIO(data)).resize((width, height), Image.LANCZOS)
+            img = Image.open(io.BytesIO(data)).resize((width, height), Image.Resampling.LANCZOS)
             on_done(img)
 
         except Exception as exc:
