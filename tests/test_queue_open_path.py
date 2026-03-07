@@ -125,11 +125,13 @@ class TestQueueOpenPath:
         # Patch open_folder to capture the target instead of launching Finder
         import ui.components.download_item_widget as mod
         original_open_folder = mod.open_folder
+        original_reveal = mod.reveal_in_explorer
 
         def spy_open_folder(path: Path) -> None:
             opened_paths.append(path)
 
         mod.open_folder = spy_open_folder
+        mod.reveal_in_explorer = lambda p: False  # stub: no file-manager on CI
         try:
             from ui.components.download_item_widget import DownloadItemWidget
             # Build a minimal widget without a real Tk root (unit-test safe)
@@ -145,6 +147,7 @@ class TestQueueOpenPath:
             )
         finally:
             mod.open_folder = original_open_folder
+            mod.reveal_in_explorer = original_reveal
 
     def test_filename_set_by_pp_hook_before_download_returns(self, tmp_path):
         """
