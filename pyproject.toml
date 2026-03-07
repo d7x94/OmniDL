@@ -1,0 +1,10 @@
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I"]
+
+[tool.ruff.lint.isort]
+# Declare project-local packages so ruff places them in the FIRST-PARTY
+# section (after third-party like customtkinter) and sorts them correctly.
+known-first-party = ["app", "domain", "infrastructure", "ui", "utils"]

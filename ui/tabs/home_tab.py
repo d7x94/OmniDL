@@ -17,6 +17,7 @@ from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from PIL.Image import Image
+
     from ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)

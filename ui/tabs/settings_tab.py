@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 
 from ui.themes.tokens import T
+
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
@@ -44,8 +45,8 @@ def _install_ytdlp_frozen() -> None:
     import sys
     import zipfile
     from pathlib import Path
-    from urllib.request import urlopen, Request
     from urllib.error import URLError
+    from urllib.request import Request, urlopen
 
     _appdata = os.getenv("APPDATA", str(Path.home()))
     override_dir = Path(_appdata) / "OmniDL" / "site-packages"
@@ -101,7 +102,9 @@ def _install_ytdlp_frozen() -> None:
         digest = hashlib.sha256(tmp_whl.read_bytes()).hexdigest()
     except OSError as exc:
         tmp_whl.unlink(missing_ok=True)
-        raise RuntimeError(f"Could not read downloaded wheel for verification: {exc}") from exc
+        raise RuntimeError(
+            f"Could not read downloaded wheel for verification: {exc}"
+        ) from exc
     if digest.lower() != wheel_sha256.lower():
         tmp_whl.unlink(missing_ok=True)
         raise RuntimeError(

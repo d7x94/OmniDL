@@ -12,6 +12,7 @@ import customtkinter as ctk
 from domain.enums.download_status import DownloadStatus
 from ui.components.download_item_widget import DownloadItemWidget
 from ui.themes.tokens import T
+
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 

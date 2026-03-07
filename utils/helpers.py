@@ -4,11 +4,14 @@ Pure utility functions — no dependencies on other omnidl modules.
 """
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 # ── File-size formatting ──────────────────────────────────────────────────
@@ -110,8 +113,7 @@ def reveal_in_explorer(path: Path) -> bool:
             subprocess.Popen(["xdg-open", str(path.parent)], close_fds=True)
         return True
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).debug("reveal_in_explorer failed: %s", exc)
+        logger.debug("reveal_in_explorer failed: %s", exc)
         return False
 
 
@@ -125,5 +127,4 @@ def open_folder(path: Path) -> None:
         else:
             subprocess.Popen(["xdg-open", str(path)], close_fds=True)
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).debug("open_folder failed for %s: %s", path, exc)
+        logger.debug("open_folder failed for %s: %s", path, exc)

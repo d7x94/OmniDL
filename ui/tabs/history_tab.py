@@ -13,6 +13,7 @@ import customtkinter as ctk
 
 from ui.themes.tokens import T
 from utils.helpers import open_folder
+
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
