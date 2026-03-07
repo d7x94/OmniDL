@@ -358,8 +358,8 @@ jobs:
           }
           echo "OK  ${{ env.APP_NAME }}.app  ($(du -sh "dist/${{ env.APP_NAME }}.app" | cut -f1))"
 
-          # PyInstaller --onedir places _MEIPASS contents in .app/Contents/MacOS/
-          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS"
+          # PyInstaller 6+ places _MEIPASS contents in .app/Contents/MacOS/_internal/
+          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS/_internal"
           for bin in ffmpeg/ffmpeg ffmpeg/ffprobe; do
             full="$MACOS/$bin"
             [ -f "$full" ] || { echo "ERROR: $full missing from bundle"; exit 1; }
@@ -369,7 +369,7 @@ jobs:
 
       - name: Write build-info.txt
         run: |
-          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS"
+          MACOS="dist/${{ env.APP_NAME }}.app/Contents/MacOS/_internal"
           FF_VER=$("$MACOS/ffmpeg/ffmpeg" -version 2>&1 | head -1 || echo "unknown")
           cat > "$MACOS/build-info.txt" <<EOF
           ${{ env.APP_NAME }} — Build Info
