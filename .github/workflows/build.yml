@@ -203,8 +203,8 @@ jobs:
           Write-Output ("OK  {0}  ({1:N1} MB)" -f "${{ env.APP_NAME }}.exe",
                         ((Get-Item $exe).Length / 1MB))
 
-          foreach ($bin in @("dist\${{ env.APP_NAME }}\ffmpeg\ffmpeg.exe",
-                              "dist\${{ env.APP_NAME }}\ffmpeg\ffprobe.exe")) {
+          foreach ($bin in @("dist\${{ env.APP_NAME }}\_internal\ffmpeg\ffmpeg.exe",
+                              "dist\${{ env.APP_NAME }}\_internal\ffmpeg\ffprobe.exe")) {
             if (-not (Test-Path $bin)) {
               Write-Error "Bundled binary missing from dist: $bin"; exit 1
             }
@@ -216,7 +216,7 @@ jobs:
       - name: Write build-info.txt
         shell: pwsh
         run: |
-          $ffVer = (& "dist\${{ env.APP_NAME }}\ffmpeg\ffmpeg.exe" -version 2>&1 |
+          $ffVer = (& "dist\${{ env.APP_NAME }}\_internal\ffmpeg\ffmpeg.exe" -version 2>&1 |
                     Select-Object -First 1)
           @"
           ${{ env.APP_NAME }} — Build Info
