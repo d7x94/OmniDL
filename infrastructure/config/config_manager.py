@@ -147,6 +147,11 @@ class ConfigManager:
         return str(self.get("theme", "dark"))
 
     @property
+    def language(self) -> str:
+        """Return the configured language code (e.g., 'en', 'es', 'fr')."""
+        return str(self.get("language", "en"))
+
+    @property
     def max_concurrent(self) -> int:
         return int(self.get("max_concurrent", 3))
 
@@ -207,6 +212,11 @@ class ConfigManager:
     @property
     def default_format(self) -> str:
         return str(self.get("default_format", "mp4"))
+
+    @property
+    def show_notifications(self) -> bool:
+        """Return whether UI notifications should be shown on download events."""
+        return bool(self.get("show_notifications", True))
 
     @property
     def history_limit(self) -> int:
