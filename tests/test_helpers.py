@@ -229,9 +229,12 @@ class TestRevealInExplorer:
             mock_sys.platform = "win32"
             reveal_in_explorer(fake_file)
             args = mock_popen.call_args[0][0]
-            # FIX S2: /select, and path must be SEPARATE list elements
-            assert args[1] == "/select,"
-            assert str(fake_file.resolve()) == args[2]
+            # SEC-2 FIX: /select, and path are concatenated into ONE argument.
+            # Explorer does not accept them as separate argv elements.
+            assert len(args) == 2
+            assert args[0] == "explorer"
+            assert args[1].startswith("/select,")
+            assert str(fake_file.resolve()) in args[1]
 
     def test_macos_uses_open_r(self, tmp_path):
         fake_file = tmp_path / "video.mp4"

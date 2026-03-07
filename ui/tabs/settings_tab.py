@@ -8,8 +8,13 @@ import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.error import URLError
+from urllib.request import Request, urlopen  # noqa: S310 — URL validated elsewhere
 
-import customtkinter as ctk
+try:
+    import customtkinter as ctk
+except ImportError:  # pragma: no cover — only missing in headless CI/tests
+    ctk = None  # type: ignore[assignment]
 
 from ui.themes.tokens import T
 
@@ -45,8 +50,6 @@ def _install_ytdlp_frozen() -> None:
     import sys
     import zipfile
     from pathlib import Path
-    from urllib.error import URLError
-    from urllib.request import Request, urlopen
 
     _appdata = os.getenv("APPDATA", str(Path.home()))
     override_dir = Path(_appdata) / "OmniDL" / "site-packages"
@@ -137,7 +140,10 @@ def _install_ytdlp_frozen() -> None:
 
 
 
-class SettingsTab(ctk.CTkFrame):
+_BaseFrame = ctk.CTkFrame if ctk is not None else object
+
+
+class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, fg_color=T.bg, corner_radius=0)

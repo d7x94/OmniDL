@@ -350,32 +350,49 @@ class TestCookieFileBoundary:
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.extract_info("https://youtube.com/watch?v=abc")
 
+    def _make_real_config(self, config_path, cookie_file=""):
+        """Create a real ConfigManager so config_path.parent is a genuine Path."""
+        import json
+        from infrastructure.config.config_manager import ConfigManager
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({}))
+        cfg = ConfigManager(config_path)
+        if cookie_file:
+            cfg.set("cookie_file", cookie_file)
+        cfg.set("use_cookies", False)
+        return cfg
+
     def test_valid_cookie_file_inside_home_is_used(self, tmp_path, monkeypatch):
-        # Create a fake cookie file inside a directory we pretend is home
-        cookie = tmp_path / "cookies.txt"
+        # Cookie lives inside the config directory (= safe_root)
+        config_dir = tmp_path / "config_dir"
+        cookie = config_dir / "cookies.txt"
+        config_dir.mkdir(parents=True)
         cookie.write_text("# Netscape HTTP Cookie File\n")
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        cfg = make_config(cookie_file=str(cookie))
+        cfg = self._make_real_config(config_dir / "config.json",
+                                     cookie_file=str(cookie))
         opts = {}
         self._run_extract(cfg, opts)
         assert opts.get("cookiefile") == str(cookie.resolve())
 
     def test_cookie_file_outside_home_is_rejected(self, tmp_path, monkeypatch):
-        # Cookie file exists but is outside the fake home dir
+        # Cookie file exists but is outside the config directory (safe_root)
+        config_dir = tmp_path / "home"
         outside = tmp_path / "outside_cookies.txt"
         outside.write_text("# cookies\n")
-        fake_home = tmp_path / "home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        cfg = make_config(cookie_file=str(outside))
+        monkeypatch.setattr(Path, "home", lambda: config_dir)
+        cfg = self._make_real_config(config_dir / "config.json",
+                                     cookie_file=str(outside))
         opts = {}
         self._run_extract(cfg, opts)
         # Should NOT be passed to yt-dlp
         assert "cookiefile" not in opts
 
     def test_nonexistent_cookie_file_is_ignored(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / "config_dir"
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        cfg = make_config(cookie_file=str(tmp_path / "nonexistent.txt"))
+        cfg = self._make_real_config(config_dir / "config.json",
+                                     cookie_file=str(tmp_path / "nonexistent.txt"))
         opts = {}
         self._run_extract(cfg, opts)
         assert "cookiefile" not in opts

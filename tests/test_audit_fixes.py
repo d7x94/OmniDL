@@ -72,7 +72,7 @@ class TestRevealInExplorerSecurity:
                 "shell=True must not be used on Windows (CWE-78 fix)"
 
     def test_windows_path_is_separate_argv_element(self, tmp_path):
-        """Path must be a separate list element, not embedded in a shell string."""
+        """Path is embedded in the /select, argument — not a separate element."""
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
@@ -82,8 +82,10 @@ class TestRevealInExplorerSecurity:
             args = mp.call_args[0][0]
             assert isinstance(args, list), "Popen must be called with a list on Windows"
             assert args[0] == "explorer"
-            # Path is its own argv element — no shell metacharacter parsing
-            assert str(fake.resolve()) in args
+            # SEC-2 FIX: path is concatenated with /select, in a single argument
+            assert len(args) == 2
+            assert args[1].startswith("/select,")
+            assert str(fake.resolve()) in args[1]
 
     def test_windows_metacharacter_filename_safe(self, tmp_path):
         """A filename with shell metacharacters must not cause a second Popen call."""
@@ -437,13 +439,17 @@ class TestSEC1PathTraversalFix:
 
     def test_sibling_directory_bypass_is_blocked(self, tmp_path, monkeypatch):
         """
-        /home/user_evil/cookies.txt must NOT pass when home=/home/user.
+        /home/user_evil/cookies.txt must NOT pass when safe_root=/home/user/.omnidl.
         The old startswith() check would have allowed this because
         '/home/user_evil'.startswith('/home/user') is True.
+        Path.parents is used instead: user_evil is NOT an ancestor of .omnidl.
         """
         fake_home = tmp_path / "home" / "user"
         fake_home.mkdir(parents=True)
-        # Create a file in a SIBLING directory whose name starts with the home dir name
+        # Config lives inside fake_home/.omnidl/ so safe_root = fake_home/.omnidl
+        config_dir = fake_home / ".omnidl"
+        config_dir.mkdir()
+        # Sibling directory whose name starts with the home-dir name
         sibling = tmp_path / "home" / "user_evil"
         sibling.mkdir()
         evil_cookie = sibling / "cookies.txt"
@@ -456,7 +462,7 @@ class TestSEC1PathTraversalFix:
         import infrastructure.downloader.yt_dlp_engine as mod
         import json
 
-        config_path = tmp_path / "config.json"
+        config_path = config_dir / "config.json"
         config_path.write_text(json.dumps({}))
         config = ConfigManager(config_path)
         config.set("cookie_file", str(evil_cookie))
@@ -487,10 +493,13 @@ class TestSEC1PathTraversalFix:
         )
 
     def test_file_inside_home_is_allowed(self, tmp_path, monkeypatch):
-        """A cookie file legitimately inside the home dir must be accepted."""
+        """A cookie file inside the OmniDL data directory must be accepted."""
         fake_home = tmp_path / "home" / "user"
         fake_home.mkdir(parents=True)
-        legit_cookie = fake_home / "cookies.txt"
+        # Config (and cookie) live in the same .omnidl directory = safe_root
+        config_dir = fake_home / ".omnidl"
+        config_dir.mkdir()
+        legit_cookie = config_dir / "cookies.txt"
         legit_cookie.write_text("# cookies\n")
 
         monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
@@ -500,7 +509,7 @@ class TestSEC1PathTraversalFix:
         import infrastructure.downloader.yt_dlp_engine as mod
         import json
 
-        config_path = tmp_path / "config.json"
+        config_path = config_dir / "config.json"
         config_path.write_text(json.dumps({}))
         config = ConfigManager(config_path)
         config.set("cookie_file", str(legit_cookie))
@@ -526,8 +535,8 @@ class TestSEC1PathTraversalFix:
             except Exception:
                 pass
 
-        assert captured.get("cookiefile") == str(legit_cookie), (
-            "Legitimate cookie file inside home dir must be accepted"
+        assert captured.get("cookiefile") == str(legit_cookie.resolve()), (
+            "Legitimate cookie file inside OmniDL data dir must be accepted"
         )
 
 

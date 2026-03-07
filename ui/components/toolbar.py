@@ -8,7 +8,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-import customtkinter as ctk
+try:
+    import customtkinter as ctk
+except ImportError:  # pragma: no cover — only missing in headless CI/tests
+    ctk = None  # type: ignore[assignment]
 
 from ui.themes.tokens import T
 
@@ -21,7 +24,10 @@ logger = logging.getLogger(__name__)
 _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
-class Toolbar(ctk.CTkFrame):
+_BaseFrame = ctk.CTkFrame if ctk is not None else object
+
+
+class Toolbar(_BaseFrame):  # type: ignore[misc]
     """
     Persistent URL bar — always visible regardless of active tab.
     Sends analyse requests and delegates result to HomeTab.
