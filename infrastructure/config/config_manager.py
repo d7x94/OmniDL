@@ -118,12 +118,12 @@ class ConfigManager:
     def set(self, key: str, value: Any) -> None:
         with self._lock:
             self._data[key] = value
-        self._schedule_save()
+        self._save()
 
     def update(self, values: dict[str, Any]) -> None:
         with self._lock:
             self._data.update(values)
-        self._schedule_save()
+        self._save()
 
     # ── Typed property accessors ─────────────────────────────────────────
 
