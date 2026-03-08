@@ -5,6 +5,7 @@ One row per DownloadTask — compact, IDM-inspired, fully themed.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -211,66 +212,52 @@ class DownloadItemWidget(ctk.CTkFrame):
     def _open_folder(self) -> None:
         """Open the folder that contains the completed download.
 
-        ROOT-CAUSE FIX: the previous implementation derived the folder via
-        ``task.output_dir`` as a fallback, which is the *configured* output
-        directory — not necessarily the *actual* directory where yt-dlp wrote
-        the file (they can differ when a per-task override is used, or when
-        yt-dlp places the merged output in a temp-adjacent path).
+        Uses ``self.task.filename`` as the single authoritative output path.
+        ``_completed_path`` is no longer consulted so a stale or missed
+        UI-refresh snapshot cannot cause the wrong directory to be opened.
 
-        The History tab is always correct because it uses::
+        A short retry loop (up to 3 attempts, 0.2 s apart) handles the edge
+        case where the OS has not yet flushed the file to disk by the time
+        the user clicks "Open".
 
-            open_folder(Path(fname).parent)
-
-        where ``fname`` is ``task.filename`` snapshotted at the moment the
-        DOWNLOAD_COMPLETED event fires — i.e. after the engine has resolved
-        the final output path.
-
-        This method now mirrors that approach:
-        1. Use ``self._completed_path`` (snapshotted at first-COMPLETED in
-           ``refresh()``) as the authoritative source.
-        2. Derive the containing folder as ``Path(completed_path).parent``.
-        3. If the file still exists, reveal it in the file manager (better UX).
-        4. If the file is gone (moved/deleted), open its containing folder.
-        5. Only fall back to ``task.output_dir`` when the derived folder does
-           not exist — this is a genuine last-resort for edge cases such as
-           the user deleting the entire output directory.
+        Priority order:
+          1. File exists -- reveal it in the file manager (highlights the file).
+          2. File absent -- open the containing folder if it exists.
+          3. Last resort -- open ``task.output_dir`` (configured download dir).
         """
-        # Use the snapshotted path from first-COMPLETED; guard against the
-        # rare case where refresh() hasn't run yet by falling back to the
-        # live field (both reference the same engine-resolved value).
-        path = self._completed_path or self.task.filename
+        path = self.task.filename
 
         if path:
             p = Path(path)
-            # Derive the folder that contains the file — identical to History:
-            #   open_folder(Path(fname).parent)
+
+            # Retry loop: the file may not be flushed to disk yet.
+            for attempt in range(3):
+                if p.is_file():
+                    # File is present -- reveal and highlight it.
+                    # Fall back to a plain folder open if reveal is unavailable.
+                    if not reveal_in_explorer(p):
+                        open_folder(p.parent)
+                    return
+                if attempt < 2:
+                    time.sleep(0.2)
+
+            # File still absent after retries -- open its containing folder.
             folder = p.parent
-
-            if p.is_file():
-                # File present: reveal it (highlights the file in the manager).
-                # Fall back to a plain folder open when reveal is unavailable.
-                if not reveal_in_explorer(p):
-                    open_folder(folder)
-                return
-
-            # File absent (moved, renamed, or not yet flushed to disk).
-            # Open the containing folder if it still exists.
             if folder.is_dir():
                 open_folder(folder)
                 return
 
-        # Absolute last resort: the task's configured output directory.
-        # This covers the edge case where the entire output folder was deleted
-        # or the path stored in task.filename has become invalid.
+        # Last resort: the task's configured output directory.
         output_dir = self.task.output_dir
         if output_dir:
             fb = Path(output_dir)
             if fb.is_dir():
                 open_folder(fb)
                 return
+
         logger.warning(
             "_open_folder: no valid path for task %s "
-            "(completed_path=%r, output_dir=%r)",
+            "(filename=%r, output_dir=%r)",
             self.task.id, path, self.task.output_dir,
         )
 
