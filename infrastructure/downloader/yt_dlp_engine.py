@@ -174,7 +174,9 @@ class YtDlpEngine:
         """
         # Reject known-unsupported URL patterns before calling yt-dlp so the
         # user gets an actionable message rather than a generic yt-dlp error.
-        # has_cookies allows Stories and Live URLs through when cookies exist.
+        # has_cookies allows Stories and Live URLs through when cookies are
+        # configured by the user (intent check).  Security validation of the
+        # actual cookie path happens in _validate_cookie_path() below.
         has_cookies = bool(
             self._config.cookie_file.strip() or self._config.use_cookies
         )
@@ -455,7 +457,12 @@ class YtDlpEngine:
             # Capture filepath after EVERY postprocessor finishes — the last
             # "finished" event is always the final merged output.
             if d.get("status") == "finished":
-                fp = (d.get("info_dict") or {}).get("filepath") or ""
+                _info = d.get("info_dict") or {}
+                fp = (
+                    _info.get("filepath")
+                    or _info.get("__real_download_filename")
+                    or ""
+                )
                 if fp:
                     p = Path(fp)
                     if p.suffix.lower() in _MEDIA_EXTS and not fp.endswith(".part"):
@@ -464,7 +471,15 @@ class YtDlpEngine:
                         # environments yt-dlp may return a relative filepath in
                         # info_dict, which would cause open_folder / history to
                         # target the wrong directory.
-                        _final_filepath.append(str(p.resolve()))
+                        resolved = str(p.resolve())
+                        _final_filepath.append(resolved)
+                        # BUG-1 FIX: write task.filename synchronously here so
+                        # the Queue "Open" button always opens the correct folder
+                        # even if the post-ydl.download() resolution block is
+                        # skipped or fails (e.g. pp_hook fires without a
+                        # subsequent size-scan fallback succeeding).
+                        with task._lock:
+                            task.filename = resolved
             # Also run the original pp hook (progress + postprocess callbacks)
             if _original_pp_hook:
                 _original_pp_hook(d)
