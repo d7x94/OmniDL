@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 
 from ui.themes.tokens import T
-from utils.helpers import open_folder
+from utils.helpers import open_folder, reveal_in_explorer
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -135,11 +135,20 @@ class HistoryTab(ctk.CTkFrame):
         ).pack(side="left", fill="x", expand=True)
 
         if fname:
+            def _open_history_file(path_str=fname) -> None:
+                p = Path(path_str)
+                if p.is_file():
+                    # Highlight the file in Explorer / Finder.
+                    # Fall back to plain folder open if reveal is unavailable.
+                    if not reveal_in_explorer(p):
+                        open_folder(p.parent)
+                elif p.parent.is_dir():
+                    open_folder(p.parent)
             ctk.CTkButton(
                 bot, text="📂", width=32, height=26, corner_radius=6,
                 fg_color=T.success_bg, hover_color=T.success_bg,
                 text_color=T.success,
-                command=lambda p=fname: open_folder(Path(p).parent),
+                command=_open_history_file,
             ).pack(side="right")
 
     def _clear_all(self) -> None:

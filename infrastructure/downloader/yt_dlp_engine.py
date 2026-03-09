@@ -460,7 +460,11 @@ class YtDlpEngine:
                     p = Path(fp)
                     if p.suffix.lower() in _MEDIA_EXTS and not fp.endswith(".part"):
                         _final_filepath.clear()
-                        _final_filepath.append(fp)
+                        # Resolve to absolute path — on some Windows + PyInstaller
+                        # environments yt-dlp may return a relative filepath in
+                        # info_dict, which would cause open_folder / history to
+                        # target the wrong directory.
+                        _final_filepath.append(str(p.resolve()))
             # Also run the original pp hook (progress + postprocess callbacks)
             if _original_pp_hook:
                 _original_pp_hook(d)

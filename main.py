@@ -73,6 +73,9 @@ if str(APP_BINARY_DIR) not in sys.path:
     sys.path.insert(0, str(APP_BINARY_DIR))
 
 
+_APP_VERSION = "16.0.0"
+
+
 def main() -> None:
     from utils.logger import setup_logging
     setup_logging(LOG_DIR)
@@ -97,6 +100,8 @@ def main() -> None:
     history = HistoryRepository(
         DATA_DIR / "download_history.jsonl", config.history_limit
     )
+    _clear_history_on_version_change(config, history)
+
     engine  = YtDlpEngine(config)
     manager = DownloadManager(config, engine=engine)
     manager.start()
@@ -126,6 +131,26 @@ def main() -> None:
         service.close()               # then flush history writes
         config.save()
         logger.info("OmniDL shutdown complete")
+
+
+def _clear_history_on_version_change(config, history) -> None:
+    """Clear download history when the installed app version changes.
+
+    History is stored in the OS user-data directory (platformdirs) which
+    persists across reinstalls.  Clearing on version change ensures a fresh
+    install always starts with an empty history, without requiring the user
+    to manually delete %APPDATA%/OmniDL/download_history.jsonl.
+    """
+    import logging
+    logger = logging.getLogger("omnidl.main")
+    stored = config.get("app_version", "")
+    if stored != _APP_VERSION:
+        logger.info(
+            "App version changed (%r -> %r) — clearing download history",
+            stored, _APP_VERSION,
+        )
+        history.clear()
+        config.set("app_version", _APP_VERSION)
 
 
 def _migrate_legacy_data() -> None:
