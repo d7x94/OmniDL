@@ -134,27 +134,22 @@ def main() -> None:
 
 
 def _clear_history_on_version_change(config, history) -> None:
-    """Reset settings and clear download history when the installed app version changes.
+    """Clear download history when the installed app version changes.
 
-    History and user settings are stored in the OS user-data directory
-    (platformdirs) which persists across reinstalls.  Resetting on version
-    change ensures a fresh install always starts with factory-default settings
-    and an empty history, without requiring the user to manually delete the
-    OmniDL data directory.
+    History is stored in the OS user-data directory (platformdirs) which
+    persists across reinstalls.  Clearing on version change ensures a fresh
+    install always starts with an empty history, without requiring the user
+    to manually delete %APPDATA%/OmniDL/download_history.jsonl.
     """
     import logging
     logger = logging.getLogger("omnidl.main")
     stored = config.get("app_version", "")
     if stored != _APP_VERSION:
         logger.info(
-            "App version changed (%r -> %r) — resetting settings and clearing history",
+            "App version changed (%r -> %r) — clearing download history",
             stored, _APP_VERSION,
         )
         history.clear()
-        # BUG-2 FIX: reset all settings to factory defaults so settings from
-        # an older build (incompatible feature flags, renamed keys, etc.) do
-        # not carry forward into the new version.
-        config.reset_to_defaults()
         config.set("app_version", _APP_VERSION)
 
 

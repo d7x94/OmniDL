@@ -97,22 +97,6 @@ class ConfigManager:
         except OSError as exc:
             logger.error("Config save failed: %s", exc)
 
-    def reset_to_defaults(self) -> None:
-        """Reset all settings to factory defaults and flush to disk immediately.
-
-        Called when the installed app version changes so a fresh install always
-        starts with a clean, known-good configuration rather than potentially
-        incompatible settings left over from an older build.
-        """
-        with self._lock:
-            self._data = dict(_DEFAULTS)
-            _snapshot = dict(self._data)
-        path_key = str(self._path.resolve())
-        with ConfigManager._cache_lock:
-            ConfigManager._cache[path_key] = _snapshot
-        self._save()
-        logger.info("Config reset to factory defaults")
-
     def save(self) -> None:
         """Flush config to disk immediately (synchronous; use at shutdown)."""
         # Cancel any pending debounced write — this is the authoritative flush.
