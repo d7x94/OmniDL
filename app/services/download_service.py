@@ -48,7 +48,7 @@ class DownloadService:
             max_workers=1, thread_name_prefix="omnidl-history"
         )
 
-        # Wire completion → history save (DEF-018: single handler for all terminal states)
+        # Wire completion → history save (DEF-018: one handler for all terminal states)
         self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._save_to_history)
         self._bus.subscribe(EventBus.DOWNLOAD_FAILED, self._save_to_history)
         self._bus.subscribe(EventBus.DOWNLOAD_CANCELLED, self._save_to_history)

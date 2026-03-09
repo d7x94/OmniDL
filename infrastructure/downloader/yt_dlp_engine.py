@@ -536,7 +536,9 @@ class YtDlpEngine:
                 eta = d.get("eta")
                 if eta is not None:
                     task.eta = _fmt_eta(eta)
-                task.filename = d.get("filename") or task.filename
+                _fname = d.get("filename")
+                if _fname and Path(_fname).is_absolute():
+                    task.filename = _fname
                 if callback:
                     callback(task)
 
@@ -545,7 +547,9 @@ class YtDlpEngine:
                 task.progress = 99.5
                 task.speed = ""
                 task.eta = ""
-                task.filename = d.get("filename") or task.filename
+                _fname = d.get("filename")
+                if _fname and Path(_fname).is_absolute():
+                    task.filename = _fname
                 if callback:
                     callback(task)
 

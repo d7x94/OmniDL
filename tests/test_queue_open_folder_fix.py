@@ -27,7 +27,7 @@ def _stub_customtkinter():
     """Replace customtkinter with a thin MagicMock so widget import succeeds."""
     ctk = types.ModuleType("customtkinter")
     # Any attribute access returns a new MagicMock class/instance.
-    ctk.__getattr__ = lambda self, name: MagicMock  # noqa: ARG001
+    ctk.__getattr__ = lambda name: MagicMock  # noqa: ARG001
     # CTkFrame must be a class we can subclass.
     class _Frame:
         def __init__(self, *a, **kw): pass
@@ -47,7 +47,7 @@ def _stub_customtkinter():
 def _stub_ui_deps():
     for mod in ("ui.themes.tokens", "ui.components.progress_bar"):
         m = types.ModuleType(mod)
-        m.__getattr__ = lambda self, name: MagicMock()  # noqa: ARG001
+        m.__getattr__ = lambda name: MagicMock()  # noqa: ARG001
         sys.modules[mod] = m
     # T token object
     T = MagicMock()
