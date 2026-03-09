@@ -44,13 +44,19 @@ def _validate_cookie_path(config: "ConfigManager") -> str | None:
     if not cookie_file:
         return None
     cp = Path(cookie_file).resolve()
-    safe_root = config.config_path.parent.resolve()
-    is_safe = cp == safe_root or safe_root in cp.parents
+    # Accept files inside the OmniDL data directory OR anywhere under the
+    # user's home directory.  Path.parents is used (not str.startswith) to
+    # prevent the sibling-directory bypass (CWE-22).
+    safe_roots = (
+        config.config_path.parent.resolve(),
+        Path.home().resolve(),
+    )
+    is_safe = any(cp == root or root in cp.parents for root in safe_roots)
     if cp.is_file() and is_safe:
         logger.info("Using cookie file: %s", cp)
         return str(cp)
     logger.warning(
-        "cookie_file rejected — not inside OmniDL data directory: %s",
+        "cookie_file rejected — not inside a safe directory: %s",
         cookie_file,
     )
     return None
@@ -104,6 +110,11 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
     (
         re.compile(r"instagram\.com/stories/", re.I),
         "Instagram Stories require login cookies.\n"
+        "Set up a cookie file in Settings → Network → Cookie file.",
+    ),
+    (
+        re.compile(r"instagram\.com/[^/]+/live(?:/|$)", re.I),
+        "Instagram Live streams require login cookies.\n"
         "Set up a cookie file in Settings → Network → Cookie file.",
     ),
     (
@@ -268,11 +279,15 @@ class YtDlpEngine:
         # yt-dlp may not always set is_live=True for TikTok live during
         # extract_info (race between go-live and extraction timing).
         # We also check duration==0 + TikTok URL as a strong secondary signal.
+        # Same race condition applies to Instagram live streams.
         _tiktok_live_re = re.compile(r"tiktok\.com/@[^/]+/live", re.I)
+        _instagram_live_re = re.compile(r"instagram\.com/[^/]+/live(?:/|$)", re.I)
         is_live = bool(
             (task.media_info and task.media_info.is_live)
             or (task.media_info and task.media_info.duration == 0
                 and _tiktok_live_re.search(task.url))
+            or (task.media_info and task.media_info.duration == 0
+                and _instagram_live_re.search(task.url))
         )
         if is_live:
             logger.info(

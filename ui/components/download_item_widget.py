@@ -212,9 +212,10 @@ class DownloadItemWidget(ctk.CTkFrame):
     def _open_folder(self) -> None:
         """Open the folder that contains the completed download.
 
-        Uses ``self.task.filename`` as the single authoritative output path.
-        ``_completed_path`` is no longer consulted so a stale or missed
-        UI-refresh snapshot cannot cause the wrong directory to be opened.
+        Uses ``self._completed_path`` (snapshot taken at COMPLETED time) as
+        the primary path source so a stale live reference cannot cause the
+        wrong directory to open.  Falls back to ``self.task.filename`` when
+        the snapshot is absent.
 
         A short retry loop (up to 3 attempts, 0.2 s apart) handles the edge
         case where the OS has not yet flushed the file to disk by the time
@@ -225,7 +226,7 @@ class DownloadItemWidget(ctk.CTkFrame):
           2. File absent -- open the containing folder if it exists.
           3. Last resort -- open ``task.output_dir`` (configured download dir).
         """
-        path = self.task.filename
+        path = self._completed_path or self.task.filename
 
         if path:
             p = Path(path)
