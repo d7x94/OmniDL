@@ -28,6 +28,18 @@ class MediaInfo:
     video_id: str = ""         # yt-dlp's internal video ID (used for filename)
 
 
+
+def _set_event() -> threading.Event:
+    """Helper: return an already-set threading.Event.
+
+    Defined before DownloadTask so it can be referenced as
+    `default_factory=_set_event` in the dataclass body (DEF-019).
+    """
+    e = threading.Event()
+    e.set()
+    return e
+
+
 @dataclass
 class DownloadTask:
     """
@@ -67,7 +79,7 @@ class DownloadTask:
         default_factory=threading.Event, compare=False, repr=False
     )
     _pause_event: threading.Event = field(
-        default_factory=lambda: _set_event(), compare=False, repr=False
+        default_factory=_set_event, compare=False, repr=False
     )
     # An RLock guards coordinated multi-field reads via snapshot().  Python's
     # GIL makes individual attribute assignments atomic, but reading a pair of
@@ -110,15 +122,17 @@ class DownloadTask:
     # ── Control ───────────────────────────────────────────────────────────
 
     def pause(self) -> None:
-        if self.status == DownloadStatus.PROCESSING:
-            return
-        self._pause_event.clear()
-        self.status = DownloadStatus.PAUSED
+        with self._lock:   # DEF-004: atomic check-and-mutate
+            if self.status == DownloadStatus.PROCESSING:
+                return
+            self._pause_event.clear()
+            self.status = DownloadStatus.PAUSED
 
     def resume(self) -> None:
-        self._pause_event.set()
-        if self.status == DownloadStatus.PAUSED:
-            self.status = DownloadStatus.DOWNLOADING
+        with self._lock:   # DEF-004: atomic check-and-mutate
+            self._pause_event.set()
+            if self.status == DownloadStatus.PAUSED:
+                self.status = DownloadStatus.DOWNLOADING
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -166,6 +180,7 @@ class DownloadTask:
         return {
             "id": self.id,
             "url": self.url,
+            "output_dir": self.output_dir,
             "title": self.title,
             "platform": self.platform,
             "filename": self.filename,
@@ -178,8 +193,3 @@ class DownloadTask:
         }
 
 
-def _set_event() -> threading.Event:
-    """Helper: return an already-set threading.Event."""
-    e = threading.Event()
-    e.set()
-    return e

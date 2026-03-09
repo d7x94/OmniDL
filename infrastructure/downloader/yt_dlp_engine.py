@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 import shlex
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -136,6 +137,13 @@ def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
     return None
 
 
+# DEF-015: module-level constant — avoids re-allocating on every download() call
+_MEDIA_EXTS: frozenset[str] = frozenset({
+    ".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v",
+    ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav",
+})
+
+
 class YtDlpEngine:
     """
     Handles:
@@ -168,6 +176,7 @@ class YtDlpEngine:
             "no_warnings": True,
             "skip_download": True,
             "noplaylist": True,
+            "socket_timeout": 20,   # DEF-007: prevent hang on stalled server
         }
         _ffmpeg_dir = get_ffmpeg_path()
         if _ffmpeg_dir:
@@ -202,12 +211,10 @@ class YtDlpEngine:
                     raise RuntimeError(_friendly_error(msg)) from exc
                 last_exc = exc
                 if attempt < 2:
-                    import time
                     time.sleep(2 ** attempt)   # 1s, 2s back-off
             except Exception as exc:
                 last_exc = exc
                 if attempt < 2:
-                    import time
                     time.sleep(2 ** attempt)
         if info is None:
             msg = str(last_exc) if last_exc else "No response from server"
@@ -298,8 +305,7 @@ class YtDlpEngine:
         # even with a long download directory.
 
         if is_live:
-            import time as _time
-            rec_ts = _time.strftime("%Y-%m-%d %H-%M")
+            rec_ts = time.strftime("%Y-%m-%d %H-%M")
             outtmpl = str(
                 output_dir
                 / (
@@ -426,10 +432,6 @@ class YtDlpEngine:
         # The pp_hook fires with status="finished" after FFmpeg merge completes;
         # at that point info_dict["filepath"] holds the exact final path.
 
-        _MEDIA_EXTS = {
-            ".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v",
-            ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav",
-        }
         _final_filepath: list[str] = []   # mutable closure cell
 
         _original_pp_hook = opts.get("postprocessor_hooks", [None])[0]

@@ -26,6 +26,8 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     root = logging.getLogger()
+    if root.handlers:   # DEF-012: prevent duplicate handlers on re-entry
+        return
     root.setLevel(level)
 
     ch = logging.StreamHandler(sys.stdout)

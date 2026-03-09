@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -42,10 +43,15 @@ class DownloadService:
         self._engine = engine
         self._bus = event_bus or global_bus
 
-        # Wire completion → history save
-        self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._on_completed)
-        self._bus.subscribe(EventBus.DOWNLOAD_FAILED, self._on_failed)
-        self._bus.subscribe(EventBus.DOWNLOAD_CANCELLED, self._on_cancelled)
+        # DEF-005: single-threaded executor so history writes survive shutdown
+        self._history_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="omnidl-history"
+        )
+
+        # Wire completion → history save (DEF-018: single handler for all terminal states)
+        self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._save_to_history)
+        self._bus.subscribe(EventBus.DOWNLOAD_FAILED, self._save_to_history)
+        self._bus.subscribe(EventBus.DOWNLOAD_CANCELLED, self._save_to_history)
 
     # ── Analysis (async) ──────────────────────────────────────────────────
 
@@ -129,26 +135,24 @@ class DownloadService:
     def clear_history(self) -> None:
         self._history.clear()
 
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
+    def close(self) -> None:
+        """Flush pending history writes and release resources (DEF-005).
+
+        Call this AFTER manager.shutdown(wait=True) to ensure all
+        completion events have already been published before the
+        executor is shut down.
+        """
+        self._history_executor.shutdown(wait=True)
+
     # ── Internal ──────────────────────────────────────────────────────────
 
-    def _on_completed(self, task: DownloadTask) -> None:
-        # Dispatch the disk write to a daemon thread so the download worker
-        # is freed immediately for the next queued item.  history_repo.add()
-        # calls json.dumps() + file.write() synchronously and would otherwise
-        # hold the worker slot during I/O, especially for large histories.
-        threading.Thread(
-            target=self._history.add, args=(task,), daemon=True,
-            name="omnidl-history-save",
-        ).start()
+    def _save_to_history(self, task: DownloadTask) -> None:
+        """Submit a history-write job (DEF-005, DEF-018).
 
-    def _on_failed(self, task: DownloadTask) -> None:
-        threading.Thread(
-            target=self._history.add, args=(task,), daemon=True,
-            name="omnidl-history-save",
-        ).start()
-
-    def _on_cancelled(self, task: DownloadTask) -> None:
-        threading.Thread(
-            target=self._history.add, args=(task,), daemon=True,
-            name="omnidl-history-save",
-        ).start()
+        Replaces three identical daemon-thread handlers with one method
+        backed by a non-daemon ThreadPoolExecutor so writes complete
+        before process exit.
+        """
+        self._history_executor.submit(self._history.add, task)

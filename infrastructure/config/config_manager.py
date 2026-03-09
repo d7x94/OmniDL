@@ -129,19 +129,21 @@ class ConfigManager:
             return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        with self._lock:
+        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
             self._data[key] = value
+            _snapshot = dict(self._data)
         path_key = str(self._path.resolve())
         with ConfigManager._cache_lock:
-            ConfigManager._cache[path_key] = dict(self._data)
+            ConfigManager._cache[path_key] = _snapshot
         self._schedule_save()
 
     def update(self, values: dict[str, Any]) -> None:
-        with self._lock:
+        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
             self._data.update(values)
+            _snapshot = dict(self._data)
         path_key = str(self._path.resolve())
         with ConfigManager._cache_lock:
-            ConfigManager._cache[path_key] = dict(self._data)
+            ConfigManager._cache[path_key] = _snapshot
         self._schedule_save()
 
     # ── Typed property accessors ─────────────────────────────────────────

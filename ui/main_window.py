@@ -391,7 +391,9 @@ class ServiceFacade:
         self._svc.analyse_url(url, on_done, on_error)
 
     def start_download(self, url, media_info, format_id, output_ext, output_dir=None):
-        self._svc.start_download(url, media_info, format_id, output_ext, output_dir)
+        return self._svc.start_download(  # DEF-030: propagate DownloadTask to caller
+            url, media_info, format_id, output_ext, output_dir
+        )
 
     def pause_download(self, task_id):   self._svc.pause_download(task_id)
     def resume_download(self, task_id):  self._svc.resume_download(task_id)

@@ -122,7 +122,8 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted")
     finally:
-        manager.shutdown(wait=False)
+        manager.shutdown(wait=True)   # drain all running downloads first (PV-002)
+        service.close()               # then flush history writes
         config.save()
         logger.info("OmniDL shutdown complete")
 
@@ -161,6 +162,7 @@ def _check_deps() -> None:
         ("yt_dlp",        "yt-dlp"),
         ("PIL",           "Pillow"),
         ("requests",      "requests"),
+        ("platformdirs",  "platformdirs>=4.0.0"),  # DEF-024
     ]:
         try:
             __import__(pkg)

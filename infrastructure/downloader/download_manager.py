@@ -186,10 +186,12 @@ class DownloadManager:
         self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
 
     def _on_future_done(self, task_id: str, future: Future) -> None:
+        # DEF-008: prune Future reference to prevent memory leak
+        with self._lock:
+            self._futures.pop(task_id, None)
+        # DEF-009: _run_task already logs errors — only surface true escapes here
         exc = future.exception()
         if exc:
-            # logger.exception() already captures the traceback via exc_info;
-            # passing exc_info= separately would emit a duplicate stack trace.
-            logger.error(
-                "Unhandled exception in task %s", task_id, exc_info=exc
+            logger.debug(
+                "Unhandled exception escaped _run_task for task %s: %s", task_id, exc
             )

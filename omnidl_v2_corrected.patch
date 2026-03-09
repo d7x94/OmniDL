@@ -1,0 +1,304 @@
+--- a/domain/models/download_task.py
++++ b/domain/models/download_task.py
+@@ -26,6 +26,18 @@
+     is_live: bool = False
+     was_live: bool = False
+     video_id: str = ""         # yt-dlp's internal video ID (used for filename)
++
++
++
++def _set_event() -> threading.Event:
++    """Helper: return an already-set threading.Event.
++
++    Defined before DownloadTask so it can be referenced as
++    `default_factory=_set_event` in the dataclass body (DEF-019).
++    """
++    e = threading.Event()
++    e.set()
++    return e
+ 
+ 
+ @dataclass
+@@ -67,7 +79,7 @@
+         default_factory=threading.Event, compare=False, repr=False
+     )
+     _pause_event: threading.Event = field(
+-        default_factory=lambda: _set_event(), compare=False, repr=False
++        default_factory=_set_event, compare=False, repr=False
+     )
+     # An RLock guards coordinated multi-field reads via snapshot().  Python's
+     # GIL makes individual attribute assignments atomic, but reading a pair of
+@@ -110,15 +122,17 @@
+     # ── Control ───────────────────────────────────────────────────────────
+ 
+     def pause(self) -> None:
+-        if self.status == DownloadStatus.PROCESSING:
+-            return
+-        self._pause_event.clear()
+-        self.status = DownloadStatus.PAUSED
++        with self._lock:   # DEF-004: atomic check-and-mutate
++            if self.status == DownloadStatus.PROCESSING:
++                return
++            self._pause_event.clear()
++            self.status = DownloadStatus.PAUSED
+ 
+     def resume(self) -> None:
+-        self._pause_event.set()
+-        if self.status == DownloadStatus.PAUSED:
+-            self.status = DownloadStatus.DOWNLOADING
++        with self._lock:   # DEF-004: atomic check-and-mutate
++            self._pause_event.set()
++            if self.status == DownloadStatus.PAUSED:
++                self.status = DownloadStatus.DOWNLOADING
+ 
+     def cancel(self) -> None:
+         self._cancel_event.set()
+@@ -166,6 +180,7 @@
+         return {
+             "id": self.id,
+             "url": self.url,
++            "output_dir": self.output_dir,
+             "title": self.title,
+             "platform": self.platform,
+             "filename": self.filename,
+@@ -178,8 +193,3 @@
+         }
+ 
+ 
+-def _set_event() -> threading.Event:
+-    """Helper: return an already-set threading.Event."""
+-    e = threading.Event()
+-    e.set()
+-    return e
+--- a/infrastructure/config/config_manager.py
++++ b/infrastructure/config/config_manager.py
+@@ -129,19 +129,21 @@
+             return self._data.get(key, default)
+ 
+     def set(self, key: str, value: Any) -> None:
+-        with self._lock:
++        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
+             self._data[key] = value
++            _snapshot = dict(self._data)
+         path_key = str(self._path.resolve())
+         with ConfigManager._cache_lock:
+-            ConfigManager._cache[path_key] = dict(self._data)
++            ConfigManager._cache[path_key] = _snapshot
+         self._schedule_save()
+ 
+     def update(self, values: dict[str, Any]) -> None:
+-        with self._lock:
++        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
+             self._data.update(values)
++            _snapshot = dict(self._data)
+         path_key = str(self._path.resolve())
+         with ConfigManager._cache_lock:
+-            ConfigManager._cache[path_key] = dict(self._data)
++            ConfigManager._cache[path_key] = _snapshot
+         self._schedule_save()
+ 
+     # ── Typed property accessors ─────────────────────────────────────────
+--- a/infrastructure/downloader/download_manager.py
++++ b/infrastructure/downloader/download_manager.py
+@@ -186,10 +186,12 @@
+         self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+ 
+     def _on_future_done(self, task_id: str, future: Future) -> None:
++        # DEF-008: prune Future reference to prevent memory leak
++        with self._lock:
++            self._futures.pop(task_id, None)
++        # DEF-009: _run_task already logs errors — only surface true escapes here
+         exc = future.exception()
+         if exc:
+-            # logger.exception() already captures the traceback via exc_info;
+-            # passing exc_info= separately would emit a duplicate stack trace.
+-            logger.error(
+-                "Unhandled exception in task %s", task_id, exc_info=exc
++            logger.debug(
++                "Unhandled exception escaped _run_task for task %s: %s", task_id, exc
+             )
+--- a/infrastructure/downloader/yt_dlp_engine.py
++++ b/infrastructure/downloader/yt_dlp_engine.py
+@@ -7,6 +7,7 @@
+ import logging
+ import re
+ import shlex
++import time
+ from pathlib import Path
+ from typing import Any, Callable, Optional
+ 
+@@ -150,6 +151,13 @@
+     return None
+ 
+ 
++# DEF-015: module-level constant — avoids re-allocating on every download() call
++_MEDIA_EXTS: frozenset[str] = frozenset({
++    ".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v",
++    ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav",
++})
++
++
+ class YtDlpEngine:
+     """
+     Handles:
+@@ -186,6 +194,7 @@
+             "no_warnings": True,
+             "skip_download": True,
+             "noplaylist": True,
++            "socket_timeout": 20,   # DEF-007: prevent hang on stalled server
+         }
+         _ffmpeg_dir = get_ffmpeg_path()
+         if _ffmpeg_dir:
+@@ -218,12 +227,10 @@
+                     raise RuntimeError(_friendly_error(msg)) from exc
+                 last_exc = exc
+                 if attempt < 2:
+-                    import time
+                     time.sleep(2 ** attempt)   # 1s, 2s back-off
+             except Exception as exc:
+                 last_exc = exc
+                 if attempt < 2:
+-                    import time
+                     time.sleep(2 ** attempt)
+         if info is None:
+             msg = str(last_exc) if last_exc else "No response from server"
+@@ -314,8 +321,7 @@
+         # even with a long download directory.
+ 
+         if is_live:
+-            import time as _time
+-            rec_ts = _time.strftime("%Y-%m-%d %H-%M")
++            rec_ts = time.strftime("%Y-%m-%d %H-%M")
+             outtmpl = str(
+                 output_dir
+                 / (
+@@ -442,10 +448,6 @@
+         # The pp_hook fires with status="finished" after FFmpeg merge completes;
+         # at that point info_dict["filepath"] holds the exact final path.
+ 
+-        _MEDIA_EXTS = {
+-            ".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v",
+-            ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav",
+-        }
+         _final_filepath: list[str] = []   # mutable closure cell
+ 
+         _original_pp_hook = opts.get("postprocessor_hooks", [None])[0]
+--- a/utils/logger.py
++++ b/utils/logger.py
+@@ -26,6 +26,8 @@
+         datefmt="%Y-%m-%d %H:%M:%S",
+     )
+     root = logging.getLogger()
++    if root.handlers:   # DEF-012: prevent duplicate handlers on re-entry
++        return
+     root.setLevel(level)
+ 
+     ch = logging.StreamHandler(sys.stdout)
+--- a/app/services/download_service.py
++++ b/app/services/download_service.py
+@@ -7,6 +7,7 @@
+ 
+ import logging
+ import threading
++from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+ from typing import Callable, Optional
+ 
+@@ -42,10 +43,15 @@
+         self._engine = engine
+         self._bus = event_bus or global_bus
+ 
+-        # Wire completion → history save
+-        self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._on_completed)
+-        self._bus.subscribe(EventBus.DOWNLOAD_FAILED, self._on_failed)
+-        self._bus.subscribe(EventBus.DOWNLOAD_CANCELLED, self._on_cancelled)
++        # DEF-005: single-threaded executor so history writes survive shutdown
++        self._history_executor: ThreadPoolExecutor = ThreadPoolExecutor(
++            max_workers=1, thread_name_prefix="omnidl-history"
++        )
++
++        # Wire completion → history save (DEF-018: single handler for all terminal states)
++        self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._save_to_history)
++        self._bus.subscribe(EventBus.DOWNLOAD_FAILED, self._save_to_history)
++        self._bus.subscribe(EventBus.DOWNLOAD_CANCELLED, self._save_to_history)
+ 
+     # ── Analysis (async) ──────────────────────────────────────────────────
+ 
+@@ -129,26 +135,24 @@
+     def clear_history(self) -> None:
+         self._history.clear()
+ 
++    # ── Lifecycle ─────────────────────────────────────────────────────────
++
++    def close(self) -> None:
++        """Flush pending history writes and release resources (DEF-005).
++
++        Call this AFTER manager.shutdown(wait=True) to ensure all
++        completion events have already been published before the
++        executor is shut down.
++        """
++        self._history_executor.shutdown(wait=True)
++
+     # ── Internal ──────────────────────────────────────────────────────────
+ 
+-    def _on_completed(self, task: DownloadTask) -> None:
+-        # Dispatch the disk write to a daemon thread so the download worker
+-        # is freed immediately for the next queued item.  history_repo.add()
+-        # calls json.dumps() + file.write() synchronously and would otherwise
+-        # hold the worker slot during I/O, especially for large histories.
+-        threading.Thread(
+-            target=self._history.add, args=(task,), daemon=True,
+-            name="omnidl-history-save",
+-        ).start()
++    def _save_to_history(self, task: DownloadTask) -> None:
++        """Submit a history-write job (DEF-005, DEF-018).
+ 
+-    def _on_failed(self, task: DownloadTask) -> None:
+-        threading.Thread(
+-            target=self._history.add, args=(task,), daemon=True,
+-            name="omnidl-history-save",
+-        ).start()
+-
+-    def _on_cancelled(self, task: DownloadTask) -> None:
+-        threading.Thread(
+-            target=self._history.add, args=(task,), daemon=True,
+-            name="omnidl-history-save",
+-        ).start()
++        Replaces three identical daemon-thread handlers with one method
++        backed by a non-daemon ThreadPoolExecutor so writes complete
++        before process exit.
++        """
++        self._history_executor.submit(self._history.add, task)
+--- a/main.py
++++ b/main.py
+@@ -122,7 +122,8 @@
+     except KeyboardInterrupt:
+         logger.info("Interrupted")
+     finally:
+-        manager.shutdown(wait=False)
++        manager.shutdown(wait=True)   # drain all running downloads first (PV-002)
++        service.close()               # then flush history writes
+         config.save()
+         logger.info("OmniDL shutdown complete")
+ 
+@@ -165,6 +166,7 @@
+         ("yt_dlp",        "yt-dlp"),
+         ("PIL",           "Pillow"),
+         ("requests",      "requests"),
++        ("platformdirs",  "platformdirs>=4.0.0"),  # DEF-024
+     ]:
+         try:
+             __import__(pkg)
+--- a/ui/main_window.py
++++ b/ui/main_window.py
+@@ -391,7 +391,9 @@
+         self._svc.analyse_url(url, on_done, on_error)
+ 
+     def start_download(self, url, media_info, format_id, output_ext, output_dir=None):
+-        self._svc.start_download(url, media_info, format_id, output_ext, output_dir)
++        return self._svc.start_download(  # DEF-030: propagate DownloadTask to caller
++            url, media_info, format_id, output_ext, output_dir
++        )
+ 
+     def pause_download(self, task_id):   self._svc.pause_download(task_id)
+     def resume_download(self, task_id):  self._svc.resume_download(task_id)
