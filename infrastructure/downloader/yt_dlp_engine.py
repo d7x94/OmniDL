@@ -172,12 +172,15 @@ class YtDlpEngine:
         Fetch video metadata without downloading.
         Raises RuntimeError on failure.
         """
-        # Reject known-unsupported URL patterns before calling yt-dlp so the
-        # user gets an actionable message rather than a generic yt-dlp error.
-        # has_cookies allows Stories and Live URLs through when cookies exist.
-        has_cookies = bool(
-            self._config.cookie_file.strip() or self._config.use_cookies
-        )
+        # BUG-3 FIX: validate the cookie path BEFORE the unsupported-URL check so
+        # that has_cookies accurately reflects whether yt-dlp will actually receive
+        # cookies.  The old check used config.cookie_file.strip() which is truthy
+        # for any non-empty path string — even if the file doesn't exist or fails
+        # the security containment check in _validate_cookie_path().  With the old
+        # logic, Facebook Story URLs were allowed through (has_cookies=True) but
+        # then yt-dlp ran without any cookies, causing the download to fail.
+        _cookie_path = _validate_cookie_path(self._config)
+        has_cookies = bool(_cookie_path or self._config.use_cookies)
         early_msg = _check_unsupported_url(url, has_cookies=has_cookies)
         if early_msg:
             raise RuntimeError(early_msg)
@@ -195,9 +198,8 @@ class YtDlpEngine:
 
         if self._config.proxy:
             opts["proxy"] = self._config.proxy
-        # Cookie-file validation delegated to _validate_cookie_path() (CWE-22).
-        # See the helper's docstring for the security rationale.
-        _cookie_path = _validate_cookie_path(self._config)
+        # _cookie_path was already validated above (CWE-22).
+        # Reuse the result here — no second call needed.
         if _cookie_path:
             opts["cookiefile"] = _cookie_path
         if not opts.get("cookiefile") and self._config.use_cookies:
@@ -455,7 +457,12 @@ class YtDlpEngine:
             # Capture filepath after EVERY postprocessor finishes — the last
             # "finished" event is always the final merged output.
             if d.get("status") == "finished":
-                fp = (d.get("info_dict") or {}).get("filepath") or ""
+                _info = d.get("info_dict") or {}
+                fp = (
+                    _info.get("filepath")
+                    or _info.get("__real_download_filename")
+                    or ""
+                )
                 if fp:
                     p = Path(fp)
                     if p.suffix.lower() in _MEDIA_EXTS and not fp.endswith(".part"):
@@ -464,7 +471,15 @@ class YtDlpEngine:
                         # environments yt-dlp may return a relative filepath in
                         # info_dict, which would cause open_folder / history to
                         # target the wrong directory.
-                        _final_filepath.append(str(p.resolve()))
+                        resolved = str(p.resolve())
+                        _final_filepath.append(resolved)
+                        # BUG-1 FIX: write task.filename synchronously here so
+                        # the Queue "Open" button always opens the correct folder
+                        # even if the post-ydl.download() resolution block is
+                        # skipped or fails (e.g. pp_hook fires without a
+                        # subsequent size-scan fallback succeeding).
+                        with task._lock:
+                            task.filename = resolved
             # Also run the original pp hook (progress + postprocess callbacks)
             if _original_pp_hook:
                 _original_pp_hook(d)
