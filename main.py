@@ -146,15 +146,11 @@ def _clear_history_on_version_change(config, history) -> None:
     logger = logging.getLogger("omnidl.main")
     stored = config.get("app_version", "")
     if stored != _APP_VERSION:
-        logger.info(
-            "App version changed (%r -> %r) — resetting settings and clearing history",
-            stored, _APP_VERSION,
-        )
-        history.clear()
-        # BUG-2 FIX: reset all settings to factory defaults so settings from
-        # an older build (incompatible feature flags, renamed keys, etc.) do
-        # not carry forward into the new version.
-        config.reset_to_defaults()
+        import re as _re
+        _major = lambda v: (_re.match(r"(\d+)", v) or ["0"])[0]
+        if _major(stored or "0") != _major(_APP_VERSION):
+            history.clear()
+            config.reset_to_defaults()
         config.set("app_version", _APP_VERSION)
 
 

@@ -51,8 +51,12 @@ def _install_ytdlp_frozen() -> None:
     import zipfile
     from pathlib import Path
 
-    _appdata = os.getenv("APPDATA", str(Path.home()))
-    override_dir = Path(_appdata) / "OmniDL" / "site-packages"
+    try:
+        from platformdirs import user_data_dir as _udd
+        _override_base = Path(_udd("OmniDL", appauthor=False))
+    except ImportError:
+        _override_base = Path.home() / ".omnidl"
+    override_dir = _override_base / "site-packages"
     override_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Resolve latest wheel URL + digest from PyPI ───────────────────
