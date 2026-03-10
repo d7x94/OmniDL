@@ -104,9 +104,15 @@ def reveal_in_explorer(path: Path) -> bool:
     """
     try:
         if sys.platform == "win32":
-            # Single argument: '/select,<absolute_path>'
-            # No shell=True needed — explorer.exe reads its own argv directly.
-            subprocess.Popen(["explorer", f"/select,{str(path.resolve())}"])
+            # Wrap the path in double-quotes so Explorer.exe handles spaces
+            # and special characters correctly.  Explorer splits its own
+            # command line on spaces, so an unquoted path like
+            # /select,C:\My Downloads\file.mp4 is truncated at the first
+            # space, causing Explorer to open the Desktop silently.
+            # The quoted form  /select,"<path>"  is the correct documented
+            # syntax and works on all tested Windows versions.
+            resolved = str(path.resolve())
+            subprocess.Popen(["explorer", f'/select,"{resolved}"'])
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path)], close_fds=True)
         else:
