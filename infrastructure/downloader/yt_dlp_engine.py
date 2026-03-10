@@ -49,7 +49,6 @@ def _validate_cookie_path(config: "ConfigManager") -> str | None:
     # prevent the sibling-directory bypass (CWE-22).
     safe_roots = (
         config.config_path.parent.resolve(),
-        Path.home().resolve(),
     )
     is_safe = any(cp == root or root in cp.parents for root in safe_roots)
     if cp.is_file() and is_safe:
@@ -99,12 +98,6 @@ def _friendly_error(msg: str) -> str:
 
 # Known URL patterns that yt-dlp cannot handle, with actionable messages.
 # Checked before calling yt-dlp to give a better UX than a generic error.
-# Patterns that are ALWAYS blocked (no cookie can help)
-_ALWAYS_BLOCKED: list[tuple[re.Pattern, str]] = [
-    # NOTE: Facebook Stories were previously here but have been moved to
-    # _NEEDS_COOKIES — yt-dlp CAN download them when valid cookies are supplied.
-]
-
 # Patterns that require cookies — only blocked if no cookie is configured
 _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
     (
@@ -138,9 +131,6 @@ def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
     has_cookies=True means a cookie file or browser cookies are configured,
     so cookie-required URLs (Stories, Live) are allowed through to yt-dlp.
     """
-    for pattern, message in _ALWAYS_BLOCKED:
-        if pattern.search(url):
-            return message
     if not has_cookies:
         for pattern, message in _NEEDS_COOKIES:
             if pattern.search(url):
@@ -451,7 +441,8 @@ class YtDlpEngine:
 
         _final_filepath: list[str] = []   # mutable closure cell
 
-        _original_pp_hook = opts.get("postprocessor_hooks", [None])[0]
+        _hooks = opts.get("postprocessor_hooks") or []
+        _original_pp_hook = _hooks[0] if _hooks else None
 
         def _capturing_pp_hook(d: dict) -> None:
             # Capture filepath after EVERY postprocessor finishes — the last
@@ -497,9 +488,8 @@ class YtDlpEngine:
                 # directory does not accumulate stale fragment files.
                 try:
                     for f in output_dir.glob("*.part"):
-                        if task.filename and f.stem in task.filename:
-                            f.unlink(missing_ok=True)
-                            logger.debug("Cleaned up partial file: %s", f)
+                        f.unlink(missing_ok=True)
+                        logger.debug("Cleaned up partial file: %s", f)
                 except OSError as cleanup_exc:
                     logger.warning("Part-file cleanup failed: %s", cleanup_exc)
                 raise  # let _run_task handle the CANCELLED transition
@@ -555,35 +545,37 @@ class YtDlpEngine:
 
             status = d.get("status", "")
             if status == "downloading":
-                task.status = DownloadStatus.DOWNLOADING
-                task.downloaded_bytes = d.get("downloaded_bytes") or 0
-                task.total_bytes = (
-                    d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                )
-                if task.total_bytes > 0:
-                    task.progress = min(
-                        99.0, task.downloaded_bytes / task.total_bytes * 100
+                with task._lock:
+                    task.status = DownloadStatus.DOWNLOADING
+                    task.downloaded_bytes = d.get("downloaded_bytes") or 0
+                    task.total_bytes = (
+                        d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                     )
-                speed = d.get("speed")
-                if speed:
-                    task.speed = _fmt_speed(speed)
-                eta = d.get("eta")
-                if eta is not None:
-                    task.eta = _fmt_eta(eta)
-                _fname = d.get("filename")
-                if _fname and Path(_fname).is_absolute():
-                    task.filename = _fname
+                    if task.total_bytes > 0:
+                        task.progress = min(
+                            99.0, task.downloaded_bytes / task.total_bytes * 100
+                        )
+                    speed = d.get("speed")
+                    if speed:
+                        task.speed = _fmt_speed(speed)
+                    eta = d.get("eta")
+                    if eta is not None:
+                        task.eta = _fmt_eta(eta)
+                    _fname = d.get("filename")
+                    if _fname and Path(_fname).is_absolute():
+                        task.filename = _fname
                 if callback:
                     callback(task)
 
             elif status == "finished":
-                task.status = DownloadStatus.PROCESSING
-                task.progress = 99.5
-                task.speed = ""
-                task.eta = ""
-                _fname = d.get("filename")
-                if _fname and Path(_fname).is_absolute():
-                    task.filename = _fname
+                with task._lock:
+                    task.status = DownloadStatus.PROCESSING
+                    task.progress = 99.5
+                    task.speed = ""
+                    task.eta = ""
+                    _fname = d.get("filename")
+                    if _fname and Path(_fname).is_absolute():
+                        task.filename = _fname
                 if callback:
                     callback(task)
 
@@ -625,7 +617,6 @@ class YtDlpEngine:
             "max_sleep_interval",
             "geo_bypass",
             "geo_bypass_country",
-            "no_check_certificates",
             "write_all_thumbnails",
             "write_description",
             "write_info_json",

@@ -172,6 +172,7 @@ def _migrate_legacy_data() -> None:
 
     _LEGACY_MAP = {
         APP_BINARY_DIR / "config.json": DATA_DIR / "config.json",
+        APP_BINARY_DIR / "download_history.jsonl": DATA_DIR / "download_history.jsonl",
     }
 
     for src, dst in _LEGACY_MAP.items():
