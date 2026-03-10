@@ -13,6 +13,7 @@ from typing import Callable, Optional
 
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
+from app.services.ffmpeg_convert_service import FfmpegConvertService
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
 from infrastructure.downloader.download_manager import DownloadManager
@@ -47,6 +48,8 @@ class DownloadService:
         self._history_executor: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="omnidl-history"
         )
+
+        self._converter = FfmpegConvertService()
 
         # Wire completion → history save (DEF-018: one handler for all terminal states)
         self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._save_to_history)
@@ -134,6 +137,26 @@ class DownloadService:
 
     def clear_history(self) -> None:
         self._history.clear()
+
+    def convert_to_mp4(
+        self,
+        source: Path,
+        on_progress: Optional[Callable[[float], None]] = None,
+        on_done: Optional[Callable[[Path], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """
+        Convert *source* to MP4/H.264/AAC in a background thread.
+
+        Callbacks fire on the worker thread — UI callers must marshal to
+        the main thread via ``widget.after(0, ...)``.
+        """
+        self._converter.convert(
+            source=source,
+            on_progress=on_progress,
+            on_done=on_done,
+            on_error=on_error,
+        )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

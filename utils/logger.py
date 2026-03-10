@@ -17,37 +17,56 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
     The file handler uses RotatingFileHandler (max 5 MB per file, 3 backups)
     to prevent unbounded log growth in long-running sessions or repeated
     restarts.  Total maximum disk usage for logs is therefore ~20 MB.
+
+    Level and noisy-logger settings are applied unconditionally so that
+    test fixtures calling setup_logging() multiple times get a predictable
+    root-logger state each time.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "omnidl.log"
 
     fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s",
+        "%(asctime)s [%(levelname)-8s] %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
     root = logging.getLogger()
-    if root.handlers:   # DEF-012: prevent duplicate handlers on re-entry
-        return
+    # Always update the root level.
     root.setLevel(level)
 
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(fmt)
-    root.addHandler(ch)
-
-    try:
-        fh = RotatingFileHandler(
-            log_file,
-            maxBytes=5 * 1024 * 1024,  # 5 MB per file
-            backupCount=3,
-            encoding="utf-8",
-        )
-        fh.setFormatter(fmt)
-        root.addHandler(fh)
-    except OSError:
-        # Read-only filesystem — console-only logging is acceptable.
-        logging.getLogger(__name__).warning(
-            "Could not open log file %s — file logging disabled.", log_file
-        )
-
+    # Always silence noisy third-party loggers.
     for noisy in ("PIL", "urllib3", "requests", "yt_dlp"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    # Prevent duplicate handlers on re-entry (DEF-012).
+    existing_files = {
+        getattr(h, "baseFilename", "") for h in root.handlers
+    }
+    log_file_abs = str(log_file.resolve())
+
+    # Add console handler only if none exists yet.
+    has_console = any(
+        isinstance(h, logging.StreamHandler)
+        and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    )
+    if not has_console:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+
+    # Add file handler only if this specific log file is not already open.
+    if log_file_abs not in existing_files:
+        try:
+            fh = RotatingFileHandler(
+                log_file,
+                maxBytes=5 * 1024 * 1024,  # 5 MB per file
+                backupCount=3,
+                encoding="utf-8",
+            )
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "Could not open log file %s - file logging disabled.", log_file
+            )

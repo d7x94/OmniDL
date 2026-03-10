@@ -1,6 +1,6 @@
 """
 ui/tabs/settings_tab.py
-All user-configurable options — themed.
+All user-configurable options -- themed.
 """
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.error import URLError
-from urllib.request import Request, urlopen  # noqa: S310 — URL validated elsewhere
+from urllib.request import Request, urlopen  # noqa: S310 -- URL validated elsewhere
 
 try:
     import customtkinter as ctk
-except ImportError:  # pragma: no cover — only missing in headless CI/tests
+except ImportError:  # pragma: no cover -- only missing in headless CI/tests
     ctk = None  # type: ignore[assignment]
 
 from ui.themes.tokens import T
@@ -45,20 +45,17 @@ def _install_ytdlp_frozen() -> None:
     import hashlib
     import importlib
     import json
+    import os
     import shutil
     import sys
     import zipfile
     from pathlib import Path
 
-    try:
-        from platformdirs import user_data_dir as _udd
-        _override_base = Path(_udd("OmniDL", appauthor=False))
-    except ImportError:
-        _override_base = Path.home() / ".omnidl"
-    override_dir = _override_base / "site-packages"
+    _appdata = os.getenv("APPDATA", str(Path.home()))
+    override_dir = Path(_appdata) / "OmniDL" / "site-packages"
     override_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── 1. Resolve latest wheel URL + digest from PyPI ───────────────────
+    # -- 1. Resolve latest wheel URL + digest from PyPI -------------------
     pypi_url = "https://pypi.org/pypi/yt-dlp/json"
     try:
         req = Request(pypi_url, headers={"User-Agent": "OmniDL-updater/1.0"})
@@ -81,14 +78,14 @@ def _install_ytdlp_frozen() -> None:
         raise RuntimeError(f"No universal wheel found for yt-dlp {latest_ver}")
     if not wheel_sha256:
         raise RuntimeError(
-            f"PyPI did not provide a SHA-256 digest for yt-dlp {latest_ver} — "
+            f"PyPI did not provide a SHA-256 digest for yt-dlp {latest_ver} -- "
             "cannot verify download integrity."
         )
     # Guard: ensure the URL returned by PyPI is https (defence-in-depth for B310)
     if not wheel_url.startswith("https://"):
         raise RuntimeError(f"Unexpected wheel URL scheme (not https): {wheel_url!r}")
 
-    # ── 2. Download wheel ─────────────────────────────────────────────────
+    # -- 2. Download wheel -------------------------------------------------
     tmp_whl = override_dir.parent / "yt_dlp_update.whl"
     try:
         req = Request(wheel_url, headers={"User-Agent": "OmniDL-updater/1.0"})
@@ -100,7 +97,7 @@ def _install_ytdlp_frozen() -> None:
     except URLError as exc:
         raise RuntimeError(f"Download failed: {exc}") from exc
 
-    # ── 3. Verify SHA-256 digest ──────────────────────────────────────────
+    # -- 3. Verify SHA-256 digest ------------------------------------------
     # Compute digest of the downloaded file and compare against the value
     # published in the PyPI JSON API.  Raises RuntimeError (which the caller
     # catches and surfaces to the user) if they do not match.
@@ -114,12 +111,12 @@ def _install_ytdlp_frozen() -> None:
     if digest.lower() != wheel_sha256.lower():
         tmp_whl.unlink(missing_ok=True)
         raise RuntimeError(
-            f"SHA-256 mismatch for yt-dlp {latest_ver} wheel — "
+            f"SHA-256 mismatch for yt-dlp {latest_ver} wheel -- "
             f"expected {wheel_sha256}, got {digest}. "
             "Download may have been tampered with. Aborting update."
         )
 
-    # ── 4. Unpack wheel into override_dir ─────────────────────────────────
+    # -- 4. Unpack wheel into override_dir ---------------------------------
     # Remove old yt_dlp tree first to avoid stale .pyc files
     old_tree = override_dir / "yt_dlp"
     if old_tree.exists():
@@ -133,7 +130,7 @@ def _install_ytdlp_frozen() -> None:
     finally:
         tmp_whl.unlink(missing_ok=True)
 
-    # ── 5. Prepend override_dir to sys.path ───────────────────────────────
+    # -- 5. Prepend override_dir to sys.path -------------------------------
     override_str = str(override_dir)
     if override_str not in sys.path:
         sys.path.insert(0, override_str)
@@ -168,8 +165,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             font=ctk.CTkFont(size=22, weight="bold"), text_color=T.text,
         ).pack(anchor="w", padx=28, pady=(24, 18))
 
-        # ── Download location ─────────────────────────────────────────────
-        self._section(p, "📁   DOWNLOAD LOCATION")
+        # -- Download location ---------------------------------------------
+        self._section(p, "????   DOWNLOAD LOCATION")
         loc = self._card(p)
         row = ctk.CTkFrame(loc, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=14)
@@ -184,8 +181,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             command=self._browse_dir,
         ).pack(side="left", padx=(10, 0))
 
-        # ── Download behaviour ────────────────────────────────────────────
-        self._section(p, "⬇   DOWNLOAD BEHAVIOUR")
+        # -- Download behaviour --------------------------------------------
+        self._section(p, "???   DOWNLOAD BEHAVIOUR")
         beh = self._card(p)
 
         self._concurrent_var = ctk.IntVar(value=cfg.max_concurrent)
@@ -208,8 +205,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._switch_row(beh, "Embed metadata", self._meta_var,
                          lambda v: cfg.set("embed_metadata", v))
 
-        # ── Network & Auth ────────────────────────────────────────────────
-        self._section(p, "🌐   NETWORK & AUTHENTICATION")
+        # -- Network & Auth ------------------------------------------------
+        self._section(p, "????   NETWORK & AUTHENTICATION")
         net = self._card(p)
 
         proxy_row = ctk.CTkFrame(net, fg_color="transparent")
@@ -233,10 +230,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         browser_row.pack(fill="x", padx=16, pady=(4, 4))
         ctk.CTkLabel(browser_row, text="Cookie source browser",
                      font=ctk.CTkFont(size=12), text_color=T.text2).pack(side="left")
-        self._browser_var = ctk.StringVar(value=cfg.cookies_browser)
         ctk.CTkOptionMenu(
             browser_row,
-            variable=self._browser_var,
             values=["chrome", "firefox", "safari", "edge", "opera", "brave"],
             command=lambda v: cfg.set("cookies_browser", v),
             width=130, corner_radius=8,
@@ -244,7 +239,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         ctk.CTkLabel(
             net,
-            text="⚠  Chrome/Brave locked? Export cookies to a .txt file instead:",
+            text="???  Chrome/Brave locked? Export cookies to a .txt file instead:",
             font=ctk.CTkFont(size=11), text_color=T.warning_text,
         ).pack(anchor="w", padx=16, pady=(10, 2))
 
@@ -257,21 +252,21 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._cf_lbl.pack(side="left", fill="x", expand=True)
 
         ctk.CTkButton(
-            cf_row, text="Browse…", width=80, height=28, corner_radius=6,
+            cf_row, text="Browse???", width=80, height=28, corner_radius=6,
             fg_color=T.surface3, hover_color=T.border2,
             text_color=T.text2, font=ctk.CTkFont(size=11),
             command=self._browse_cookie_file,
         ).pack(side="left", padx=(8, 4))
 
         ctk.CTkButton(
-            cf_row, text="✕ Clear", width=64, height=28, corner_radius=6,
+            cf_row, text="??? Clear", width=64, height=28, corner_radius=6,
             fg_color=T.error_bg, hover_color=T.error_bg,
             text_color=T.error, font=ctk.CTkFont(size=11),
             command=self._clear_cookie_file,
         ).pack(side="left")
 
-        # ── Appearance ────────────────────────────────────────────────────
-        self._section(p, "🎨   APPEARANCE")
+        # -- Appearance ----------------------------------------------------
+        self._section(p, "????   APPEARANCE")
         app_card = self._card(p)
         theme_row = ctk.CTkFrame(app_card, fg_color="transparent")
         theme_row.pack(fill="x", padx=16, pady=14)
@@ -282,8 +277,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             command=self._change_theme, width=130, corner_radius=8,
         ).pack(side="right")
 
-        # ── yt-dlp engine ─────────────────────────────────────────────────
-        self._section(p, "⚙   YT-DLP ENGINE")
+        # -- yt-dlp engine -------------------------------------------------
+        self._section(p, "???   YT-DLP ENGINE")
         ytdlp = self._card(p)
 
         ver_row = ctk.CTkFrame(ytdlp, fg_color="transparent")
@@ -321,26 +316,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._extra_entry.bind("<FocusOut>",
             lambda _: cfg.set("extra_args", self._extra_entry.get().strip()))
 
-        # ── Reset ─────────────────────────────────────────────────────────
-        self._section(p, "⚠   RESET")
-        reset_card = self._card(p)
-        reset_row = ctk.CTkFrame(reset_card, fg_color="transparent")
-        reset_row.pack(fill="x", padx=16, pady=14)
-        ctk.CTkLabel(
-            reset_row,
-            text="Reset all settings to factory defaults.\n"
-                "Your download history will not be affected.",
-            font=ctk.CTkFont(size=12), text_color=T.text2, justify="left",
-        ).pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(
-            reset_row, text="Reset to Defaults",
-            width=140, height=32, corner_radius=8,
-            fg_color=T.error_bg, hover_color=T.error_bg,
-            text_color=T.error, font=ctk.CTkFont(size=12),
-            command=self._reset_to_defaults,
-        ).pack(side="right")
-
-    # ── Helpers ───────────────────────────────────────────────────────────
+    # -- Helpers -----------------------------------------------------------
 
     def _section(self, parent, text: str) -> None:
         ctk.CTkLabel(
@@ -410,43 +386,18 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             self._dir_lbl.configure(text=chosen)
 
     def _browse_cookie_file(self) -> None:
-        import shutil
         import tkinter.filedialog as fd
         chosen = fd.askopenfilename(
             title="Select cookies.txt (Netscape format)",
             filetypes=[("Cookie files", "*.txt"), ("All files", "*.*")])
         if not chosen:
             return
-        chosen_path = Path(chosen).resolve()
-        if not chosen_path.is_file():
+        if not Path(chosen).is_file():
             self._app.toast("File not found.", "error")
             return
-        data_dir = self._app.config.config_path.parent.resolve()
-        is_inside = data_dir in chosen_path.parents
-        if not is_inside:
-            dest = data_dir / chosen_path.name
-            if dest.exists():
-                stem, suffix = chosen_path.stem, chosen_path.suffix
-                counter = 1
-                while dest.exists():
-                    dest = data_dir / f"{stem}_{counter}{suffix}"
-                    counter += 1
-            try:
-                shutil.copy2(chosen_path, dest)
-            except OSError as exc:
-                logger.warning("Could not copy cookie file to DATA_DIR: %s", exc)
-                self._app.toast(f"Could not copy cookie file: {exc}", "error")
-                return
-            chosen = str(dest)
-            self._app.toast(
-                "The selected cookie file was copied to the OmniDL data "
-                "directory for security reasons.",
-                "info",
-            )
-        else:
-            self._app.toast("Cookie file set.", "info")
         self._app.config.set("cookie_file", chosen)
         self._cf_lbl.configure(text=self._short_cookie_path(chosen))
+        self._app.toast("Cookie file set.", "info")
 
     def _clear_cookie_file(self) -> None:
         self._app.config.set("cookie_file", "")
@@ -457,7 +408,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         if not path:
             return "No file selected"
         s = str(Path(path))
-        return s if len(s) <= 45 else f"…{s[-42:]}"
+        return s if len(s) <= 45 else f"???{s[-42:]}"
 
     def _change_theme(self, theme: str) -> None:
         self._app.config.set("theme", theme)
@@ -475,21 +426,21 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         """
         Update yt-dlp in both frozen (PyInstaller EXE) and source/dev modes.
 
-        Frozen mode: PyInstaller bundles Python inside the EXE — there is no
+        Frozen mode: PyInstaller bundles Python inside the EXE -- there is no
         python.exe on disk to invoke pip with.  Instead we download the latest
         yt-dlp wheel directly from PyPI using only the stdlib (urllib + zipfile),
         unpack it into %APPDATA%/OmniDL/site-packages, prepend that directory to
         sys.path, and reload yt_dlp.version so the UI reflects the new version
-        immediately — no restart required.
+        immediately -- no restart required.
 
         Source/dev mode: delegate to pip as before.
         """
         import sys
         self._upd_btn.configure(state="disabled")
         self._upd_status.configure(
-            text="Checking for updates…", text_color=T.primary_text
+            text="Checking for updates???", text_color=T.primary_text
         )
-        self._app.toast("Updating yt-dlp, please wait…", "info")
+        self._app.toast("Updating yt-dlp, please wait???", "info")
 
         def _worker():
             import importlib
@@ -513,10 +464,10 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
                 ver = self._get_ytdlp_version()
                 self.after(0, lambda: self._upd_status.configure(
-                    text=f"Updated → {ver}", text_color=T.success))
+                    text=f"Updated ??? {ver}", text_color=T.success))
                 self.after(0, lambda: self._ver_lbl.configure(text=ver))
                 self.after(
-                    0, lambda: self._app.toast(f"yt-dlp updated to {ver} ✓", "success")
+                    0, lambda: self._app.toast(f"yt-dlp updated to {ver} ???", "success")
                 )
             except Exception as exc:
                 msg = str(exc)
@@ -529,20 +480,6 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                 self.after(0, lambda: self._upd_btn.configure(state="normal"))
 
         threading.Thread(target=_worker, daemon=True).start()
-
-    def _reset_to_defaults(self) -> None:
-        import tkinter.messagebox as mb
-        if not mb.askyesno(
-            "OmniDL",
-            "Reset all settings to factory defaults?\n\n"
-            "Download history will not be affected.",
-            icon="warning",
-        ):
-            return
-        self._app.config.reset_to_defaults()
-        self._app.toast(
-            "Settings reset to defaults. Restart to apply all changes.", "info"
-        )
 
     def _on_theme(self) -> None:
         if not self.winfo_exists():

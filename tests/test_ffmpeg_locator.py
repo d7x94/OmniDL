@@ -463,6 +463,11 @@ class TestProbeDir(LocatorTC):
         d = self.tmp / "d"; d.mkdir()
         self.assertIsNone(_probe_directory(d, "bundle"))
 
+    @unittest.skipIf(
+        __import__('sys').platform == 'win32'
+        and not __import__('ctypes').windll.shell32.IsUserAnAdmin(),
+        'Creating symlinks on Windows requires elevated privileges (Developer Mode or Admin)'
+    )
     def test_resolves_symlinks(self):
         real = self.tmp / "real"; real.mkdir()
         (real / "ffmpeg").touch(); (real / "ffprobe").touch()

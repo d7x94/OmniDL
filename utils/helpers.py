@@ -5,7 +5,6 @@ Pure utility functions — no dependencies on other omnidl modules.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import subprocess
 import sys
@@ -105,15 +104,9 @@ def reveal_in_explorer(path: Path) -> bool:
     """
     try:
         if sys.platform == "win32":
-            # Wrap the path in double-quotes so Explorer.exe handles spaces
-            # and special characters correctly.  Explorer splits its own
-            # command line on spaces, so an unquoted path like
-            # /select,C:\My Downloads\file.mp4 is truncated at the first
-            # space, causing Explorer to open the Desktop silently.
-            # The quoted form  /select,"<path>"  is the correct documented
-            # syntax and works on all tested Windows versions.
-            resolved = str(path.resolve())
-            subprocess.Popen(f'explorer /select,"{resolved}"', shell=True) # nosec B602
+            # Single argument: '/select,<absolute_path>'
+            # No shell=True needed — explorer.exe reads its own argv directly.
+            subprocess.Popen(["explorer", f"/select,{str(path.resolve())}"])
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path)], close_fds=True)
         else:
@@ -128,7 +121,7 @@ def open_folder(path: Path) -> None:
     """Open a folder in the OS file manager."""
     try:
         if sys.platform == "win32":
-            os.startfile(str(path))
+            subprocess.Popen(["explorer", str(path)])
         elif sys.platform == "darwin":
             subprocess.Popen(["open", str(path)], close_fds=True)
         else:

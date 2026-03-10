@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
-from domain.enums.download_status import DownloadStatus
 from ui.themes.tokens import T
 
 if TYPE_CHECKING:
@@ -128,18 +127,31 @@ class StatusBar(ctk.CTkFrame):
             return
         try:
             tasks = self._app.service.get_all_tasks()
-            active = [t for t in tasks if t.status in DownloadStatus.active_states()]
+            downloading = [t for t in tasks
+                           if t.status.name == "DOWNLOADING"]
+            queued      = [t for t in tasks
+                           if t.status.name == "QUEUED"]
+            processing  = [t for t in tasks
+                           if t.status.name == "PROCESSING"]
+            active = downloading + queued + processing
 
             if active:
                 self._dot_lbl.configure(text_color=T.primary)
+                parts = []
+                if downloading:
+                    parts.append(f"{len(downloading)} downloading")
+                if processing:
+                    parts.append(f"{len(processing)} processing")
+                if queued:
+                    parts.append(f"{len(queued)} queued")
                 self._active_lbl.configure(
-                    text=f"{len(active)} active  ·  {len(tasks)} total",
+                    text="  ·  ".join(parts),
                     text_color=T.text2,
                 )
-                # Aggregate speed
+                # Aggregate speed from downloading tasks only.
                 total_bps = sum(
                     self._parse_speed(t.speed)
-                    for t in active
+                    for t in downloading
                     if t.speed
                 )
                 if total_bps > 0:

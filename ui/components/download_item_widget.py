@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import customtkinter as ctk
 
@@ -43,18 +43,22 @@ _PROG_STATE: dict = {
 class DownloadItemWidget(ctk.CTkFrame):
 
     def __init__(self, master, task: DownloadTask,
-                 on_pause: Callable, on_cancel: Callable, **kwargs) -> None:
+                 on_pause: Callable, on_cancel: Callable,
+                 on_convert: Optional[Callable] = None, **kwargs) -> None:
         super().__init__(master, fg_color=T.surface, corner_radius=10,
                          border_width=1, border_color=T.border, **kwargs)
         self.task = task
-        self._on_pause  = on_pause
-        self._on_cancel = on_cancel
+        self._on_pause   = on_pause
+        self._on_cancel  = on_cancel
+        self._on_convert = on_convert
         # Snapshot of task.filename taken the first time status reaches
         # COMPLETED.  Mirrors what History does (persists task.filename at
         # DOWNLOAD_COMPLETED event time) so the Open button always opens the
         # folder that actually contains the downloaded file, regardless of any
         # later task-object mutations.
         self._completed_path: str = ""
+        self._converting: bool = False   # True while background conversion runs
+        self._convert_pct: float = 0.0
         self._build()
         T.register(self._on_theme)
 
@@ -104,6 +108,13 @@ class DownloadItemWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             command=self._open_folder)
 
+        self._convert_btn = ctk.CTkButton(
+            self._btn_box, text="→ MP4", width=64, height=26, corner_radius=6,
+            fg_color=T.primary_dim, hover_color=T.surface3,
+            text_color=T.primary_text,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=self._start_convert)
+
         # Row 2: progress
         self._prog = OmniProgressBar(self)
         self._prog.pack(fill="x", padx=16, pady=(0, 6))
@@ -119,6 +130,10 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._eta_lbl = ctk.CTkLabel(stats, text="",
             font=ctk.CTkFont(size=10), text_color=T.text3)
         self._eta_lbl.pack(side="left", padx=(12, 0))
+
+        self._elapsed_lbl = ctk.CTkLabel(stats, text="",
+            font=ctk.CTkFont(size=10), text_color=T.text3)
+        self._elapsed_lbl.pack(side="left", padx=(12, 0))
 
         self._size_lbl = ctk.CTkLabel(stats, text="",
             font=ctk.CTkFont(size=10), text_color=T.text3)
@@ -143,6 +158,12 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._prog.set_state(_PROG_STATE.get(st, "active"))
         self._speed_lbl.configure(text=f"↓  {task.speed}" if task.speed else "")
         self._eta_lbl.configure(text=f"ETA  {task.eta}" if task.eta else "")
+        elapsed = task.elapsed
+        if hasattr(self, "_elapsed_lbl"):
+            self._elapsed_lbl.configure(
+                text=f"⏱  {elapsed}" if elapsed and st not in DownloadStatus.terminal_states()
+                else ""
+            )
 
         if task.total_bytes > 0:
             self._size_lbl.configure(
@@ -180,19 +201,21 @@ class DownloadItemWidget(ctk.CTkFrame):
         if st == DownloadStatus.COMPLETED and task.filename:
             if not self._folder_btn.winfo_ismapped():
                 # Snapshot the final output path the first time we see
-                # COMPLETED.  This is the same moment DownloadService calls
-                # history_repo.add(task) — task.filename is guaranteed to hold
-                # the engine-resolved final path, not a progress-hook
-                # intermediate.  Storing it here means _open_folder() always
-                # opens the correct folder even if the task object is later
-                # overwritten by a subsequent poll cycle.
+                # COMPLETED.  task.filename is guaranteed to hold the
+                # engine-resolved final path at this point.
                 self._completed_path = task.filename
                 self._folder_btn.pack(side="left", padx=(4, 0))
                 self._cancel_btn.pack_forget()
                 self._pause_btn.pack_forget()
+                # Show → MP4 button for non-MP4 completed files.
+                if (self._on_convert
+                        and Path(task.filename).suffix.lower() != ".mp4"
+                        and not self._converting):
+                    self._convert_btn.pack(side="left", padx=(4, 0))
         else:
             if self._folder_btn.winfo_ismapped():
                 self._folder_btn.pack_forget()
+                self._convert_btn.pack_forget()
                 if not self._pause_btn.winfo_ismapped():
                     self._pause_btn.pack(side="left", padx=(0, 4))
                     self._cancel_btn.pack(side="left")
@@ -204,10 +227,60 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._title_lbl.configure(text_color=T.text)
         self._speed_lbl.configure(text_color=T.primary_text)
         self._eta_lbl.configure(text_color=T.text3)
+        self._elapsed_lbl.configure(text_color=T.text3)
         self._size_lbl.configure(text_color=T.text3)
         self._pause_btn.configure(fg_color=T.surface2, hover_color=T.surface3)
         self._cancel_btn.configure(fg_color=T.error_bg)
         self._folder_btn.configure(fg_color=T.success_bg)
+        self._convert_btn.configure(fg_color=T.primary_dim)
+
+    def _start_convert(self) -> None:
+        """Launch background FFmpeg conversion and animate the button."""
+        if self._converting or not self._on_convert:
+            return
+        path = self._completed_path or self.task.filename
+        if not path:
+            return
+        self._converting = True
+        self._convert_btn.configure(state="disabled", text="Converting…")
+        self._prog.set_progress(0.0)
+        self._prog.set_state("active")
+
+        def _on_progress(pct: float) -> None:
+            if self.winfo_exists():
+                self.after(0, lambda p=pct: self._prog.set_progress(p))
+
+        def _on_done(output_path) -> None:
+            self._converting = False
+            if self.winfo_exists():
+                self.after(0, self._on_convert_done)
+
+        def _on_error(msg: str) -> None:
+            self._converting = False
+            if self.winfo_exists():
+                self.after(0, lambda m=msg: self._on_convert_error(m))
+
+        self._on_convert(
+            Path(path),
+            on_progress=_on_progress,
+            on_done=_on_done,
+            on_error=_on_error,
+        )
+
+    def _on_convert_done(self) -> None:
+        if not self.winfo_exists():
+            return
+        self._prog.set_progress(100.0)
+        self._prog.set_state("complete")
+        self._convert_btn.configure(text="✓ Done", state="disabled")
+
+    def _on_convert_error(self, msg: str) -> None:
+        if not self.winfo_exists():
+            return
+        self._prog.set_state("failed")
+        self._convert_btn.configure(text="→ MP4", state="normal")
+        self._err_lbl.configure(text=f"  Convert failed: {msg[:120]}")
+        self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
 
     def _open_folder(self) -> None:
         """Open the folder that contains the completed download.
