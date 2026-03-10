@@ -52,7 +52,10 @@ _PRESETS: dict[Quality, dict] = {
         "preset":  "fast",
         "audio_b": "96k",
         # Scale down: keep aspect ratio, max height 720p, force even dims
-        "scale":   "scale='if(gt(ih,720),trunc(iw*720/ih/2)*2,trunc(iw/2)*2)':'if(gt(ih,720),720,trunc(ih/2)*2)'",
+        "scale":   (
+            "scale='if(gt(ih,720),trunc(iw*720/ih/2)*2,trunc(iw/2)*2)'"
+            ":'if(gt(ih,720),720,trunc(ih/2)*2)'"
+        ),
         "label":   "File nhỏ (≤720p)",
     },
 }
@@ -207,7 +210,8 @@ class FfmpegConvertService:
         if not output.is_file() or output.stat().st_size < 1_000:
             raise ConversionError(f"File output trống hoặc không tồn tại: {output}")
 
-        logger.info("Done: %s (%.1f MB)", output.name, output.stat().st_size / 1_048_576)
+        size_mb = output.stat().st_size / 1_048_576
+        logger.info("Done: %s (%.1f MB)", output.name, size_mb)
         if on_progress:
             on_progress(100.0)
         return output

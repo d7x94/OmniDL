@@ -467,7 +467,10 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                     text=f"Updated ??? {ver}", text_color=T.success))
                 self.after(0, lambda: self._ver_lbl.configure(text=ver))
                 self.after(
-                    0, lambda: self._app.toast(f"yt-dlp updated to {ver} ???", "success")
+                    0,
+                    lambda: self._app.toast(
+                        f"yt-dlp updated to {ver}", "success"
+                    )
                 )
             except Exception as exc:
                 msg = str(exc)

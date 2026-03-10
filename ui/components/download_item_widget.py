@@ -161,8 +161,11 @@ class DownloadItemWidget(ctk.CTkFrame):
         elapsed = task.elapsed
         if hasattr(self, "_elapsed_lbl"):
             self._elapsed_lbl.configure(
-                text=f"⏱  {elapsed}" if elapsed and st not in DownloadStatus.terminal_states()
-                else ""
+                text=(
+                    f"⏱  {elapsed}"
+                    if elapsed and st not in DownloadStatus.terminal_states()
+                    else ""
+                )
             )
 
         if task.total_bytes > 0:
