@@ -386,18 +386,43 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             self._dir_lbl.configure(text=chosen)
 
     def _browse_cookie_file(self) -> None:
+        import shutil
         import tkinter.filedialog as fd
         chosen = fd.askopenfilename(
             title="Select cookies.txt (Netscape format)",
             filetypes=[("Cookie files", "*.txt"), ("All files", "*.*")])
         if not chosen:
             return
-        if not Path(chosen).is_file():
+        chosen_path = Path(chosen).resolve()
+        if not chosen_path.is_file():
             self._app.toast("File not found.", "error")
             return
+        data_dir = self._app.config.config_path.parent.resolve()
+        is_inside = data_dir in chosen_path.parents
+        if not is_inside:
+            dest = data_dir / chosen_path.name
+            if dest.exists():
+                stem, suffix = chosen_path.stem, chosen_path.suffix
+                counter = 1
+                while dest.exists():
+                    dest = data_dir / f"{stem}_{counter}{suffix}"
+                    counter += 1
+            try:
+                shutil.copy2(chosen_path, dest)
+            except OSError as exc:
+                logger.warning("Could not copy cookie file to DATA_DIR: %s", exc)
+                self._app.toast(f"Could not copy cookie file: {exc}", "error")
+                return
+            chosen = str(dest)
+            self._app.toast(
+                "The selected cookie file was copied to the OmniDL data "
+                "directory for security reasons.",
+                "info",
+            )
+        else:
+            self._app.toast("Cookie file set.", "info")
         self._app.config.set("cookie_file", chosen)
         self._cf_lbl.configure(text=self._short_cookie_path(chosen))
-        self._app.toast("Cookie file set.", "info")
 
     def _clear_cookie_file(self) -> None:
         self._app.config.set("cookie_file", "")
