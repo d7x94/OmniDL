@@ -230,13 +230,16 @@ class TestConfigManagerCacheLoad:
 class TestSettingsTabBrowserVar:
     """ui/tabs/settings_tab.py :: SettingsTab — cookies_browser OptionMenu"""
 
+    @pytest.fixture(autouse=True)
+    def _src(self):
+        """Load settings_tab.py relative to this test file's repo root."""
+        repo_root = pathlib.Path(__file__).parent.parent
+        self.src = (repo_root / "ui" / "tabs" / "settings_tab.py").read_text()
+
     def test_browser_var_attribute_exists(self):
         """After the fix, SettingsTab must define self._browser_var."""
-        import ast, pathlib
-        src = pathlib.Path(
-            "/home/claude/OmniDL-patched/ui/tabs/settings_tab.py"
-        ).read_text()
-        tree = ast.parse(src)
+        import ast
+        tree = ast.parse(self.src)
         assigns = [
             n for n in ast.walk(tree)
             if isinstance(n, ast.Assign)
@@ -249,26 +252,17 @@ class TestSettingsTabBrowserVar:
 
     def test_optionmenu_has_variable_kwarg(self):
         """The cookies_browser CTkOptionMenu must include variable= in source."""
-        import pathlib
-        src = pathlib.Path(
-            "/home/claude/OmniDL-patched/ui/tabs/settings_tab.py"
-        ).read_text()
-        # Find the block containing the browser OptionMenu
-        idx = src.find('values=["chrome", "firefox"')
+        idx = self.src.find('values=["chrome", "firefox"')
         assert idx != -1, "Browser OptionMenu block not found"
         # Preceding 300 chars must contain variable=
-        context = src[max(0, idx - 300):idx]
+        context = self.src[max(0, idx - 300):idx]
         assert "variable=self._browser_var" in context or "variable=" in context, \
             "variable= keyword missing from cookies_browser OptionMenu"
 
     def test_browser_var_initialised_from_config(self):
         """_browser_var must be initialised with cfg.cookies_browser, not a hardcoded value."""
-        import pathlib, re
-        src = pathlib.Path(
-            "/home/claude/OmniDL-patched/ui/tabs/settings_tab.py"
-        ).read_text()
-        # Find _browser_var = ctk.StringVar(value=...)
-        m = re.search(r'_browser_var\s*=\s*ctk\.StringVar\(value=([^)]+)\)', src)
+        import re
+        m = re.search(r'_browser_var\s*=\s*ctk\.StringVar\(value=([^)]+)\)', self.src)
         assert m, "_browser_var StringVar initialisation not found"
         value_expr = m.group(1)
         assert "cfg.cookies_browser" in value_expr, \
