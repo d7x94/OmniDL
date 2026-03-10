@@ -4,6 +4,8 @@ Pure utility functions — no dependencies on other omnidl modules.
 """
 from __future__ import annotations
 
+import os
+import sys
 import logging
 import re
 import subprocess
@@ -112,7 +114,7 @@ def reveal_in_explorer(path: Path) -> bool:
             # The quoted form  /select,"<path>"  is the correct documented
             # syntax and works on all tested Windows versions.
             resolved = str(path.resolve())
-            subprocess.Popen(["explorer", f'/select,"{resolved}"'])
+            subprocess.Popen(f'explorer /select,"{resolved}"', shell=True)
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path)], close_fds=True)
         else:
@@ -127,7 +129,7 @@ def open_folder(path: Path) -> None:
     """Open a folder in the OS file manager."""
     try:
         if sys.platform == "win32":
-            subprocess.Popen(["explorer", str(path)])
+            os.startfile(str(path))
         elif sys.platform == "darwin":
             subprocess.Popen(["open", str(path)], close_fds=True)
         else:
