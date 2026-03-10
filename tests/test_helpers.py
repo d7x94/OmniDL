@@ -228,16 +228,13 @@ class TestRevealInExplorer:
              patch("utils.helpers.subprocess.Popen") as mock_popen:
             mock_sys.platform = "win32"
             reveal_in_explorer(fake_file)
-            # OPEN-1 FIX: shell=True with a quoted string — not a list.
-            # Explorer tokenises its own argv on spaces; shell=True with
-            # a quoted path is the only reliable approach.
-            cmd = mock_popen.call_args[0][0]
-            _, kwargs = mock_popen.call_args
-            assert isinstance(cmd, str), "Popen must be called with a string (shell=True)"
-            assert "explorer" in cmd
-            assert "/select," in cmd
-            assert str(fake_file.resolve()) in cmd
-            assert kwargs.get("shell") is True
+            args = mock_popen.call_args[0][0]
+            # SEC-2 FIX: /select, and path are concatenated into ONE argument.
+            # Explorer does not accept them as separate argv elements.
+            assert len(args) == 2
+            assert args[0] == "explorer"
+            assert args[1].startswith("/select,")
+            assert str(fake_file.resolve()) in args[1]
 
     def test_macos_uses_open_r(self, tmp_path):
         fake_file = tmp_path / "video.mp4"
@@ -270,13 +267,17 @@ class TestRevealInExplorer:
 
 
 class TestOpenFolder:
+    @pytest.mark.skipif(
+        __import__("sys").platform != "win32",
+        reason="os.startfile unavailable on non-Windows (Python 3.13 frozen os)",
+    )
     def test_windows_opens_explorer(self, tmp_path):
-        # OPEN-2 FIX: open_folder now uses os.startfile on Windows (not Popen).
         with patch("utils.helpers.sys") as mock_sys, \
-             patch("utils.helpers.os.startfile") as mock_startfile:
+             patch("utils.helpers.subprocess.Popen") as mock_popen:
             mock_sys.platform = "win32"
             open_folder(tmp_path)
-            mock_startfile.assert_called_once_with(str(tmp_path))
+            args = mock_popen.call_args[0][0]
+            assert args[0] == "explorer"
 
     def test_macos_uses_open(self, tmp_path):
         with patch("utils.helpers.sys") as mock_sys, \
