@@ -142,12 +142,13 @@ def _clear_history_on_version_change(config, history) -> None:
     and an empty history, without requiring the user to manually delete the
     OmniDL data directory.
     """
-    import logging
-    logger = logging.getLogger("omnidl.main")
+    
+    import re as _re
     stored = config.get("app_version", "")
     if stored != _APP_VERSION:
-        import re as _re
-        _major = lambda v: (_re.match(r"(\d+)", v) or ["0"])[0]
+        def _major(v: str) -> str:
+            m = _re.match(r"(\d+)", v)
+            return m.group(0) if m else "0"
         if _major(stored or "0") != _major(_APP_VERSION):
             history.clear()
             config.reset_to_defaults()

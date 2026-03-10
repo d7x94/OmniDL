@@ -45,7 +45,6 @@ def _install_ytdlp_frozen() -> None:
     import hashlib
     import importlib
     import json
-    import os
     import shutil
     import sys
     import zipfile
@@ -327,7 +326,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         reset_row.pack(fill="x", padx=16, pady=14)
         ctk.CTkLabel(
             reset_row,
-            text="Reset all settings to factory defaults.\nYour download history will not be affected.",
+            text="Reset all settings to factory defaults.\n"
+                "Your download history will not be affected.",
             font=ctk.CTkFont(size=12), text_color=T.text2, justify="left",
         ).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(
@@ -532,7 +532,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         import tkinter.messagebox as mb
         if not mb.askyesno(
             "OmniDL",
-            "Reset all settings to factory defaults?\n\nDownload history will not be affected.",
+            "Reset all settings to factory defaults?\n\n"
+            "Download history will not be affected.",
             icon="warning",
         ):
             return

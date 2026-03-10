@@ -4,9 +4,8 @@ Pure utility functions — no dependencies on other omnidl modules.
 """
 from __future__ import annotations
 
-import os
-import sys
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -114,7 +113,7 @@ def reveal_in_explorer(path: Path) -> bool:
             # The quoted form  /select,"<path>"  is the correct documented
             # syntax and works on all tested Windows versions.
             resolved = str(path.resolve())
-            subprocess.Popen(f'explorer /select,"{resolved}"', shell=True)
+            subprocess.Popen(f'explorer /select,"{resolved}"', shell=True) # nosec B602
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path)], close_fds=True)
         else:
