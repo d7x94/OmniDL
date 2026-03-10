@@ -57,12 +57,10 @@ def _make_repo(tmp_path: Path, limit: int = 5):
 # ===========================================================================
 
 class TestRevealInExplorerSecurity:
-    """Ensure reveal_in_explorer passes /select,<path> correctly on Windows."""
+    """Ensure reveal_in_explorer no longer uses shell=True on any platform."""
 
-    def test_windows_uses_shell_true(self, tmp_path):
-        """shell=True is required so the quoted path survives intact (OPEN-1 fix).
-        Without shell=True, Explorer tokenises its own argv on spaces and silently
-        opens the Desktop instead of selecting the file."""
+    def test_windows_no_shell_true(self, tmp_path):
+        """shell=True must not appear in Popen kwargs on Windows."""
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
@@ -70,22 +68,24 @@ class TestRevealInExplorerSecurity:
             ms.platform = "win32"
             reveal_in_explorer(fake)
             _, kwargs = mp.call_args
-            assert kwargs.get("shell") is True, \
-                "shell=True is required for correct Windows path handling (OPEN-1)"
+            assert kwargs.get("shell") is not True, \
+                "shell=True must not be used on Windows (CWE-78 fix)"
 
-    def test_windows_command_is_string_with_select(self, tmp_path):
-        """Popen must receive a string (not a list) when shell=True is used."""
+    def test_windows_path_is_separate_argv_element(self, tmp_path):
+        """Path is embedded in the /select, argument — not a separate element."""
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
              patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "win32"
             reveal_in_explorer(fake)
-            cmd = mp.call_args[0][0]
-            assert isinstance(cmd, str), "Popen must be called with a string when shell=True"
-            assert "explorer" in cmd
-            assert "/select," in cmd
-            assert str(fake.resolve()) in cmd
+            args = mp.call_args[0][0]
+            assert isinstance(args, list), "Popen must be called with a list on Windows"
+            assert args[0] == "explorer"
+            # SEC-2 FIX: path is concatenated with /select, in a single argument
+            assert len(args) == 2
+            assert args[1].startswith("/select,")
+            assert str(fake.resolve()) in args[1]
 
     def test_windows_metacharacter_filename_safe(self, tmp_path):
         """A filename with shell metacharacters must not cause a second Popen call."""
@@ -574,20 +574,17 @@ class TestSEC2RevealInExplorer:
 
     def test_windows_select_arg_is_single_token(self, tmp_path, monkeypatch):
         """
-        OPEN-1 FIX: shell=True with a quoted string is the correct approach.
-        Explorer tokenises its own command line on spaces, so the path must be
-        quoted and passed via shell=True — not as a separate list element.
+        The /select, prefix and the path must be concatenated into one
+        list element, not passed as two separate elements.
         """
         import sys
         monkeypatch.setattr(sys, "platform", "win32")
 
         from utils.helpers import reveal_in_explorer
         calls = []
-        call_kwargs = []
 
-        def fake_popen(cmd, **kwargs):
-            calls.append(cmd)
-            call_kwargs.append(kwargs)
+        def fake_popen(args, **kwargs):
+            calls.append(args)
             class FakeProc:
                 pass
             return FakeProc()
@@ -600,14 +597,16 @@ class TestSEC2RevealInExplorer:
         reveal_in_explorer(test_file)
 
         assert calls, "Popen should have been called"
-        cmd = calls[0]
-        assert isinstance(cmd, str), (
-            f"Popen must receive a string (not a list) when shell=True, got {type(cmd)}"
+        args = calls[0]
+        assert len(args) == 2, (
+            f"Expected exactly 2 args ['explorer', '/select,...'], got {args}"
         )
-        assert "explorer" in cmd
-        assert "/select," in cmd
-        assert str(test_file.resolve()) in cmd
-        assert call_kwargs[0].get("shell") is True, "shell=True is required"
+        assert args[1].startswith("/select,"), (
+            f"Second argument must start with '/select,', got: {args[1]!r}"
+        )
+        assert "/select,," not in args[1], (
+            "Must not have double comma — path should follow /select, immediately"
+        )
 
 
 class TestP1DebouncedSave:

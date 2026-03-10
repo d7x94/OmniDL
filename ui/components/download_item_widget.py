@@ -211,7 +211,7 @@ class DownloadItemWidget(ctk.CTkFrame):
                 self._cancel_btn.pack_forget()
                 self._pause_btn.pack_forget()
                 # Show → MP4 button for non-MP4 completed files.
-                if (self._on_convert
+                if (hasattr(self, "_on_convert") and self._on_convert
                         and Path(task.filename).suffix.lower() != ".mp4"
                         and not self._converting):
                     self._convert_btn.pack(side="left", padx=(4, 0))
@@ -239,7 +239,7 @@ class DownloadItemWidget(ctk.CTkFrame):
 
     def _start_convert(self) -> None:
         """Launch background FFmpeg conversion and animate the button."""
-        if self._converting or not self._on_convert:
+        if self._converting or not getattr(self, "_on_convert", None):
             return
         path = self._completed_path or self.task.filename
         if not path:
