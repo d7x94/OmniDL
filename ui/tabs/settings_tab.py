@@ -233,8 +233,10 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         browser_row.pack(fill="x", padx=16, pady=(4, 4))
         ctk.CTkLabel(browser_row, text="Cookie source browser",
                      font=ctk.CTkFont(size=12), text_color=T.text2).pack(side="left")
+        self._browser_var = ctk.StringVar(value=cfg.cookies_browser)
         ctk.CTkOptionMenu(
             browser_row,
+            variable=self._browser_var,
             values=["chrome", "firefox", "safari", "edge", "opera", "brave"],
             command=lambda v: cfg.set("cookies_browser", v),
             width=130, corner_radius=8,

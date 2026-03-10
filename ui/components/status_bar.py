@@ -24,10 +24,17 @@ _NET_CHECK_TIMEOUT = 1.5
 
 
 def _check_network() -> bool:
-    """Non-blocking network check — runs in background thread."""
+    """Non-blocking network check — runs in background thread.
+
+    Uses s.settimeout() on the individual socket rather than the global
+    socket.setdefaulttimeout(), which would affect all concurrently-created
+    sockets (e.g. yt-dlp download connections) and is not thread-safe.
+    The socket is closed via a context manager to prevent FD leaks.
+    """
     try:
-        socket.setdefaulttimeout(_NET_CHECK_TIMEOUT)
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(_NET_CHECK_HOST)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(_NET_CHECK_TIMEOUT)
+            s.connect(_NET_CHECK_HOST)
         return True
     except Exception:
         return False
@@ -185,7 +192,12 @@ class StatusBar(ctk.CTkFrame):
 
     @staticmethod
     def _parse_speed(speed_str: str) -> float:
-        """Convert '12.3 MB/s' → float bytes/s."""
+        """Convert speed string to float bytes/s.
+
+        Handles both SI units (MB/s, KB/s) and IEC units (MiB/s, KiB/s).
+        The yt-dlp engine emits IEC units exclusively; SI is kept for
+        forward-compatibility if the format ever changes.
+        """
         if not speed_str:
             return 0.0
         try:
@@ -193,11 +205,11 @@ class StatusBar(ctk.CTkFrame):
             num, _, unit = s.partition(" ")
             v = float(num)
             unit = unit.lower()
-            if "gb" in unit:
+            if "gib" in unit or "gb" in unit:
                 return v * 1024 ** 3
-            if "mb" in unit:
+            if "mib" in unit or "mb" in unit:
                 return v * 1024 ** 2
-            if "kb" in unit:
+            if "kib" in unit or "kb" in unit:
                 return v * 1024
             return v
         except Exception:
