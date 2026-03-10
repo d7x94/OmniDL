@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from urllib.parse import urlparse as _urlparse
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlparse as _urlparse
 
 import customtkinter as ctk
 
@@ -547,6 +547,17 @@ class HomeTab(ctk.CTkFrame):
     def _short_path(p: Path) -> str:
         s = str(p)
         return s if len(s) <= 40 else "…" + s[-37:]
+
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
 
 def _is_safe_thumbnail_url(url: str) -> bool:
     """Return True only for http/https URLs pointing to public hosts (SSRF fix)."""
