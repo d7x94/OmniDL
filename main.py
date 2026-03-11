@@ -118,6 +118,9 @@ def main() -> None:
     ctk.set_appearance_mode(config.theme)
     ctk.set_default_color_theme("blue")
 
+    from ui.themes.tokens import T
+    T.set_mode(config.theme)    # sync token palette before any widget reads T.*
+
     from ui.main_window import MainWindow
     window = MainWindow(service=service, config=config)
 

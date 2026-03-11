@@ -236,7 +236,7 @@ class HomeTab(ctk.CTkFrame):
         self._live_badge = ctk.CTkLabel(
             info_row, text="  🔴 LIVE  ",
             font=ctk.CTkFont(size=9, weight="bold"),
-            fg_color="#C0001A", corner_radius=4,
+            fg_color=T.error, corner_radius=4,
             text_color="white",
         )
         # packed conditionally
@@ -529,6 +529,8 @@ class HomeTab(ctk.CTkFrame):
             self._title_lbl.configure(text_color=T.text)
         if hasattr(self, "_thumb_lbl"):
             self._thumb_lbl.configure(fg_color=T.surface2)
+        if hasattr(self, "_live_badge"):
+            self._live_badge.configure(fg_color=T.error)
         if hasattr(self, "_download_btn"):
             self._download_btn.configure(
                 fg_color=T.primary, hover_color=T.primary_hover)

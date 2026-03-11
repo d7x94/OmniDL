@@ -46,6 +46,9 @@ coverage.xml
 *.tmp
 *.temp
 
+*.patch
+*.diff
+
 # Download cache
 downloads/
 cache/

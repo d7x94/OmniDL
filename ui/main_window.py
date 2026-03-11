@@ -60,8 +60,10 @@ class MainWindow(ctk.CTk):
         self._config  = config
         self._current_tab: Optional[str] = None
         self._toast_after: Optional[str] = None
+        self.withdraw()          # hide during construction — prevents startup flicker
         self._setup_window()
         self._build_ui()
+        self.deiconify()         # show once all widgets are built and themed
 
     # ── Exposed API ───────────────────────────────────────────────────────
 
@@ -140,8 +142,8 @@ class MainWindow(ctk.CTk):
         self._sidebar.pack_propagate(False)
         self._build_sidebar()
 
-        ctk.CTkFrame(body, width=1, fg_color=T.border, corner_radius=0).pack(
-            side="left", fill="y")
+        self._divider = ctk.CTkFrame(body, width=1, fg_color=T.border, corner_radius=0)
+        self._divider.pack(side="left", fill="y")
 
         self._content = ctk.CTkFrame(body, fg_color=T.bg, corner_radius=0)
         self._content.pack(side="left", fill="both", expand=True)
@@ -162,8 +164,17 @@ class MainWindow(ctk.CTk):
             text_color="white", padx=16, pady=8,
         )
 
+        # Register for theme changes so structural frames refresh on toggle
+        T.register(self._on_theme)
+        # Sync theme-button label with the token system's current mode
+        # (needed when the saved theme differs from the hardcoded default "dark")
+        self._theme_btn.configure(
+            text="🌙 Dark" if T.mode == "light" else "☀ Light"
+        )
+
     def _build_title_bar(self) -> None:
         tb = ctk.CTkFrame(self, fg_color=T.sidebar, height=44, corner_radius=0)
+        self._title_bar = tb          # ← ref for theme refresh
         tb.pack(fill="x")
         tb.pack_propagate(False)
 
@@ -171,16 +182,18 @@ class MainWindow(ctk.CTk):
         logo = ctk.CTkFrame(tb, fg_color="transparent")
         logo.pack(side="left", padx=18)
 
-        ctk.CTkLabel(
+        self._logo_icon = ctk.CTkLabel(
             logo, text="⬇",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color=T.primary,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(
+        )
+        self._logo_icon.pack(side="left", padx=(0, 6))
+        self._logo_name = ctk.CTkLabel(
             logo, text="OmniDL",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=T.text,
-        ).pack(side="left")
+        )
+        self._logo_name.pack(side="left")
 
         # yt-dlp version badge
         try:
@@ -192,29 +205,33 @@ class MainWindow(ctk.CTk):
         except Exception as exc:
             ver = "?"
             logger.debug("Could not read yt-dlp version: %s", exc)
-        ctk.CTkLabel(
+        self._ytdlp_badge = ctk.CTkLabel(
             tb, text=f"yt-dlp {ver}",
             font=ctk.CTkFont(size=10),
             text_color=T.text3,
             fg_color=T.surface2,
             corner_radius=4, padx=8, pady=2,
-        ).pack(side="left", padx=6)
+        )
+        self._ytdlp_badge.pack(side="left", padx=6)
 
         # Window controls
         bx = ctk.CTkFrame(tb, fg_color="transparent")
         bx.pack(side="right", padx=10)
 
+        self._wctrl_btns: list[ctk.CTkButton] = []
         for text, cmd, hover in [
             ("—",  self._minimize,   T.surface3),
             ("⬜", self._toggle_max, T.surface3),
             ("✕",  self._on_close,  T.close_hover),
         ]:
-            ctk.CTkButton(
+            btn = ctk.CTkButton(
                 bx, text=text, width=36, height=28,
                 fg_color="transparent", hover_color=hover,
                 font=ctk.CTkFont(size=12), text_color=T.text3,
                 command=cmd,
-            ).pack(side="left", padx=1)
+            )
+            btn.pack(side="left", padx=1)
+            self._wctrl_btns.append(btn)
 
         for w in (tb, logo, *tb.winfo_children(), *logo.winfo_children()):
             w.bind("<ButtonPress-1>", self._drag_start, add="+")
@@ -225,15 +242,18 @@ class MainWindow(ctk.CTk):
         sections_seen: set[str] = set()
         self._nav_btns: dict[str, ctk.CTkButton] = {}
         self._nav_indicators: dict[str, ctk.CTkFrame] = {}
+        self._section_labels: list[ctk.CTkLabel] = []  # ← for theme refresh
 
         for key, icon, label, section in NAV_ITEMS:
             if section not in sections_seen:
                 sections_seen.add(section)
-                ctk.CTkLabel(
+                lbl = ctk.CTkLabel(
                     self._sidebar, text=section,
                     font=ctk.CTkFont(size=9, weight="bold"),
                     text_color=T.text3,
-                ).pack(anchor="w", padx=20, pady=(18, 4))
+                )
+                lbl.pack(anchor="w", padx=20, pady=(18, 4))
+                self._section_labels.append(lbl)
 
             row = ctk.CTkFrame(self._sidebar, fg_color="transparent", height=40)
             row.pack(fill="x", padx=8, pady=1)
@@ -278,10 +298,11 @@ class MainWindow(ctk.CTk):
         )
         self._theme_btn.pack(side="right")
 
-        ctk.CTkLabel(
+        self._powered_lbl = ctk.CTkLabel(
             self._sidebar, text="Powered by yt-dlp",
             font=ctk.CTkFont(size=9), text_color=T.text3,
-        ).pack(side="bottom", pady=(0, 4))
+        )
+        self._powered_lbl.pack(side="bottom", pady=(0, 4))
 
     def _build_tabs(self) -> None:
         from ui.tabs.convert_tab import ConvertTab
@@ -325,15 +346,47 @@ class MainWindow(ctk.CTk):
 
     def _toggle_theme(self) -> None:
         new_mode = "light" if T.mode == "dark" else "dark"
-        T.set_mode(new_mode)
+        T.set_mode(new_mode)            # fires _on_theme + all registered tab/component callbacks
         ctk.set_appearance_mode(new_mode)
         self._config.set("theme", new_mode)
         self._theme_btn.configure(
             text="🌙 Dark" if new_mode == "light" else "☀ Light")
-        # Refresh root + layout frames
+
+    def _on_theme(self) -> None:
+        """Refresh every structural widget in MainWindow after a theme change."""
+        if not self.winfo_exists():
+            return
+        # Root + body frames
         self.configure(fg_color=T.bg)
-        self._content.configure(fg_color=T.bg)
+        self._title_bar.configure(fg_color=T.sidebar)
+        self._logo_icon.configure(text_color=T.primary)
+        self._logo_name.configure(text_color=T.text)
+        self._ytdlp_badge.configure(text_color=T.text3, fg_color=T.surface2)
+        # Window-control buttons: — and ⬜ use surface3; ✕ uses close_hover
+        for btn in self._wctrl_btns[:-1]:
+            btn.configure(text_color=T.text3, hover_color=T.surface3)
+        if self._wctrl_btns:
+            self._wctrl_btns[-1].configure(text_color=T.text3, hover_color=T.close_hover)
         self._sidebar.configure(fg_color=T.sidebar)
+        self._divider.configure(fg_color=T.border)
+        self._content.configure(fg_color=T.bg)
+        # Sidebar labels
+        for lbl in self._section_labels:
+            lbl.configure(text_color=T.text3)
+        # Nav buttons — update colours and re-apply active state
+        for k, btn in self._nav_btns.items():
+            ind = self._nav_indicators[k]
+            if k == self._current_tab:
+                btn.configure(fg_color=T.primary_dim, text_color=T.text,
+                               hover_color=T.surface2)
+                ind.configure(fg_color=T.primary)
+            else:
+                btn.configure(fg_color="transparent", text_color=T.text3,
+                               hover_color=T.surface2)
+                ind.configure(fg_color="transparent")
+        self._theme_btn.configure(
+            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2)
+        self._powered_lbl.configure(text_color=T.text3)
 
     # ── Toast ─────────────────────────────────────────────────────────────
 
