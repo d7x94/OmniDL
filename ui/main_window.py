@@ -60,10 +60,10 @@ class MainWindow(ctk.CTk):
         self._config  = config
         self._current_tab: Optional[str] = None
         self._toast_after: Optional[str] = None
-        self.withdraw()          # hide during construction — prevents startup flicker
-        self._setup_window()
+        self.attributes("-alpha", 0)   # invisible during construction — no flicker
+        self._setup_window()           # (withdraw() breaks overrideredirect on Windows)
         self._build_ui()
-        self.deiconify()         # show once all widgets are built and themed
+        self.attributes("-alpha", 1)   # reveal once all widgets are built and themed
 
     # ── Exposed API ───────────────────────────────────────────────────────
 
