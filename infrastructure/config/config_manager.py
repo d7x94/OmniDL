@@ -96,11 +96,20 @@ class ConfigManager:
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Take a snapshot under the lock so the disk write is not racy.
+        with self._lock:
+            snapshot = dict(self._data)
+        # Write atomically: dump to a .tmp file then rename over the real file.
+        # A direct open("w") truncates first — a crash mid-write leaves a
+        # zero-byte config.json, losing all settings on next startup.
+        tmp = self._path.with_suffix(".tmp.json")
         try:
-            with self._path.open("w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(snapshot, f, indent=2, ensure_ascii=False)
+            tmp.replace(self._path)
         except OSError as exc:
             logger.error("Config save failed: %s", exc)
+            tmp.unlink(missing_ok=True)
 
     def reset_to_defaults(self) -> None:
         """Reset all settings to factory defaults and flush to disk immediately.

@@ -172,7 +172,7 @@ class ThumbnailService:
             return
 
         try:
-            resp = req_lib.get(url, timeout=8, stream=True)
+            resp = req_lib.get(url, timeout=8, stream=True, allow_redirects=False)
             resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")
