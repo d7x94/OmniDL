@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 NAV_ITEMS = [
     ("home",     "⬇",  "Download",  "DOWNLOADS"),
     ("queue",    "≡",  "Queue",     "DOWNLOADS"),
+    ("convert",  "🍎", "Convert",   "TOOLS"),
     ("history",  "⏱",  "History",   "LIBRARY"),
     ("settings", "⚙",  "Settings",  "SYSTEM"),
 ]
@@ -283,6 +284,7 @@ class MainWindow(ctk.CTk):
         ).pack(side="bottom", pady=(0, 4))
 
     def _build_tabs(self) -> None:
+        from ui.tabs.convert_tab import ConvertTab
         from ui.tabs.history_tab import HistoryTab
         from ui.tabs.home_tab import HomeTab
         from ui.tabs.queue_tab import QueueTab
@@ -290,6 +292,7 @@ class MainWindow(ctk.CTk):
         self._tabs: dict[str, ctk.CTkFrame] = {
             "home":     HomeTab(self._content, self),
             "queue":    QueueTab(self._content, self),
+            "convert":  ConvertTab(self._content, self),
             "history":  HistoryTab(self._content, self),
             "settings": SettingsTab(self._content, self),
         }
@@ -406,3 +409,12 @@ class ServiceFacade:
     def clear_history(self):             self._svc.clear_history()
     def get_download_dir(self) -> Path:  return self._cfg.download_dir
     def set_download_dir(self, p: Path): self._cfg.set("download_dir", str(p))
+
+    def convert_to_mp4(self, source: Path, on_progress=None,
+                       on_done=None, on_error=None) -> None:
+        self._svc.convert_to_mp4(
+            source=source,
+            on_progress=on_progress,
+            on_done=on_done,
+            on_error=on_error,
+        )

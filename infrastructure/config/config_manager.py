@@ -85,6 +85,11 @@ class ConfigManager:
                 loaded = json.load(f)
             with self._lock:
                 self._data.update(loaded)
+                _snapshot = dict(self._data)
+            # Populate the shared cache so a second instance for the same
+            # path sees this data immediately, without re-reading the file.
+            with ConfigManager._cache_lock:
+                ConfigManager._cache[path_key] = _snapshot
             logger.debug("Config loaded from %s", self._path)
         except Exception as exc:
             logger.warning("Could not load config (%s) — using defaults", exc)

@@ -220,7 +220,12 @@ def test_progress_hook_ignores_relative_filename():
 
     config = MagicMock()
     engine = YtDlpEngine(config)
-    task = _make_task(filename="/absolute/prior.mp4")
+    import os, sys as _sys
+    if _sys.platform == "win32":
+        _abs = os.path.join(os.path.splitdrive(os.getcwd())[0] or "C:\\", "absolute", "prior.mp4")
+    else:
+        _abs = "/absolute/prior.mp4"
+    task = _make_task(filename=_abs)
 
     hook = engine._make_progress_hook(task, callback=None)
 
@@ -239,7 +244,7 @@ def test_progress_hook_ignores_relative_filename():
         "the progress hook.  Got: %r" % task.filename
     )
     # The prior absolute value must be preserved
-    assert task.filename == "/absolute/prior.mp4", (
+    assert task.filename == _abs, (
         "A relative progress-hook filename must not overwrite an existing "
         "absolute task.filename."
     )

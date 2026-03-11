@@ -222,6 +222,10 @@ class TestSafePath:
 # ---------------------------------------------------------------------------
 
 class TestRevealInExplorer:
+    @pytest.mark.skipif(
+        __import__("sys").platform != "win32",
+        reason="os.startfile unavailable on non-Windows (Python 3.13 frozen os)",
+    )
     def test_windows_uses_explorer_select(self, tmp_path):
         fake_file = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as mock_sys, \
@@ -267,6 +271,10 @@ class TestRevealInExplorer:
 
 
 class TestOpenFolder:
+    @pytest.mark.skipif(
+        __import__("sys").platform != "win32",
+        reason="os.startfile unavailable on non-Windows (Python 3.13 frozen os)",
+    )
     def test_windows_opens_explorer(self, tmp_path):
         with patch("utils.helpers.sys") as mock_sys, \
              patch("utils.helpers.subprocess.Popen") as mock_popen:

@@ -90,11 +90,6 @@ class DownloadTask:
         default_factory=threading.RLock, compare=False, repr=False
     )
 
-    def __post_init__(self) -> None:
-        # _pause_event is pre-set by _set_event(); the download thread can
-        # proceed immediately and only blocks when pause() clears the event.
-        pass
-
     # ── Convenience properties ────────────────────────────────────────────
 
     @property
@@ -135,8 +130,9 @@ class DownloadTask:
                 self.status = DownloadStatus.DOWNLOADING
 
     def cancel(self) -> None:
-        self._cancel_event.set()
-        self._pause_event.set()   # unblock any waiting hook
+        with self._lock:
+            self._cancel_event.set()
+            self._pause_event.set()   # unblock any waiting hook
 
     @property
     def is_cancellation_requested(self) -> bool:

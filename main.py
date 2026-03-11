@@ -142,19 +142,16 @@ def _clear_history_on_version_change(config, history) -> None:
     and an empty history, without requiring the user to manually delete the
     OmniDL data directory.
     """
-    import logging
-    logger = logging.getLogger("omnidl.main")
+    
+    import re as _re
     stored = config.get("app_version", "")
     if stored != _APP_VERSION:
-        logger.info(
-            "App version changed (%r -> %r) — resetting settings and clearing history",
-            stored, _APP_VERSION,
-        )
-        history.clear()
-        # BUG-2 FIX: reset all settings to factory defaults so settings from
-        # an older build (incompatible feature flags, renamed keys, etc.) do
-        # not carry forward into the new version.
-        config.reset_to_defaults()
+        def _major(v: str) -> str:
+            m = _re.match(r"(\d+)", v)
+            return m.group(0) if m else "0"
+        if _major(stored or "0") != _major(_APP_VERSION):
+            history.clear()
+            config.reset_to_defaults()
         config.set("app_version", _APP_VERSION)
 
 
@@ -172,6 +169,7 @@ def _migrate_legacy_data() -> None:
 
     _LEGACY_MAP = {
         APP_BINARY_DIR / "config.json": DATA_DIR / "config.json",
+        APP_BINARY_DIR / "download_history.jsonl": DATA_DIR / "download_history.jsonl",
     }
 
     for src, dst in _LEGACY_MAP.items():

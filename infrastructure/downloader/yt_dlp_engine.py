@@ -44,14 +44,12 @@ def _validate_cookie_path(config: "ConfigManager") -> str | None:
     if not cookie_file:
         return None
     cp = Path(cookie_file).resolve()
-    # Accept files inside the OmniDL data directory OR anywhere under the
-    # user's home directory.  Path.parents is used (not str.startswith) to
-    # prevent the sibling-directory bypass (CWE-22).
-    safe_roots = (
-        config.config_path.parent.resolve(),
-        Path.home().resolve(),
-    )
-    is_safe = any(cp == root or root in cp.parents for root in safe_roots)
+    # Accept ONLY files inside the OmniDL data directory (config_path.parent).
+    # Path.home() is NOT included -- SSH keys and other home-dir files must
+    # not be silently forwarded to remote servers via yt-dlp (SEC-1 fix).
+    # Path.parents is used (not str.startswith) to prevent CWE-22 bypass.
+    safe_root = config.config_path.parent.resolve()
+    is_safe = cp == safe_root or safe_root in cp.parents
     if cp.is_file() and is_safe:
         logger.info("Using cookie file: %s", cp)
         return str(cp)
