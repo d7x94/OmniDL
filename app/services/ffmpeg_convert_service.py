@@ -184,12 +184,11 @@ class FfmpegConvertService:
 
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
 
         stderr_lines: list[str] = []
-        assert proc.stderr is not None
         for raw in proc.stderr:
             line = raw.decode("utf-8", errors="replace").rstrip()
             stderr_lines.append(line)
