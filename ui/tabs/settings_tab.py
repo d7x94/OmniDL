@@ -166,7 +166,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         ).pack(anchor="w", padx=28, pady=(24, 18))
 
         # -- Download location ---------------------------------------------
-        self._section(p, "????   DOWNLOAD LOCATION")
+        self._section(p, "📁   DOWNLOAD LOCATION")
         loc = self._card(p)
         row = ctk.CTkFrame(loc, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=14)
@@ -182,7 +182,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         ).pack(side="left", padx=(10, 0))
 
         # -- Download behaviour --------------------------------------------
-        self._section(p, "???   DOWNLOAD BEHAVIOUR")
+        self._section(p, "⚙   DOWNLOAD BEHAVIOUR")
         beh = self._card(p)
 
         self._concurrent_var = ctk.IntVar(value=cfg.max_concurrent)
@@ -206,7 +206,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                          lambda v: cfg.set("embed_metadata", v))
 
         # -- Network & Auth ------------------------------------------------
-        self._section(p, "????   NETWORK & AUTHENTICATION")
+        self._section(p, "🔒   NETWORK & AUTHENTICATION")
         net = self._card(p)
 
         proxy_row = ctk.CTkFrame(net, fg_color="transparent")
@@ -241,7 +241,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         ctk.CTkLabel(
             net,
-            text="???  Chrome/Brave locked? Export cookies to a .txt file instead:",
+            text="⚠  Chrome/Brave locked? Export cookies to a .txt file instead:",
             font=ctk.CTkFont(size=11), text_color=T.warning_text,
         ).pack(anchor="w", padx=16, pady=(10, 2))
 
@@ -254,21 +254,21 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._cf_lbl.pack(side="left", fill="x", expand=True)
 
         ctk.CTkButton(
-            cf_row, text="Browse???", width=80, height=28, corner_radius=6,
+            cf_row, text="Browse…", width=80, height=28, corner_radius=6,
             fg_color=T.surface3, hover_color=T.border2,
             text_color=T.text2, font=ctk.CTkFont(size=11),
             command=self._browse_cookie_file,
         ).pack(side="left", padx=(8, 4))
 
         ctk.CTkButton(
-            cf_row, text="??? Clear", width=64, height=28, corner_radius=6,
+            cf_row, text="🗑 Clear", width=64, height=28, corner_radius=6,
             fg_color=T.error_bg, hover_color=T.error_bg,
             text_color=T.error, font=ctk.CTkFont(size=11),
             command=self._clear_cookie_file,
         ).pack(side="left")
 
         # -- Appearance ----------------------------------------------------
-        self._section(p, "????   APPEARANCE")
+        self._section(p, "🎨   APPEARANCE")
         app_card = self._card(p)
         theme_row = ctk.CTkFrame(app_card, fg_color="transparent")
         theme_row.pack(fill="x", padx=16, pady=14)
@@ -280,7 +280,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         ).pack(side="right")
 
         # -- yt-dlp engine -------------------------------------------------
-        self._section(p, "???   YT-DLP ENGINE")
+        self._section(p, "🔧   YT-DLP ENGINE")
         ytdlp = self._card(p)
 
         ver_row = ctk.CTkFrame(ytdlp, fg_color="transparent")
@@ -410,7 +410,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         if not path:
             return "No file selected"
         s = str(Path(path))
-        return s if len(s) <= 45 else f"???{s[-42:]}"
+        return s if len(s) <= 45 else f"…{s[-42:]}"
 
     def _change_theme(self, theme: str) -> None:
         self._app.config.set("theme", theme)
@@ -440,9 +440,9 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         import sys
         self._upd_btn.configure(state="disabled")
         self._upd_status.configure(
-            text="Checking for updates???", text_color=T.primary_text
+            text="Checking for updates…", text_color=T.primary_text
         )
-        self._app.toast("Updating yt-dlp, please wait???", "info")
+        self._app.toast("Updating yt-dlp, please wait…", "info")
 
         def _worker():
             import importlib
@@ -466,7 +466,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
                 ver = self._get_ytdlp_version()
                 self.after(0, lambda: self._upd_status.configure(
-                    text=f"Updated ??? {ver}", text_color=T.success))
+                    text=f"Updated → {ver}", text_color=T.success))
                 self.after(0, lambda: self._ver_lbl.configure(text=ver))
                 self.after(
                     0,
