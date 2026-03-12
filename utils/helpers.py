@@ -106,13 +106,13 @@ def reveal_in_explorer(path: Path) -> bool:
         if sys.platform == "win32":
             # Single argument: '/select,<absolute_path>'
             # No shell=True needed — explorer.exe reads its own argv directly.
-            # Use ctypes ShellExecuteW so explorer.exe receives the
-            # /select,<path> argument verbatim — no shell=True needed and
-            # paths with spaces are handled correctly by the Win32 API.
-            import ctypes
-            resolved = str(path.resolve())
-            ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
-                None, "open", "explorer.exe", f'/select,"{resolved}"', None, 1
+            # Concatenate /select, and the path into a single argv element.
+            # list-form Popen (no shell=True) is safe (no B602); Windows
+            # CreateProcess joins the list via list2cmdline which quotes
+            # the argument correctly when the path contains spaces.
+            subprocess.Popen(
+                ["explorer", f"/select,{str(path.resolve())}"],
+                close_fds=True,
             )
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path.resolve())], close_fds=True)
@@ -127,14 +127,13 @@ def reveal_in_explorer(path: Path) -> bool:
 def open_folder(path: Path) -> None:
     """Open a folder in the OS file manager.
 
-    On Windows os.startfile() is preferred over subprocess+explorer because
-    it calls ShellExecute directly, which handles paths with spaces and UNC
-    paths without any quoting gymnastics.
     """
     try:
         if sys.platform == "win32":
-            import os as _os
-            _os.startfile(str(path.resolve()))
+            subprocess.Popen(
+                ["explorer", str(path.resolve())],
+                close_fds=True,
+            )
         elif sys.platform == "darwin":
             subprocess.Popen(["open", str(path.resolve())], close_fds=True)
         else:

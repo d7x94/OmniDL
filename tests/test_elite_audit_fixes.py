@@ -39,7 +39,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-REPO = pathlib.Path(__file__).parent
+REPO = pathlib.Path(__file__).parent.parent  # repo root, not tests/
 
 
 # ─────────────────────────────────────────────────────────────────────────────

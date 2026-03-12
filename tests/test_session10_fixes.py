@@ -214,6 +214,10 @@ class TestThemeTokenValues(unittest.TestCase):
     """
 
     def setUp(self):
+        # test_queue_open_folder_fix.py replaces ui.themes.tokens with a
+        # MagicMock stub at module-load time.  Remove the stub so we get the
+        # real ThemeManager singleton here.
+        sys.modules.pop("ui.themes.tokens", None)
         from ui.themes.tokens import T, _DARK, _LIGHT
         self.T = T
         self.DARK = _DARK
@@ -263,6 +267,7 @@ class TestThemeCallbackRegistration(unittest.TestCase):
     """T.register / T.unregister and callback firing."""
 
     def setUp(self):
+        sys.modules.pop("ui.themes.tokens", None)
         from ui.themes.tokens import T
         self.T = T
         T.set_mode("dark")
@@ -481,6 +486,8 @@ class TestStartupThemeSync(unittest.TestCase):
         Simulate main.py startup sequence: T starts dark, 'config' says
         light → after T.set_mode('light') all tokens must be light values.
         """
+        import sys as _sys
+        _sys.modules.pop("ui.themes.tokens", None)
         from ui.themes.tokens import T, _LIGHT, _DARK
         # Simulate default (dark) state at module import
         T.set_mode("dark")
