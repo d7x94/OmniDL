@@ -85,6 +85,19 @@ class HistoryRepository:
         A backup copy is written first so data is not lost if the write fails
         mid-way (power loss, full disk, etc.).  The backup is removed on
         success.
+
+        Callers (``remove``, ``clear``, and ``_load`` migration) must ensure
+        they are **not** holding ``self._lock`` when calling this — it
+        delegates to ``_rewrite_unlocked`` which performs disk I/O.
+        """
+        self._rewrite_unlocked(self._entries)
+
+    def _rewrite_unlocked(self, entries: list[dict]) -> None:
+        """Write *entries* atomically to disk without requiring ``self._lock``.
+
+        Accepts a consistent snapshot so the caller can release the lock
+        before performing the slow disk write, keeping ``all()`` and
+        ``search()`` responsive for the UI's 500 ms polling loop.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         backup = self._path.with_suffix(".backup.jsonl")
@@ -92,7 +105,7 @@ class HistoryRepository:
             # Write to a temp file then atomically replace the original.
             tmp = self._path.with_suffix(".tmp.jsonl")
             with tmp.open("w", encoding="utf-8") as f:
-                for entry in self._entries:
+                for entry in entries:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             # Keep a backup until the rename succeeds.
             if self._path.exists():
@@ -128,11 +141,18 @@ class HistoryRepository:
             overflow = len(self._entries) > self._limit
             if overflow:
                 self._entries = self._entries[: self._limit]
-                # Disk is now out of sync — rewrite to match in-memory list.
-                self._rewrite()
+                # Take a snapshot for the disk rewrite — the lock is released
+                # immediately after so that concurrent all()/search() calls are
+                # not blocked during the (slow) full-file write.
+                entries_snapshot: list[dict] = list(self._entries)
             else:
-                # Fast O(1) path: no pruning needed, just append one line.
-                self._append_line(entry)
+                entries_snapshot = []
+        # ── Lock released — perform disk I/O outside the critical section ──
+        if overflow:
+            self._rewrite_unlocked(entries_snapshot)
+        else:
+            # Fast O(1) path: no pruning needed, just append one line.
+            self._append_line(entry)
 
     def all(self) -> list[dict]:
         with self._lock:
@@ -155,12 +175,13 @@ class HistoryRepository:
     def remove(self, task_id: str) -> None:
         with self._lock:
             self._entries = [e for e in self._entries if e.get("id") != task_id]
-            self._rewrite()
+            snapshot = list(self._entries)
+        self._rewrite_unlocked(snapshot)
 
     def clear(self) -> None:
         with self._lock:
             self._entries = []
-            self._rewrite()
+        self._rewrite_unlocked([])
 
     def get_by_id(self, task_id: str) -> Optional[dict]:
         with self._lock:

@@ -95,17 +95,20 @@ class ConfigManager:
             logger.warning("Could not load config (%s) — using defaults", exc)
 
     def _save(self) -> None:
+        import io as _io
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp.json")
-        # Snapshot *and* serialise under the same lock acquisition so that a
-        # concurrent set() cannot mutate self._data between the snapshot and
-        # json.dump.  The RLock is re-entrant so callers that already hold it
-        # (e.g. save()) re-enter safely.
         try:
+            # Snapshot and serialise inside the lock.  Writing to StringIO has
+            # no syscalls, so the lock is released quickly — concurrent get()
+            # and set() calls are not blocked during the (slower) disk write.
+            buf = _io.StringIO()
             with self._lock:
                 snapshot = dict(self._data)
-                with tmp.open("w", encoding="utf-8") as f:
-                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
+                json.dump(snapshot, buf, indent=2, ensure_ascii=False)
+            # Lock is now released — write the pre-serialised data to disk.
+            with tmp.open("w", encoding="utf-8") as f:
+                f.write(buf.getvalue())
             tmp.replace(self._path)
         except OSError as exc:
             logger.error("Config save failed: %s", exc)
