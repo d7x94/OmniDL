@@ -68,19 +68,28 @@ class TestRevealInExplorerSecurity:
       all special characters including #, [, ], Unicode, and long paths
     """
 
+    @staticmethod
+    def _setup_win32_ctypes(mc):
+        """Populate a ctypes mock with all real types + non-null PIDL values."""
+        import ctypes as _r
+        mc.c_void_p = _r.c_void_p
+        mc.c_wchar_p = _r.c_wchar_p
+        mc.c_uint = _r.c_uint
+        mc.c_ulong = _r.c_ulong
+        mc.HRESULT = getattr(_r, 'HRESULT', _r.c_long)
+        mc.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
+        mc.windll.shell32.ILFindLastID.return_value = 2
+        mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+
     def test_windows_no_subprocess_popen(self, tmp_path):
         """Windows path must use ctypes — subprocess.Popen must not be called."""
-        import ctypes as _real_ctypes
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
              patch("utils.helpers.ctypes") as mc, \
              patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "win32"
-            mc.windll.shell32.ILCreateFromPathW.return_value = 1
-            mc.windll.shell32.ILFindLastID.return_value = 2
-            mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
-            mc.c_void_p = _real_ctypes.c_void_p
+            self._setup_win32_ctypes(mc)
             reveal_in_explorer(fake)
             assert not mp.called, (
                 "subprocess.Popen must not be called on Windows; "
@@ -89,34 +98,25 @@ class TestRevealInExplorerSecurity:
 
     def test_windows_uses_shell_api_not_explorer_cmdline(self, tmp_path):
         """Windows must call SHOpenFolderAndSelectItems, not explorer /select,."""
-        import ctypes as _real_ctypes
         from utils.helpers import reveal_in_explorer
         dangerous = tmp_path / 'video";calc.exe;echo ".mp4'
         with patch("utils.helpers.sys") as ms, \
              patch("utils.helpers.ctypes") as mc:
             ms.platform = "win32"
-            mc.windll.shell32.ILCreateFromPathW.return_value = 1
-            mc.windll.shell32.ILFindLastID.return_value = 2
-            mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
-            mc.c_void_p = _real_ctypes.c_void_p
+            self._setup_win32_ctypes(mc)
             reveal_in_explorer(dangerous)
-            # Shell API called — no command injection possible
             assert mc.windll.shell32.SHOpenFolderAndSelectItems.called
             assert mc.windll.shell32.ILCreateFromPathW.called
 
     def test_windows_metacharacter_filename_safe(self, tmp_path):
         """Shell metacharacters in filename are safe — ctypes never invokes shell."""
-        import ctypes as _real_ctypes
         from utils.helpers import reveal_in_explorer
         dangerous = tmp_path / 'video";calc.exe;echo ".mp4'
         with patch("utils.helpers.sys") as ms, \
              patch("utils.helpers.ctypes") as mc, \
              patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "win32"
-            mc.windll.shell32.ILCreateFromPathW.return_value = 1
-            mc.windll.shell32.ILFindLastID.return_value = 2
-            mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
-            mc.c_void_p = _real_ctypes.c_void_p
+            self._setup_win32_ctypes(mc)
             reveal_in_explorer(dangerous)
         assert not mp.called, "Metacharacters in filename must not reach subprocess"
 

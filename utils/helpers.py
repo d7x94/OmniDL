@@ -109,22 +109,36 @@ def reveal_in_explorer(path: Path) -> bool:
             # as a URL fragment), [ ], or certain Unicode characters.
             # SHOpenFolderAndSelectItems has no such limitation.
             abs_path = str(path.resolve())
+            parent_path = str(path.resolve().parent)
             shell32 = ctypes.windll.shell32
 
-            # ILCreateFromPathW converts the path string to a PIDL.
-            # This is immune to # / [ ] / Unicode / long-path issues that
-            # plague the explorer.exe /select, command-line approach.
-            parent_path = str(path.resolve().parent)
-            # Two PIDLs are needed:
-            #   parent_pidl — the folder to open (absolute)
-            #   file_pidl   — used to extract the relative (child) PIDL
-            # ILFindLastID returns a pointer INTO file_pidl (no new allocation).
-            # SHOpenFolderAndSelectItems(folder, cidl=1, [relative_pidl], 0)
-            # is the correct idiom: cidl=1 + relative child PIDL selects the
-            # file inside the opened folder.
-            # Using cidl=0 opens the folder without selecting any file.
-            # Using an absolute PIDL as an apidl entry is wrong — apidl must
-            # contain relative (child) PIDLs only (MSDN requirement).
+            # ── Critical: declare return types BEFORE any call ──────────────
+            # ctypes default restype is c_int (32-bit).  On 64-bit Windows all
+            # PIDL pointers are 64-bit; without c_void_p the top 32 bits are
+            # silently truncated, making every pointer invalid.  That causes
+            # SHOpenFolderAndSelectItems to return a non-S_OK HRESULT, which
+            # makes reveal_in_explorer return False and open_folder() run as a
+            # fallback — so the correct folder opens but nothing is selected.
+            shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+            shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
+            shell32.ILFindLastID.restype = ctypes.c_void_p
+            shell32.ILFindLastID.argtypes = [ctypes.c_void_p]
+            shell32.ILFree.restype = None
+            shell32.ILFree.argtypes = [ctypes.c_void_p]
+            # SHOpenFolderAndSelectItems(pidlFolder, cidl, apidl, dwFlags)
+            # apidl = PCUITEMID_CHILD_ARRAY = pointer to array of child PIDLs
+            shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+            shell32.SHOpenFolderAndSelectItems.argtypes = [
+                ctypes.c_void_p,   # pidlFolder  (absolute)
+                ctypes.c_uint,     # cidl         (count of apidl entries)
+                ctypes.c_void_p,   # apidl        (pointer to child-PIDL array)
+                ctypes.c_ulong,    # dwFlags
+            ]
+
+            # Two absolute PIDLs: one for the parent folder, one for the file.
+            # ILFindLastID extracts the last SHITEMID from file_pidl — that is
+            # the relative (child) PIDL required by apidl.  The returned pointer
+            # points INTO file_pidl memory; do NOT free it separately.
             parent_pidl = shell32.ILCreateFromPathW(parent_path)
             file_pidl = shell32.ILCreateFromPathW(abs_path)
             if not parent_pidl or not file_pidl:
@@ -132,14 +146,10 @@ def reveal_in_explorer(path: Path) -> bool:
                 shell32.ILFree(file_pidl)
                 return False
             try:
-                # ILFindLastID: extract the last SHITEMID from file_pidl.
-                # This gives us the relative (child) PIDL needed by apidl.
-                # The returned pointer is INTO file_pidl — do NOT free it.
                 rel_pidl = shell32.ILFindLastID(file_pidl)
-                ItemArray = ctypes.c_void_p * 1
-                items = ItemArray(rel_pidl)
+                apidl = (ctypes.c_void_p * 1)(rel_pidl)
                 hr = shell32.SHOpenFolderAndSelectItems(
-                    parent_pidl, 1, items, 0,
+                    parent_pidl, 1, apidl, 0,
                 )
                 return hr == 0  # S_OK
             finally:

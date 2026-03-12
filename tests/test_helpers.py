@@ -222,6 +222,25 @@ class TestSafePath:
 # ---------------------------------------------------------------------------
 
 class TestRevealInExplorer:
+    # Helper: set up a ctypes mock with all real types populated
+    @staticmethod
+    def _mock_ctypes_win32(mock_ctypes, parent_pidl=1, file_pidl=1,
+                           rel_pidl=2, hr=0):
+        """Wire up a ctypes mock for Windows shell32 tests."""
+        import ctypes as _r
+        # Real ctypes types required by restype/argtypes declarations in code
+        mock_ctypes.c_void_p = _r.c_void_p
+        mock_ctypes.c_wchar_p = _r.c_wchar_p
+        mock_ctypes.c_uint = _r.c_uint
+        mock_ctypes.c_ulong = _r.c_ulong
+        mock_ctypes.HRESULT = _r.HRESULT
+        # ILCreateFromPathW returns parent_pidl on first call, file_pidl second
+        mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [
+            parent_pidl, file_pidl,
+        ]
+        mock_ctypes.windll.shell32.ILFindLastID.return_value = rel_pidl
+        mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = hr
+
     def test_windows_uses_shell_api(self, tmp_path):
         """
         Windows reveal_in_explorer must use SHOpenFolderAndSelectItems via
@@ -240,17 +259,11 @@ class TestRevealInExplorer:
         with patch("utils.helpers.sys") as mock_sys, \
              patch("utils.helpers.ctypes") as mock_ctypes:
             mock_sys.platform = "win32"
-            # Both ILCreateFromPathW calls return non-NULL PIDLs.
-            mock_ctypes.windll.shell32.ILCreateFromPathW.return_value = 1
-            mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
-            mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
-            import ctypes as _real_ctypes
-            mock_ctypes.c_void_p = _real_ctypes.c_void_p
+            self._mock_ctypes_win32(mock_ctypes)
             result = reveal_in_explorer(fake_file)
             sh_open = mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems
-            il_find = mock_ctypes.windll.shell32.ILFindLastID
             assert mock_ctypes.windll.shell32.ILCreateFromPathW.called
-            assert il_find.called, (
+            assert mock_ctypes.windll.shell32.ILFindLastID.called, (
                 "ILFindLastID must be called to get the relative child PIDL"
             )
             assert sh_open.called
@@ -262,14 +275,122 @@ class TestRevealInExplorer:
             )
             assert result is True
 
+    def test_windows_restype_declared_for_all_pidl_functions(self, tmp_path):
+        """
+        restype = c_void_p must be set on ILCreateFromPathW, ILFindLastID,
+        and SHOpenFolderAndSelectItems BEFORE any call is made.
+
+        Without restype declarations, ctypes defaults to c_int (32-bit).
+        On 64-bit Windows, PIDL pointers are 64-bit; the top 32 bits are
+        silently truncated, making every pointer invalid and causing
+        SHOpenFolderAndSelectItems to fail — the file is never highlighted.
+
+        This is the root cause of the 'correct folder opens but file not
+        highlighted' bug observed with Unicode/emoji/Thai filenames.
+        """
+        fake_file = tmp_path / "ไทย emoji 🔥 #test [1].mp4"
+        restype_calls = {}
+
+        import ctypes as _r
+
+        class TrackingShell32:
+            """Records restype assignments to verify they happen before calls."""
+            def __init__(self):
+                self._restype_set = {}
+                self._calls = []
+
+            class _Func:
+                def __init__(self, name, tracker):
+                    self.name = name
+                    self._tracker = tracker
+                    self.return_value = None
+                    self.side_effect = None
+                    self.call_count = 0
+                    self.call_args = None
+                    self._argtypes = None
+                    self._restype = None
+
+                @property
+                def restype(self):
+                    return self._restype
+
+                @restype.setter
+                def restype(self, val):
+                    self._restype = val
+                    self._tracker._restype_set[self.name] = val
+
+                @property
+                def argtypes(self):
+                    return self._argtypes
+
+                @argtypes.setter
+                def argtypes(self, val):
+                    self._argtypes = val
+
+                def __call__(self, *a, **kw):
+                    self.call_count += 1
+                    self.call_args = (a, kw)
+                    if self.side_effect:
+                        vals = list(self.side_effect)
+                        v = vals.pop(0)
+                        self.side_effect = iter(vals)
+                        return v
+                    return self.return_value
+
+            def __getattr__(self, name):
+                if name.startswith("_"):
+                    raise AttributeError(name)
+                func = self._Func(name, self)
+                setattr(self, name, func)
+                return func
+
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch("utils.helpers.ctypes") as mock_ctypes:
+            mock_sys.platform = "win32"
+            self._mock_ctypes_win32(mock_ctypes)
+            reveal_in_explorer(fake_file)
+
+        # The key assertion: restype must be c_void_p (not the default c_int)
+        il_create = mock_ctypes.windll.shell32.ILCreateFromPathW
+        assert il_create.restype == _r.c_void_p, (
+            "ILCreateFromPathW.restype must be c_void_p. "
+            "Without this, 64-bit PIDL pointers are truncated to 32-bit, "
+            "causing SHOpenFolderAndSelectItems to fail and the file to not "
+            "be highlighted in Explorer."
+        )
+        il_find = mock_ctypes.windll.shell32.ILFindLastID
+        assert il_find.restype == _r.c_void_p, (
+            "ILFindLastID.restype must be c_void_p — same truncation risk."
+        )
+
+    def test_windows_unicode_emoji_thai_filename(self, tmp_path):
+        """
+        Files with Unicode, Thai, emoji, and special chars must be handled.
+        Regression test for: ไทยไฟล์ 🔥 #tag [123].mp4
+        """
+        for name in [
+            "video.mp4",
+            "test file [123].mp4",
+            "🔥 emoji test file 😎.mp4",
+            "ไทยไฟล์ทดสอบ.mp4",
+            "tigerphuangkaew - #ฟีดดดシ #รวมเพื่อน 🧡💙 [760634766487].mp4",
+        ]:
+            fake_file = tmp_path / name
+            with patch("utils.helpers.sys") as mock_sys, \
+                 patch("utils.helpers.ctypes") as mock_ctypes:
+                mock_sys.platform = "win32"
+                self._mock_ctypes_win32(mock_ctypes)
+                # Must not raise and must return True (S_OK mocked)
+                result = reveal_in_explorer(fake_file)
+                assert result is True, f"Failed for filename: {name!r}"
+
     def test_windows_returns_false_when_parent_pidl_null(self, tmp_path):
         """If parent dir ILCreateFromPathW returns NULL, return False."""
         fake_file = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as mock_sys, \
              patch("utils.helpers.ctypes") as mock_ctypes:
             mock_sys.platform = "win32"
-            # First call (parent dir) returns NULL — must bail.
-            mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [0, 1]
+            self._mock_ctypes_win32(mock_ctypes, parent_pidl=0, file_pidl=1)
             result = reveal_in_explorer(fake_file)
             assert result is False
 
@@ -279,8 +400,7 @@ class TestRevealInExplorer:
         with patch("utils.helpers.sys") as mock_sys, \
              patch("utils.helpers.ctypes") as mock_ctypes:
             mock_sys.platform = "win32"
-            # Second call (file path) returns NULL — must bail.
-            mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 0]
+            self._mock_ctypes_win32(mock_ctypes, parent_pidl=1, file_pidl=0)
             result = reveal_in_explorer(fake_file)
             assert result is False
 
@@ -307,15 +427,11 @@ class TestRevealInExplorer:
         # Windows must use ctypes, NOT subprocess.Popen
         # (explorer /select, breaks silently on # in filenames).
         fake_file = tmp_path / "video#calisthenics [123].mp4"
-        import ctypes as _real_ctypes
         with patch("utils.helpers.sys") as mock_sys, \
              patch("utils.helpers.ctypes") as mock_ctypes, \
              patch("utils.helpers.subprocess.Popen") as mock_popen:
             mock_sys.platform = "win32"
-            mock_ctypes.windll.shell32.ILCreateFromPathW.return_value = 1
-            mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
-            mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
-            mock_ctypes.c_void_p = _real_ctypes.c_void_p
+            self._mock_ctypes_win32(mock_ctypes)
             reveal_in_explorer(fake_file)
             assert not mock_popen.called, (
                 "subprocess.Popen must not be called on Windows; "
