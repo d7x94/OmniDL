@@ -199,6 +199,55 @@ class TestQueueOpenPath:
         )
         assert _Path(task.filename).parent == tmp_path
 
+
+    def test_relative_filename_anchored_to_output_dir(self, tmp_path):
+        """
+        When task.filename is a bare filename (no directory component),
+        _open_folder must resolve it relative to task.output_dir, NOT relative
+        to the process CWD.
+
+        Root cause: on Windows + PyInstaller, CWD when launching from a
+        double-clicked EXE is the EXE directory.  Path("video.mp4").resolve()
+        would yield EXE-dir/video.mp4 which does not exist, causing _open_folder
+        to fall through to the EXE directory instead of the downloads folder.
+
+        Fix: if raw is not absolute, anchor it to task.output_dir.
+        """
+        download_dir = tmp_path / "downloads"
+        download_dir.mkdir()
+        final_file = download_dir / "video.mp4"
+        final_file.write_bytes(b"\x00" * 1024)
+
+        # Simulate yt-dlp returning only the basename (no directory)
+        bare_name = "video.mp4"
+
+        task = _make_task(tmp_path)
+        task.output_dir = str(download_dir)   # correct download directory
+        task.filename = bare_name              # bare name — PyInstaller scenario
+        task.status = DownloadStatus.COMPLETED
+
+        opened_paths: list[Path] = []
+
+        import ui.components.download_item_widget as mod
+        original_open_folder = mod.open_folder
+        original_reveal = mod.reveal_in_explorer
+
+        mod.open_folder = lambda p: opened_paths.append(p)
+        mod.reveal_in_explorer = lambda p: False
+        try:
+            widget = object.__new__(mod.DownloadItemWidget)
+            widget.task = task
+            widget._completed_path = bare_name
+            widget._open_folder()
+
+            assert opened_paths, "_open_folder did not call open_folder"
+            assert opened_paths[0] == download_dir, (
+                f"Expected {download_dir!r}, got {opened_paths[0]!r}. "
+                "Bare filename must be anchored to task.output_dir, not process CWD."
+            )
+        finally:
+            mod.open_folder = original_open_folder
+            mod.reveal_in_explorer = original_reveal
     def test_fallback_to_output_dir_when_filename_empty(self, tmp_path):
         """
         When task.filename is empty, _open_folder must open task.output_dir

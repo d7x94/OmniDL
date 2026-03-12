@@ -60,7 +60,7 @@ class ConfigManager:
 
     def __init__(self, config_path: Path) -> None:
         self._path = config_path
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._data: dict[str, Any] = dict(_DEFAULTS)
         # Config writes are debounced (see _schedule_save) so that rapid
         # successive set() calls — e.g. dragging a settings slider — do not
@@ -95,12 +95,24 @@ class ConfigManager:
             logger.warning("Could not load config (%s) — using defaults", exc)
 
     def _save(self) -> None:
+        import io as _io
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(".tmp.json")
         try:
-            with self._path.open("w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
+            # Snapshot and serialise inside the lock.  Writing to StringIO has
+            # no syscalls, so the lock is released quickly — concurrent get()
+            # and set() calls are not blocked during the (slower) disk write.
+            buf = _io.StringIO()
+            with self._lock:
+                snapshot = dict(self._data)
+                json.dump(snapshot, buf, indent=2, ensure_ascii=False)
+            # Lock is now released — write the pre-serialised data to disk.
+            with tmp.open("w", encoding="utf-8") as f:
+                f.write(buf.getvalue())
+            tmp.replace(self._path)
         except OSError as exc:
             logger.error("Config save failed: %s", exc)
+            tmp.unlink(missing_ok=True)
 
     def reset_to_defaults(self) -> None:
         """Reset all settings to factory defaults and flush to disk immediately.
@@ -121,11 +133,14 @@ class ConfigManager:
     def save(self) -> None:
         """Flush config to disk immediately (synchronous; use at shutdown)."""
         # Cancel any pending debounced write — this is the authoritative flush.
+        # Cancel the timer while holding the lock, then call _save() OUTSIDE
+        # the lock — _save() acquires it internally for the snapshot, so calling
+        # it while already holding the lock would deadlock with threading.Lock.
         with self._lock:
             if self._save_timer is not None and self._save_timer.is_alive():
                 self._save_timer.cancel()
                 self._save_timer = None
-            self._save()
+        self._save()
 
     def _schedule_save(self) -> None:
         """
@@ -179,10 +194,14 @@ class ConfigManager:
         # Treat both None (JSON null) and "" (empty string) as "not set" and
         # fall back to the OS default.  Path("") resolves to CWD, which would
         # silently route downloads into the app's working directory.
+        # Always return an absolute path (.resolve()) so that callers never
+        # accidentally write files relative to the process CWD.  This is
+        # especially important on Windows + PyInstaller where the CWD is the
+        # EXE directory, not the user's home.
         raw = self.get("download_dir")
         if not raw:
-            return Path(_DEFAULTS["download_dir"])
-        return Path(raw)
+            return Path(_DEFAULTS["download_dir"]).resolve()
+        return Path(raw).resolve()
 
     @property
     def theme(self) -> str:

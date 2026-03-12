@@ -270,9 +270,17 @@ class YtDlpEngine:
         Mutates task.status / progress / filename in-place.
         Raises RuntimeError on failure.
         """
+        # Always resolve to an absolute path before passing to yt-dlp.
+        # If output_dir is relative (e.g. the user typed a relative path into
+        # Settings, or the app was launched from a different CWD), yt-dlp will
+        # write files relative to the process CWD.  On Windows + PyInstaller
+        # the CWD is the EXE directory, not the downloads folder, so the file
+        # lands in the wrong place AND info_dict["filepath"] is relative,
+        # causing task.filename to resolve to EXE-dir/video.mp4.
+        # .resolve() makes the path absolute before yt-dlp ever sees it.
         output_dir = (
             Path(task.output_dir) if task.output_dir else self._config.download_dir
-        )
+        ).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Livestream detection ──────────────────────────────────────────

@@ -603,3 +603,103 @@ class TestFinalFilenameResolution:
         import infrastructure.downloader.yt_dlp_engine as mod
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)  # Must not raise
+
+
+class TestOutputDirAlwaysAbsolute:
+    """
+    Regression guard: engine.download() must always resolve output_dir to an
+    absolute path before passing it to yt-dlp as the outtmpl base.
+
+    Root cause of the 'Open Folder opens wrong directory' bug on Windows +
+    PyInstaller: when the app is launched via a double-clicked EXE the process
+    CWD is the EXE directory.  If output_dir / config.download_dir is a relative
+    Path (e.g. the user typed "Downloads/OmniDL" into Settings), yt-dlp
+    resolves it against the EXE directory and writes files there.  The
+    resulting info_dict["filepath"] is also relative, so task.filename ends up
+    as EXE-dir/video.mp4 — the wrong place.
+
+    Fix: (Path(task.output_dir) or config.download_dir).resolve() in the
+    engine so yt-dlp always receives an absolute outtmpl path.
+    """
+
+    def test_opts_outtmpl_is_absolute_for_relative_output_dir(self, tmp_path):
+        """
+        When task.output_dir is a relative path, the opts["outtmpl"] passed
+        to yt-dlp must still be an absolute path.
+        """
+        import os
+
+        cfg = make_config(download_dir=tmp_path)
+        engine = YtDlpEngine(cfg)
+        task = make_task()
+
+        # Use a relative output_dir string (no leading slash / drive letter)
+        old_cwd = os.getcwd()
+        exe_dir = tmp_path / "exe_dir"
+        exe_dir.mkdir()
+        try:
+            os.chdir(exe_dir)   # simulate PyInstaller CWD = EXE dir
+
+            task.output_dir = str(tmp_path)   # absolute — use parent tmp_path
+            # Pretend only a relative path is available (edge-case portable install)
+            task.output_dir = "downloads"     # relative to CWD = exe_dir
+
+            captured_opts: list[dict] = []
+
+            class CapturingYDL:
+                def __init__(self, opts):
+                    captured_opts.append(opts)
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def download(self, urls):
+                    # Create a dummy file so size-scan doesn't fail
+                    dl_dir = (exe_dir / "downloads")
+                    dl_dir.mkdir(exist_ok=True)
+                    (dl_dir / "video.mp4").write_bytes(b"x" * 60_000)
+
+            import infrastructure.downloader.yt_dlp_engine as mod
+            with patch.object(mod.yt_dlp, "YoutubeDL", CapturingYDL):
+                try:
+                    engine.download(task)
+                except Exception:
+                    pass   # we only care about opts here
+
+            assert captured_opts, "YoutubeDL was not instantiated"
+            outtmpl = captured_opts[0]["outtmpl"]
+            assert os.path.isabs(outtmpl), (
+                "opts outtmpl must be absolute, got: " + repr(outtmpl) + ". "
+                "A relative outtmpl causes yt-dlp to write files to the process CWD "
+                "(EXE directory on PyInstaller), not the downloads folder."
+            )
+        finally:
+            os.chdir(old_cwd)
+
+    def test_task_filename_is_absolute_after_download(self, tmp_path):
+        """
+        After a successful download, task.filename must be an absolute path
+        regardless of whether task.output_dir was relative or absolute.
+        """
+        cfg = make_config(download_dir=tmp_path)
+        engine = YtDlpEngine(cfg)
+        task = make_task()
+        task.output_dir = str(tmp_path)   # absolute
+
+        final_file = tmp_path / "video.mp4"
+
+        class FakeYDL:
+            def __init__(self, opts): self.opts = opts
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def download(self, urls):
+                # Simulate engine's postprocessor hook firing with the final path
+                final_file.write_bytes(b"x" * 60_000)
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.download(task)
+
+        assert task.filename, "task.filename must not be empty after download"
+        import os
+        assert os.path.isabs(task.filename), (
+            f"task.filename must be absolute after download, got: {task.filename!r}"
+        )

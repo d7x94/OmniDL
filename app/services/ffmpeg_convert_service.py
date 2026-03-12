@@ -188,17 +188,42 @@ class FfmpegConvertService:
             stderr=subprocess.PIPE,
         )
 
-        stderr_lines: list[str] = []
-        for raw in proc.stderr:
-            line = raw.decode("utf-8", errors="replace").rstrip()
-            stderr_lines.append(line)
-            if on_progress and duration_s > 0:
-                m = _TIME_RE.search(line)
-                if m:
-                    pct = min(99.0, _parse_seconds(m) / duration_s * 100.0)
-                    on_progress(pct)
+        # Compute a generous but finite timeout.  The factor-of-6 headroom
+        # (minimum 60 s, maximum 4 h) covers slow hardware and large files
+        # while still bounding worst-case hangs.
+        timeout_s = max(60.0, min(duration_s * 6 if duration_s > 0 else 3600.0,
+                                   14400.0))
 
-        proc.wait()
+        # Read stderr on a daemon thread so the main worker thread is free to
+        # time-out via proc.wait().  Without this the stderr pipe can fill and
+        # block ffmpeg even before wait() is called.
+        stderr_lines: list[str] = []
+
+        def _drain_stderr() -> None:
+            for raw in proc.stderr:
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                stderr_lines.append(line)
+                if on_progress and duration_s > 0:
+                    m = _TIME_RE.search(line)
+                    if m:
+                        pct = min(99.0, _parse_seconds(m) / duration_s * 100.0)
+                        on_progress(pct)
+
+        reader = threading.Thread(
+            target=_drain_stderr, daemon=True, name="omnidl-ffmpeg-stderr"
+        )
+        reader.start()
+
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.communicate()   # drain pipe + reap zombie
+            raise ConversionError(
+                f"ffmpeg timed out after {timeout_s:.0f} s — process killed"
+            ) from exc
+
+        reader.join()   # ensure all stderr has been consumed (pipe closed)
 
         if proc.returncode != 0:
             tail = "\n".join(stderr_lines[-10:])

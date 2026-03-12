@@ -5,7 +5,6 @@ One row per DownloadTask — compact, IDM-inspired, fully themed.
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -293,41 +292,59 @@ class DownloadItemWidget(ctk.CTkFrame):
         wrong directory to open.  Falls back to ``self.task.filename`` when
         the snapshot is absent.
 
-        A short retry loop (up to 3 attempts, 0.2 s apart) handles the edge
-        case where the OS has not yet flushed the file to disk by the time
-        the user clicks "Open".
+        If the file is present immediately it is revealed synchronously.
+        If it is absent (e.g. OS flush still in progress) up to 2 additional
+        checks are scheduled via ``widget.after()`` so the Tk event loop
+        remains fully responsive — no ``time.sleep`` on the UI thread.
+
+        IMPORTANT — always call .resolve() on the raw string before any
+        further path operations.  yt-dlp occasionally returns a relative
+        path on Windows + PyInstaller environments (CWD may be the EXE
+        directory, not the download folder), so resolving here makes
+        p.parent reliable regardless of how the app was launched.
 
         Priority order:
           1. File exists -- reveal it in the file manager (highlights the file).
           2. File absent -- open the containing folder if it exists.
           3. Last resort -- open ``task.output_dir`` (configured download dir).
         """
-        path = self._completed_path or self.task.filename
+        raw = self._completed_path or self.task.filename
 
-        if path:
-            p = Path(path)
+        if raw:
+            # Resolve to absolute path.  If *raw* is a bare filename or a
+            # relative path (yt-dlp on Windows + PyInstaller sometimes returns
+            # one) we must NOT resolve against CWD — the process CWD when
+            # launched from a double-clicked EXE is the EXE directory, not the
+            # downloads folder.  Instead, anchor the relative path against
+            # task.output_dir so the resolved parent is always the correct
+            # downloads folder.
+            _raw_p = Path(raw)
+            if _raw_p.is_absolute():
+                p = _raw_p.resolve()
+            else:
+                _base = (
+                    Path(self.task.output_dir)
+                    if self.task.output_dir else Path.cwd()
+                )
+                p = (_base / raw).resolve()
 
-            # Retry loop: the file may not be flushed to disk yet.
-            for attempt in range(3):
-                if p.is_file():
-                    # File is present -- reveal and highlight it.
-                    # Fall back to a plain folder open if reveal is unavailable.
-                    if not reveal_in_explorer(p):
-                        open_folder(p.parent)
-                    return
-                if attempt < 2:
-                    time.sleep(0.2)
-
-            # File still absent after retries -- open its containing folder.
-            folder = p.parent
-            if folder.is_dir():
-                open_folder(folder)
+            if p.is_file():
+                # File present — reveal and highlight it synchronously.
+                if not reveal_in_explorer(p):
+                    open_folder(p.parent)
                 return
+
+            # File not yet visible — schedule non-blocking retries.
+            # Falls back to parent folder / output_dir after all attempts.
+            self._open_folder_retry(p, attempts_left=2)
+            return
 
         # Last resort: the task's configured output directory.
         output_dir = self.task.output_dir
         if output_dir:
-            fb = Path(output_dir)
+            # Resolve here too: output_dir from config may be relative on
+            # some portable / PyInstaller setups.
+            fb = Path(output_dir).resolve()
             if fb.is_dir():
                 open_folder(fb)
                 return
@@ -335,8 +352,38 @@ class DownloadItemWidget(ctk.CTkFrame):
         logger.warning(
             "_open_folder: no valid path for task %s "
             "(filename=%r, output_dir=%r)",
-            self.task.id, path, self.task.output_dir,
+            self.task.id, raw, self.task.output_dir,
         )
+
+    def _open_folder_retry(self, p: Path, attempts_left: int) -> None:
+        """Retry opening the folder without sleeping on the UI thread.
+
+        Uses ``widget.after()`` to reschedule each check 200 ms later so
+        the Tk event loop stays responsive.  When ``after()`` is unavailable
+        (e.g. unit tests without a running Tk event loop) the method falls
+        through immediately to the parent-folder / output-dir fallback so
+        existing synchronous tests continue to work.
+        """
+        if not self.winfo_exists():
+            return
+        if p.is_file():
+            if not reveal_in_explorer(p):
+                open_folder(p.parent)
+            return
+        _after = getattr(self, "after", None)
+        if attempts_left > 0 and callable(_after):
+            _after(200, lambda: self._open_folder_retry(p, attempts_left - 1))
+            return
+        # All retries exhausted (or no event loop available) — open parent dir.
+        folder = p.parent
+        if folder.is_dir():
+            open_folder(folder)
+            return
+        output_dir = self.task.output_dir
+        if output_dir:
+            fb = Path(output_dir).resolve()
+            if fb.is_dir():
+                open_folder(fb)
 
     @staticmethod
     def _trunc(s: str, n: int) -> str:

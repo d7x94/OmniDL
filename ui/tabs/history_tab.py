@@ -136,7 +136,12 @@ class HistoryTab(ctk.CTkFrame):
 
         if fname:
             def _open_history_file(path_str=fname) -> None:
-                p = Path(path_str)
+                # resolve() normalises symlinks and makes the path absolute.
+                # History entries should already store absolute paths (the
+                # engine resolves them before persisting), but calling
+                # resolve() here is cheap insurance against stale relative
+                # entries from older app versions.
+                p = Path(path_str).resolve()
                 if p.is_file():
                     # Highlight the file in Explorer / Finder.
                     # Fall back to plain folder open if reveal is unavailable.

@@ -171,8 +171,33 @@ class ThumbnailService:
             on_error("URL blocked by SSRF policy")
             return
 
+        # Maximum number of redirects to follow.  Each hop re-validates the
+        # Location header through _is_safe_thumbnail_url so a redirect chain
+        # cannot bypass the SSRF guard applied to the original URL.
+        _MAX_REDIRECTS = 2
+        _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+
         try:
-            resp = req_lib.get(url, timeout=8, stream=True)
+            current_url = url
+            resp = None
+
+            for _hop in range(_MAX_REDIRECTS + 1):
+                resp = req_lib.get(
+                    current_url, timeout=8, stream=True, allow_redirects=False
+                )
+                if resp.status_code in _REDIRECT_CODES:
+                    location = resp.headers.get("location", "").strip()
+                    resp.close()
+                    if not location:
+                        on_error("Redirect missing Location header")
+                        return
+                    if not _is_safe_thumbnail_url(location):
+                        on_error("Redirect target blocked by SSRF policy")
+                        return
+                    current_url = location
+                    continue
+                break  # non-redirect — proceed with this response
+
             resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")

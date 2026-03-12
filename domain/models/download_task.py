@@ -173,19 +173,23 @@ class DownloadTask:
     # ── Serialisation (for history) ───────────────────────────────────────
 
     def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "url": self.url,
-            "output_dir": self.output_dir,
-            "title": self.title,
-            "platform": self.platform,
-            "filename": self.filename,
-            "status": self.status.name,
-            "downloaded_bytes": self.downloaded_bytes,
-            "total_bytes": self.total_bytes,
-            "created_at": self.created_at,
-            "finished_at": self.finished_at,
-            "error_msg": self.error_msg,
-        }
+        # Acquire _lock for consistent multi-field read — identical to snapshot().
+        # Without the lock, a concurrent progress hook writing filename + status
+        # in sequence could produce a dict with status=COMPLETED but filename="".
+        with self._lock:
+            return {
+                "id": self.id,
+                "url": self.url,
+                "output_dir": self.output_dir,
+                "title": self.title,
+                "platform": self.platform,
+                "filename": self.filename,
+                "status": self.status.name,
+                "downloaded_bytes": self.downloaded_bytes,
+                "total_bytes": self.total_bytes,
+                "created_at": self.created_at,
+                "finished_at": self.finished_at,
+                "error_msg": self.error_msg,
+            }
 
 

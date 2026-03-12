@@ -274,3 +274,83 @@ def test_progress_hook_stores_absolute_filename(tmp_path):
     assert task.filename == abs_path, (
         "An absolute filename from the progress hook must be stored in task.filename."
     )
+
+
+# ── Test 7: bare-filename in _completed_path anchored to task.output_dir ─────
+
+def test_open_folder_bare_filename_anchored_to_output_dir(tmp_path):
+    """
+    When _completed_path is a bare filename with no directory component,
+    _open_folder must resolve it against task.output_dir, NOT against CWD.
+
+    PyInstaller scenario: process CWD = EXE directory.  A bare "video.mp4"
+    would resolve to EXE-dir/video.mp4 (nonexistent), then fall through to
+    EXE dir — completely wrong.  Correct: anchor to task.output_dir so the
+    resolved path is download-dir/video.mp4 and the opened folder is
+    download-dir.
+    """
+    from ui.components.download_item_widget import DownloadItemWidget
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    final_file = download_dir / "video.mp4"
+    final_file.touch()
+
+    task = _make_task(filename="video.mp4", output_dir=str(download_dir))
+    task.status = DownloadStatus.COMPLETED
+
+    widget = DownloadItemWidget.__new__(DownloadItemWidget)
+    widget.task = task
+    widget._completed_path = "video.mp4"   # bare name — PyInstaller scenario
+
+    opened_paths: list[Path] = []
+
+    with patch("ui.components.download_item_widget.reveal_in_explorer",
+               return_value=False),          patch("ui.components.download_item_widget.open_folder",
+               side_effect=opened_paths.append):
+        widget._open_folder()
+
+    assert len(opened_paths) == 1, "_open_folder must call open_folder"
+    assert opened_paths[0] == download_dir, (
+        f"Expected {download_dir!r} (task.output_dir), got {opened_paths[0]!r}. "
+        "Bare filename must be anchored to task.output_dir, not process CWD."
+    )
+
+
+# ── Test 8: relative output_dir fallback is also resolved to absolute ─────────
+
+def test_open_folder_resolves_relative_output_dir_fallback(tmp_path):
+    """
+    When both _completed_path and task.filename are empty, _open_folder falls
+    back to task.output_dir.  A relative output_dir must be resolved before
+    calling open_folder so the correct directory is opened.
+    """
+    from ui.components.download_item_widget import DownloadItemWidget
+    import os
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(download_dir)   # simulate: CWD == download_dir here
+
+        task = _make_task(filename="", output_dir=".")  # relative
+        task.status = DownloadStatus.COMPLETED
+
+        widget = DownloadItemWidget.__new__(DownloadItemWidget)
+        widget.task = task
+        widget._completed_path = ""
+
+        opened_paths: list[Path] = []
+        with patch("ui.components.download_item_widget.open_folder",
+                   side_effect=opened_paths.append):
+            widget._open_folder()
+    finally:
+        os.chdir(old_cwd)
+
+    assert len(opened_paths) == 1
+    assert opened_paths[0] == download_dir, (
+        f"Expected {download_dir!r}, got {opened_paths[0]!r}. "
+        "Relative output_dir fallback must be resolved to absolute."
+    )
