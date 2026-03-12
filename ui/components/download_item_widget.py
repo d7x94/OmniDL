@@ -322,7 +322,10 @@ class DownloadItemWidget(ctk.CTkFrame):
             if _raw_p.is_absolute():
                 p = _raw_p.resolve()
             else:
-                _base = Path(self.task.output_dir) if self.task.output_dir else Path.cwd()
+                _base = (
+                    Path(self.task.output_dir)
+                    if self.task.output_dir else Path.cwd()
+                )
                 p = (_base / raw).resolve()
 
             # Retry loop: the file may not be flushed to disk yet.
