@@ -152,6 +152,10 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         T.register(self._on_theme)
 
     def _build(self) -> None:
+        self._section_labels: list = []
+        self._row_labels: list = []
+        self._sliders: list = []
+        self._switches: list = []
         self._scroll = ctk.CTkScrollableFrame(
             self, fg_color="transparent",
             scrollbar_button_color=T.scrollbar,
@@ -174,12 +178,13 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             row, text=str(cfg.download_dir),
             font=ctk.CTkFont(size=12), text_color=T.primary_text)
         self._dir_lbl.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(
+        self._browse_dir_btn = ctk.CTkButton(
             row, text="Browse", width=80, height=32, corner_radius=8,
             fg_color=T.surface3, hover_color=T.border2,
             text_color=T.text2, font=ctk.CTkFont(size=12),
             command=self._browse_dir,
-        ).pack(side="left", padx=(10, 0))
+        )
+        self._browse_dir_btn.pack(side="left", padx=(10, 0))
 
         # -- Download behaviour --------------------------------------------
         self._section(p, "⚙   DOWNLOAD BEHAVIOUR")
@@ -231,13 +236,14 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         ctk.CTkLabel(browser_row, text="Cookie source browser",
                      font=ctk.CTkFont(size=12), text_color=T.text2).pack(side="left")
         self._browser_var = ctk.StringVar(value=cfg.cookies_browser)
-        ctk.CTkOptionMenu(
+        self._browser_om = ctk.CTkOptionMenu(
             browser_row,
             variable=self._browser_var,
             values=["chrome", "firefox", "safari", "edge", "opera", "brave"],
             command=lambda v: cfg.set("cookies_browser", v),
             width=130, corner_radius=8,
-        ).pack(side="right")
+        )
+        self._browser_om.pack(side="right")
 
         ctk.CTkLabel(
             net,
@@ -253,19 +259,21 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             font=ctk.CTkFont(size=11), text_color=T.primary_text, anchor="w")
         self._cf_lbl.pack(side="left", fill="x", expand=True)
 
-        ctk.CTkButton(
+        self._browse_cf_btn = ctk.CTkButton(
             cf_row, text="Browse…", width=80, height=28, corner_radius=6,
             fg_color=T.surface3, hover_color=T.border2,
             text_color=T.text2, font=ctk.CTkFont(size=11),
             command=self._browse_cookie_file,
-        ).pack(side="left", padx=(8, 4))
+        )
+        self._browse_cf_btn.pack(side="left", padx=(8, 4))
 
-        ctk.CTkButton(
+        self._clear_cf_btn = ctk.CTkButton(
             cf_row, text="🗑 Clear", width=64, height=28, corner_radius=6,
             fg_color=T.error_bg, hover_color=T.error_bg,
             text_color=T.error, font=ctk.CTkFont(size=11),
             command=self._clear_cookie_file,
-        ).pack(side="left")
+        )
+        self._clear_cf_btn.pack(side="left")
 
         # -- Appearance ----------------------------------------------------
         self._section(p, "🎨   APPEARANCE")
@@ -274,10 +282,11 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         theme_row.pack(fill="x", padx=16, pady=14)
         ctk.CTkLabel(theme_row, text="Theme",
                      font=ctk.CTkFont(size=12), text_color=T.text2).pack(side="left")
-        ctk.CTkOptionMenu(
+        self._theme_om = ctk.CTkOptionMenu(
             theme_row, values=["dark", "light", "system"],
             command=self._change_theme, width=130, corner_radius=8,
-        ).pack(side="right")
+        )
+        self._theme_om.pack(side="right")
 
         # -- yt-dlp engine -------------------------------------------------
         self._section(p, "🔧   YT-DLP ENGINE")
@@ -321,11 +330,13 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
     # -- Helpers -----------------------------------------------------------
 
     def _section(self, parent, text: str) -> None:
-        ctk.CTkLabel(
+        lbl = ctk.CTkLabel(
             parent, text=text,
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=T.text3,
-        ).pack(anchor="w", padx=28, pady=(18, 5))
+        )
+        lbl.pack(anchor="w", padx=28, pady=(18, 5))
+        self._section_labels.append(lbl)
 
     def _card(self, parent) -> ctk.CTkFrame:
         card = ctk.CTkFrame(
@@ -344,13 +355,17 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=(12, 2))
-        ctk.CTkLabel(row, text=label,
-                     font=ctk.CTkFont(size=12), text_color=T.text2).pack(side="left")
-        ctk.CTkSlider(
+        lbl = ctk.CTkLabel(row, text=label,
+                     font=ctk.CTkFont(size=12), text_color=T.text2)
+        lbl.pack(side="left")
+        self._row_labels.append(lbl)
+        sl = ctk.CTkSlider(
             row, from_=lo, to=hi, number_of_steps=hi - lo,
             variable=var, command=debounced, width=160,
             button_color=T.primary, progress_color=T.primary,
-        ).pack(side="right")
+        )
+        sl.pack(side="right")
+        self._sliders.append(sl)
 
     def _add_value_label(self, parent, var: ctk.IntVar) -> ctk.CTkLabel:
         lbl = ctk.CTkLabel(
@@ -369,14 +384,18 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=(8, 4))
-        ctk.CTkLabel(row, text=label,
-                     font=ctk.CTkFont(size=12), text_color=T.text2).pack(side="left")
-        ctk.CTkSwitch(
+        lbl = ctk.CTkLabel(row, text=label,
+                     font=ctk.CTkFont(size=12), text_color=T.text2)
+        lbl.pack(side="left")
+        self._row_labels.append(lbl)
+        sw = ctk.CTkSwitch(
             row, variable=var, text="",
             command=lambda: debounced_cmd(var.get()),
             onvalue=True, offvalue=False,
             progress_color=T.primary, button_color=T.primary_text,
-        ).pack(side="right")
+        )
+        sw.pack(side="right")
+        self._switches.append(sw)
 
     def _browse_dir(self) -> None:
         import tkinter.filedialog as fd
@@ -486,101 +505,72 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    # ── Colour tokens keyed by widget attribute role ─────────────────────
-    _LABEL_ROLES: dict = {
-        # text content → token name
-        "Settings":                     "text",
-        "DOWNLOAD LOCATION":            "text3",
-        "DOWNLOAD BEHAVIOUR":           "text3",
-        "NETWORK & AUTHENTICATION":     "text3",
-        "APPEARANCE":                   "text3",
-        "YT-DLP ENGINE":                "text3",
-    }
-
     def _on_theme(self) -> None:
-        """Refresh every widget in SettingsTab after a palette change."""
+        """Refresh every CTk widget in SettingsTab after a palette change.
+
+        Uses explicit stored widget refs instead of winfo_children() tree
+        walking because winfo_children() returns internal Tk widgets (Frame,
+        Canvas, Label), not CTk wrapper objects — type(w).__name__ would be
+        'Frame' not 'CTkFrame', breaking all isinstance/name checks.
+        """
         if not self.winfo_exists():
             return
         self.configure(fg_color=T.bg)
         self._scroll.configure(
+            fg_color="transparent",
             scrollbar_button_color=T.scrollbar,
             scrollbar_button_hover_color=T.scrollbar_hover,
         )
-        # Refresh all card frames
+        # Card frames
         for attr in ("_card_loc", "_card_beh", "_card_net", "_card_app", "_card_ytdlp"):
             card = getattr(self, attr, None)
             if card and card.winfo_exists():
                 card.configure(fg_color=T.surface, border_color=T.border)
-        # Walk the widget tree and re-apply token colours
-        self._retheme_tree(self._scroll)
+        # Section header labels
+        for lbl in getattr(self, "_section_labels", []):
+            if lbl.winfo_exists():
+                lbl.configure(text_color=T.text3)
+        # Labels that show paths / values
+        for attr in ("_dir_lbl", "_cf_lbl", "_ver_lbl"):
+            w = getattr(self, attr, None)
+            if w and w.winfo_exists():
+                w.configure(text_color=T.primary_text)
+        # Status / update label
+        w = getattr(self, "_upd_status", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)
+        # Browse / action buttons
+        for attr in ("_browse_dir_btn", "_browse_cf_btn", "_upd_btn"):
+            w = getattr(self, attr, None)
+            if w and w.winfo_exists():
+                w.configure(fg_color=T.surface3, hover_color=T.border2,
+                            text_color=T.text2)
+        # Clear cookie button
+        w = getattr(self, "_clear_cf_btn", None)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.error_bg, hover_color=T.error_bg,
+                        text_color=T.error)
+        # OptionMenus
+        for attr in ("_theme_om", "_browser_om"):
+            w = getattr(self, attr, None)
+            if w and w.winfo_exists():
+                w.configure(fg_color=T.surface3, button_color=T.border2,
+                            text_color=T.text2)
+        # Row labels (slider/switch descriptors)
+        for lbl in getattr(self, "_row_labels", []):
+            if lbl.winfo_exists():
+                lbl.configure(text_color=T.text2)
+        # Sliders
+        for sl in getattr(self, "_sliders", []):
+            if sl.winfo_exists():
+                sl.configure(button_color=T.primary, progress_color=T.primary)
+        # Switches
+        for sw in getattr(self, "_switches", []):
+            if sw.winfo_exists():
+                sw.configure(progress_color=T.primary)
+        # Entry fields
+        for attr in ("_proxy_entry", "_extra_entry"):
+            w = getattr(self, attr, None)
+            if w and w.winfo_exists():
+                w.configure(fg_color=T.input, border_color=T.border2)
 
-    def _retheme_tree(self, widget) -> None:
-        """Recursively re-apply theme tokens to all descendants."""
-        import customtkinter as _ctk
-        try:
-            wclass = type(widget).__name__
-            cfg = widget.cget
-
-            if wclass == "CTkLabel":
-                text = cfg("text") or ""
-                # Section headers (uppercase, short, no spaces-only)
-                if text.isupper() and len(text) < 60:
-                    widget.configure(text_color=T.text3)
-                elif text in ("Theme", "Proxy URL", "Cookie source browser",
-                              "Use browser cookies", "Extra yt-dlp args",
-                              "Max concurrent downloads", "Max retries on failure",
-                              "Embed thumbnail", "Embed metadata",
-                              "Installed version", "Browse", "Update yt-dlp now"):
-                    widget.configure(text_color=T.text2)
-                elif "Chrome/Brave" in text or "⚠" in text:
-                    widget.configure(text_color=T.warning_text)
-                elif text == "Settings":
-                    widget.configure(text_color=T.text)
-                else:
-                    # path labels, version label, status label
-                    widget.configure(text_color=T.primary_text)
-
-            elif wclass == "CTkEntry":
-                widget.configure(fg_color=T.input, border_color=T.border2)
-
-            elif wclass == "CTkButton":
-                text = cfg("text") or ""
-                if "🗑" in text or "Clear" in text:
-                    widget.configure(fg_color=T.error_bg, text_color=T.error,
-                                     hover_color=T.error_bg)
-                elif text in ("Browse", "Browse…"):
-                    widget.configure(fg_color=T.surface3, text_color=T.text2,
-                                     hover_color=T.border2)
-                elif "Update" in text or "yt-dlp" in text.lower():
-                    widget.configure(fg_color=T.surface3, text_color=T.text2,
-                                     hover_color=T.border2)
-                else:
-                    widget.configure(fg_color=T.surface3, text_color=T.text2,
-                                     hover_color=T.border2)
-
-            elif wclass == "CTkOptionMenu":
-                widget.configure(fg_color=T.surface3, button_color=T.border2,
-                                 text_color=T.text2)
-
-            elif wclass == "CTkSlider":
-                widget.configure(button_color=T.primary,
-                                 progress_color=T.primary)
-
-            elif wclass == "CTkSwitch":
-                widget.configure(progress_color=T.primary)
-
-            elif wclass == "CTkFrame":
-                fg = cfg("fg_color")
-                if fg not in ("transparent", "#00000000", "", None):
-                    # Only repaint non-transparent frames (the cards)
-                    widget.configure(fg_color=T.surface, border_color=T.border)
-
-        except Exception:
-            pass
-
-        # Recurse into children
-        try:
-            for child in widget.winfo_children():
-                self._retheme_tree(child)
-        except Exception:
-            pass

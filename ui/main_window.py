@@ -346,7 +346,7 @@ class MainWindow(ctk.CTk):
 
     def _toggle_theme(self) -> None:
         new_mode = "light" if T.mode == "dark" else "dark"
-        T.set_mode(new_mode)            # fires _on_theme + all registered tab/component callbacks
+        T.set_mode(new_mode)  # fires _on_theme + all registered callbacks
         ctk.set_appearance_mode(new_mode)
         self._config.set("theme", new_mode)
         self._theme_btn.configure(
@@ -366,7 +366,8 @@ class MainWindow(ctk.CTk):
         for btn in self._wctrl_btns[:-1]:
             btn.configure(text_color=T.text3, hover_color=T.surface3)
         if self._wctrl_btns:
-            self._wctrl_btns[-1].configure(text_color=T.text3, hover_color=T.close_hover)
+            self._wctrl_btns[-1].configure(
+                text_color=T.text3, hover_color=T.close_hover)
         self._sidebar.configure(fg_color=T.sidebar)
         self._divider.configure(fg_color=T.border)
         self._content.configure(fg_color=T.bg)

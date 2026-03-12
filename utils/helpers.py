@@ -106,13 +106,14 @@ def reveal_in_explorer(path: Path) -> bool:
         if sys.platform == "win32":
             # Single argument: '/select,<absolute_path>'
             # No shell=True needed — explorer.exe reads its own argv directly.
-            # shell=True + quoted path: cmd.exe passes the full quoted
-            # token to explorer.exe, which handles spaces correctly.
-            # list-form Popen cannot be used here because list2cmdline
-            # wraps the entire /select,path argument in outer quotes, which
-            # explorer.exe does not strip — it then opens the wrong folder.
+            # Use ctypes ShellExecuteW so explorer.exe receives the
+            # /select,<path> argument verbatim — no shell=True needed and
+            # paths with spaces are handled correctly by the Win32 API.
+            import ctypes
             resolved = str(path.resolve())
-            subprocess.Popen(f'explorer /select,"{resolved}"', shell=True)
+            ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
+                None, "open", "explorer.exe", f'/select,"{resolved}"', None, 1
+            )
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path.resolve())], close_fds=True)
         else:

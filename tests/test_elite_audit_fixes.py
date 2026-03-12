@@ -295,7 +295,7 @@ class TestDownloadTaskToDictLocked:
 
         task = DownloadTask(url="https://example.com/v")
         task.status = DownloadStatus.COMPLETED
-        task.filename = "/tmp/video.mp4"
+        task.filename = "/tmp/video.mp4"  # nosec B108 - test fixture
 
         lock_was_held = []
 
@@ -316,7 +316,7 @@ class TestDownloadTaskToDictLocked:
         task._lock = _SpyRLock()
         result = task.to_dict()
         assert lock_was_held, "to_dict() did not acquire self._lock"
-        assert result["filename"] == "/tmp/video.mp4"
+        assert result["filename"] == "/tmp/video.mp4"  # nosec B108
         assert result["status"] == "COMPLETED"
 
     def test_to_dict_sees_consistent_state_under_concurrent_update(self):
@@ -336,7 +336,7 @@ class TestDownloadTaskToDictLocked:
         def _updater():
             for _ in range(500):
                 with task._lock:
-                    task.filename = "/tmp/video.mp4"
+                    task.filename = "/tmp/video.mp4"  # nosec B108
                     task.status = DownloadStatus.COMPLETED
                 time.sleep(0)
                 with task._lock:
