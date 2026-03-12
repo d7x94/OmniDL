@@ -188,10 +188,14 @@ class ConfigManager:
         # Treat both None (JSON null) and "" (empty string) as "not set" and
         # fall back to the OS default.  Path("") resolves to CWD, which would
         # silently route downloads into the app's working directory.
+        # Always return an absolute path (.resolve()) so that callers never
+        # accidentally write files relative to the process CWD.  This is
+        # especially important on Windows + PyInstaller where the CWD is the
+        # EXE directory, not the user's home.
         raw = self.get("download_dir")
         if not raw:
-            return Path(_DEFAULTS["download_dir"])
-        return Path(raw)
+            return Path(_DEFAULTS["download_dir"]).resolve()
+        return Path(raw).resolve()
 
     @property
     def theme(self) -> str:
