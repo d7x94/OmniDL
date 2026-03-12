@@ -116,6 +116,7 @@ class HistoryRepository:
     def add(self, task: DownloadTask) -> None:
         with self._lock:
             entry = task.to_dict()
+                            
             # Remove duplicate by id if re-queued
             self._entries = [e for e in self._entries if e.get("id") != task.id]
             self._entries.insert(0, entry)

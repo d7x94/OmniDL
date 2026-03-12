@@ -106,7 +106,13 @@ def reveal_in_explorer(path: Path) -> bool:
         if sys.platform == "win32":
             # Single argument: '/select,<absolute_path>'
             # No shell=True needed — explorer.exe reads its own argv directly.
-            subprocess.Popen(["explorer", f"/select,{str(path.resolve())}"], close_fds=True)
+            # shell=True + quoted path: cmd.exe passes the full quoted
+            # token to explorer.exe, which handles spaces correctly.
+            # list-form Popen cannot be used here because list2cmdline
+            # wraps the entire /select,path argument in outer quotes, which
+            # explorer.exe does not strip — it then opens the wrong folder.
+            resolved = str(path.resolve())
+            subprocess.Popen(f'explorer /select,"{resolved}"', shell=True)
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path.resolve())], close_fds=True)
         else:
@@ -118,10 +124,16 @@ def reveal_in_explorer(path: Path) -> bool:
 
 
 def open_folder(path: Path) -> None:
-    """Open a folder in the OS file manager."""
+    """Open a folder in the OS file manager.
+
+    On Windows os.startfile() is preferred over subprocess+explorer because
+    it calls ShellExecute directly, which handles paths with spaces and UNC
+    paths without any quoting gymnastics.
+    """
     try:
         if sys.platform == "win32":
-            subprocess.Popen(["explorer", str(path.resolve())], close_fds=True)
+            import os as _os
+            _os.startfile(str(path.resolve()))
         elif sys.platform == "darwin":
             subprocess.Popen(["open", str(path.resolve())], close_fds=True)
         else:

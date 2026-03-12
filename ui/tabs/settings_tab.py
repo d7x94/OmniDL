@@ -167,7 +167,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         # -- Download location ---------------------------------------------
         self._section(p, "📁   DOWNLOAD LOCATION")
-        loc = self._card(p)
+        self._card_loc = loc = self._card(p)
         row = ctk.CTkFrame(loc, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=14)
         self._dir_lbl = ctk.CTkLabel(
@@ -183,7 +183,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         # -- Download behaviour --------------------------------------------
         self._section(p, "⚙   DOWNLOAD BEHAVIOUR")
-        beh = self._card(p)
+        self._card_beh = beh = self._card(p)
 
         self._concurrent_var = ctk.IntVar(value=cfg.max_concurrent)
         self._slider_row(beh, "Max concurrent downloads",
@@ -207,7 +207,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         # -- Network & Auth ------------------------------------------------
         self._section(p, "🔒   NETWORK & AUTHENTICATION")
-        net = self._card(p)
+        self._card_net = net = self._card(p)
 
         proxy_row = ctk.CTkFrame(net, fg_color="transparent")
         proxy_row.pack(fill="x", padx=16, pady=(12, 4))
@@ -269,7 +269,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         # -- Appearance ----------------------------------------------------
         self._section(p, "🎨   APPEARANCE")
-        app_card = self._card(p)
+        self._card_app = app_card = self._card(p)
         theme_row = ctk.CTkFrame(app_card, fg_color="transparent")
         theme_row.pack(fill="x", padx=16, pady=14)
         ctk.CTkLabel(theme_row, text="Theme",
@@ -281,7 +281,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         # -- yt-dlp engine -------------------------------------------------
         self._section(p, "🔧   YT-DLP ENGINE")
-        ytdlp = self._card(p)
+        self._card_ytdlp = ytdlp = self._card(p)
 
         ver_row = ctk.CTkFrame(ytdlp, fg_color="transparent")
         ver_row.pack(fill="x", padx=16, pady=(12, 4))
@@ -486,9 +486,101 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    # ── Colour tokens keyed by widget attribute role ─────────────────────
+    _LABEL_ROLES: dict = {
+        # text content → token name
+        "Settings":                     "text",
+        "DOWNLOAD LOCATION":            "text3",
+        "DOWNLOAD BEHAVIOUR":           "text3",
+        "NETWORK & AUTHENTICATION":     "text3",
+        "APPEARANCE":                   "text3",
+        "YT-DLP ENGINE":                "text3",
+    }
+
     def _on_theme(self) -> None:
+        """Refresh every widget in SettingsTab after a palette change."""
         if not self.winfo_exists():
             return
         self.configure(fg_color=T.bg)
-        self._scroll.configure(scrollbar_button_color=T.scrollbar,
-                               scrollbar_button_hover_color=T.scrollbar_hover)
+        self._scroll.configure(
+            scrollbar_button_color=T.scrollbar,
+            scrollbar_button_hover_color=T.scrollbar_hover,
+        )
+        # Refresh all card frames
+        for attr in ("_card_loc", "_card_beh", "_card_net", "_card_app", "_card_ytdlp"):
+            card = getattr(self, attr, None)
+            if card and card.winfo_exists():
+                card.configure(fg_color=T.surface, border_color=T.border)
+        # Walk the widget tree and re-apply token colours
+        self._retheme_tree(self._scroll)
+
+    def _retheme_tree(self, widget) -> None:
+        """Recursively re-apply theme tokens to all descendants."""
+        import customtkinter as _ctk
+        try:
+            wclass = type(widget).__name__
+            cfg = widget.cget
+
+            if wclass == "CTkLabel":
+                text = cfg("text") or ""
+                # Section headers (uppercase, short, no spaces-only)
+                if text.isupper() and len(text) < 60:
+                    widget.configure(text_color=T.text3)
+                elif text in ("Theme", "Proxy URL", "Cookie source browser",
+                              "Use browser cookies", "Extra yt-dlp args",
+                              "Max concurrent downloads", "Max retries on failure",
+                              "Embed thumbnail", "Embed metadata",
+                              "Installed version", "Browse", "Update yt-dlp now"):
+                    widget.configure(text_color=T.text2)
+                elif "Chrome/Brave" in text or "⚠" in text:
+                    widget.configure(text_color=T.warning_text)
+                elif text == "Settings":
+                    widget.configure(text_color=T.text)
+                else:
+                    # path labels, version label, status label
+                    widget.configure(text_color=T.primary_text)
+
+            elif wclass == "CTkEntry":
+                widget.configure(fg_color=T.input, border_color=T.border2)
+
+            elif wclass == "CTkButton":
+                text = cfg("text") or ""
+                if "🗑" in text or "Clear" in text:
+                    widget.configure(fg_color=T.error_bg, text_color=T.error,
+                                     hover_color=T.error_bg)
+                elif text in ("Browse", "Browse…"):
+                    widget.configure(fg_color=T.surface3, text_color=T.text2,
+                                     hover_color=T.border2)
+                elif "Update" in text or "yt-dlp" in text.lower():
+                    widget.configure(fg_color=T.surface3, text_color=T.text2,
+                                     hover_color=T.border2)
+                else:
+                    widget.configure(fg_color=T.surface3, text_color=T.text2,
+                                     hover_color=T.border2)
+
+            elif wclass == "CTkOptionMenu":
+                widget.configure(fg_color=T.surface3, button_color=T.border2,
+                                 text_color=T.text2)
+
+            elif wclass == "CTkSlider":
+                widget.configure(button_color=T.primary,
+                                 progress_color=T.primary)
+
+            elif wclass == "CTkSwitch":
+                widget.configure(progress_color=T.primary)
+
+            elif wclass == "CTkFrame":
+                fg = cfg("fg_color")
+                if fg not in ("transparent", "#00000000", "", None):
+                    # Only repaint non-transparent frames (the cards)
+                    widget.configure(fg_color=T.surface, border_color=T.border)
+
+        except Exception:
+            pass
+
+        # Recurse into children
+        try:
+            for child in widget.winfo_children():
+                self._retheme_tree(child)
+        except Exception:
+            pass
