@@ -297,15 +297,33 @@ class DownloadItemWidget(ctk.CTkFrame):
         case where the OS has not yet flushed the file to disk by the time
         the user clicks "Open".
 
+        IMPORTANT — always call .resolve() on the raw string before any
+        further path operations.  yt-dlp occasionally returns a relative
+        path on Windows + PyInstaller environments (CWD may be the EXE
+        directory, not the download folder), so resolving here makes
+        p.parent reliable regardless of how the app was launched.
+
         Priority order:
           1. File exists -- reveal it in the file manager (highlights the file).
           2. File absent -- open the containing folder if it exists.
           3. Last resort -- open ``task.output_dir`` (configured download dir).
         """
-        path = self._completed_path or self.task.filename
+        raw = self._completed_path or self.task.filename
 
-        if path:
-            p = Path(path)
+        if raw:
+            # Resolve to absolute path.  If *raw* is a bare filename or a
+            # relative path (yt-dlp on Windows + PyInstaller sometimes returns
+            # one) we must NOT resolve against CWD — the process CWD when
+            # launched from a double-clicked EXE is the EXE directory, not the
+            # downloads folder.  Instead, anchor the relative path against
+            # task.output_dir so the resolved parent is always the correct
+            # downloads folder.
+            _raw_p = Path(raw)
+            if _raw_p.is_absolute():
+                p = _raw_p.resolve()
+            else:
+                _base = Path(self.task.output_dir) if self.task.output_dir else Path.cwd()
+                p = (_base / raw).resolve()
 
             # Retry loop: the file may not be flushed to disk yet.
             for attempt in range(3):
@@ -327,7 +345,9 @@ class DownloadItemWidget(ctk.CTkFrame):
         # Last resort: the task's configured output directory.
         output_dir = self.task.output_dir
         if output_dir:
-            fb = Path(output_dir)
+            # Resolve here too: output_dir from config may be relative on
+            # some portable / PyInstaller setups.
+            fb = Path(output_dir).resolve()
             if fb.is_dir():
                 open_folder(fb)
                 return
@@ -335,7 +355,7 @@ class DownloadItemWidget(ctk.CTkFrame):
         logger.warning(
             "_open_folder: no valid path for task %s "
             "(filename=%r, output_dir=%r)",
-            self.task.id, path, self.task.output_dir,
+            self.task.id, raw, self.task.output_dir,
         )
 
     @staticmethod

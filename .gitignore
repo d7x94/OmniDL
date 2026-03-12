@@ -68,3 +68,5 @@ build/build_windows 7.bat
 # To test locally: place ffmpeg[.exe] + ffprobe[.exe] in resources/ffmpeg/
 resources/ffmpeg/
 
+# Others
+tests.zip
