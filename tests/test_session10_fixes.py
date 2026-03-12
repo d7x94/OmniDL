@@ -100,17 +100,33 @@ class TestRevealInExplorerResolvesPath(unittest.TestCase):
     # ── Windows ──────────────────────────────────────────────────────────
 
     def test_windows_select_arg_contains_resolved_path(self):
-        """/select,<path> must embed the resolved path, not the raw one."""
+        """ILCreateFromPathW must receive the resolved absolute path."""
         with tempfile.TemporaryDirectory() as d:
+            import ctypes as _r
             f = pathlib.Path(d) / "clip.mp4"
             f.write_bytes(b"x")
-            args = self._call("win32", f)
             resolved = str(f.resolve())
-            # argv[1] must be the single /select,<abs-path> token
-            self.assertTrue(args[1].startswith("/select,"), args[1])
-            self.assertIn(resolved, args[1])
+            with patch("utils.helpers.sys") as ms, \
+                 patch("utils.helpers.ctypes") as mock_ctypes:
+                ms.platform = "win32"
+                mock_ctypes.c_void_p = _r.c_void_p
+                mock_ctypes.c_wchar_p = _r.c_wchar_p
+                mock_ctypes.c_uint = _r.c_uint
+                mock_ctypes.c_ulong = _r.c_ulong
+                mock_ctypes.c_long = _r.c_long
+                mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
+                mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+                mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+                from utils.helpers import reveal_in_explorer
+                reveal_in_explorer(f)
+            calls = mock_ctypes.windll.shell32.ILCreateFromPathW.call_args_list
+            paths = [c[0][0] for c in calls]
+            self.assertTrue(
+                any(resolved in p for p in paths),
+                f"Resolved path {resolved!r} not found in ILCreateFromPathW calls: {paths}",
+            )
 
-    # ── Regression guard: path not passed raw ────────────────────────────
+
 
     def test_macos_does_not_pass_unresolved_str(self):
         """
@@ -569,26 +585,48 @@ class TestExistingContractsUnchanged(unittest.TestCase):
             return mp.call_args[0][0]
 
     def test_reveal_windows_argv_length_is_two(self):
-        """SEC-2 must still hold: ['explorer', '/select,<path>']."""
+        """Windows reveal_in_explorer must use ctypes, not subprocess."""
         with tempfile.TemporaryDirectory() as d:
+            import ctypes as _r
             f = pathlib.Path(d) / "v.mp4"
             f.write_bytes(b"x")
             from utils.helpers import reveal_in_explorer
-            args = self._popen_args("win32", reveal_in_explorer, f)
-            self.assertEqual(len(args), 2)
-            self.assertTrue(args[1].startswith("/select,"))
+            with patch("utils.helpers.sys") as ms, \
+                 patch("utils.helpers.ctypes") as mock_ctypes, \
+                 patch("utils.helpers.subprocess.Popen") as mp:
+                ms.platform = "win32"
+                mock_ctypes.c_void_p = _r.c_void_p
+                mock_ctypes.c_wchar_p = _r.c_wchar_p
+                mock_ctypes.c_uint = _r.c_uint
+                mock_ctypes.c_ulong = _r.c_ulong
+                mock_ctypes.c_long = _r.c_long
+                mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
+                mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+                mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+                reveal_in_explorer(f)
+                self.assertFalse(mp.called, "Windows must use ctypes, not subprocess.Popen")
+                self.assertTrue(mock_ctypes.windll.shell32.ILCreateFromPathW.called)
 
     def test_reveal_windows_no_shell_true(self):
+        """Windows reveal_in_explorer uses ctypes — no shell=True risk at all."""
         with tempfile.TemporaryDirectory() as d:
+            import ctypes as _r
             f = pathlib.Path(d) / "v.mp4"
             from utils.helpers import reveal_in_explorer
             with patch("utils.helpers.sys") as ms, \
+                 patch("utils.helpers.ctypes") as mock_ctypes, \
                  patch("utils.helpers.subprocess.Popen") as mp:
                 ms.platform = "win32"
-                mp.return_value = MagicMock()
+                mock_ctypes.c_void_p = _r.c_void_p
+                mock_ctypes.c_wchar_p = _r.c_wchar_p
+                mock_ctypes.c_uint = _r.c_uint
+                mock_ctypes.c_ulong = _r.c_ulong
+                mock_ctypes.c_long = _r.c_long
+                mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
+                mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+                mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
                 reveal_in_explorer(f)
-                _, kw = mp.call_args
-                self.assertNotEqual(kw.get("shell"), True)
+                self.assertFalse(mp.called, "ctypes used on Windows — Popen never called")
 
     def test_reveal_returns_true_on_success(self):
         with tempfile.TemporaryDirectory() as d:

@@ -156,9 +156,11 @@ def reveal_in_explorer(path: Path) -> bool:
                 shell32.ILFree(parent_pidl)
                 shell32.ILFree(file_pidl)
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", str(path.resolve())], close_fds=True)
+            _p = str(path.resolve())
+            subprocess.Popen(["open", "-R", _p], close_fds=True)
         else:
-            subprocess.Popen(["xdg-open", str(path.resolve().parent)], close_fds=True)
+            _p = str(path.resolve().parent)
+            subprocess.Popen(["xdg-open", _p], close_fds=True)
         return True
     except Exception as exc:
         logger.debug("reveal_in_explorer failed: %s", exc)
@@ -171,13 +173,13 @@ def open_folder(path: Path) -> None:
     """
     try:
         if sys.platform == "win32":
-            subprocess.Popen(
-                ["explorer", str(path.resolve())],
-                close_fds=True,
-            )
+            _p = str(path.resolve())
+            subprocess.Popen(["explorer", _p], close_fds=True)
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path.resolve())], close_fds=True)
+            _p = str(path.resolve())
+            subprocess.Popen(["open", _p], close_fds=True)
         else:
-            subprocess.Popen(["xdg-open", str(path.resolve())], close_fds=True)
+            _p = str(path.resolve())
+            subprocess.Popen(["xdg-open", _p], close_fds=True)
     except Exception as exc:
         logger.debug("open_folder failed for %s: %s", path, exc)

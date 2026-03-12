@@ -231,20 +231,33 @@ class TestWindowsPopenCloseFds:
 
     def test_reveal_in_explorer_close_fds_windows(self, tmp_path):
         """
-        reveal_in_explorer on Windows must pass close_fds=True so that
-        open yt-dlp download file handles are not inherited by Explorer,
-        which would lock the file and prevent deletion or overwrite.
+        reveal_in_explorer on Windows must use ctypes SHOpenFolderAndSelectItems,
+        NOT subprocess.Popen.  The old explorer /select, approach inherited open
+        yt-dlp file handles and broke on # in filenames.  ctypes has no such risk.
         """
+        import ctypes as _r
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
+             patch("utils.helpers.ctypes") as mock_ctypes, \
              patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "win32"
+            mock_ctypes.c_void_p = _r.c_void_p
+            mock_ctypes.c_wchar_p = _r.c_wchar_p
+            mock_ctypes.c_uint = _r.c_uint
+            mock_ctypes.c_ulong = _r.c_ulong
+            mock_ctypes.c_long = _r.c_long
+            mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
+            mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+            mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
             reveal_in_explorer(fake)
-            _, kwargs = mp.call_args
-            assert kwargs.get("close_fds") is True, (
-                "reveal_in_explorer Windows Popen must set close_fds=True to "
-                "prevent yt-dlp FDs being inherited by Explorer"
+            assert not mp.called, (
+                "reveal_in_explorer Windows must use ctypes, NOT subprocess.Popen; "
+                "ctypes API is safe, does not inherit file handles, and handles "
+                "all special chars including # (CWE-78)"
+            )
+            assert mock_ctypes.windll.shell32.ILCreateFromPathW.called, (
+                "ILCreateFromPathW must be called to highlight the file in Explorer"
             )
 
     def test_open_folder_close_fds_windows(self, tmp_path):

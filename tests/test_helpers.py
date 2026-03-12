@@ -233,7 +233,7 @@ class TestRevealInExplorer:
         mock_ctypes.c_wchar_p = _r.c_wchar_p
         mock_ctypes.c_uint = _r.c_uint
         mock_ctypes.c_ulong = _r.c_ulong
-        mock_ctypes.HRESULT = _r.HRESULT
+        mock_ctypes.c_long = _r.c_long  # used as SHOpenFolderAndSelectItems restype
         # ILCreateFromPathW returns parent_pidl on first call, file_pidl second
         mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [
             parent_pidl, file_pidl,

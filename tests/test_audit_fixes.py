@@ -587,42 +587,56 @@ class TestSEC5BrowserAllowlist:
 
 
 class TestSEC2RevealInExplorer:
-    """SEC-2: reveal_in_explorer must pass /select,<path> as a single argument."""
+    """SEC-2: reveal_in_explorer must use ctypes SHOpenFolderAndSelectItems on Windows."""
 
     def test_windows_select_arg_is_single_token(self, tmp_path, monkeypatch):
         """
-        The /select, prefix and the path must be concatenated into one
-        list element, not passed as two separate elements.
+        Windows reveal_in_explorer must use ctypes SHOpenFolderAndSelectItems.
+
+        The old explorer.exe /select,<path> approach broke silently when the
+        path contained # (URL fragment), [ ], or certain Unicode characters.
+        SHOpenFolderAndSelectItems has no such limitation and correctly
+        highlights the file in Explorer.
+
+        Verifies:
+          - ctypes ILCreateFromPathW is called (path → PIDL)
+          - SHOpenFolderAndSelectItems is called with cidl=1 (select file)
+          - subprocess.Popen is NOT called on Windows
         """
-        import sys
-        monkeypatch.setattr(sys, "platform", "win32")
-
+        import ctypes as _r
         from utils.helpers import reveal_in_explorer
-        calls = []
-
-        def fake_popen(args, **kwargs):
-            calls.append(args)
-            class FakeProc:
-                pass
-            return FakeProc()
-
-        import subprocess
-        monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
         test_file = tmp_path / "video.mp4"
         test_file.write_bytes(b"fake")
-        reveal_in_explorer(test_file)
 
-        assert calls, "Popen should have been called"
-        args = calls[0]
-        assert len(args) == 2, (
-            f"Expected exactly 2 args ['explorer', '/select,...'], got {args}"
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch("utils.helpers.ctypes") as mock_ctypes, \
+             patch("utils.helpers.subprocess.Popen") as mock_popen:
+            mock_sys.platform = "win32"
+            mock_ctypes.c_void_p = _r.c_void_p
+            mock_ctypes.c_wchar_p = _r.c_wchar_p
+            mock_ctypes.c_uint = _r.c_uint
+            mock_ctypes.c_ulong = _r.c_ulong
+            mock_ctypes.c_long = _r.c_long
+            mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
+            mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+            mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+            reveal_in_explorer(test_file)
+
+        assert not mock_popen.called, (
+            "subprocess.Popen must NOT be called on Windows — "
+            "explorer /select, breaks on # in filenames (CWE-78). "
+            "Use ctypes SHOpenFolderAndSelectItems instead."
         )
-        assert args[1].startswith("/select,"), (
-            f"Second argument must start with '/select,', got: {args[1]!r}"
+        assert mock_ctypes.windll.shell32.ILCreateFromPathW.called, (
+            "ILCreateFromPathW must be called to convert path to PIDL"
         )
-        assert "/select,," not in args[1], (
-            "Must not have double comma — path should follow /select, immediately"
+        sh_open = mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems
+        assert sh_open.called, "SHOpenFolderAndSelectItems must be called"
+        cidl = sh_open.call_args[0][1]
+        assert cidl == 1, (
+            f"cidl must be 1 to select the file; got {cidl}. "
+            "cidl=0 only opens the folder without highlighting any file."
         )
 
 

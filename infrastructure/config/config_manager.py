@@ -60,7 +60,7 @@ class ConfigManager:
 
     def __init__(self, config_path: Path) -> None:
         self._path = config_path
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._data: dict[str, Any] = dict(_DEFAULTS)
         # Config writes are debounced (see _schedule_save) so that rapid
         # successive set() calls — e.g. dragging a settings slider — do not
@@ -133,11 +133,14 @@ class ConfigManager:
     def save(self) -> None:
         """Flush config to disk immediately (synchronous; use at shutdown)."""
         # Cancel any pending debounced write — this is the authoritative flush.
+        # Cancel the timer while holding the lock, then call _save() OUTSIDE
+        # the lock — _save() acquires it internally for the snapshot, so calling
+        # it while already holding the lock would deadlock with threading.Lock.
         with self._lock:
             if self._save_timer is not None and self._save_timer.is_alive():
                 self._save_timer.cancel()
                 self._save_timer = None
-            self._save()
+        self._save()
 
     def _schedule_save(self) -> None:
         """
