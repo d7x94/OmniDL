@@ -222,23 +222,67 @@ class TestSafePath:
 # ---------------------------------------------------------------------------
 
 class TestRevealInExplorer:
-    @pytest.mark.skipif(
-        __import__("sys").platform != "win32",
-        reason="os.startfile unavailable on non-Windows (Python 3.13 frozen os)",
-    )
-    def test_windows_uses_explorer_select(self, tmp_path):
+    def test_windows_uses_shell_api(self, tmp_path):
+        """
+        Windows reveal_in_explorer must use SHOpenFolderAndSelectItems via
+        ctypes to open the parent folder and SELECT (highlight) the file.
+
+        Correct 3-step idiom:
+          parent_pidl = ILCreateFromPathW(parent_dir)
+          file_pidl   = ILCreateFromPathW(file_path)
+          rel_pidl    = ILFindLastID(file_pidl)   # child PIDL — no free
+          SHOpenFolderAndSelectItems(parent_pidl, 1, [rel_pidl], 0)
+
+        cidl=1 + relative child PIDL → Explorer opens folder AND selects file.
+        cidl=0 → only opens folder, no file is selected/highlighted.
+        """
+        fake_file = tmp_path / "video#hash [1].mp4"
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch("utils.helpers.ctypes") as mock_ctypes:
+            mock_sys.platform = "win32"
+            # Both ILCreateFromPathW calls return non-NULL PIDLs.
+            mock_ctypes.windll.shell32.ILCreateFromPathW.return_value = 1
+            mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+            mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+            import ctypes as _real_ctypes
+            mock_ctypes.c_void_p = _real_ctypes.c_void_p
+            result = reveal_in_explorer(fake_file)
+            sh_open = mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems
+            il_find = mock_ctypes.windll.shell32.ILFindLastID
+            assert mock_ctypes.windll.shell32.ILCreateFromPathW.called
+            assert il_find.called, (
+                "ILFindLastID must be called to get the relative child PIDL"
+            )
+            assert sh_open.called
+            # cidl must be 1 (select the file), NOT 0 (0 only opens folder)
+            call_args = sh_open.call_args[0]
+            assert call_args[1] == 1, (
+                f"cidl must be 1 to select the file; got {call_args[1]}. "
+                "cidl=0 only opens the folder without highlighting any file."
+            )
+            assert result is True
+
+    def test_windows_returns_false_when_parent_pidl_null(self, tmp_path):
+        """If parent dir ILCreateFromPathW returns NULL, return False."""
         fake_file = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as mock_sys, \
-             patch("utils.helpers.subprocess.Popen") as mock_popen:
+             patch("utils.helpers.ctypes") as mock_ctypes:
             mock_sys.platform = "win32"
-            reveal_in_explorer(fake_file)
-            args = mock_popen.call_args[0][0]
-            # SEC-2 FIX: /select, and path are concatenated into ONE argument.
-            # Explorer does not accept them as separate argv elements.
-            assert len(args) == 2
-            assert args[0] == "explorer"
-            assert args[1].startswith("/select,")
-            assert str(fake_file.resolve()) in args[1]
+            # First call (parent dir) returns NULL — must bail.
+            mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [0, 1]
+            result = reveal_in_explorer(fake_file)
+            assert result is False
+
+    def test_windows_returns_false_when_file_pidl_null(self, tmp_path):
+        """If file ILCreateFromPathW returns NULL, return False."""
+        fake_file = tmp_path / "video.mp4"
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch("utils.helpers.ctypes") as mock_ctypes:
+            mock_sys.platform = "win32"
+            # Second call (file path) returns NULL — must bail.
+            mock_ctypes.windll.shell32.ILCreateFromPathW.side_effect = [1, 0]
+            result = reveal_in_explorer(fake_file)
+            assert result is False
 
     def test_macos_uses_open_r(self, tmp_path):
         fake_file = tmp_path / "video.mp4"
@@ -259,15 +303,33 @@ class TestRevealInExplorer:
             args = mock_popen.call_args[0][0]
             assert args[0] == "xdg-open"
 
-    def test_popen_exception_is_swallowed(self, tmp_path):
-        """reveal_in_explorer must not propagate subprocess errors."""
-        fake_file = tmp_path / "video.mp4"
+    def test_no_subprocess_on_windows(self, tmp_path):
+        # Windows must use ctypes, NOT subprocess.Popen
+        # (explorer /select, breaks silently on # in filenames).
+        fake_file = tmp_path / "video#calisthenics [123].mp4"
+        import ctypes as _real_ctypes
         with patch("utils.helpers.sys") as mock_sys, \
-             patch(
-                 "utils.helpers.subprocess.Popen", side_effect=OSError("no explorer")
-             ):
+             patch("utils.helpers.ctypes") as mock_ctypes, \
+             patch("utils.helpers.subprocess.Popen") as mock_popen:
             mock_sys.platform = "win32"
-            reveal_in_explorer(fake_file)  # should not raise
+            mock_ctypes.windll.shell32.ILCreateFromPathW.return_value = 1
+            mock_ctypes.windll.shell32.ILFindLastID.return_value = 2
+            mock_ctypes.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+            mock_ctypes.c_void_p = _real_ctypes.c_void_p
+            reveal_in_explorer(fake_file)
+            assert not mock_popen.called, (
+                "subprocess.Popen must not be called on Windows; "
+                "explorer /select, breaks on # in filenames"
+            )
+
+    def test_exception_is_swallowed(self, tmp_path):
+        """reveal_in_explorer must never raise, even if ctypes fails."""
+        fake_file = tmp_path / "video.mp4"
+        with (patch("utils.helpers.sys") as mock_sys,
+             patch("utils.helpers.ctypes",
+                   side_effect=ImportError("no ctypes"))):
+            mock_sys.platform = "win32"
+            reveal_in_explorer(fake_file)  # must not raise
 
 
 class TestOpenFolder:

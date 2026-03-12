@@ -4,6 +4,7 @@ Pure utility functions — no dependencies on other omnidl modules.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import re
 import subprocess
@@ -90,30 +91,60 @@ def safe_path(base: Path, untrusted: str) -> Path:
 def reveal_in_explorer(path: Path) -> bool:
     """
     Open the parent folder and select/highlight the file.
-    Returns True if the OS call was issued, False on failure.
+    Returns True on success, False on failure.
 
-    FIX SEC-2 (HIGH): The previous Windows implementation split
-    '/select,' and the path into two separate list elements:
-        ['explorer', '/select,', str(path)]
-    Explorer does NOT accept them as separate argv entries — it silently
-    opens the desktop or does nothing.  The /select, prefix and the path
-    must be concatenated into a single argument:
-        ['explorer', '/select,C:\\path\\to\\file.mp4']
-    This is safe (no shell=True) and works correctly on all tested
-    Windows versions.
+    Windows: uses ctypes SHOpenFolderAndSelectItems — the proper shell API.
+    This handles ALL special characters in filenames including #, [, ],
+    Unicode, and long paths, unlike the explorer.exe /select, command-line
+    which silently breaks on # (treats it as a URL fragment separator).
+
+    macOS:  open -R <path>
+    Linux:  xdg-open <parent>
     """
     try:
         if sys.platform == "win32":
-            # Single argument: '/select,<absolute_path>'
-            # No shell=True needed — explorer.exe reads its own argv directly.
-            # Concatenate /select, and the path into a single argv element.
-            # list-form Popen (no shell=True) is safe (no B602); Windows
-            # CreateProcess joins the list via list2cmdline which quotes
-            # the argument correctly when the path contains spaces.
-            subprocess.Popen(
-                ["explorer", f"/select,{str(path.resolve())}"],
-                close_fds=True,
-            )
+            # Use SHOpenFolderAndSelectItems via ctypes — the correct Windows
+            # API for "reveal file in Explorer".  explorer.exe /select,<path>
+            # breaks silently when the path contains # (Explorer interprets it
+            # as a URL fragment), [ ], or certain Unicode characters.
+            # SHOpenFolderAndSelectItems has no such limitation.
+            abs_path = str(path.resolve())
+            shell32 = ctypes.windll.shell32
+
+            # ILCreateFromPathW converts the path string to a PIDL.
+            # This is immune to # / [ ] / Unicode / long-path issues that
+            # plague the explorer.exe /select, command-line approach.
+            parent_path = str(path.resolve().parent)
+            # Two PIDLs are needed:
+            #   parent_pidl — the folder to open (absolute)
+            #   file_pidl   — used to extract the relative (child) PIDL
+            # ILFindLastID returns a pointer INTO file_pidl (no new allocation).
+            # SHOpenFolderAndSelectItems(folder, cidl=1, [relative_pidl], 0)
+            # is the correct idiom: cidl=1 + relative child PIDL selects the
+            # file inside the opened folder.
+            # Using cidl=0 opens the folder without selecting any file.
+            # Using an absolute PIDL as an apidl entry is wrong — apidl must
+            # contain relative (child) PIDLs only (MSDN requirement).
+            parent_pidl = shell32.ILCreateFromPathW(parent_path)
+            file_pidl = shell32.ILCreateFromPathW(abs_path)
+            if not parent_pidl or not file_pidl:
+                shell32.ILFree(parent_pidl)
+                shell32.ILFree(file_pidl)
+                return False
+            try:
+                # ILFindLastID: extract the last SHITEMID from file_pidl.
+                # This gives us the relative (child) PIDL needed by apidl.
+                # The returned pointer is INTO file_pidl — do NOT free it.
+                rel_pidl = shell32.ILFindLastID(file_pidl)
+                ItemArray = ctypes.c_void_p * 1
+                items = ItemArray(rel_pidl)
+                hr = shell32.SHOpenFolderAndSelectItems(
+                    parent_pidl, 1, items, 0,
+                )
+                return hr == 0  # S_OK
+            finally:
+                shell32.ILFree(parent_pidl)
+                shell32.ILFree(file_pidl)
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path.resolve())], close_fds=True)
         else:

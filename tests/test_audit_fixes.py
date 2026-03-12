@@ -57,51 +57,68 @@ def _make_repo(tmp_path: Path, limit: int = 5):
 # ===========================================================================
 
 class TestRevealInExplorerSecurity:
-    """Ensure reveal_in_explorer no longer uses shell=True on any platform."""
+    """
+    Ensure reveal_in_explorer uses the secure ctypes-based implementation.
 
-    def test_windows_no_shell_true(self, tmp_path):
-        """shell=True must not appear in Popen kwargs on Windows."""
+    Windows implementation was updated from explorer.exe /select, (subprocess)
+    to SHOpenFolderAndSelectItems (ctypes) because:
+    - shell=True / Popen was never safe for user-controlled paths (CWE-78)
+    - explorer /select, silently breaks on # in filenames (URL fragment issue)
+    - SHOpenFolderAndSelectItems is the correct Windows shell API and handles
+      all special characters including #, [, ], Unicode, and long paths
+    """
+
+    def test_windows_no_subprocess_popen(self, tmp_path):
+        """Windows path must use ctypes — subprocess.Popen must not be called."""
+        import ctypes as _real_ctypes
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
+             patch("utils.helpers.ctypes") as mc, \
              patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "win32"
+            mc.windll.shell32.ILCreateFromPathW.return_value = 1
+            mc.windll.shell32.ILFindLastID.return_value = 2
+            mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+            mc.c_void_p = _real_ctypes.c_void_p
             reveal_in_explorer(fake)
-            _, kwargs = mp.call_args
-            assert kwargs.get("shell") is not True, \
-                "shell=True must not be used on Windows (CWE-78 fix)"
+            assert not mp.called, (
+                "subprocess.Popen must not be called on Windows; "
+                "ctypes SHOpenFolderAndSelectItems is used instead (CWE-78 fix)"
+            )
 
-    def test_windows_path_is_separate_argv_element(self, tmp_path):
-        """Path is embedded in the /select, argument — not a separate element."""
+    def test_windows_uses_shell_api_not_explorer_cmdline(self, tmp_path):
+        """Windows must call SHOpenFolderAndSelectItems, not explorer /select,."""
+        import ctypes as _real_ctypes
         from utils.helpers import reveal_in_explorer
-        fake = tmp_path / "video.mp4"
+        dangerous = tmp_path / 'video";calc.exe;echo ".mp4'
         with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+             patch("utils.helpers.ctypes") as mc:
             ms.platform = "win32"
-            reveal_in_explorer(fake)
-            args = mp.call_args[0][0]
-            assert isinstance(args, list), "Popen must be called with a list on Windows"
-            assert args[0] == "explorer"
-            # SEC-2 FIX: path is concatenated with /select, in a single argument
-            assert len(args) == 2
-            assert args[1].startswith("/select,")
-            assert str(fake.resolve()) in args[1]
+            mc.windll.shell32.ILCreateFromPathW.return_value = 1
+            mc.windll.shell32.ILFindLastID.return_value = 2
+            mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+            mc.c_void_p = _real_ctypes.c_void_p
+            reveal_in_explorer(dangerous)
+            # Shell API called — no command injection possible
+            assert mc.windll.shell32.SHOpenFolderAndSelectItems.called
+            assert mc.windll.shell32.ILCreateFromPathW.called
 
     def test_windows_metacharacter_filename_safe(self, tmp_path):
-        """A filename with shell metacharacters must not cause a second Popen call."""
+        """Shell metacharacters in filename are safe — ctypes never invokes shell."""
+        import ctypes as _real_ctypes
         from utils.helpers import reveal_in_explorer
-        # Semicolon, backtick, pipe — formerly would inject commands via shell=True
         dangerous = tmp_path / 'video";calc.exe;echo ".mp4'
-        popen_calls = []
         with patch("utils.helpers.sys") as ms, \
-             patch(
-                 "utils.helpers.subprocess.Popen",
-                 side_effect=lambda *a, **k: popen_calls.append(a),
-             ):
+             patch("utils.helpers.ctypes") as mc, \
+             patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "win32"
+            mc.windll.shell32.ILCreateFromPathW.return_value = 1
+            mc.windll.shell32.ILFindLastID.return_value = 2
+            mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
+            mc.c_void_p = _real_ctypes.c_void_p
             reveal_in_explorer(dangerous)
-        assert len(popen_calls) == 1, \
-            "Metacharacters in filename must not spawn extra processes"
+        assert not mp.called, "Metacharacters in filename must not reach subprocess"
 
     def test_linux_uses_close_fds(self, tmp_path):
         """On Linux, close_fds=True must be set to prevent zombie accumulation."""
