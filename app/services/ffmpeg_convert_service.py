@@ -216,12 +216,12 @@ class FfmpegConvertService:
 
         try:
             proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             proc.kill()
             proc.communicate()   # drain pipe + reap zombie
             raise ConversionError(
                 f"ffmpeg timed out after {timeout_s:.0f} s — process killed"
-            )
+            ) from exc
 
         reader.join()   # ensure all stderr has been consumed (pipe closed)
 
