@@ -203,13 +203,67 @@ class EncodeSettings:
 
 # ── Hardware detection ────────────────────────────────────────────────────────
 
+def _validate_encoder_codec(ffmpeg_bin: Path, codec: str) -> bool:
+    """Return ``True`` if *codec* can actually encode on this machine.
+
+    Runs a one-frame synthetic test encode via FFmpeg's ``lavfi testsrc``
+    source and discards the output with ``-f null``.  No files are written.
+    This catches drivers that are listed by ``ffmpeg -encoders`` but fail at
+    runtime (e.g. ``h264_nvenc`` without ``nvcuda.dll``, or ``h264_qsv``
+    without an Intel GPU).
+
+    The test is intentionally kept as cheap as possible:
+
+    * 64×64 resolution — minimal GPU memory pressure
+    * 1 output frame — sub-second wall time on any hardware
+    * ``-f null -`` — no disk I/O
+
+    Safe to call from any thread.  Always returns ``False`` on exception.
+    """
+    cmd = [
+        str(ffmpeg_bin),
+        "-f", "lavfi",
+        "-i", "testsrc=duration=1:size=64x64:rate=1",
+        "-c:v", codec,
+        "-frames:v", "1",
+        "-f", "null", "-",
+        "-y",
+        "-loglevel", "error",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True
+        logger.debug(
+            "_validate_encoder_codec: %s exited with code %d",
+            codec, result.returncode,
+        )
+        return False
+    except Exception as exc:
+        logger.debug("_validate_encoder_codec: %s error: %s", codec, exc)
+        return False
+
+
 def detect_available_encoders(
     ffmpeg_bin: Optional[Path] = None,
 ) -> set[str]:
-    """Return the set of encoder keys available on this machine.
+    """Return the set of encoder keys available **and working** on this machine.
 
-    CPU is always included. GPU encoders are added only if ``ffmpeg -encoders``
-    lists the corresponding codec. Safe to call from any thread.
+    Two-phase detection:
+
+    1. **List phase** — runs ``ffmpeg -encoders`` and builds a candidate set
+       of GPU encoder keys whose codec string appears in the output.
+    2. **Validate phase** — for each candidate, calls
+       :func:`_validate_encoder_codec` to perform a lightweight one-frame test
+       encode.  Encoders that fail (e.g. NVENC without ``nvcuda.dll``, or QSV
+       without an Intel GPU present) are silently excluded.
+
+    CPU (``libx264``) is always included regardless of detection results.
+    Safe to call from any thread.
     """
     available: set[str] = {"cpu"}
 
@@ -219,6 +273,8 @@ def detect_available_encoders(
             return available
         ffmpeg_bin = Path(loc.ffmpeg_bin)
 
+    # ── Phase 1: list encoders ────────────────────────────────────────────
+    candidates: list[tuple[str, str]] = []   # [(encoder_key, ffmpeg_codec), …]
     try:
         result = subprocess.run(
             [str(ffmpeg_bin), "-encoders"],
@@ -233,10 +289,23 @@ def detect_available_encoders(
         output = result.stdout
         for codec, key in _CODEC_TO_KEY.items():
             if codec in output:
-                available.add(key)
+                candidates.append((key, codec))
 
     except Exception as exc:
-        logger.debug("detect_available_encoders: %s", exc)
+        logger.debug("detect_available_encoders: list phase error: %s", exc)
+        return available
+
+    # ── Phase 2: validate each candidate with a short test encode ─────────
+    for key, codec in candidates:
+        if _validate_encoder_codec(ffmpeg_bin, codec):
+            available.add(key)
+            logger.debug("detect_available_encoders: %s (%s) OK", key, codec)
+        else:
+            logger.info(
+                "detect_available_encoders: %s (%s) listed but failed "
+                "validation — excluded (missing drivers?)",
+                key, codec,
+            )
 
     return available
 

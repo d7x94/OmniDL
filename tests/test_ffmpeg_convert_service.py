@@ -501,3 +501,838 @@ class TestConvertQueue:
             second_started.wait(timeout=5)
 
         assert second_started.is_set(), "Second job never started — semaphore may have leaked"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: EncodeSettings dataclass
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.services.ffmpeg_convert_service import (
+    EncodeSettings,
+    _HW_ENCODER_CATALOG,
+    ENCODER_OPTIONS,
+    SPEED_OPTIONS,
+    _validate_encoder_codec,
+    detect_available_encoders,
+)
+
+
+class TestEncodeSettings:
+    def test_default_is_cpu_standard(self):
+        s = EncodeSettings()
+        assert s.encoder_key == "cpu"
+        assert s.quality == "standard"
+        assert s.speed_preset == "balanced"
+        assert s.custom_quality == 23
+
+    def test_custom_fields(self):
+        s = EncodeSettings(quality="custom", custom_quality=20,
+                           encoder_key="nvenc", speed_preset="fast")
+        assert s.quality == "custom"
+        assert s.custom_quality == 20
+        assert s.encoder_key == "nvenc"
+        assert s.speed_preset == "fast"
+
+    def test_encoder_options_contains_cpu(self):
+        keys = [k for k, _ in ENCODER_OPTIONS]
+        assert "cpu" in keys
+
+    def test_encoder_options_contains_known_gpus(self):
+        keys = [k for k, _ in ENCODER_OPTIONS]
+        assert "nvenc" in keys
+        assert "qsv" in keys
+        assert "amf" in keys
+        assert "videotoolbox" in keys
+
+    def test_speed_options_has_three_tiers(self):
+        assert len(SPEED_OPTIONS) == 3
+        keys = [k for k, _ in SPEED_OPTIONS]
+        assert "quality" in keys
+        assert "balanced" in keys
+        assert "fast" in keys
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: _HW_ENCODER_CATALOG structure
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHwEncoderCatalog:
+    def test_all_known_encoders_present(self):
+        expected = {"nvenc", "qsv", "amf", "videotoolbox"}
+        assert expected == set(_HW_ENCODER_CATALOG.keys())
+
+    def test_nvenc_uses_cq_flag(self):
+        assert _HW_ENCODER_CATALOG["nvenc"].quality_flag == "-cq"
+        assert _HW_ENCODER_CATALOG["nvenc"].ffmpeg_codec == "h264_nvenc"
+
+    def test_qsv_uses_global_quality_flag(self):
+        assert _HW_ENCODER_CATALOG["qsv"].quality_flag == "-global_quality"
+        assert _HW_ENCODER_CATALOG["qsv"].ffmpeg_codec == "h264_qsv"
+
+    def test_amf_uses_qp_flag(self):
+        assert _HW_ENCODER_CATALOG["amf"].quality_flag == "-qp"
+        assert _HW_ENCODER_CATALOG["amf"].ffmpeg_codec == "h264_amf"
+
+    def test_videotoolbox_no_profile_level(self):
+        assert not _HW_ENCODER_CATALOG["videotoolbox"].supports_profile_level
+
+    def test_nvenc_speed_map(self):
+        speed = _HW_ENCODER_CATALOG["nvenc"].speed_map
+        assert speed["quality"] == "p7"
+        assert speed["balanced"] == "p5"
+        assert speed["fast"] == "p3"
+
+    def test_quality_values_present_for_all_encoders(self):
+        for key, spec in _HW_ENCODER_CATALOG.items():
+            for tier in ("high", "standard", "small"):
+                assert tier in spec.quality_values, (
+                    f"Encoder {key!r} missing quality_values[{tier!r}]"
+                )
+
+    def test_quality_values_are_numeric_strings(self):
+        for key, spec in _HW_ENCODER_CATALOG.items():
+            for tier, val in spec.quality_values.items():
+                assert val.isdigit(), (
+                    f"Encoder {key!r} quality_values[{tier!r}]={val!r} "
+                    "must be a numeric string"
+                )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: detect_available_encoders
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDetectAvailableEncoders:
+    def test_always_includes_cpu(self, tmp_path: Path):
+        """CPU must always be in the result even when ffmpeg is not found."""
+        with patch("app.services.ffmpeg_convert_service.locate_ffmpeg", return_value=None):
+            result = detect_available_encoders()
+        assert "cpu" in result
+
+    def test_detects_nvenc_when_present_in_output(self, tmp_path: Path):
+        fake_output = (
+            "Encoders:\n"
+            " V..... h264_nvenc           NVIDIA NVENC H.264 encoder\n"
+            " V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC\n"
+        )
+        ffmpeg = tmp_path / "ffmpeg"
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = fake_output
+        fake_result.stderr = ""
+        with patch("subprocess.run", return_value=fake_result):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+        assert "nvenc" in result
+        assert "cpu" in result
+
+    def test_does_not_detect_absent_encoder(self, tmp_path: Path):
+        fake_output = (
+            "Encoders:\n"
+            " V..... libx264              libx264 H.264\n"
+        )
+        ffmpeg = tmp_path / "ffmpeg"
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = fake_output
+        fake_result.stderr = ""
+        with patch("subprocess.run", return_value=fake_result):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+        assert "nvenc" not in result
+        assert "qsv" not in result
+        assert "amf" not in result
+
+    def test_detects_multiple_gpus(self, tmp_path: Path):
+        fake_output = (
+            " V..... h264_nvenc    NVIDIA\n"
+            " V..... h264_qsv      Intel\n"
+            " V..... h264_amf      AMD\n"
+        )
+        ffmpeg = tmp_path / "ffmpeg"
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = fake_output
+        fake_result.stderr = ""
+        with patch("subprocess.run", return_value=fake_result):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+        assert "nvenc" in result
+        assert "qsv" in result
+        assert "amf" in result
+
+    def test_returns_cpu_only_on_subprocess_exception(self, tmp_path: Path):
+        ffmpeg = tmp_path / "ffmpeg"
+        with patch("subprocess.run", side_effect=Exception("timeout")):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+        assert result == {"cpu"}
+
+    def test_videotoolbox_detected_by_codec_name(self, tmp_path: Path):
+        fake_output = " V..... h264_videotoolbox   VideoToolbox H.264\n"
+        ffmpeg = tmp_path / "ffmpeg"
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = fake_output
+        fake_result.stderr = ""
+        with patch("subprocess.run", return_value=fake_result):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+        assert "videotoolbox" in result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: _build_cmd with EncodeSettings (GPU path)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBuildCmdGpu:
+    """GPU encoder paths in _build_cmd must use the correct codec and flags."""
+
+    def _cmd(
+        self,
+        tmp_path: Path,
+        encoder_key: str,
+        quality: str = "standard",
+        custom_quality: int = 23,
+        speed_preset: str = "balanced",
+    ) -> list[str]:
+        from app.services.ffmpeg_convert_service import _PRESETS
+        settings = EncodeSettings(
+            quality=quality,
+            custom_quality=custom_quality,
+            encoder_key=encoder_key,
+            speed_preset=speed_preset,
+        )
+        preset = _PRESETS.get(quality, _PRESETS["standard"])
+        return FfmpegConvertService._build_cmd(
+            tmp_path / "ffmpeg",
+            tmp_path / "in.mkv",
+            tmp_path / "out.mp4",
+            preset,
+            encode_settings=settings,
+        )
+
+    # ── NVENC ─────────────────────────────────────────────────────────────
+
+    def test_nvenc_uses_h264_nvenc_codec(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc")
+        assert "h264_nvenc" in cmd
+
+    def test_nvenc_does_not_use_libx264(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc")
+        assert "libx264" not in cmd
+
+    def test_nvenc_uses_cq_flag(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", quality="standard")
+        assert "-cq" in cmd
+        assert "-crf" not in cmd
+
+    def test_nvenc_standard_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", quality="standard")
+        idx = cmd.index("-cq")
+        assert cmd[idx + 1] == "23"
+
+    def test_nvenc_high_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", quality="high")
+        idx = cmd.index("-cq")
+        assert cmd[idx + 1] == "19"
+
+    def test_nvenc_small_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", quality="small")
+        idx = cmd.index("-cq")
+        assert cmd[idx + 1] == "28"
+
+    def test_nvenc_custom_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", quality="custom", custom_quality=20)
+        idx = cmd.index("-cq")
+        assert cmd[idx + 1] == "20"
+
+    def test_nvenc_speed_preset_quality(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", speed_preset="quality")
+        assert "-preset" in cmd
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "p7"
+
+    def test_nvenc_speed_preset_balanced(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", speed_preset="balanced")
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "p5"
+
+    def test_nvenc_speed_preset_fast(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc", speed_preset="fast")
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "p3"
+
+    def test_nvenc_includes_profile_level(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "nvenc")
+        assert "-profile:v" in cmd
+        assert "-level:v" in cmd
+
+    # ── QSV ───────────────────────────────────────────────────────────────
+
+    def test_qsv_uses_h264_qsv_codec(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "qsv")
+        assert "h264_qsv" in cmd
+
+    def test_qsv_uses_global_quality_flag(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "qsv", quality="high")
+        assert "-global_quality" in cmd
+        assert "-crf" not in cmd
+        assert "-cq" not in cmd
+
+    def test_qsv_high_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "qsv", quality="high")
+        idx = cmd.index("-global_quality")
+        assert cmd[idx + 1] == "18"
+
+    def test_qsv_custom_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "qsv", quality="custom", custom_quality=25)
+        idx = cmd.index("-global_quality")
+        assert cmd[idx + 1] == "25"
+
+    def test_qsv_speed_preset_balanced(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "qsv", speed_preset="balanced")
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "medium"
+
+    # ── AMF ───────────────────────────────────────────────────────────────
+
+    def test_amf_uses_h264_amf_codec(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "amf")
+        assert "h264_amf" in cmd
+
+    def test_amf_uses_qp_flag(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "amf", quality="standard")
+        assert "-qp" in cmd
+
+    def test_amf_standard_quality_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "amf", quality="standard")
+        idx = cmd.index("-qp")
+        assert cmd[idx + 1] == "23"
+
+    def test_amf_speed_flag_is_quality_not_preset(self, tmp_path: Path):
+        """AMF uses -quality not -preset for speed control."""
+        cmd = self._cmd(tmp_path, "amf", speed_preset="quality")
+        assert "-quality" in cmd
+
+    def test_amf_speed_balanced_value(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "amf", speed_preset="balanced")
+        idx = cmd.index("-quality")
+        assert cmd[idx + 1] == "balanced"
+
+    # ── VideoToolbox ──────────────────────────────────────────────────────
+
+    def test_videotoolbox_uses_h264_videotoolbox_codec(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "videotoolbox")
+        assert "h264_videotoolbox" in cmd
+
+    def test_videotoolbox_no_profile_level(self, tmp_path: Path):
+        """VideoToolbox does not accept -profile:v/-level:v."""
+        cmd = self._cmd(tmp_path, "videotoolbox")
+        assert "-profile:v" not in cmd
+        assert "-level:v" not in cmd
+
+    def test_videotoolbox_uses_qv_flag(self, tmp_path: Path):
+        cmd = self._cmd(tmp_path, "videotoolbox")
+        assert "-q:v" in cmd
+
+    # ── Common GPU requirements ────────────────────────────────────────────
+
+    def test_gpu_cmd_still_has_progress_api(self, tmp_path: Path):
+        for key in ("nvenc", "qsv", "amf", "videotoolbox"):
+            cmd = self._cmd(tmp_path, key)
+            assert "-progress" in cmd, f"{key}: missing -progress"
+            assert "pipe:1" in cmd, f"{key}: missing pipe:1"
+            assert "-nostats" in cmd, f"{key}: missing -nostats"
+
+    def test_gpu_cmd_has_audio_flags(self, tmp_path: Path):
+        for key in ("nvenc", "qsv", "amf"):
+            cmd = self._cmd(tmp_path, key)
+            assert "-c:a" in cmd, f"{key}: missing -c:a"
+            assert "aac" in cmd, f"{key}: missing aac"
+            assert "-movflags" in cmd, f"{key}: missing -movflags"
+
+    def test_unknown_encoder_falls_back_to_cpu(self, tmp_path: Path):
+        """An unrecognized encoder_key must silently fall back to libx264."""
+        from app.services.ffmpeg_convert_service import _PRESETS
+        settings = EncodeSettings(encoder_key="unknown_gpu_xyz")
+        cmd = FfmpegConvertService._build_cmd(
+            tmp_path / "ffmpeg",
+            tmp_path / "in.mkv",
+            tmp_path / "out.mp4",
+            _PRESETS["standard"],
+            encode_settings=settings,
+        )
+        assert "libx264" in cmd
+        assert "-crf" in cmd
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: _build_cmd CPU path with EncodeSettings (speed preset mapping)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBuildCmdCpuWithSettings:
+    def _cpu_cmd(self, tmp_path: Path, quality: str = "standard",
+                 speed: str = "balanced", custom: int = 23) -> list[str]:
+        from app.services.ffmpeg_convert_service import _PRESETS
+        settings = EncodeSettings(
+            quality=quality, custom_quality=custom,
+            encoder_key="cpu", speed_preset=speed,
+        )
+        preset = _PRESETS.get(quality, _PRESETS["standard"])
+        return FfmpegConvertService._build_cmd(
+            tmp_path / "ffmpeg", tmp_path / "in.mkv",
+            tmp_path / "out.mp4", preset,
+            encode_settings=settings,
+        )
+
+    def test_cpu_quality_speed_maps_to_medium(self, tmp_path: Path):
+        cmd = self._cpu_cmd(tmp_path, speed="quality")
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "medium"
+
+    def test_cpu_balanced_speed_maps_to_fast(self, tmp_path: Path):
+        cmd = self._cpu_cmd(tmp_path, speed="balanced")
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "fast"
+
+    def test_cpu_fast_speed_maps_to_veryfast(self, tmp_path: Path):
+        cmd = self._cpu_cmd(tmp_path, speed="fast")
+        idx = cmd.index("-preset")
+        assert cmd[idx + 1] == "veryfast"
+
+    def test_cpu_custom_quality_uses_custom_value(self, tmp_path: Path):
+        cmd = self._cpu_cmd(tmp_path, quality="custom", custom=18)
+        idx = cmd.index("-crf")
+        assert cmd[idx + 1] == "18"
+
+    def test_cpu_standard_quality_uses_preset_crf(self, tmp_path: Path):
+        cmd = self._cpu_cmd(tmp_path, quality="standard")
+        idx = cmd.index("-crf")
+        assert cmd[idx + 1] == "23"
+
+    def test_cpu_high_quality_uses_preset_crf(self, tmp_path: Path):
+        cmd = self._cpu_cmd(tmp_path, quality="high")
+        idx = cmd.index("-crf")
+        assert cmd[idx + 1] == "18"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: GPU fallback behaviour in _convert_sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGpuFallback:
+    """When a GPU encoder fails, _convert_sync retries with CPU (libx264)."""
+
+    def test_fallback_to_cpu_on_gpu_failure(self, tmp_path: Path):
+        source = tmp_path / "video.mkv"
+        source.write_bytes(b"x" * 100)
+
+        svc = FfmpegConvertService()
+        fresh_calls: list[dict] = []
+
+        gpu_settings = EncodeSettings(
+            quality="high", encoder_key="nvenc", speed_preset="balanced"
+        )
+
+        call_count = [0]
+
+        def fake_fresh(ffmpeg_bin, src, dest_dir, temp_output,
+                       duration_s, preset, on_progress, encode_settings=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call (GPU) — fail
+                raise ConversionError("NVENC not supported")
+            # Second call (CPU fallback) — succeed
+            out = dest_dir / "video_iPhone.mp4"
+            out.write_bytes(b"x" * 2000)
+            fresh_calls.append({"encoder": encode_settings})
+            return out
+
+        with patch.object(svc, "_probe_duration", return_value=120.0):
+            with patch.object(svc, "_fresh_encode", side_effect=fake_fresh):
+                with patch.object(
+                    svc.__class__, "_locate_ffmpeg_bin",
+                    staticmethod(lambda: tmp_path / "ffmpeg")
+                ):
+                    try:
+                        result = svc._convert_sync(
+                            source, "high", tmp_path, None, gpu_settings
+                        )
+                    except ConversionError:
+                        pytest.fail("Should have fallen back to CPU, not raised")
+
+        assert call_count[0] == 2, "Expected exactly 2 encode calls (GPU + CPU retry)"
+        assert fresh_calls[0]["encoder"].encoder_key == "cpu", (
+            "Second call must use CPU encoder"
+        )
+
+    def test_cpu_failure_not_retried(self, tmp_path: Path):
+        """CPU (libx264) failures must propagate immediately without retry."""
+        source = tmp_path / "video.mkv"
+        source.write_bytes(b"x" * 100)
+
+        svc = FfmpegConvertService()
+        cpu_settings = EncodeSettings(quality="standard", encoder_key="cpu")
+        call_count = [0]
+
+        def fake_fresh(*a, **kw):
+            call_count[0] += 1
+            raise ConversionError("libx264 failed for real")
+
+        with patch.object(svc, "_probe_duration", return_value=60.0):
+            with patch.object(svc, "_fresh_encode", side_effect=fake_fresh):
+                with patch.object(
+                    svc.__class__, "_locate_ffmpeg_bin",
+                    staticmethod(lambda: tmp_path / "ffmpeg")
+                ):
+                    with pytest.raises(ConversionError, match="libx264"):
+                        svc._convert_sync(
+                            source, "standard", tmp_path, None, cpu_settings
+                        )
+
+        assert call_count[0] == 1, "CPU failure must not be retried"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: ConvertQueue passes encode_settings through
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestConvertQueueEncodeSettings:
+    def test_encode_settings_passed_to_svc_run(self, tmp_path: Path):
+        """ConvertQueue.submit must forward encode_settings to _svc._run."""
+        source = tmp_path / "video.mkv"
+        source.touch()
+
+        received: list[Optional[EncodeSettings]] = []
+        done_event = threading.Event()
+        queue = ConvertQueue(max_concurrent=1)
+
+        def fake_run(src, quality, output_dir, on_progress, on_done, on_error,
+                     encode_settings=None):
+            received.append(encode_settings)
+            done_event.set()
+
+        settings = EncodeSettings(quality="high", encoder_key="nvenc")
+        with patch.object(queue._svc, "_run", side_effect=fake_run):
+            queue.submit(source=source, encode_settings=settings)
+            done_event.wait(timeout=3)
+
+        assert len(received) == 1
+        assert received[0] is not None
+        assert received[0].encoder_key == "nvenc"
+        assert received[0].quality == "high"
+
+    def test_none_encode_settings_preserved(self, tmp_path: Path):
+        """Passing encode_settings=None must reach _run as None (backward compat)."""
+        source = tmp_path / "video.mkv"
+        source.touch()
+
+        received: list = []
+        done_event = threading.Event()
+        queue = ConvertQueue(max_concurrent=1)
+
+        def fake_run(src, quality, output_dir, on_progress, on_done, on_error,
+                     encode_settings=None):
+            received.append(encode_settings)
+            done_event.set()
+
+        with patch.object(queue._svc, "_run", side_effect=fake_run):
+            queue.submit(source=source, encode_settings=None)
+            done_event.wait(timeout=3)
+
+        assert received[0] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: _validate_encoder_codec
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestValidateEncoderCodec:
+    """Unit tests for the lightweight per-encoder smoke-test function."""
+
+    def test_returns_true_when_ffmpeg_exits_zero(self, tmp_path: Path):
+        ffmpeg = tmp_path / "ffmpeg"
+        fake = MagicMock()
+        fake.returncode = 0
+        with patch("subprocess.run", return_value=fake):
+            assert _validate_encoder_codec(ffmpeg, "h264_nvenc") is True
+
+    def test_returns_false_when_ffmpeg_exits_nonzero(self, tmp_path: Path):
+        ffmpeg = tmp_path / "ffmpeg"
+        fake = MagicMock()
+        fake.returncode = 1
+        with patch("subprocess.run", return_value=fake):
+            assert _validate_encoder_codec(ffmpeg, "h264_nvenc") is False
+
+    def test_returns_false_on_subprocess_exception(self, tmp_path: Path):
+        ffmpeg = tmp_path / "ffmpeg"
+        with patch("subprocess.run", side_effect=OSError("not found")):
+            assert _validate_encoder_codec(ffmpeg, "h264_nvenc") is False
+
+    def test_returns_false_on_timeout(self, tmp_path: Path):
+        import subprocess as sp
+        ffmpeg = tmp_path / "ffmpeg"
+        with patch("subprocess.run", side_effect=sp.TimeoutExpired(cmd=[], timeout=30)):
+            assert _validate_encoder_codec(ffmpeg, "h264_nvenc") is False
+
+    def test_command_uses_lavfi_testsrc(self, tmp_path: Path):
+        """The test encode must use a synthetic lavfi source, not a real file."""
+        ffmpeg = tmp_path / "ffmpeg"
+        captured: list[list[str]] = []
+        fake = MagicMock(returncode=0)
+
+        def capture_cmd(cmd, **kw):
+            captured.append(list(cmd))
+            return fake
+
+        with patch("subprocess.run", side_effect=capture_cmd):
+            _validate_encoder_codec(ffmpeg, "h264_nvenc")
+
+        assert len(captured) == 1
+        cmd = captured[0]
+        assert "-f" in cmd
+        lavfi_idx = cmd.index("-f")
+        assert cmd[lavfi_idx + 1] == "lavfi"
+        # Input source must contain "testsrc"
+        assert any("testsrc" in tok for tok in cmd)
+
+    def test_command_uses_null_output(self, tmp_path: Path):
+        """No output file should be written — output must be discarded."""
+        ffmpeg = tmp_path / "ffmpeg"
+        captured: list[list[str]] = []
+        fake = MagicMock(returncode=0)
+
+        def capture_cmd(cmd, **kw):
+            captured.append(list(cmd))
+            return fake
+
+        with patch("subprocess.run", side_effect=capture_cmd):
+            _validate_encoder_codec(ffmpeg, "h264_nvenc")
+
+        cmd = captured[0]
+        assert "null" in cmd
+        assert "-" in cmd
+
+    def test_command_includes_given_codec(self, tmp_path: Path):
+        """The function must encode with the requested codec."""
+        ffmpeg = tmp_path / "ffmpeg"
+        captured: list[list[str]] = []
+        fake = MagicMock(returncode=0)
+
+        def capture_cmd(cmd, **kw):
+            captured.append(list(cmd))
+            return fake
+
+        for codec in ("h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox"):
+            captured.clear()
+            with patch("subprocess.run", side_effect=capture_cmd):
+                _validate_encoder_codec(ffmpeg, codec)
+            cmd = captured[0]
+            assert "-c:v" in cmd
+            cv_idx = cmd.index("-c:v")
+            assert cmd[cv_idx + 1] == codec, (
+                f"Expected codec {codec!r}, got {cmd[cv_idx + 1]!r}"
+            )
+
+    def test_command_limits_frames(self, tmp_path: Path):
+        """Encode must be limited to at most 1 frame to stay fast."""
+        ffmpeg = tmp_path / "ffmpeg"
+        captured: list[list[str]] = []
+        fake = MagicMock(returncode=0)
+
+        def capture_cmd(cmd, **kw):
+            captured.append(list(cmd))
+            return fake
+
+        with patch("subprocess.run", side_effect=capture_cmd):
+            _validate_encoder_codec(ffmpeg, "h264_nvenc")
+
+        cmd = captured[0]
+        assert "-frames:v" in cmd
+        frames_idx = cmd.index("-frames:v")
+        assert int(cmd[frames_idx + 1]) <= 1
+
+    def test_does_not_use_shell_true(self, tmp_path: Path):
+        """subprocess must never be invoked with shell=True."""
+        ffmpeg = tmp_path / "ffmpeg"
+        captured_kwargs: list[dict] = []
+        fake = MagicMock(returncode=0)
+
+        def capture_cmd(cmd, **kw):
+            captured_kwargs.append(kw)
+            return fake
+
+        with patch("subprocess.run", side_effect=capture_cmd):
+            _validate_encoder_codec(ffmpeg, "h264_nvenc")
+
+        for kw in captured_kwargs:
+            assert not kw.get("shell", False), "shell=True must never be used"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: detect_available_encoders — validation integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDetectWithValidation:
+    """Test that detect_available_encoders gates on _validate_encoder_codec."""
+
+    def _encoders_result(self, stdout: str) -> MagicMock:
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = stdout
+        r.stderr = ""
+        return r
+
+    def test_encoder_excluded_when_validation_fails(self, tmp_path: Path):
+        """An encoder listed in -encoders but rejected by validation is excluded."""
+        ffmpeg = tmp_path / "ffmpeg"
+        list_output = " V..... h264_nvenc   NVIDIA NVENC H.264\n"
+        list_result = self._encoders_result(list_output)
+
+        call_count = [0]
+
+        def side_effect(cmd, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call: -encoders listing
+                return list_result
+            # Subsequent calls: validation — simulate driver missing
+            r = MagicMock()
+            r.returncode = 1
+            return r
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        assert "nvenc" not in result, (
+            "nvenc must be excluded when validation fails"
+        )
+        assert "cpu" in result
+
+    def test_encoder_included_when_validation_succeeds(self, tmp_path: Path):
+        """An encoder listed in -encoders and passing validation is included."""
+        ffmpeg = tmp_path / "ffmpeg"
+        list_output = " V..... h264_nvenc   NVIDIA NVENC H.264\n"
+        list_result = self._encoders_result(list_output)
+        ok_result = MagicMock(returncode=0)
+
+        call_count = [0]
+
+        def side_effect(cmd, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return list_result
+            return ok_result
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        assert "nvenc" in result
+        assert "cpu" in result
+
+    def test_partial_validation_failure(self, tmp_path: Path):
+        """When one GPU validates and another fails, only the valid one is added."""
+        ffmpeg = tmp_path / "ffmpeg"
+        list_output = (
+            " V..... h264_nvenc   NVIDIA\n"
+            " V..... h264_qsv     Intel\n"
+        )
+        list_result = self._encoders_result(list_output)
+
+        call_count = [0]
+
+        def side_effect(cmd, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return list_result
+            # First validation (nvenc): fails
+            if call_count[0] == 2:
+                return MagicMock(returncode=1)
+            # Second validation (qsv): passes
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        # Exactly one GPU passed; exact key depends on iteration order,
+        # so check the total GPU count rather than which one.
+        gpu_keys = result - {"cpu"}
+        assert len(gpu_keys) == 1, (
+            f"Expected exactly 1 GPU encoder, got {gpu_keys}"
+        )
+        assert "cpu" in result
+
+    def test_validation_called_once_per_detected_encoder(self, tmp_path: Path):
+        """detect_available_encoders must validate every detected GPU codec."""
+        ffmpeg = tmp_path / "ffmpeg"
+        list_output = (
+            " V..... h264_nvenc   NVIDIA\n"
+            " V..... h264_qsv     Intel\n"
+            " V..... h264_amf     AMD\n"
+        )
+        list_result = self._encoders_result(list_output)
+        ok_result = MagicMock(returncode=0)
+
+        calls: list[list[str]] = []
+
+        def side_effect(cmd, **kw):
+            calls.append(list(cmd))
+            if len(calls) == 1:
+                return list_result
+            return ok_result
+
+        with patch("subprocess.run", side_effect=side_effect):
+            detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        # 1 list call + 3 validation calls
+        assert len(calls) == 4, (
+            f"Expected 4 subprocess calls (1 list + 3 validate), got {len(calls)}"
+        )
+        # The first call must be the -encoders listing
+        assert "-encoders" in calls[0]
+        # The remaining 3 must each be test encodes with -f lavfi
+        for validation_cmd in calls[1:]:
+            assert "-f" in validation_cmd
+            assert "lavfi" in validation_cmd
+
+    def test_cpu_not_validated(self, tmp_path: Path):
+        """CPU (libx264) must always be present without running a test encode."""
+        ffmpeg = tmp_path / "ffmpeg"
+        # No GPU codecs in the output → only the list call is made
+        list_output = " V..... libx264   CPU\n"
+        list_result = self._encoders_result(list_output)
+
+        calls: list = []
+
+        def side_effect(cmd, **kw):
+            calls.append(cmd)
+            return list_result
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        assert "cpu" in result
+        # Only 1 subprocess call (the -encoders list); no validation needed for CPU
+        assert len(calls) == 1
+
+    def test_validation_via_patch(self, tmp_path: Path):
+        """Patch _validate_encoder_codec directly to test composition."""
+        ffmpeg = tmp_path / "ffmpeg"
+        list_output = (
+            " V..... h264_nvenc   NVIDIA\n"
+            " V..... h264_qsv     Intel\n"
+        )
+        list_result = self._encoders_result(list_output)
+
+        validated: list[str] = []
+
+        def fake_validate(fb: Path, codec: str) -> bool:
+            validated.append(codec)
+            return codec == "h264_nvenc"   # only nvenc passes
+
+        with patch("subprocess.run", return_value=list_result):
+            with patch(
+                "app.services.ffmpeg_convert_service._validate_encoder_codec",
+                side_effect=fake_validate,
+            ):
+                result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        assert "nvenc" in result
+        assert "qsv" not in result
+        assert set(validated) == {"h264_nvenc", "h264_qsv"}
