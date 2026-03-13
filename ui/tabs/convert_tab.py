@@ -32,8 +32,12 @@ import customtkinter as ctk
 
 from app.services.ffmpeg_convert_service import (
     ConvertQueue,
+    EncodeSettings,
+    ENCODER_OPTIONS,
     MediaInfo,
+    SPEED_OPTIONS,
     SUPPORTED_EXTS,
+    detect_available_encoders,
     probe_media_info,
     scan_folder_for_media,
 )
@@ -58,6 +62,7 @@ _QUALITY_OPTIONS = [
     ("high",     "🏆  Chất lượng cao",  "H.264 CRF 18 · AAC 192k · Giữ độ phân giải"),
     ("standard", "📱  Chuẩn",           "H.264 CRF 23 · AAC 128k · Phù hợp mọi iPhone"),
     ("small",    "💾  File nhỏ",        "H.264 CRF 28 · AAC 96k · Tối đa 720p"),
+    ("custom",   "✏️  Tuỳ chỉnh",       "Giá trị CRF/CQ tuỳ chọn (16–35)"),
 ]
 
 # ── Max concurrent conversions ────────────────────────────────────────────────
@@ -335,6 +340,17 @@ class ConvertTab(ctk.CTkFrame):
         self._queue = ConvertQueue(max_concurrent=_MAX_CONCURRENT)
         # Count of jobs in QUEUED or CONVERTING state (for "Convert All" gating)
         self._active_count = 0
+        # GPU encoder + speed state
+        self._encoder_key = tk.StringVar(value="cpu")
+        self._speed_preset = tk.StringVar(value="balanced")
+        self._custom_quality = tk.IntVar(value=23)
+        self._available_encoders: set[str] = {"cpu"}
+        # Detect available encoders in background; UI enabled when ready
+        threading.Thread(
+            target=self._detect_encoders_async,
+            daemon=True,
+            name="omnidl-detect-encoders",
+        ).start()
         self._build()
         T.register(self._on_theme)
 
@@ -412,6 +428,89 @@ class ConvertTab(ctk.CTkFrame):
             card = self._make_quality_card(q_row, key, label, desc)
             card.pack(side="left", padx=(0, 8))
             self._quality_cards[key] = card
+
+        # Custom quality value entry (shown only when "custom" is selected)
+        custom_row = ctk.CTkFrame(cfg, fg_color="transparent")
+        custom_row.pack(fill="x", padx=20, pady=(0, 4))
+
+        ctk.CTkLabel(
+            custom_row, text="",
+            width=90,
+        ).pack(side="left")
+
+        self._custom_lbl = ctk.CTkLabel(
+            custom_row, text="Giá trị (16–35):",
+            font=ctk.CTkFont(size=11), text_color=T.text3,
+        )
+        self._custom_lbl.pack(side="left", padx=(0, 6))
+
+        self._custom_entry = ctk.CTkEntry(
+            custom_row,
+            textvariable=self._custom_quality,
+            width=60, height=28, corner_radius=6,
+            fg_color=T.input, border_color=T.border2, border_width=1,
+            text_color=T.text, font=ctk.CTkFont(size=12),
+        )
+        self._custom_entry.pack(side="left")
+        custom_row.pack_forget()   # hidden until "custom" quality selected
+        self._custom_row = custom_row
+
+        # ── Encoder row ───────────────────────────────────────────────────
+        enc_row = ctk.CTkFrame(cfg, fg_color="transparent")
+        enc_row.pack(fill="x", padx=20, pady=(4, 4))
+
+        ctk.CTkLabel(
+            enc_row, text="Encoder",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=T.text2,
+            width=90, anchor="w",
+        ).pack(side="left")
+
+        self._encoder_menu = ctk.CTkOptionMenu(
+            enc_row,
+            values=[label for _, label in ENCODER_OPTIONS],
+            command=self._on_encoder_change,
+            width=200, height=32, corner_radius=6,
+            fg_color=T.surface2, button_color=T.surface3,
+            button_hover_color=T.border, text_color=T.text,
+            font=ctk.CTkFont(size=11),
+        )
+        self._encoder_menu.pack(side="left", padx=(0, 12))
+
+        self._encoder_status_lbl = ctk.CTkLabel(
+            enc_row, text="Đang kiểm tra…",
+            font=ctk.CTkFont(size=10), text_color=T.text3,
+        )
+        self._encoder_status_lbl.pack(side="left")
+
+        # ── Speed preset row ──────────────────────────────────────────────
+        spd_row = ctk.CTkFrame(cfg, fg_color="transparent")
+        spd_row.pack(fill="x", padx=20, pady=(4, 4))
+
+        ctk.CTkLabel(
+            spd_row, text="Tốc độ",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=T.text2,
+            width=90, anchor="w",
+        ).pack(side="left")
+
+        self._speed_cards: dict[str, ctk.CTkFrame] = {}
+        for s_key, s_label in SPEED_OPTIONS:
+            s_card = ctk.CTkFrame(
+                spd_row,
+                corner_radius=6,
+                fg_color=T.primary_dim if s_key == "balanced" else T.surface2,
+                border_width=1,
+                border_color=T.primary if s_key == "balanced" else T.border,
+                cursor="hand2",
+            )
+            ctk.CTkLabel(
+                s_card, text=s_label,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=T.text if s_key == "balanced" else T.text2,
+            ).pack(padx=12, pady=6)
+            for w in (s_card, *s_card.winfo_children()):
+                w.bind("<Button-1>", lambda _e, k=s_key: self._on_speed_change(k))
+            s_card.pack(side="left", padx=(0, 6))
+            self._speed_cards[s_key] = s_card
 
         out_row = ctk.CTkFrame(cfg, fg_color="transparent")
         out_row.pack(fill="x", padx=20, pady=(4, 16))
@@ -541,6 +640,52 @@ class ConvertTab(ctk.CTkFrame):
                 children[0].configure(
                     text_color=T.text if selected else T.text2
                 )
+        # Show custom quality entry only when "custom" is selected
+        if key == "custom":
+            self._custom_row.pack(fill="x", padx=20, pady=(0, 4))
+        else:
+            self._custom_row.pack_forget()
+
+    # ── Encoder detection ─────────────────────────────────────────────────
+
+    def _detect_encoders_async(self) -> None:
+        """Background: detect GPU encoders, then update UI on main thread."""
+        available = detect_available_encoders()
+        if self.winfo_exists():
+            self.after(0, lambda: self._apply_available_encoders(available))
+
+    def _apply_available_encoders(self, available: set[str]) -> None:
+        """UI-thread: enable/disable encoder options based on detection result."""
+        self._available_encoders = available
+        gpu_labels = [
+            label for key, label in ENCODER_OPTIONS
+            if key in available and key != "cpu"
+        ]
+        status = f"GPU: {', '.join(gpu_labels)}" if gpu_labels else "Chỉ CPU"
+        self._encoder_status_lbl.configure(text=status, text_color=T.text3)
+
+    # ── Encoder / speed event handlers ───────────────────────────────────
+
+    def _on_encoder_change(self, label: str) -> None:
+        # Map label back to key
+        for key, opt_label in ENCODER_OPTIONS:
+            if opt_label == label:
+                self._encoder_key.set(key)
+                break
+
+    def _on_speed_change(self, key: str) -> None:
+        self._speed_preset.set(key)
+        for k, card in self._speed_cards.items():
+            selected = (k == key)
+            card.configure(
+                fg_color=T.primary_dim if selected else T.surface2,
+                border_color=T.primary if selected else T.border,
+            )
+            children = card.winfo_children()
+            if children:
+                children[0].configure(
+                    text_color=T.text if selected else T.text2
+                )
 
     def _browse_files(self) -> None:
         paths = fd.askopenfilenames(
@@ -638,6 +783,26 @@ class ConvertTab(ctk.CTkFrame):
         elif self._output_dir:
             output_dir = self._output_dir
 
+        # Build encode settings — fall back to CPU if selected encoder unavailable
+        encoder_key = self._encoder_key.get()
+        if encoder_key not in self._available_encoders:
+            logger.info(
+                "Encoder %r not available; falling back to CPU", encoder_key
+            )
+            encoder_key = "cpu"
+
+        try:
+            custom_val = int(self._custom_quality.get())
+        except (ValueError, tk.TclError):
+            custom_val = 23
+
+        encode_settings = EncodeSettings(
+            encoder_key=encoder_key,
+            quality=quality,
+            speed_preset=self._speed_preset.get(),
+            custom_quality=max(1, min(51, custom_val)),
+        )
+
         self._convert_btn.configure(state="disabled")
 
         # Mark all as QUEUED first, then submit to the queue
@@ -648,7 +813,7 @@ class ConvertTab(ctk.CTkFrame):
             self._rebuild_card(job)
 
         for job in pending:
-            self._submit_job(job, quality, output_dir)
+            self._submit_job(job, quality, output_dir, encode_settings)
 
         self._refresh_ui()
 
@@ -657,6 +822,7 @@ class ConvertTab(ctk.CTkFrame):
         job: FileJob,
         quality: str,
         output_dir: Optional[Path],
+        encode_settings: Optional[EncodeSettings] = None,
     ) -> None:
         """Submit *job* to the ConvertQueue.  All callbacks are thread-safe."""
 
@@ -696,6 +862,7 @@ class ConvertTab(ctk.CTkFrame):
             on_done=on_done,
             on_error=on_error,
             on_start=on_start,
+            encode_settings=encode_settings,
         )
 
     # ── Card management ───────────────────────────────────────────────────
