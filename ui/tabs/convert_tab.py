@@ -3,15 +3,23 @@ ui/tabs/convert_tab.py
 Tab chuyển đổi video sang MP4 tương thích iPhone.
 
 Luồng:
-  1. User thêm file qua Browse hoặc drag-and-drop
+  1. User thêm file qua Browse / drag-and-drop, hoặc chọn cả thư mục
   2. Chọn preset chất lượng (Cao / Chuẩn / Nhỏ) và thư mục output
-  3. Nhấn "Convert All" → từng file chạy trong background thread
-  4. Mỗi file có card riêng với progress bar + trạng thái
+  3. Nhấn "Convert All" → jobs vào hàng chờ, tối đa 2 job chạy song song
+  4. Mỗi file có card riêng với media-info, progress bar + trạng thái
   5. Sau khi xong có nút "📂 Mở thư mục"
+
+States:
+  PENDING    → chưa bắt đầu (mới thêm vào)
+  QUEUED     → đang chờ slot (convert đã bắt đầu nhưng vượt giới hạn concurrency)
+  CONVERTING → đang encode
+  DONE       → hoàn tất
+  FAILED     → lỗi
 """
 from __future__ import annotations
 
 import logging
+import threading
 import tkinter as tk
 import tkinter.filedialog as fd
 import uuid
@@ -22,10 +30,16 @@ from typing import TYPE_CHECKING, Optional
 
 import customtkinter as ctk
 
-from app.services.ffmpeg_convert_service import FfmpegConvertService
+from app.services.ffmpeg_convert_service import (
+    ConvertQueue,
+    MediaInfo,
+    SUPPORTED_EXTS,
+    probe_media_info,
+    scan_folder_for_media,
+)
 from ui.components.progress_bar import OmniProgressBar
 from ui.themes.tokens import T
-from utils.helpers import fmt_bytes, open_folder, reveal_in_explorer
+from utils.helpers import fmt_bytes, fmt_duration, open_folder, reveal_in_explorer
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -33,10 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ── Supported input formats ───────────────────────────────────────────────────
-_INPUT_EXTS = (
-    "*.mp4", "*.mkv", "*.webm", "*.avi", "*.mov", "*.flv",
-    "*.wmv", "*.m4v", "*.ts", "*.mpeg", "*.mpg", "*.3gp",
-)
+_INPUT_EXTS = tuple(f"*.{ext}" for ext in sorted(SUPPORTED_EXTS))
 _FILETYPES = [
     ("Video files", " ".join(_INPUT_EXTS)),
     ("All files",   "*.*"),
@@ -49,24 +60,30 @@ _QUALITY_OPTIONS = [
     ("small",    "💾  File nhỏ",        "H.264 CRF 28 · AAC 96k · Tối đa 720p"),
 ]
 
+# ── Max concurrent conversions ────────────────────────────────────────────────
+_MAX_CONCURRENT = 2
+
 
 class FileState(Enum):
     PENDING    = auto()
+    QUEUED     = auto()    # waiting for a concurrency slot
     CONVERTING = auto()
     DONE       = auto()
     FAILED     = auto()
 
 
 _STATE_BADGE: dict[FileState, tuple[str, str, str]] = {
-    #                         label          text_token   bg_token
-    FileState.PENDING:    ("Chờ",          "text3",      "surface3"),
-    FileState.CONVERTING: ("Đang chuyển…", "warning",    "warning_bg"),
-    FileState.DONE:       ("✓ Xong",       "success",    "success_bg"),
-    FileState.FAILED:     ("✕ Lỗi",        "error",      "error_bg"),
+    #                         label               text_token    bg_token
+    FileState.PENDING:    ("Chờ",              "text3",       "surface3"),
+    FileState.QUEUED:     ("⏳ Hàng chờ",      "text2",       "surface2"),
+    FileState.CONVERTING: ("Đang chuyển…",     "warning",     "warning_bg"),
+    FileState.DONE:       ("✓ Xong",           "success",     "success_bg"),
+    FileState.FAILED:     ("✕ Lỗi",            "error",       "error_bg"),
 }
 
 _STATE_PROG: dict[FileState, str] = {
     FileState.PENDING:    "active",
+    FileState.QUEUED:     "paused",
     FileState.CONVERTING: "active",
     FileState.DONE:       "complete",
     FileState.FAILED:     "failed",
@@ -81,6 +98,7 @@ class FileJob:
     progress: float = 0.0
     output: Optional[Path] = None
     error_msg: str = ""
+    media_info: Optional[MediaInfo] = field(default=None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,11 +127,10 @@ class FileCard(ctk.CTkFrame):
     # ── Build ─────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        # ── Row 1: icon + filename + badge + buttons ──────────────────────
+        # ── Row 1: icon + filename + badges + buttons ─────────────────────
         top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill="x", padx=16, pady=(12, 6))
+        top.pack(fill="x", padx=16, pady=(12, 4))
 
-        # File type dot
         ext = self.job.source.suffix.lower().lstrip(".")
         self._dot = ctk.CTkLabel(
             top, text="●",
@@ -121,7 +138,6 @@ class FileCard(ctk.CTkFrame):
         )
         self._dot.pack(side="left", padx=(0, 8))
 
-        # Filename
         self._name_lbl = ctk.CTkLabel(
             top,
             text=self._trunc(self.job.source.name, 55),
@@ -130,7 +146,6 @@ class FileCard(ctk.CTkFrame):
         )
         self._name_lbl.pack(side="left", fill="x", expand=True)
 
-        # Format badge (ext)
         self._ext_badge = ctk.CTkLabel(
             top, text=f"  {ext.upper()}  ",
             font=ctk.CTkFont(size=9, weight="bold"),
@@ -138,7 +153,6 @@ class FileCard(ctk.CTkFrame):
         )
         self._ext_badge.pack(side="left", padx=(0, 8))
 
-        # State badge
         s_lbl, s_txt, s_bg = _STATE_BADGE[self.job.state]
         self._state_badge = ctk.CTkLabel(
             top, text=f"  {s_lbl}  ",
@@ -148,7 +162,6 @@ class FileCard(ctk.CTkFrame):
         )
         self._state_badge.pack(side="left", padx=(0, 8))
 
-        # Button box
         self._btn_box = ctk.CTkFrame(top, fg_color="transparent")
         self._btn_box.pack(side="left")
 
@@ -168,11 +181,21 @@ class FileCard(ctk.CTkFrame):
             command=lambda: self._on_open_folder(self.job.id),
         )
 
-        # ── Row 2: progress bar ───────────────────────────────────────────
+        # ── Row 2: media info ─────────────────────────────────────────────
+        info_row = ctk.CTkFrame(self, fg_color="transparent")
+        info_row.pack(fill="x", padx=16, pady=(0, 4))
+
+        self._info_lbl = ctk.CTkLabel(
+            info_row, text=self._initial_info_text(),
+            font=ctk.CTkFont(size=10), text_color=T.text3, anchor="w",
+        )
+        self._info_lbl.pack(side="left")
+
+        # ── Row 3: progress bar ───────────────────────────────────────────
         self._prog = OmniProgressBar(self)
         self._prog.pack(fill="x", padx=16, pady=(0, 6))
 
-        # ── Row 3: stats row ──────────────────────────────────────────────
+        # ── Row 4: stats ──────────────────────────────────────────────────
         stats = ctk.CTkFrame(self, fg_color="transparent")
         stats.pack(fill="x", padx=16, pady=(0, 12))
 
@@ -199,6 +222,10 @@ class FileCard(ctk.CTkFrame):
             anchor="e",
         )
         self._out_lbl.pack(side="right")
+
+        # Apply MediaInfo if already available (e.g. on card rebuild)
+        if self.job.media_info is not None:
+            self.update_info(self.job.media_info)
 
     # ── Refresh ───────────────────────────────────────────────────────────
 
@@ -233,10 +260,30 @@ class FileCard(ctk.CTkFrame):
             if self._open_btn.winfo_ismapped():
                 self._open_btn.pack_forget()
 
-        # Disable remove during conversion
         self._remove_btn.configure(
-            state="disabled" if job.state == FileState.CONVERTING else "normal"
+            state="disabled" if job.state in (
+                FileState.QUEUED, FileState.CONVERTING
+            ) else "normal"
         )
+
+    def update_info(self, info: Optional[MediaInfo]) -> None:
+        """Refresh the media-info label from an ffprobe MediaInfo result."""
+        if info is None:
+            self._info_lbl.configure(text="")
+            return
+        parts: list[str] = []
+        if info.video_codec:
+            parts.append(info.video_codec.upper())
+        if info.audio_codec:
+            parts.append(info.audio_codec.upper())
+        if info.width and info.height:
+            parts.append(f"{info.width}×{info.height}")
+        if info.duration_s > 0:
+            parts.append(fmt_duration(info.duration_s))
+        if info.bitrate_bps > 0:
+            mbps = info.bitrate_bps / 1_000_000
+            parts.append(f"{mbps:.1f} Mbps")
+        self._info_lbl.configure(text="  ·  ".join(parts) if parts else "")
 
     # ── Theme ──────────────────────────────────────────────────────────────
 
@@ -247,11 +294,18 @@ class FileCard(ctk.CTkFrame):
         self._name_lbl.configure(text_color=T.text)
         self._ext_badge.configure(text_color=T.text3, fg_color=T.surface3)
         self._size_lbl.configure(text_color=T.text3)
+        self._info_lbl.configure(text_color=T.text3)
         self._out_lbl.configure(text_color=T.success_text)
         self._remove_btn.configure(fg_color=T.surface2)
         self._open_btn.configure(fg_color=T.success_bg)
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _initial_info_text(self) -> str:
+        """Show a 'loading…' placeholder until the ffprobe result arrives."""
+        if self.job.media_info is not None:
+            return ""   # will be filled by update_info() at end of _build
+        return "Đang đọc thông tin…"
 
     def _file_size_str(self) -> str:
         try:
@@ -274,12 +328,13 @@ class ConvertTab(ctk.CTkFrame):
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, fg_color=T.bg, corner_radius=0)
         self._app = app
-        self._jobs: dict[str, FileJob] = {}          # id → FileJob
-        self._cards: dict[str, FileCard] = {}        # id → FileCard
+        self._jobs: dict[str, FileJob] = {}
+        self._cards: dict[str, FileCard] = {}
         self._quality = tk.StringVar(value="standard")
         self._output_dir: Optional[Path] = None
-        self._svc = FfmpegConvertService()
-        self._converting_count = 0
+        self._queue = ConvertQueue(max_concurrent=_MAX_CONCURRENT)
+        # Count of jobs in QUEUED or CONVERTING state (for "Convert All" gating)
+        self._active_count = 0
         self._build()
         T.register(self._on_theme)
 
@@ -318,6 +373,16 @@ class ConvertTab(ctk.CTkFrame):
         )
         self._add_btn.pack(side="left", padx=(0, 8))
 
+        # NEW: add whole folder
+        self._folder_btn = ctk.CTkButton(
+            right_hdr, text="📁  Thêm thư mục",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=36, width=150, corner_radius=8,
+            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2,
+            command=self._browse_folder,
+        )
+        self._folder_btn.pack(side="left", padx=(0, 8))
+
         self._clear_btn = ctk.CTkButton(
             right_hdr, text="Xóa xong",
             font=ctk.CTkFont(size=11),
@@ -333,7 +398,6 @@ class ConvertTab(ctk.CTkFrame):
         cfg.pack(fill="x", padx=28, pady=(16, 0))
         self._cfg_frame = cfg
 
-        # Quality preset row
         q_row = ctk.CTkFrame(cfg, fg_color="transparent")
         q_row.pack(fill="x", padx=20, pady=(16, 8))
 
@@ -349,7 +413,6 @@ class ConvertTab(ctk.CTkFrame):
             card.pack(side="left", padx=(0, 8))
             self._quality_cards[key] = card
 
-        # Output folder row
         out_row = ctk.CTkFrame(cfg, fg_color="transparent")
         out_row.pack(fill="x", padx=20, pady=(4, 16))
 
@@ -377,7 +440,7 @@ class ConvertTab(ctk.CTkFrame):
             command=self._browse_output,
         ).pack(side="left")
 
-        # ── Drop zone / file list ─────────────────────────────────────────
+        # ── File list ─────────────────────────────────────────────────────
         self._scroll = ctk.CTkScrollableFrame(
             self, fg_color="transparent",
             scrollbar_button_color=T.scrollbar,
@@ -385,7 +448,6 @@ class ConvertTab(ctk.CTkFrame):
         )
         self._scroll.pack(fill="both", expand=True, padx=28, pady=(12, 0))
 
-        # Empty state placeholder
         self._empty = ctk.CTkFrame(self._scroll, fg_color="transparent")
         self._empty.pack(fill="both", expand=True)
 
@@ -393,18 +455,15 @@ class ConvertTab(ctk.CTkFrame):
             self._empty, text="📂",
             font=ctk.CTkFont(size=40), text_color=T.text3,
         ).pack(pady=(50, 8))
-
         ctk.CTkLabel(
             self._empty, text="Chưa có file nào",
             font=ctk.CTkFont(size=16, weight="bold"), text_color=T.text3,
         ).pack()
-
         ctk.CTkLabel(
             self._empty,
-            text='Nhấn "＋ Thêm file" để chọn video từ máy',
+            text='Nhấn "＋ Thêm file" hoặc "📁 Thêm thư mục" để chọn video',
             font=ctk.CTkFont(size=12), text_color=T.text3,
         ).pack(pady=(4, 0))
-
         ctk.CTkLabel(
             self._empty,
             text="Hỗ trợ: MP4, MKV, WebM, AVI, MOV, FLV, WMV, TS, 3GP…",
@@ -439,13 +498,11 @@ class ConvertTab(ctk.CTkFrame):
         )
         self._convert_btn.pack(side="right")
 
-        # Init quality selection highlight
         self._on_quality_change("standard")
 
     def _make_quality_card(
         self, parent, key: str, label: str, desc: str
     ) -> ctk.CTkFrame:
-        """Create a clickable quality preset card."""
         is_selected = (key == self._quality.get())
         card = ctk.CTkFrame(
             parent,
@@ -455,23 +512,18 @@ class ConvertTab(ctk.CTkFrame):
             border_color=T.primary if is_selected else T.border,
             cursor="hand2",
         )
-
         ctk.CTkLabel(
             card, text=label,
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=T.text if is_selected else T.text2,
         ).pack(padx=14, pady=(10, 2))
-
         ctk.CTkLabel(
             card, text=desc,
             font=ctk.CTkFont(size=9), text_color=T.text3,
             wraplength=160,
         ).pack(padx=14, pady=(0, 10))
-
-        # Bind clicks on the card and all children
         for w in (card, *card.winfo_children()):
             w.bind("<Button-1>", lambda _e, k=key: self._on_quality_change(k))
-
         return card
 
     # ── Event handlers ────────────────────────────────────────────────────
@@ -484,7 +536,6 @@ class ConvertTab(ctk.CTkFrame):
                 fg_color=T.primary_dim if selected else T.surface2,
                 border_color=T.primary if selected else T.border,
             )
-            # Update label colour (first child)
             children = card.winfo_children()
             if children:
                 children[0].configure(
@@ -500,6 +551,42 @@ class ConvertTab(ctk.CTkFrame):
             self._add_file(Path(p))
         self._refresh_ui()
 
+    def _browse_folder(self) -> None:
+        """Open a folder dialog, then scan it for media files in a background thread."""
+        d = fd.askdirectory(title="Chọn thư mục chứa video")
+        if not d:
+            return
+        self._status_lbl.configure(text="Đang quét thư mục…", text_color=T.text3)
+        threading.Thread(
+            target=self._scan_folder_async,
+            args=(Path(d),),
+            daemon=True,
+            name="omnidl-folder-scan",
+        ).start()
+
+    def _scan_folder_async(self, folder: Path) -> None:
+        """Background: scan folder, then dispatch results back to the UI thread."""
+        found = scan_folder_for_media(folder)
+        if self.winfo_exists():
+            self.after(0, lambda: self._add_files_from_scan(found, folder))
+
+    def _add_files_from_scan(self, files: list[Path], folder: Path) -> None:
+        """UI-thread: bulk-add scanned files and refresh."""
+        for f in files:
+            self._add_file(f)
+        self._refresh_ui()
+        count = len(files)
+        if count == 0:
+            self._status_lbl.configure(
+                text=f"Không tìm thấy video trong {folder.name}",
+                text_color=T.text3,
+            )
+        else:
+            self._status_lbl.configure(
+                text=f"Đã thêm {count} file từ {folder.name}",
+                text_color=T.success,
+            )
+
     def _browse_output(self) -> None:
         d = fd.askdirectory(title="Chọn thư mục lưu file đã chuyển")
         if d:
@@ -508,16 +595,34 @@ class ConvertTab(ctk.CTkFrame):
             self._out_entry.insert(0, str(self._output_dir))
 
     def _add_file(self, path: Path) -> None:
-        # Skip duplicates (same absolute path)
+        """Add a single file to the job list and start background media probe."""
         existing = {j.source.resolve() for j in self._jobs.values()}
         if path.resolve() in existing:
             return
-        if path.suffix.lower() not in {
-            ext.lstrip("*") for ext in _INPUT_EXTS
-        }:
+        if path.suffix.lower().lstrip(".") not in SUPPORTED_EXTS:
             return
         job = FileJob(source=path)
         self._jobs[job.id] = job
+        # Probe media info in background; update the card when ready
+        threading.Thread(
+            target=self._probe_info_async,
+            args=(job,),
+            daemon=True,
+            name=f"omnidl-probe-{path.stem[:16]}",
+        ).start()
+
+    def _probe_info_async(self, job: FileJob) -> None:
+        """Background: run ffprobe and update the card with the result."""
+        info = probe_media_info(job.source)
+        job.media_info = info
+        if self.winfo_exists():
+            self.after(0, lambda j=job: self._update_card_info(j))
+
+    def _update_card_info(self, job: FileJob) -> None:
+        """UI-thread: push MediaInfo result into the job's FileCard."""
+        card = self._cards.get(job.id)
+        if card and card.winfo_exists():
+            card.update_info(job.media_info)
 
     def _start_all(self) -> None:
         pending = [j for j in self._jobs.values()
@@ -535,21 +640,32 @@ class ConvertTab(ctk.CTkFrame):
 
         self._convert_btn.configure(state="disabled")
 
+        # Mark all as QUEUED first, then submit to the queue
         for job in pending:
-            self._start_job(job, quality, output_dir)
+            job.state = FileState.QUEUED
+            job.progress = 0.0
+            self._active_count += 1
+            self._rebuild_card(job)
+
+        for job in pending:
+            self._submit_job(job, quality, output_dir)
 
         self._refresh_ui()
 
-    def _start_job(
+    def _submit_job(
         self,
         job: FileJob,
         quality: str,
         output_dir: Optional[Path],
     ) -> None:
-        job.state = FileState.CONVERTING
-        job.progress = 0.0
-        self._converting_count += 1
-        self._rebuild_card(job)
+        """Submit *job* to the ConvertQueue.  All callbacks are thread-safe."""
+
+        def on_start() -> None:
+            """Called from worker thread when the semaphore slot is acquired."""
+            job.state = FileState.CONVERTING
+            job.progress = 0.0
+            if self.winfo_exists():
+                self.after(0, lambda j=job: self._tick_card(j))
 
         def on_progress(pct: float) -> None:
             if not self.winfo_exists():
@@ -561,30 +677,30 @@ class ConvertTab(ctk.CTkFrame):
             job.state = FileState.DONE
             job.progress = 100.0
             job.output = out_path
-            self._converting_count -= 1
+            self._active_count -= 1
             if self.winfo_exists():
                 self.after(0, lambda j=job: self._finish_card(j))
 
         def on_error(msg: str) -> None:
             job.state = FileState.FAILED
             job.error_msg = msg
-            self._converting_count -= 1
+            self._active_count -= 1
             if self.winfo_exists():
                 self.after(0, lambda j=job: self._finish_card(j))
 
-        self._svc.convert(
+        self._queue.submit(
             source=job.source,
-            quality=quality,       # type: ignore[arg-type]
+            quality=quality,        # type: ignore[arg-type]
             output_dir=output_dir,
             on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,
+            on_start=on_start,
         )
 
     # ── Card management ───────────────────────────────────────────────────
 
     def _rebuild_card(self, job: FileJob) -> None:
-        """Create or recreate the FileCard for job."""
         old = self._cards.pop(job.id, None)
         if old and old.winfo_exists():
             old.destroy()
@@ -607,21 +723,17 @@ class ConvertTab(ctk.CTkFrame):
         if card and card.winfo_exists():
             card.refresh()
         self._refresh_status()
-        # Re-enable convert button when all jobs settle
-        if self._converting_count == 0:
-            if self.winfo_exists():
-                self._convert_btn.configure(state="normal")
+        if self._active_count == 0 and self.winfo_exists():
+            self._convert_btn.configure(state="normal")
 
     def _refresh_ui(self) -> None:
         """Sync full card list with self._jobs."""
-        # Remove cards for deleted jobs
         for jid in list(self._cards):
             if jid not in self._jobs:
                 c = self._cards.pop(jid)
                 if c.winfo_exists():
                     c.destroy()
 
-        # Add cards for new jobs
         for job in self._jobs.values():
             if job.id not in self._cards:
                 card = FileCard(
@@ -632,7 +744,6 @@ class ConvertTab(ctk.CTkFrame):
                 card.pack(fill="x", pady=(0, 8))
                 self._cards[job.id] = card
 
-        # Show/hide empty state
         if self._jobs:
             self._empty.pack_forget()
         elif not self._empty.winfo_ismapped():
@@ -642,18 +753,21 @@ class ConvertTab(ctk.CTkFrame):
 
     def _refresh_status(self) -> None:
         total      = len(self._jobs)
-        done       = sum(1 for j in self._jobs.values()
-                         if j.state == FileState.DONE)
-        converting = sum(1 for j in self._jobs.values()
-                         if j.state == FileState.CONVERTING)
-        failed     = sum(1 for j in self._jobs.values()
-                         if j.state == FileState.FAILED)
+        done       = sum(1 for j in self._jobs.values() if j.state == FileState.DONE)
+        converting = sum(1 for j in self._jobs.values() if j.state == FileState.CONVERTING)
+        queued     = sum(1 for j in self._jobs.values() if j.state == FileState.QUEUED)
+        failed     = sum(1 for j in self._jobs.values() if j.state == FileState.FAILED)
 
         if total == 0:
             self._status_lbl.configure(text="")
-        elif converting > 0:
+        elif converting > 0 or queued > 0:
+            parts = []
+            if converting:
+                parts.append(f"Đang xử lý {converting}")
+            if queued:
+                parts.append(f"{queued} chờ")
             self._status_lbl.configure(
-                text=f"Đang xử lý {converting} file…",
+                text="  ·  ".join(parts) + f" / {total} file",
                 text_color=T.warning,
             )
         elif done == total:
@@ -662,16 +776,16 @@ class ConvertTab(ctk.CTkFrame):
                 text_color=T.success,
             )
         else:
-            parts = []
+            parts2 = []
             if done:
-                parts.append(f"{done} xong")
+                parts2.append(f"{done} xong")
             if failed:
-                parts.append(f"{failed} lỗi")
+                parts2.append(f"{failed} lỗi")
             pending = total - done - failed
             if pending:
-                parts.append(f"{pending} chờ")
+                parts2.append(f"{pending} chờ")
             self._status_lbl.configure(
-                text="  ·  ".join(parts),
+                text="  ·  ".join(parts2),
                 text_color=T.text3,
             )
 
@@ -709,10 +823,11 @@ class ConvertTab(ctk.CTkFrame):
         self._out_entry.configure(fg_color=T.input, border_color=T.border2,
                                   text_color=T.text)
         self._add_btn.configure(fg_color=T.primary, hover_color=T.primary_hover)
+        self._folder_btn.configure(fg_color=T.surface2, hover_color=T.surface3,
+                                   text_color=T.text2)
         self._clear_btn.configure(fg_color=T.surface2, hover_color=T.surface3,
                                   text_color=T.text2)
         self._convert_btn.configure(fg_color=T.primary, hover_color=T.primary_hover)
         self._scroll.configure(scrollbar_button_color=T.scrollbar,
-                                scrollbar_button_hover_color=T.scrollbar_hover)
-        # Re-highlight quality cards
+                               scrollbar_button_hover_color=T.scrollbar_hover)
         self._on_quality_change(self._quality.get())
