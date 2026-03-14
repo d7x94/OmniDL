@@ -1871,3 +1871,62 @@ class TestProgressWatchdog:
         assert not proc.killed, (
             "Watchdog must not kill a process that produces output before the timeout"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: get_available_encoder_options — edge cases and contract
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetAvailableEncoderOptionsContract:
+    """get_available_encoder_options must satisfy its full public contract."""
+
+    def _run(self, available_keys: set[str]) -> list[tuple[str, str]]:
+        _reset_cache()
+        with patch(
+            "app.services.ffmpeg_convert_service.detect_available_encoders",
+            return_value=available_keys,
+        ):
+            return get_available_encoder_options()
+
+    def test_cpu_present_when_only_cpu_available(self):
+        opts = self._run({"cpu"})
+        assert opts and opts[0][0] == "cpu"
+
+    def test_cpu_present_when_gpu_also_available(self):
+        opts = self._run({"cpu", "nvenc"})
+        keys = [k for k, _ in opts]
+        assert "cpu" in keys
+
+    def test_unknown_key_not_in_result(self):
+        opts = self._run({"cpu", "hypothetical_encoder"})
+        keys = [k for k, _ in opts]
+        assert "hypothetical_encoder" not in keys
+
+    def test_result_subset_of_encoder_options(self):
+        """Every returned key must come from the known ENCODER_OPTIONS list."""
+        opts = self._run({"cpu", "nvenc", "qsv"})
+        known_keys = {k for k, _ in ENCODER_OPTIONS}
+        for key, _ in opts:
+            assert key in known_keys
+
+    def test_all_four_gpus_returned_when_all_available(self):
+        opts = self._run({"cpu", "nvenc", "qsv", "amf", "videotoolbox"})
+        keys = [k for k, _ in opts]
+        for k in ("nvenc", "qsv", "amf", "videotoolbox"):
+            assert k in keys
+
+    def test_passes_ffmpeg_bin_through(self, tmp_path: Path):
+        """Explicit ffmpeg_bin must reach detect_available_encoders."""
+        received: list = []
+
+        def fake_detect(ffmpeg_bin=None):
+            received.append(ffmpeg_bin)
+            return {"cpu"}
+
+        with patch(
+            "app.services.ffmpeg_convert_service.detect_available_encoders",
+            side_effect=fake_detect,
+        ):
+            get_available_encoder_options(ffmpeg_bin=tmp_path / "ffmpeg")
+
+        assert received[0] == tmp_path / "ffmpeg"

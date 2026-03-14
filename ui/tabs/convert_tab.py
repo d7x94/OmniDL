@@ -37,7 +37,7 @@ from app.services.ffmpeg_convert_service import (
     MediaInfo,
     SPEED_OPTIONS,
     SUPPORTED_EXTS,
-    detect_available_encoders,
+    get_available_encoder_options,
     probe_media_info,
     scan_folder_for_media,
 )
@@ -345,6 +345,12 @@ class ConvertTab(ctk.CTkFrame):
         self._speed_preset = tk.StringVar(value="balanced")
         self._custom_quality = tk.IntVar(value=23)
         self._available_encoders: set[str] = {"cpu"}
+        # Filtered (key, label) pairs — kept in sync with _available_encoders.
+        # Starts as CPU-only so the dropdown is always usable before detection
+        # finishes.  Replaced on the UI thread once detection completes.
+        self._available_encoder_options: list[tuple[str, str]] = [
+            opt for opt in ENCODER_OPTIONS if opt[0] == "cpu"
+        ]
         # Detect available encoders in background; UI enabled when ready
         threading.Thread(
             target=self._detect_encoders_async,
@@ -467,7 +473,7 @@ class ConvertTab(ctk.CTkFrame):
 
         self._encoder_menu = ctk.CTkOptionMenu(
             enc_row,
-            values=[label for _, label in ENCODER_OPTIONS],
+            values=[label for _, label in self._available_encoder_options],
             command=self._on_encoder_change,
             width=200, height=32, corner_radius=6,
             fg_color=T.surface2, button_color=T.surface3,
@@ -649,29 +655,62 @@ class ConvertTab(ctk.CTkFrame):
     # ── Encoder detection ─────────────────────────────────────────────────
 
     def _detect_encoders_async(self) -> None:
-        """Background: detect GPU encoders, then update UI on main thread."""
-        available = detect_available_encoders()
+        """Background thread: call get_available_encoder_options(), then hand
+        the result to the UI thread via after(0, …).  Never touches widgets
+        directly — Tkinter is not thread-safe."""
+        available_opts = get_available_encoder_options()
         if self.winfo_exists():
-            self.after(0, lambda: self._apply_available_encoders(available))
+            self.after(0, lambda opts=available_opts: self._apply_available_encoders(opts))
 
-    def _apply_available_encoders(self, available: set[str]) -> None:
-        """UI-thread: enable/disable encoder options based on detection result."""
-        self._available_encoders = available
-        gpu_labels = [
-            label for key, label in ENCODER_OPTIONS
-            if key in available and key != "cpu"
-        ]
+    def _apply_available_encoders(
+        self, available_opts: list[tuple[str, str]]
+    ) -> None:
+        """UI-thread: replace dropdown values with the filtered encoder list.
+
+        ``available_opts`` is the list returned by
+        :func:`get_available_encoder_options` — it already contains only
+        encoders that are detected *and* validated on this machine, with CPU
+        always first.
+        """
+        # Guarantee CPU is present even if something went wrong upstream
+        if not any(key == "cpu" for key, _ in available_opts):
+            cpu_opt = next((o for o in ENCODER_OPTIONS if o[0] == "cpu"), ("cpu", "CPU (libx264)"))
+            available_opts = [cpu_opt] + list(available_opts)
+
+        self._available_encoder_options = available_opts
+        self._available_encoders = {key for key, _ in available_opts}
+
+        # Replace dropdown values — ConfigureError is safe to ignore if widget
+        # was destroyed while detection was running.
+        labels = [label for _, label in available_opts]
+        try:
+            self._encoder_menu.configure(values=labels)
+        except Exception:
+            return
+
+        # If current selection is no longer available, fall back to CPU
+        current_key = self._encoder_key.get()
+        if current_key not in self._available_encoders:
+            self._encoder_key.set("cpu")
+            cpu_label = next((l for k, l in available_opts if k == "cpu"), labels[0])
+            self._encoder_menu.set(cpu_label)
+
+        # Update status label
+        gpu_labels = [l for k, l in available_opts if k != "cpu"]
         status = f"GPU: {', '.join(gpu_labels)}" if gpu_labels else "Chỉ CPU"
         self._encoder_status_lbl.configure(text=status, text_color=T.text3)
 
     # ── Encoder / speed event handlers ───────────────────────────────────
 
     def _on_encoder_change(self, label: str) -> None:
-        # Map label back to key
-        for key, opt_label in ENCODER_OPTIONS:
+        # Map label back to key using the *filtered* options, not the static
+        # full list — the two may have different entries after detection.
+        for key, opt_label in self._available_encoder_options:
             if opt_label == label:
                 self._encoder_key.set(key)
-                break
+                return
+        # Fallback: if label somehow not found, default to CPU
+        self._encoder_key.set("cpu")
 
     def _on_speed_change(self, key: str) -> None:
         self._speed_preset.set(key)
