@@ -34,6 +34,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Optional
@@ -186,9 +187,10 @@ ENCODER_OPTIONS: list[tuple[str, str]] = [
 ]
 
 SPEED_OPTIONS: list[tuple[str, str]] = [
-    ("quality",  "Chat luong"),
-    ("balanced", "Can bang"),
-    ("fast",     "Nhanh"),
+    # "quality" → slower encode, better compression (not a quality *level*)
+    ("quality",  "Chậm (Nén tốt nhất)"),
+    ("balanced", "Cân bằng"),
+    ("fast",     "Nhanh (Nén ít hơn)"),
 ]
 
 
@@ -199,6 +201,57 @@ class EncodeSettings:
     quality: str = "standard"
     speed_preset: str = "balanced"
     custom_quality: int = 23
+
+
+# ── Encoder detection cache ───────────────────────────────────────────────────
+# Cache the result of detect_available_encoders() for _ENCODER_CACHE_TTL_S
+# seconds so repeated calls (e.g. on tab re-focus) do not re-run the expensive
+# validation test-encodes.  Protected by a lock so concurrent calls on different
+# worker threads see a consistent result.
+
+_ENCODER_CACHE_TTL_S: float = 300.0          # 5 minutes
+_encoder_cache: Optional[set[str]] = None
+_encoder_cache_ts: float = 0.0
+_encoder_cache_lock: threading.Lock = threading.Lock()
+
+
+def _encoder_cache_get() -> Optional[set[str]]:
+    """Return the cached encoder set if still fresh, else ``None``."""
+    with _encoder_cache_lock:
+        if _encoder_cache is not None and (
+            time.monotonic() - _encoder_cache_ts < _ENCODER_CACHE_TTL_S
+        ):
+            return set(_encoder_cache)          # defensive copy
+    return None
+
+
+def _encoder_cache_set(result: set[str]) -> None:
+    """Store *result* in the cache with the current timestamp."""
+    global _encoder_cache, _encoder_cache_ts   # noqa: PLW0603
+    with _encoder_cache_lock:
+        _encoder_cache = set(result)
+        _encoder_cache_ts = time.monotonic()
+
+
+def get_available_encoder_options(
+    ffmpeg_bin: Optional[Path] = None,
+) -> list[tuple[str, str]]:
+    """Return only the encoder options available on this machine.
+
+    Calls :func:`detect_available_encoders` (with caching) and filters
+    :data:`ENCODER_OPTIONS` down to the encoders that are actually available.
+    CPU (``libx264``) is always included regardless of detection results.
+
+    Returns:
+        A list of ``(key, label)`` tuples in the same order as
+        :data:`ENCODER_OPTIONS` but containing only available encoders.
+    """
+    available = detect_available_encoders(ffmpeg_bin=ffmpeg_bin)
+    return [
+        (key, label)
+        for key, label in ENCODER_OPTIONS
+        if key in available
+    ]
 
 
 # ── Hardware detection ────────────────────────────────────────────────────────
@@ -253,6 +306,11 @@ def detect_available_encoders(
 ) -> set[str]:
     """Return the set of encoder keys available **and working** on this machine.
 
+    Results are cached for :data:`_ENCODER_CACHE_TTL_S` seconds (default
+    5 minutes) so repeated calls do not re-run the expensive validation
+    test-encodes.  Pass an explicit *ffmpeg_bin* to bypass the cache (useful
+    in tests that need isolated results).
+
     Two-phase detection:
 
     1. **List phase** — runs ``ffmpeg -encoders`` and builds a candidate set
@@ -265,11 +323,19 @@ def detect_available_encoders(
     CPU (``libx264``) is always included regardless of detection results.
     Safe to call from any thread.
     """
+    # ── Cache lookup (only when ffmpeg_bin is not explicitly overridden) ──
+    if ffmpeg_bin is None:
+        cached = _encoder_cache_get()
+        if cached is not None:
+            logger.debug("detect_available_encoders: returning cached result %s", cached)
+            return cached
+
     available: set[str] = {"cpu"}
 
     if ffmpeg_bin is None:
         loc = locate_ffmpeg()
         if loc is None:
+            _encoder_cache_set(available)
             return available
         ffmpeg_bin = Path(loc.ffmpeg_bin)
 
@@ -284,6 +350,7 @@ def detect_available_encoders(
             errors="replace",
         )
         if result.returncode != 0:
+            _encoder_cache_set(available)
             return available
 
         output = result.stdout
@@ -293,6 +360,7 @@ def detect_available_encoders(
 
     except Exception as exc:
         logger.debug("detect_available_encoders: list phase error: %s", exc)
+        _encoder_cache_set(available)
         return available
 
     # ── Phase 2: validate each candidate with a short test encode ─────────
@@ -307,6 +375,7 @@ def detect_available_encoders(
                 key, codec,
             )
 
+    _encoder_cache_set(available)
     return available
 
 
@@ -606,6 +675,77 @@ class FfmpegConvertService:
     # ── FFmpeg command builder ────────────────────────────────────────────
 
     @staticmethod
+    def _build_cpu_flags(
+        preset: dict,
+        encode_settings: Optional[EncodeSettings],
+    ) -> list[str]:
+        """Return the CPU (libx264) video-codec flags for one encode pass.
+
+        When *encode_settings* is ``None`` the legacy preset dict is used
+        directly; otherwise the speed preset and quality are taken from the
+        settings object.  Always produces exactly the same flag sequence as the
+        inline code it replaced.
+        """
+        if encode_settings is None:
+            return [
+                "-c:v", "libx264",
+                "-profile:v", "high",
+                "-level:v", "4.0",
+                "-preset", preset["preset"],
+                "-crf", preset["crf"],
+            ]
+        cpu_preset_val = _CPU_SPEED_MAP.get(encode_settings.speed_preset, "fast")
+        crf_val = (
+            str(encode_settings.custom_quality)
+            if encode_settings.quality == "custom"
+            else _PRESETS.get(encode_settings.quality, _PRESETS["standard"])["crf"]
+        )
+        return [
+            "-c:v", "libx264",
+            "-profile:v", "high",
+            "-level:v", "4.0",
+            "-preset", cpu_preset_val,
+            "-crf", crf_val,
+        ]
+
+    @staticmethod
+    def _build_gpu_flags(
+        hw_spec: HwEncoderSpec,
+        encode_settings: EncodeSettings,
+    ) -> list[str]:
+        """Return the GPU hardware-encoder video-codec flags for one encode pass.
+
+        Handles codec, optional profile/level, quality flag+value, and optional
+        speed preset.  Quality value is looked up from *hw_spec.quality_values*
+        or taken from *encode_settings.custom_quality* when quality is
+        ``"custom"``.
+        """
+        quality_val = (
+            str(encode_settings.custom_quality)
+            if encode_settings.quality == "custom"
+            else hw_spec.quality_values.get(
+                encode_settings.quality,
+                hw_spec.quality_values.get("standard", "23"),
+            )
+        )
+
+        flags: list[str] = ["-c:v", hw_spec.ffmpeg_codec]
+
+        if hw_spec.supports_profile_level:
+            flags += ["-profile:v", "high", "-level:v", "4.0"]
+
+        flags += [hw_spec.quality_flag, quality_val]
+
+        if hw_spec.speed_flag and hw_spec.speed_map:
+            speed_val = hw_spec.speed_map.get(
+                encode_settings.speed_preset,
+                next(iter(hw_spec.speed_map.values())),
+            )
+            flags += [hw_spec.speed_flag, speed_val]
+
+        return flags
+
+    @staticmethod
     def _build_cmd(
         ffmpeg_bin: Path,
         source: Path,
@@ -616,9 +756,10 @@ class FfmpegConvertService:
     ) -> list[str]:
         """Assemble the ffmpeg CLI command for a single encode pass.
 
-        When *encode_settings* is ``None`` the legacy CPU path is used so that
-        existing call-sites without settings continue to work identically.
-        Unknown encoder keys fall back to libx264 silently.
+        Delegates video-codec flag building to :meth:`_build_cpu_flags` or
+        :meth:`_build_gpu_flags`.  When *encode_settings* is ``None`` the
+        legacy CPU path is used for full backward compatibility.  Unknown
+        encoder keys fall back to libx264 silently.
         """
         vf_parts = ["scale=trunc(iw/2)*2:trunc(ih/2)*2"]
         if preset["scale"]:
@@ -636,65 +777,22 @@ class FfmpegConvertService:
             "-loglevel", "error",
         ]
 
-        # ── Video codec + quality ─────────────────────────────────────────
+        # ── Video codec + quality (delegated to helpers) ──────────────────
         if encode_settings is None:
-            # Legacy path — pure CPU, reads preset dict directly
-            cmd += [
-                "-c:v", "libx264",
-                "-profile:v", "high",
-                "-level:v", "4.0",
-                "-preset", preset["preset"],
-                "-crf", preset["crf"],
-            ]
+            cmd += FfmpegConvertService._build_cpu_flags(preset, None)
         else:
             encoder_key = encode_settings.encoder_key
             hw_spec: Optional[HwEncoderSpec] = _HW_ENCODER_CATALOG.get(encoder_key)
 
             if encoder_key == "cpu" or hw_spec is None:
-                # CPU path with EncodeSettings (supports speed + custom quality)
                 if hw_spec is None and encoder_key != "cpu":
                     logger.warning(
                         "_build_cmd: unknown encoder %r, falling back to libx264",
                         encoder_key,
                     )
-                cpu_preset_val = _CPU_SPEED_MAP.get(encode_settings.speed_preset, "fast")
-                if encode_settings.quality == "custom":
-                    crf_val = str(encode_settings.custom_quality)
-                else:
-                    crf_val = _PRESETS.get(
-                        encode_settings.quality, _PRESETS["standard"]
-                    )["crf"]
-                cmd += [
-                    "-c:v", "libx264",
-                    "-profile:v", "high",
-                    "-level:v", "4.0",
-                    "-preset", cpu_preset_val,
-                    "-crf", crf_val,
-                ]
+                cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
             else:
-                # GPU path
-                if encode_settings.quality == "custom":
-                    quality_val = str(encode_settings.custom_quality)
-                else:
-                    quality_val = hw_spec.quality_values.get(
-                        encode_settings.quality,
-                        hw_spec.quality_values.get("standard", "23"),
-                    )
-
-                cmd += ["-c:v", hw_spec.ffmpeg_codec]
-
-                if hw_spec.supports_profile_level:
-                    cmd += ["-profile:v", "high", "-level:v", "4.0"]
-
-                cmd += [hw_spec.quality_flag, quality_val]
-
-                # Speed preset (only when the encoder supports it)
-                if hw_spec.speed_flag and hw_spec.speed_map:
-                    speed_val = hw_spec.speed_map.get(
-                        encode_settings.speed_preset,
-                        next(iter(hw_spec.speed_map.values())),
-                    )
-                    cmd += [hw_spec.speed_flag, speed_val]
+                cmd += FfmpegConvertService._build_gpu_flags(hw_spec, encode_settings)
 
         # ── Common output flags ───────────────────────────────────────────
         cmd += [
@@ -713,8 +811,23 @@ class FfmpegConvertService:
         cmd: list[str],
         duration_s: float,
         on_progress: Optional[Callable[[float], None]],
+        watchdog_timeout_s: float = 30.0,
     ) -> None:
-        """Execute *cmd*, parse stdout for FFmpeg progress API data."""
+        """Execute *cmd*, parse stdout for FFmpeg progress API data.
+
+        Two daemon threads drain stdout (progress) and stderr (errors) in
+        parallel to prevent pipe stalls.  The calling thread blocks on
+        ``proc.wait(timeout)``.
+
+        A **progress watchdog** runs alongside: if no stdout output is received
+        for *watchdog_timeout_s* seconds while the process is still alive the
+        process is killed and a :class:`ConversionError` is raised.  This
+        catches encoders that silently stall (e.g. GPU drivers hanging on
+        initialisation or a broken pipe).
+
+        Raises :class:`ConversionError` on non-zero exit, overall timeout, or
+        watchdog timeout.
+        """
         timeout_s = max(60.0, min(
             duration_s * 6 if duration_s > 0 else 3600.0,
             14400.0,
@@ -728,6 +841,11 @@ class FfmpegConvertService:
 
         stderr_lines: list[str] = []
 
+        # Shared state for the watchdog — updated by _drain_stdout on every
+        # stdout line (not only progress lines, so any FFmpeg output resets it).
+        _last_stdout_activity = [time.monotonic()]
+        _stdout_done = threading.Event()
+
         def _drain_stderr() -> None:
             assert proc.stderr is not None  # noqa: S101
             for raw in proc.stderr:
@@ -737,6 +855,7 @@ class FfmpegConvertService:
         def _drain_stdout() -> None:
             assert proc.stdout is not None  # noqa: S101
             for raw in proc.stdout:
+                _last_stdout_activity[0] = time.monotonic()
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if on_progress and duration_s > 0:
                     m = _PROG_MS_RE.match(line)
@@ -746,6 +865,21 @@ class FfmpegConvertService:
                             elapsed_s = time_us / 1_000_000
                             pct = min(99.0, elapsed_s / duration_s * 100.0)
                             on_progress(pct)
+            _stdout_done.set()
+
+        def _watchdog() -> None:
+            """Kill the process if stdout goes silent for too long."""
+            while not _stdout_done.wait(timeout=1.0):
+                if proc.poll() is not None:
+                    break   # process already exited — watchdog not needed
+                elapsed_since_last = time.monotonic() - _last_stdout_activity[0]
+                if elapsed_since_last >= watchdog_timeout_s:
+                    logger.warning(
+                        "_run_ffmpeg: no stdout for %.0f s — killing stalled process",
+                        elapsed_since_last,
+                    )
+                    proc.kill()
+                    break
 
         stderr_thread = threading.Thread(
             target=_drain_stderr, daemon=True, name="omnidl-ffmpeg-stderr"
@@ -753,8 +887,12 @@ class FfmpegConvertService:
         stdout_thread = threading.Thread(
             target=_drain_stdout, daemon=True, name="omnidl-ffmpeg-stdout"
         )
+        watchdog_thread = threading.Thread(
+            target=_watchdog, daemon=True, name="omnidl-ffmpeg-watchdog"
+        )
         stderr_thread.start()
         stdout_thread.start()
+        watchdog_thread.start()
 
         try:
             proc.wait(timeout=timeout_s)
@@ -767,6 +905,8 @@ class FfmpegConvertService:
 
         stderr_thread.join()
         stdout_thread.join()
+        # Watchdog exits naturally once _stdout_done is set or process exits.
+        watchdog_thread.join(timeout=2.0)
 
         if proc.returncode != 0:
             tail = "\n".join(stderr_lines[-10:])

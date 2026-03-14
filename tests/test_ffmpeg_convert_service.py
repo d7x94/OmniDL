@@ -1336,3 +1336,538 @@ class TestDetectWithValidation:
         assert "nvenc" in result
         assert "qsv" not in result
         assert set(validated) == {"h264_nvenc", "h264_qsv"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: Encoder detection cache
+# ─────────────────────────────────────────────────────────────────────────────
+
+import time as _time_mod
+import app.services.ffmpeg_convert_service as _svc_mod
+
+from app.services.ffmpeg_convert_service import (
+    _encoder_cache_get,
+    _encoder_cache_set,
+    _ENCODER_CACHE_TTL_S,
+    get_available_encoder_options,
+)
+
+
+def _reset_cache() -> None:
+    """Helper: clear the module-level encoder cache between tests."""
+    _svc_mod._encoder_cache = None
+    _svc_mod._encoder_cache_ts = 0.0
+
+
+class FakeLoc:
+    """Minimal locate_ffmpeg() return value that points at a dummy binary."""
+    def __init__(self, path: Path) -> None:
+        self.ffmpeg_bin = str(path)
+        self.ffprobe_bin = str(path)
+
+
+class TestEncoderCache:
+    """Encoder detection result is cached to avoid repeated test-encodes."""
+
+    def test_cache_miss_returns_none_initially(self):
+        _reset_cache()
+        assert _encoder_cache_get() is None
+
+    def test_cache_set_then_get_returns_same_set(self):
+        _reset_cache()
+        _encoder_cache_set({"cpu", "nvenc"})
+        result = _encoder_cache_get()
+        assert result == {"cpu", "nvenc"}
+
+    def test_cache_get_returns_defensive_copy(self):
+        _reset_cache()
+        _encoder_cache_set({"cpu"})
+        copy1 = _encoder_cache_get()
+        copy1.add("bogus")  # mutate the returned copy
+        copy2 = _encoder_cache_get()
+        assert "bogus" not in copy2, "Mutating returned copy must not corrupt cache"
+
+    def test_cache_expires_after_ttl(self):
+        _reset_cache()
+        _encoder_cache_set({"cpu"})
+        # Wind the clock past the TTL
+        _svc_mod._encoder_cache_ts = _time_mod.monotonic() - _ENCODER_CACHE_TTL_S - 1
+        assert _encoder_cache_get() is None
+
+    def test_cache_still_fresh_within_ttl(self):
+        _reset_cache()
+        _encoder_cache_set({"cpu", "qsv"})
+        # Move clock forward but stay within the TTL window
+        _svc_mod._encoder_cache_ts = _time_mod.monotonic() - _ENCODER_CACHE_TTL_S + 60
+        result = _encoder_cache_get()
+        assert result == {"cpu", "qsv"}
+
+    def test_detect_second_call_uses_cache(self, tmp_path: Path):
+        """When called twice without explicit ffmpeg_bin, subprocess runs once."""
+        _reset_cache()
+        ffmpeg = tmp_path / "ffmpeg"
+        fake_loc = FakeLoc(ffmpeg)
+        list_result = MagicMock(returncode=0, stdout=" V..... libx264\n", stderr="")
+        call_count = [0]
+
+        def se(cmd, **kw):
+            call_count[0] += 1
+            return list_result
+
+        with patch("app.services.ffmpeg_convert_service.locate_ffmpeg",
+                   return_value=fake_loc):
+            with patch("subprocess.run", side_effect=se):
+                r1 = detect_available_encoders()
+                r2 = detect_available_encoders()
+
+        assert call_count[0] == 1, (
+            f"Expected 1 subprocess call (second uses cache), got {call_count[0]}"
+        )
+        assert r1 == r2
+
+    def test_detect_explicit_ffmpeg_bin_bypasses_cache_read(self, tmp_path: Path):
+        """An explicit ffmpeg_bin always runs fresh (no cache read)."""
+        _reset_cache()
+        # Pre-populate cache with a value
+        _encoder_cache_set({"cpu", "nvenc"})
+        ffmpeg = tmp_path / "ffmpeg"
+        list_result = MagicMock(returncode=0, stdout=" V..... libx264\n", stderr="")
+        call_count = [0]
+
+        def se(cmd, **kw):
+            call_count[0] += 1
+            return list_result
+
+        with patch("subprocess.run", side_effect=se):
+            result = detect_available_encoders(ffmpeg_bin=ffmpeg)
+
+        # subprocess must have been called even though cache was populated
+        assert call_count[0] >= 1, "Explicit ffmpeg_bin must bypass cache read"
+        # Result comes from fresh detection (libx264-only output → cpu only)
+        assert result == {"cpu"}
+
+    def test_detect_populates_cache(self, tmp_path: Path):
+        """After detect runs, cache is populated for subsequent no-bin calls."""
+        _reset_cache()
+        ffmpeg = tmp_path / "ffmpeg"
+        fake_loc = FakeLoc(ffmpeg)
+        list_result = MagicMock(returncode=0, stdout=" V..... libx264\n", stderr="")
+
+        with patch("app.services.ffmpeg_convert_service.locate_ffmpeg",
+                   return_value=fake_loc):
+            with patch("subprocess.run", return_value=list_result):
+                detect_available_encoders()
+
+        cached = _encoder_cache_get()
+        assert cached is not None, "Cache must be populated after detection"
+        assert "cpu" in cached
+
+    def test_ttl_constant_is_positive(self):
+        assert _ENCODER_CACHE_TTL_S > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: get_available_encoder_options
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetAvailableEncoderOptions:
+    """UI helper returns only encoders that are actually available."""
+
+    def _run(self, available_keys: set[str]) -> list[tuple[str, str]]:
+        _reset_cache()
+        with patch(
+            "app.services.ffmpeg_convert_service.detect_available_encoders",
+            return_value=available_keys,
+        ):
+            return get_available_encoder_options()
+
+    def test_cpu_always_included(self):
+        opts = self._run({"cpu"})
+        keys = [k for k, _ in opts]
+        assert "cpu" in keys
+
+    def test_cpu_only_when_no_gpu(self):
+        opts = self._run({"cpu"})
+        assert len(opts) == 1
+        assert opts[0][0] == "cpu"
+
+    def test_gpu_included_when_available(self):
+        opts = self._run({"cpu", "nvenc"})
+        keys = [k for k, _ in opts]
+        assert "nvenc" in keys
+
+    def test_absent_gpu_excluded(self):
+        opts = self._run({"cpu"})
+        keys = [k for k, _ in opts]
+        assert "nvenc" not in keys
+        assert "qsv" not in keys
+        assert "amf" not in keys
+
+    def test_multiple_gpus_included(self):
+        opts = self._run({"cpu", "nvenc", "qsv", "amf"})
+        keys = [k for k, _ in opts]
+        assert "nvenc" in keys and "qsv" in keys and "amf" in keys
+
+    def test_order_matches_encoder_options(self):
+        """Returned order must match ENCODER_OPTIONS, not arbitrary set order."""
+        from app.services.ffmpeg_convert_service import ENCODER_OPTIONS
+        opts = self._run({"cpu", "nvenc", "qsv"})
+        keys = [k for k, _ in opts]
+        expected_order = [k for k, _ in ENCODER_OPTIONS if k in {"cpu", "nvenc", "qsv"}]
+        assert keys == expected_order
+
+    def test_labels_match_encoder_options(self):
+        """Labels returned must be the same as in ENCODER_OPTIONS."""
+        from app.services.ffmpeg_convert_service import ENCODER_OPTIONS
+        opts = self._run({"cpu", "nvenc"})
+        label_map = {k: l for k, l in ENCODER_OPTIONS}
+        for key, label in opts:
+            assert label == label_map[key]
+
+    def test_returns_list_of_tuples(self):
+        opts = self._run({"cpu"})
+        assert isinstance(opts, list)
+        assert all(isinstance(item, tuple) and len(item) == 2 for item in opts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: Speed preset label clarity
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSpeedOptionLabels:
+    """Speed preset labels must be clear and not confuse speed with quality."""
+
+    def test_three_speed_options_exist(self):
+        assert len(SPEED_OPTIONS) == 3
+
+    def test_speed_option_keys_unchanged(self):
+        keys = [k for k, _ in SPEED_OPTIONS]
+        assert keys == ["quality", "balanced", "fast"]
+
+    def test_quality_label_not_ambiguously_named_quality(self):
+        """'quality' speed preset label must not just say 'Chất lượng'/'Chat luong'
+        which users confuse with the output quality level."""
+        quality_label = next(l for k, l in SPEED_OPTIONS if k == "quality")
+        # The old ambiguous label was "Chat luong" — must be changed
+        assert quality_label.lower() not in ("chat luong", "chất lượng"), (
+            f"Label {quality_label!r} is too ambiguous — must clarify it means slower"
+        )
+
+    def test_all_labels_are_non_empty_strings(self):
+        for key, label in SPEED_OPTIONS:
+            assert isinstance(label, str) and label.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: Command builder helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.services.ffmpeg_convert_service import (
+    _HW_ENCODER_CATALOG as _CATALOG,
+)
+
+
+class TestBuildCpuFlags:
+    """_build_cpu_flags returns the correct libx264 flags."""
+
+    def test_legacy_none_settings_reads_preset(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], None)
+        assert "-c:v" in flags and flags[flags.index("-c:v") + 1] == "libx264"
+        assert "-crf" in flags and flags[flags.index("-crf") + 1] == "23"
+        assert "-preset" in flags and flags[flags.index("-preset") + 1] == "fast"
+
+    def test_high_preset_via_none_settings(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["high"], None)
+        assert flags[flags.index("-crf") + 1] == "18"
+        assert flags[flags.index("-preset") + 1] == "medium"
+
+    def test_speed_quality_maps_to_medium(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        s = EncodeSettings(encoder_key="cpu", speed_preset="quality")
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], s)
+        assert flags[flags.index("-preset") + 1] == "medium"
+
+    def test_speed_balanced_maps_to_fast(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        s = EncodeSettings(encoder_key="cpu", speed_preset="balanced")
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], s)
+        assert flags[flags.index("-preset") + 1] == "fast"
+
+    def test_speed_fast_maps_to_veryfast(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        s = EncodeSettings(encoder_key="cpu", speed_preset="fast")
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], s)
+        assert flags[flags.index("-preset") + 1] == "veryfast"
+
+    def test_custom_quality_uses_custom_value(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        s = EncodeSettings(encoder_key="cpu", quality="custom", custom_quality=20)
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], s)
+        assert flags[flags.index("-crf") + 1] == "20"
+
+    def test_always_includes_profile_and_level(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], None)
+        assert "-profile:v" in flags and flags[flags.index("-profile:v") + 1] == "high"
+        assert "-level:v" in flags and flags[flags.index("-level:v") + 1] == "4.0"
+
+    def test_result_is_list_of_strings(self):
+        from app.services.ffmpeg_convert_service import _PRESETS
+        flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], None)
+        assert isinstance(flags, list)
+        assert all(isinstance(f, str) for f in flags)
+
+
+class TestBuildGpuFlags:
+    """_build_gpu_flags returns the correct hardware-encoder flags."""
+
+    def test_nvenc_codec(self):
+        s = EncodeSettings(encoder_key="nvenc", quality="standard")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["nvenc"], s)
+        assert "h264_nvenc" in flags
+
+    def test_nvenc_quality_flag_is_cq(self):
+        s = EncodeSettings(encoder_key="nvenc", quality="standard")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["nvenc"], s)
+        assert "-cq" in flags and flags[flags.index("-cq") + 1] == "23"
+
+    def test_nvenc_custom_quality(self):
+        s = EncodeSettings(encoder_key="nvenc", quality="custom", custom_quality=17)
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["nvenc"], s)
+        assert flags[flags.index("-cq") + 1] == "17"
+
+    def test_nvenc_speed_balanced(self):
+        s = EncodeSettings(encoder_key="nvenc", speed_preset="balanced")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["nvenc"], s)
+        assert "-preset" in flags and flags[flags.index("-preset") + 1] == "p5"
+
+    def test_qsv_codec_and_quality_flag(self):
+        s = EncodeSettings(encoder_key="qsv", quality="high")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["qsv"], s)
+        assert "h264_qsv" in flags
+        assert "-global_quality" in flags and flags[flags.index("-global_quality") + 1] == "18"
+
+    def test_amf_codec_and_quality_flag(self):
+        s = EncodeSettings(encoder_key="amf", quality="standard")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["amf"], s)
+        assert "h264_amf" in flags
+        assert "-qp" in flags
+
+    def test_amf_speed_flag_is_quality_not_preset(self):
+        s = EncodeSettings(encoder_key="amf", speed_preset="balanced")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["amf"], s)
+        assert "-quality" in flags and flags[flags.index("-quality") + 1] == "balanced"
+
+    def test_videotoolbox_no_profile_level(self):
+        s = EncodeSettings(encoder_key="videotoolbox", quality="standard")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["videotoolbox"], s)
+        assert "-profile:v" not in flags
+        assert "-level:v" not in flags
+
+    def test_videotoolbox_uses_qv_flag(self):
+        s = EncodeSettings(encoder_key="videotoolbox", quality="standard")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["videotoolbox"], s)
+        assert "-q:v" in flags
+
+    def test_result_is_list_of_strings(self):
+        s = EncodeSettings(encoder_key="nvenc", quality="standard")
+        flags = FfmpegConvertService._build_gpu_flags(_CATALOG["nvenc"], s)
+        assert isinstance(flags, list)
+        assert all(isinstance(f, str) for f in flags)
+
+    def test_build_cmd_delegates_to_helpers(self, tmp_path: Path):
+        """_build_cmd result must be identical whether inline or via helpers."""
+        from app.services.ffmpeg_convert_service import _PRESETS
+        s = EncodeSettings(encoder_key="nvenc", quality="high", speed_preset="fast")
+        cmd = FfmpegConvertService._build_cmd(
+            tmp_path / "ffmpeg", tmp_path / "in.mkv",
+            tmp_path / "out.mp4", _PRESETS["high"],
+            encode_settings=s,
+        )
+        # Verify the full command still contains the expected flags
+        assert "h264_nvenc" in cmd
+        assert "-cq" in cmd and cmd[cmd.index("-cq") + 1] == "19"
+        assert "-preset" in cmd and cmd[cmd.index("-preset") + 1] == "p3"
+        assert "-progress" in cmd and "pipe:1" in cmd
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: Progress watchdog
+# ─────────────────────────────────────────────────────────────────────────────
+
+import io as _io_mod
+
+
+class _HealthyProc:
+    """Simulates an ffmpeg process that produces stdout quickly and exits 0."""
+
+    returncode = 0
+
+    def __init__(self) -> None:
+        lines = b"out_time_ms=1000000\nout_time_ms=2000000\nprogress=end\n"
+        self.stdout = _io_mod.BytesIO(lines)
+        self.stderr = _io_mod.BytesIO(b"")
+        self.killed = False
+
+    def wait(self, timeout=None) -> int:
+        return 0
+
+    def poll(self) -> Optional[int]:
+        return 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def communicate(self):
+        return b"", b""
+
+
+class _StalledProc:
+    """Simulates an ffmpeg process that produces no stdout and never exits."""
+
+    returncode: Optional[int] = None
+
+    def __init__(self) -> None:
+        self._killed = threading.Event()
+        self.stderr = _io_mod.BytesIO(b"")
+        self.stdout = self._make_blocking_stdout()
+        self.killed = False
+
+    def _make_blocking_stdout(self):
+        parent = self
+
+        class _BlockIO(_io_mod.RawIOBase):
+            def readable(self) -> bool:
+                return True
+
+            def readinto(self, b) -> int:
+                parent._killed.wait()
+                return 0   # EOF after kill
+
+        return _io_mod.BufferedReader(_BlockIO())
+
+    def wait(self, timeout=None) -> int:
+        self._killed.wait(timeout=timeout)
+        self.returncode = -9
+        return -9
+
+    def poll(self) -> Optional[int]:
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+        self._killed.set()
+
+    def communicate(self):
+        return b"", b""
+
+
+class TestProgressWatchdog:
+    """Watchdog terminates a stalled FFmpeg process after silence timeout."""
+
+    def test_healthy_process_not_killed(self):
+        proc = _HealthyProc()
+        with patch("subprocess.Popen", return_value=proc):
+            FfmpegConvertService._run_ffmpeg(
+                ["/ffmpeg"], 10.0, None, watchdog_timeout_s=2.0
+            )
+        assert not proc.killed, "Watchdog must not kill a process that produces output"
+
+    def test_stalled_process_is_killed(self):
+        proc = _StalledProc()
+        with patch("subprocess.Popen", return_value=proc):
+            try:
+                FfmpegConvertService._run_ffmpeg(
+                    ["/ffmpeg"], 10.0, None, watchdog_timeout_s=1.0
+                )
+            except ConversionError:
+                pass   # expected — process was killed → non-zero exit
+        assert proc.killed, "Watchdog must kill a process that produces no stdout"
+
+    def test_stalled_process_raises_conversion_error(self):
+        proc = _StalledProc()
+        with patch("subprocess.Popen", return_value=proc):
+            with pytest.raises(ConversionError):
+                FfmpegConvertService._run_ffmpeg(
+                    ["/ffmpeg"], 10.0, None, watchdog_timeout_s=1.0
+                )
+
+    def test_watchdog_default_timeout_is_positive(self):
+        """The default watchdog_timeout_s must be a positive number."""
+        import inspect
+        sig = inspect.signature(FfmpegConvertService._run_ffmpeg)
+        default = sig.parameters["watchdog_timeout_s"].default
+        assert isinstance(default, (int, float)) and default > 0
+
+    def test_watchdog_default_timeout_is_reasonable(self):
+        """Default timeout must be in a reasonable range (10 s – 5 min)."""
+        import inspect
+        sig = inspect.signature(FfmpegConvertService._run_ffmpeg)
+        default = sig.parameters["watchdog_timeout_s"].default
+        assert 10 <= default <= 300, (
+            f"watchdog_timeout_s default {default} is outside 10–300 s range"
+        )
+
+    def test_progress_resets_watchdog_timer(self):
+        """A process that produces stdout periodically must not be killed."""
+        import queue
+
+        class _SlowButAliveProc:
+            returncode: Optional[int] = None
+
+            def __init__(self) -> None:
+                self._q: queue.Queue = queue.Queue()
+                self.stderr = _io_mod.BytesIO(b"")
+                self.stdout = self._make_trickle_stdout()
+                self.killed = False
+                # Emit one progress line every 0.2 s for 0.8 s then close
+                def _feeder():
+                    for i in range(4):
+                        _time_mod.sleep(0.2)
+                        self._q.put(
+                            f"out_time_ms={i * 250_000}\n".encode()
+                        )
+                    self._q.put(None)  # sentinel → EOF
+                threading.Thread(target=_feeder, daemon=True).start()
+
+            def _make_trickle_stdout(self):
+                parent = self
+
+                class _TrickleIO(_io_mod.RawIOBase):
+                    def readable(self): return True
+
+                    def readinto(self, b):
+                        item = parent._q.get()
+                        if item is None:
+                            return 0
+                        n = len(item)
+                        b[:n] = item
+                        return n
+
+                return _io_mod.BufferedReader(_TrickleIO())
+
+            def wait(self, timeout=None):
+                _time_mod.sleep(1.5)
+                self.returncode = 0
+                return 0
+
+            def poll(self): return self.returncode
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+            def communicate(self): return b"", b""
+
+        proc = _SlowButAliveProc()
+        # Watchdog fires after 0.5 s without output; process emits every 0.2 s
+        with patch("subprocess.Popen", return_value=proc):
+            FfmpegConvertService._run_ffmpeg(
+                ["/ffmpeg"], 10.0, None, watchdog_timeout_s=0.5
+            )
+        assert not proc.killed, (
+            "Watchdog must not kill a process that produces output before the timeout"
+        )
