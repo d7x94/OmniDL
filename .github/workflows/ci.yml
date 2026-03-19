@@ -54,7 +54,7 @@ jobs:
       # FIX D-1: add linting and type-checking so style/type regressions
       # are caught before they reach the main branch.
       - name: Install linters
-        run: pip install ruff mypy
+        run: pip install ruff mypy types-requests
 
       # ── Lint ──────────────────────────────────────────────────────────────
       # E = pycodestyle errors, F = pyflakes, B = flake8-bugbear, I = isort

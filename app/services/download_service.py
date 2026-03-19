@@ -9,7 +9,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
@@ -22,6 +22,9 @@ from infrastructure.downloader.download_manager import DownloadManager
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 from infrastructure.storage.history_repository import HistoryRepository
 from utils.helpers import is_valid_url
+
+if TYPE_CHECKING:
+    from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,7 @@ class DownloadService:
         history_repo: HistoryRepository,
         engine: YtDlpEngine,
         event_bus: Optional[EventBus] = None,
-        gallery_engine: Optional[object] = None,
+        gallery_engine: Optional[GalleryDlEngine] = None,
     ) -> None:
         self._config = config
         self._manager = download_manager

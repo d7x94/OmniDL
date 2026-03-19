@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
@@ -17,6 +17,9 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
+
+if TYPE_CHECKING:
+    from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +39,7 @@ class DownloadManager:
         config: ConfigManager,
         engine: YtDlpEngine,
         event_bus: Optional[EventBus] = None,
-        gallery_engine: Optional[object] = None,
+        gallery_engine: Optional[GalleryDlEngine] = None,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
