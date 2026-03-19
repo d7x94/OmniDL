@@ -59,6 +59,90 @@ def _validate_cookie_path(config: "ConfigManager") -> str | None:
     )
     return None
 
+# ── Per-platform cookie resolution ───────────────────────────────────────────
+
+# Maps registered hostname suffixes to ConfigManager platform keys.
+# Intentionally uses exact hostname matching (via urlparse) rather than
+# substring regex to prevent the subdomain-spoofing attack:
+#   malicious.tiktok.com.evil → hostname does NOT end with ".tiktok.com"
+#   www.tiktok.com            → hostname ends with ".tiktok.com" ✅
+_COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
+    ("tiktok.com",    "tiktok"),
+    ("instagram.com", "instagram"),
+    ("facebook.com",  "facebook"),
+    ("fb.watch",      "facebook"),
+    ("twitter.com",   "twitter"),
+    ("x.com",         "twitter"),
+    ("threads.net",   "threads"),
+]
+
+
+def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
+    """Return the validated cookie file path for *url*, or None.
+
+    Resolution order (first non-empty validated path wins):
+      1. config.platform_cookies[platform_key]   — per-platform (most specific)
+      2. config.cookie_file                       — global fallback
+      3. None                                     — no cookie configured
+
+    Platforms with no entry in _COOKIE_PLATFORM_MAP (YouTube, Twitch, Vimeo …)
+    skip step 1 and go straight to the global fallback.  This means YouTube
+    downloads never accidentally receive an Instagram session cookie.
+
+    Security: every candidate path is validated by _validate_cookie_path_raw()
+    (same CWE-22 logic as _validate_cookie_path()) before being returned.
+    """
+    from urllib.parse import urlparse as _urlparse
+
+    # ── Step 1: detect platform from URL hostname ─────────────────────────
+    platform_key: str | None = None
+    try:
+        hostname = (_urlparse(url).hostname or "").lower()
+    except Exception:
+        hostname = ""
+
+    for domain, key in _COOKIE_PLATFORM_MAP:
+        if hostname == domain or hostname.endswith("." + domain):
+            platform_key = key
+            break
+
+    # ── Step 2: per-platform cookie ───────────────────────────────────────
+    if platform_key:
+        candidate = config.get_cookie_for_platform(platform_key).strip()
+        validated = _validate_cookie_path_raw(candidate, config)
+        if validated:
+            logger.info(
+                "Using %s cookie: %s", platform_key, validated
+            )
+            return validated
+
+    # ── Step 3: global cookie fallback ───────────────────────────────────
+    return _validate_cookie_path(config)
+
+
+def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str | None:
+    """Validate a raw cookie file path string (CWE-22).
+
+    Identical logic to _validate_cookie_path() but accepts the path
+    as a parameter rather than reading from config.cookie_file.
+    Used by _resolve_cookie() to validate per-platform paths.
+
+    Returns the resolved absolute path string, or None if invalid.
+    """
+    if not cookie_file:
+        return None
+    cp = Path(cookie_file).resolve()
+    safe_root = config.config_path.parent.resolve()
+    is_safe = cp == safe_root or safe_root in cp.parents
+    if cp.is_file() and is_safe:
+        return str(cp)
+    logger.warning(
+        "platform cookie_file rejected — not inside safe directory: %s",
+        cookie_file,
+    )
+    return None
+
+
 # Map URL patterns to friendly platform names
 _PLATFORM_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"youtu\.?be", re.I), "YouTube"),
@@ -92,7 +176,81 @@ def _friendly_error(msg: str) -> str:
         return "Live stream has not started yet."
     if "ended" in msg_l and "live" in msg_l:
         return "Live stream has ended."
+    # Instagram photo — no video stream in post
+    if "no video in this post" in msg_l or "no video formats found" in msg_l:
+        return (
+            "Bài đăng này chỉ có ảnh, không có video.\n"
+            "OmniDL sẽ thử tải ảnh với format='best'.\n"
+            "Nếu vẫn lỗi, hãy đảm bảo đang dùng cookie Instagram "
+            "(không phải Facebook) và yt-dlp phiên bản mới nhất."
+        )
+    # yt-dlp internal extractor bug (e.g. KeyError('=') on base64 shortcodes)
+    if "extractor error" in msg_l or "keyerror" in msg_l:
+        return (
+            "yt-dlp gặp lỗi nội bộ khi phân tích URL này.\n"
+            "Hãy cập nhật yt-dlp lên phiên bản mới nhất:\n"
+            "Settings → Cập nhật yt-dlp, hoặc chạy: pip install -U yt-dlp"
+        )
+    # Instagram-specific errors
+    if "checkpoint" in msg_l or "challenge_required" in msg_l:
+        return (
+            "Instagram yêu cầu xác minh tài khoản.\n"
+            "1. Mở Instagram trên trình duyệt, hoàn tất xác minh.\n"
+            "2. Export cookies mới (dùng tiện ích 'Get cookies.txt LOCALLY').\n"
+            "3. Cập nhật cookie file trong Settings → Network → Cookie file.\n"
+            "Lưu ý: Cookie Instagram thường hết hạn sau 1–2 tuần."
+        )
+    if "rate" in msg_l and ("limit" in msg_l or "429" in msg_l or "too many" in msg_l):
+        return (
+            "Rate limit reached — too many requests in a short time.\n"
+            "Wait 5–10 minutes and try again. "
+            "Enabling browser cookies in Settings may help."
+        )
+    # Facebook-specific errors
+    if "content not available" in msg_l or "this content isn" in msg_l:
+        return (
+            "This Facebook content is not available. "
+            "It may require login or be restricted to a specific region."
+        )
+    # Geographic / copyright restrictions
+    if "geo" in msg_l or "region" in msg_l or "country" in msg_l:
+        return (
+            "This content is geo-restricted and not available in your region.\n"
+            "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
+        )
+    if "copyright" in msg_l or "blocked" in msg_l and "copyright" in msg_l:
+        return "This content has been blocked due to a copyright claim."
+    # Account issues
+    if "suspended" in msg_l or "account" in msg_l and "disabled" in msg_l:
+        return "The account that posted this content has been suspended."
+    if "members only" in msg_l or "subscriber" in msg_l:
+        return (
+            "This content is for members/subscribers only.\n"
+            "Make sure you are logged in via cookies in Settings."
+        )
     return msg[:200]
+
+
+# Profile / channel / playlist URL patterns — these return multiple items.
+# When a URL matches, extract_info() uses extract_flat="in_playlist" to
+# collect entry URLs without triggering per-video extractors (fast, safe).
+# Platforms supported: TikTok, YouTube, Twitter/X, Instagram, Threads.
+#
+# Design rule: match ONLY unambiguous profile/channel/playlist URLs.
+# Single-video URLs (e.g. /video/ID, /watch?v=, /status/) must NOT match
+# so noplaylist=True continues to work correctly for them.
+_PROFILE_URL_RE = re.compile(
+    r'(?:'
+    r'tiktok\.com/@[^/?#]+/?(?:[?#].*)?$'                              # TikTok @user
+    r'|youtube\.com/(?:@[^/?#]+|c/[^/?#]+|channel/[^/?#]+|user/[^/?#]+)/?(?:[?#].*)?$'  # YT channel
+    r'|youtube\.com/playlist\?'                                         # YT playlist
+    r'|twitter\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$'              # Twitter @user (not tweets)
+    r'|x\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$'                    # X @user (not tweets)
+    r'|instagram\.com/(?!p/|reel/|tv/|live/|stories/|explore/|accounts/)[^/?#]+/?(?:[?#].*)?$'  # IG profile
+    r'|threads\.net/@[^/?#]+/?(?:[?#].*)?$'                            # Threads @user
+    r')',
+    re.I,
+)
 
 
 # Known URL patterns that yt-dlp cannot handle, with actionable messages.
@@ -106,24 +264,38 @@ _ALWAYS_BLOCKED: list[tuple[re.Pattern, str]] = [
 # Patterns that require cookies — only blocked if no cookie is configured
 _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
     (
+        # Instagram Stories — both /stories/ path and reel-style archive URLs
         re.compile(r"instagram\.com/stories/", re.I),
         "Instagram Stories require login cookies.\n"
         "Set up a cookie file in Settings → Network → Cookie file.",
     ),
     (
-        re.compile(r"instagram\.com/[^/]+/live(?:/|$)", re.I),
+        # Instagram Live — old format (/username/live/) AND new 2024+ format (/live/shortcode/)
+        re.compile(r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I),
         "Instagram Live streams require login cookies.\n"
         "Set up a cookie file in Settings → Network → Cookie file.",
     ),
     (
+        # Facebook Live — facebook.com/live/ path
         re.compile(r"facebook\.com/live/", re.I),
         "Facebook Live streams require cookies.\n"
         "Set up a cookie file in Settings → Network → Cookie file.",
     ),
     (
-        # Matches /stories/ paths AND ?view_single=1 story viewer URLs
-        # e.g. facebook.com/stories/XYZ or story.php?...&view_single=1
-        re.compile(r"facebook\.com/(?:stories/|.*[?&]view_single)", re.I),
+        # Facebook Stories — covers:
+        # /stories/XYZ, /stories/viewer/?..., ?view_single=1 viewer URLs,
+        # m.facebook.com/stories/..., permalink.php?story_fbid=...,
+        # share/r/ story shares, and the generic /story.php path.
+        re.compile(
+            r"facebook\.com/(?:"
+            r"stories/"                          # /stories/XYZ
+            r"|story\.php"                       # story.php?...
+            r"|permalink\.php[^#]*story_fbid"    # permalink.php?story_fbid=...
+            r"|share/[rs]/"                      # share/r/ or share/s/ story links
+            r"|.*[?&]view_single"                # ?view_single=1 story viewer
+            r")",
+            re.I,
+        ),
         "Facebook Stories require login cookies.\n"
         "Set up a cookie file in Settings → Network → Cookie file.",
     ),
@@ -150,6 +322,7 @@ def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
 _MEDIA_EXTS: frozenset[str] = frozenset({
     ".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v",
     ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav",
+    ".ts",   # MPEG-TS live recordings — needed so pp_hook captures task.filename
 })
 
 
@@ -176,11 +349,31 @@ class YtDlpEngine:
         # configured by the user (intent check).  Security validation of the
         # actual cookie path happens in _validate_cookie_path() below.
         has_cookies = bool(
-            self._config.cookie_file.strip() or self._config.use_cookies
+            self._config.cookie_file.strip()
+            or self._config.use_cookies
+            or any(self._config.platform_cookies.values())
         )
         early_msg = _check_unsupported_url(url, has_cookies=has_cookies)
         if early_msg:
             raise RuntimeError(early_msg)
+
+        # ── Profile / channel / playlist fast-path ────────────────────────
+        # When URL is a profile or channel page (TikTok @user, YouTube channel,
+        # Twitter/X @user, Instagram profile, Threads @user, YouTube playlist),
+        # use extract_flat="in_playlist" to collect entry URLs WITHOUT triggering
+        # per-video extractors.
+        #
+        # WHY: The two-pass approach (noplaylist=True then noplaylist=False with
+        # ignoreerrors) caused "No video formats found!" and "status code 100004"
+        # errors to appear in logs because yt-dlp attempted to fully extract each
+        # entry even when we only needed the URL.  extract_flat="in_playlist"
+        # returns only {_type, url, id, title} per entry — no extractor called,
+        # no per-video errors, extremely fast (1 API call vs N calls).
+        #
+        # SAFETY: _PROFILE_URL_RE is conservative — only unambiguous profile URLs
+        # match.  Single-video URLs (/video/ID, /watch?v=, /status/) do NOT match,
+        # so noplaylist=True continues to protect against accidental playlist
+        # expansion for videos that are embedded inside playlists.
 
         opts: dict[str, object] = {
             "quiet": True,
@@ -195,17 +388,31 @@ class YtDlpEngine:
 
         if self._config.proxy:
             opts["proxy"] = self._config.proxy
-        # Cookie-file validation delegated to _validate_cookie_path() (CWE-22).
-        # See the helper's docstring for the security rationale.
-        _cookie_path = _validate_cookie_path(self._config)
+        # Cookie resolution: per-platform first, global fallback second.
+        # _resolve_cookie() uses urlparse hostname matching (not regex substring)
+        # to prevent subdomain-spoofing. CWE-22 guard applied inside.
+        _cookie_path = _resolve_cookie(url, self._config)
         if _cookie_path:
             opts["cookiefile"] = _cookie_path
         if not opts.get("cookiefile") and self._config.use_cookies:
             opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
 
+        # Profile / channel fast-path (after opts are built so cookie/proxy
+        # are included in the flat playlist fetch).
+        if _PROFILE_URL_RE.search(url):
+            return self._extract_playlist_flat(url, opts)
+
         # Retry up to 2 times on transient errors (rate limit, network blip).
         last_exc: Exception | None = None
         info = None
+        # Regex for Instagram photo/reel/TV shortcode extraction from URL.
+        # Used to build a synthetic MediaInfo when yt-dlp raises "no video in
+        # this post" — photo posts have no video stream but ARE downloadable
+        # with format="best".  The shortcode is extracted for video_id so
+        # the filename template is still meaningful.
+        _ig_photo_re = re.compile(
+            r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)", re.I
+        )
         for attempt in range(3):
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -213,17 +420,67 @@ class YtDlpEngine:
                 break   # success
             except yt_dlp.utils.DownloadError as exc:
                 msg = str(exc)
-                # Don't retry hard errors (private, removed, unsupported)
+                msg_l = msg.lower()
+
+                # FIX-A: Instagram photo posts raise one of two errors during
+                # extract_info depending on the yt-dlp version and whether
+                # cookies are present:
+                #   • Without cookies: "There is no video in this post"
+                #   • With valid cookies: "No video formats found!"
+                # Both mean the same thing — the post contains only images.
+                # We intercept both and return synthetic MediaInfo(formats=[],
+                # duration=0) so BUG Z photo detection in home_tab activates.
+                # The download() call then uses format="best" to fetch the image.
+                _is_photo_error = (
+                    "no video in this post" in msg_l
+                    or "no video formats found" in msg_l
+                )
+                if _is_photo_error and _ig_photo_re.search(url):
+                    m = _ig_photo_re.search(url)
+                    shortcode = m.group(1) if m else ""
+                    logger.info(
+                        "Instagram photo detected (no video stream) — "
+                        "returning synthetic MediaInfo for photo path: %s",
+                        shortcode,
+                    )
+                    return MediaInfo(
+                        url=url,
+                        title=shortcode or "Instagram Photo",
+                        uploader="",
+                        duration=0,
+                        thumbnail="",
+                        platform="Instagram",
+                        formats=[],
+                        is_live=False,
+                        was_live=False,
+                        video_id=shortcode,
+                        # Signal DownloadManager to use GalleryDlEngine.
+                        # yt-dlp cannot download image-only posts — routing
+                        # here avoids 4 pointless retries through yt-dlp.
+                        source_engine="gallery_dl",
+                    )
+
+                # Don't retry hard errors (private, removed, unsupported,
+                # or Instagram auth challenges that retrying cannot resolve).
                 _hard = (
                     "private", "removed", "unsupported url",
                     "not found", "404", "login",
+                    "checkpoint", "challenge_required",   # FIX-3: Instagram auth
+                    "no video in this post",              # FIX-B: photo (no cookies)
+                    "no video formats found",             # FIX-B: photo (with cookies)
+                    "extractor error",                    # FIX-B: yt-dlp internal bug
                 )
-                if any(k in msg.lower() for k in _hard):
+                if any(k in msg_l for k in _hard):
                     raise RuntimeError(_friendly_error(msg)) from exc
                 last_exc = exc
                 if attempt < 2:
                     time.sleep(2 ** attempt)   # 1s, 2s back-off
             except Exception as exc:
+                msg = str(exc)
+                # FIX-B: KeyError('=') manifests as a generic Exception with
+                # "extractor error" in the string representation.  Don't retry.
+                if "extractor error" in msg.lower() or "keyerror" in msg.lower():
+                    raise RuntimeError(_friendly_error(msg)) from exc
                 last_exc = exc
                 if attempt < 2:
                     time.sleep(2 ** attempt)
@@ -236,12 +493,17 @@ class YtDlpEngine:
                        "Tip: enable browser cookies in Settings -> Network.")
             raise RuntimeError(_friendly_error(msg)) from last_exc
 
-        # Handle playlist — take first entry
-        if info.get("_type") == "playlist":
-            entries = info.get("entries", [])
-            if not entries:
-                raise RuntimeError("Playlist is empty.")
-            info = entries[0]
+        # Single-video path — profile URLs were already handled above by
+        # _extract_playlist_flat() and returned early.  At this point info
+        # is always a single-video dict (not a playlist).
+        # FIX-2: Force is_live=True for Instagram Live URLs even when yt-dlp
+        # returns is_live=False (race condition during stream preparation).
+        # The regex mirrors _instagram_live_re in download() — both patterns
+        # must be kept in sync (BUG Y invariant).
+        _ig_live_re = re.compile(
+            r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
+        )
+        is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
 
         return MediaInfo(
             url=url,
@@ -251,10 +513,124 @@ class YtDlpEngine:
             thumbnail=info.get("thumbnail") or "",
             platform=_detect_platform(url),
             formats=info.get("formats") or [],
-            is_live=bool(info.get("is_live")),
+            is_live=is_live_resolved,
             was_live=bool(info.get("was_live")),
-            # saved so download() needs no 2nd network call
             video_id=info.get("id") or "",
+            # playlist_entries always empty here — profile URLs returned early
+        )
+
+    # ── Playlist / channel fast extraction ───────────────────────────────
+
+    def _extract_playlist_flat(
+        self, url: str, base_opts: "dict[str, object]"
+    ) -> "MediaInfo":
+        """
+        Collect entry URLs from a profile/channel/playlist URL using
+        extract_flat="in_playlist".
+
+        extract_flat tells yt-dlp to return ONLY basic metadata (url, id,
+        title) for each entry WITHOUT calling per-video extractors.  This
+        means:
+          • No "No video formats found!" errors for unavailable videos
+          • No "status code 100004" errors for geo-restricted entries
+          • Extremely fast — single HTTP request instead of N requests
+          • Output entries are always {"_type": "url", "url": "<webpage_url>"}
+            so entry["url"] IS the canonical webpage URL, no preference
+            logic needed
+
+        Supports: TikTok @user, YouTube channel/@handle/playlist,
+                  Twitter/X @user, Instagram profile, Threads @user.
+
+        Raises RuntimeError on hard failures (auth, empty playlist, network).
+        """
+        opts_flat: dict[str, object] = dict(base_opts)
+        opts_flat["noplaylist"]   = False
+        opts_flat["extract_flat"] = "in_playlist"
+        # ignoreerrors silences per-entry warnings that can appear even with
+        # extract_flat (e.g. private entries in a mixed public/private feed).
+        opts_flat["ignoreerrors"] = True
+
+        logger.info(
+            "Profile/playlist flat-extract: %s", url
+        )
+        try:
+            with yt_dlp.YoutubeDL(opts_flat) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except yt_dlp.utils.DownloadError as exc:
+            raise RuntimeError(_friendly_error(str(exc))) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"Không thể lấy danh sách từ URL này: {exc}"
+            ) from exc
+
+        if not info:
+            raise RuntimeError(
+                "Không nhận được dữ liệu từ URL. "
+                "Kiểm tra lại URL hoặc thêm cookie file trong Settings."
+            )
+
+        # Flatten nested playlist (e.g. YouTube channel has a playlist of
+        # playlists) — we only want leaf-level video entries.
+        raw_entries: list[dict] = []
+
+        def _collect(node: "dict") -> None:
+            for entry in node.get("entries") or []:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("_type") == "playlist":
+                    _collect(entry)           # recurse one level
+                else:
+                    raw_entries.append(entry)
+
+        if info.get("_type") == "playlist":
+            _collect(info)
+        else:
+            # URL returned a single item (unusual for profile URL but handle it)
+            raw_entries.append(info)
+
+        # Extract webpage URLs — with extract_flat, entry["url"] is always
+        # the canonical video page URL (not a CDN stream URL).
+        entry_urls: list[str] = []
+        for entry in raw_entries:
+            u = entry.get("url") or entry.get("webpage_url") or ""
+            if u.startswith("http"):
+                entry_urls.append(u)
+
+        logger.info(
+            "Flat-extract: %d URLs from '%s'",
+            len(entry_urls),
+            (info.get("title") or info.get("uploader") or url)[:60],
+        )
+
+        if not entry_urls:
+            raise RuntimeError(
+                "Playlist/profile không có video nào khả dụng.\n"
+                "Có thể tài khoản private hoặc cần cookie file."
+            )
+
+        # Use playlist-level title/uploader for display
+        playlist_title = (
+            info.get("title")
+            or info.get("uploader")
+            or info.get("channel")
+            or ""
+        )
+        # Use first entry's thumbnail as preview (may be empty — acceptable)
+        first = raw_entries[0] if raw_entries else {}
+
+        return MediaInfo(
+            url=url,
+            title=playlist_title or "Unknown",
+            uploader=info.get("uploader") or info.get("channel") or "",
+            duration=0,                         # no single duration for a playlist
+            thumbnail=first.get("thumbnail") or "",
+            platform=_detect_platform(url),
+            formats=[],                          # no format picker for playlists
+            is_live=False,
+            was_live=False,
+            video_id=info.get("id") or "",
+            playlist_entries=entry_urls,
+            playlist_title=playlist_title,
         )
 
     # ── Download execution ────────────────────────────────────────────────
@@ -288,8 +664,15 @@ class YtDlpEngine:
         # extract_info (race between go-live and extraction timing).
         # We also check duration==0 + TikTok URL as a strong secondary signal.
         # Same race condition applies to Instagram live streams.
+        # Instagram live regex covers both the old (/username/live/) and
+        # new 2024+ (/live/shortcode/) URL formats.
+        # NOTE: Instagram photo posts (source_engine="gallery_dl") are routed
+        # to GalleryDlEngine by DownloadManager before reaching this method —
+        # this code never runs for photos.
         _tiktok_live_re = re.compile(r"tiktok\.com/@[^/]+/live", re.I)
-        _instagram_live_re = re.compile(r"instagram\.com/[^/]+/live(?:/|$)", re.I)
+        _instagram_live_re = re.compile(
+            r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
+        )
         is_live = bool(
             (task.media_info and task.media_info.is_live)
             or (task.media_info and task.media_info.duration == 0
@@ -334,7 +717,7 @@ class YtDlpEngine:
                 / (
                     f"%(uploader,channel|Unknown).50B"
                     f" - [LIVE] {rec_ts}"
-                    f" %(title).80B [%(id).12B].%(ext)s"
+                    f" %(title).80B [%(id).12B].ts"
                 )
             )
         else:
@@ -371,7 +754,7 @@ class YtDlpEngine:
             "writethumbnail": False,
             "embedthumbnail": False,
             "addmetadata": False if is_live else self._config.embed_metadata,
-            "progress_hooks": [self._make_progress_hook(task, on_progress)],
+            "progress_hooks": [self._make_progress_hook(task, on_progress, is_live)],
             "postprocessor_hooks": [self._make_pp_hook(task, on_postprocess)],
             # noplaylist must match extract_info() — without it, pasting a
             # playlist URL would show the first video's metadata but silently
@@ -435,10 +818,9 @@ class YtDlpEngine:
 
         if self._config.proxy:
             opts["proxy"] = self._config.proxy
-        # Cookie-file validation delegated to _validate_cookie_path() (CWE-22).
-        # Centralising the check in the helper ensures both extract_info() and
-        # download() enforce identical security constraints and cannot diverge.
-        _cookie_path = _validate_cookie_path(self._config)
+        # Cookie resolution: per-platform first, global fallback second.
+        # _resolve_cookie() applies CWE-22 guard via _validate_cookie_path_raw().
+        _cookie_path = _resolve_cookie(task.url, self._config)
         if _cookie_path:
             opts["cookiefile"] = _cookie_path
         if not opts.get("cookiefile") and self._config.use_cookies:
@@ -552,6 +934,7 @@ class YtDlpEngine:
         self,
         task: DownloadTask,
         callback: Optional[Callable[[DownloadTask], None]],
+        is_live: bool = False,
     ) -> Callable[[dict], None]:
         def hook(d: dict[str, Any]) -> None:
             # Respect pause / cancel
@@ -576,6 +959,13 @@ class YtDlpEngine:
                 eta = d.get("eta")
                 if eta is not None:
                     task.eta = _fmt_eta(eta)
+                # FIX-1: Live streams never have total_bytes (open-ended HLS).
+                # Show bytes recorded so user knows the download is active.
+                # Condition is guarded by is_live so VODs are never affected —
+                # even VODs that transiently report total_bytes=0 in the first
+                # few hook calls will not show this message.
+                elif is_live and task.total_bytes == 0 and task.downloaded_bytes > 0:
+                    task.eta = f"⏺ {_fmt_bytes(task.downloaded_bytes)} đã ghi"
                 _fname = d.get("filename")
                 if _fname and Path(_fname).is_absolute():
                     task.filename = _fname
@@ -686,6 +1076,17 @@ def _fmt_speed(speed: float) -> str:
     if speed >= 1024:
         return f"{speed / 1024:.0f} KiB/s"
     return f"{speed:.0f} B/s"
+
+
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte count used for live recording progress display."""
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.1f} GiB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MiB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KiB"
+    return f"{n} B"
 
 
 def _fmt_eta(eta: int | float) -> str:

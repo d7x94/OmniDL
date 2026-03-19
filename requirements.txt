@@ -1,5 +1,6 @@
 customtkinter>=5.2.2          # unpinned from ==5.2.2; older exact pin had Canvas bugs on Python 3.13
 yt-dlp>=2025.1.1              # lower-bound raised; 2024.1.1 is 14+ months stale
+gallery-dl>=1.27.0            # image/gallery downloader — fallback for IG photos, Twitter images
 Pillow>=10.3.0                # >=10.3.0 patches CVE-2024-28219 (ImageMath buffer overflow)
 requests>=2.31.0
 packaging>=23.0

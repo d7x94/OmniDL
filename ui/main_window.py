@@ -29,16 +29,18 @@ import customtkinter as ctk
 from app.services.download_service import DownloadService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
-from ui.themes.tokens import T
+from ui.themes.tokens import T, THEME_NAMES
 
 logger = logging.getLogger(__name__)
 
 NAV_ITEMS = [
-    ("home",     "⬇",  "Download",  "DOWNLOADS"),
-    ("queue",    "≡",  "Queue",     "DOWNLOADS"),
-    ("convert",  "🍎", "Convert",   "TOOLS"),
-    ("history",  "⏱",  "History",   "LIBRARY"),
-    ("settings", "⚙",  "Settings",  "SYSTEM"),
+    ("home",         "⬇",  "Download",     "DOWNLOADS"),
+    ("queue",        "≡",  "Queue",         "DOWNLOADS"),
+    ("batch",        "☰",  "Batch",         "DOWNLOADS"),
+    ("live_monitor", "🔴", "Live Monitor",  "DOWNLOADS"),
+    ("convert",      "🍎", "Convert",       "TOOLS"),
+    ("history",      "⏱",  "History",       "LIBRARY"),
+    ("settings",     "⚙",  "Settings",      "SYSTEM"),
 ]
 
 _TOAST_BG = {
@@ -195,25 +197,6 @@ class MainWindow(ctk.CTk):
         )
         self._logo_name.pack(side="left")
 
-        # yt-dlp version badge
-        try:
-            import yt_dlp
-            ver = yt_dlp.version.__version__
-        except ImportError:
-            ver = "not installed"
-            logger.warning("yt-dlp not found — version badge will show 'not installed'")
-        except Exception as exc:
-            ver = "?"
-            logger.debug("Could not read yt-dlp version: %s", exc)
-        self._ytdlp_badge = ctk.CTkLabel(
-            tb, text=f"yt-dlp {ver}",
-            font=ctk.CTkFont(size=10),
-            text_color=T.text3,
-            fg_color=T.surface2,
-            corner_radius=4, padx=8, pady=2,
-        )
-        self._ytdlp_badge.pack(side="left", padx=6)
-
         # Window controls
         bx = ctk.CTkFrame(tb, fg_color="transparent")
         bx.pack(side="right", padx=10)
@@ -298,22 +281,20 @@ class MainWindow(ctk.CTk):
         )
         self._theme_btn.pack(side="right")
 
-        self._powered_lbl = ctk.CTkLabel(
-            self._sidebar, text="Powered by yt-dlp",
-            font=ctk.CTkFont(size=9), text_color=T.text3,
-        )
-        self._powered_lbl.pack(side="bottom", pady=(0, 4))
-
     def _build_tabs(self) -> None:
+        from ui.tabs.batch_tab import BatchTab
         from ui.tabs.convert_tab import ConvertTab
         from ui.tabs.history_tab import HistoryTab
         from ui.tabs.home_tab import HomeTab
+        from ui.tabs.live_monitor_tab import LiveMonitorTab
         from ui.tabs.queue_tab import QueueTab
         from ui.tabs.settings_tab import SettingsTab
         self._tabs: dict[str, ctk.CTkFrame] = {
-            "home":     HomeTab(self._content, self),
-            "queue":    QueueTab(self._content, self),
-            "convert":  ConvertTab(self._content, self),
+            "home":         HomeTab(self._content, self),
+            "queue":        QueueTab(self._content, self),
+            "batch":        BatchTab(self._content, self),
+            "live_monitor": LiveMonitorTab(self._content, self),
+            "convert":      ConvertTab(self._content, self),
             "history":  HistoryTab(self._content, self),
             "settings": SettingsTab(self._content, self),
         }
@@ -361,7 +342,6 @@ class MainWindow(ctk.CTk):
         self._title_bar.configure(fg_color=T.sidebar)
         self._logo_icon.configure(text_color=T.primary)
         self._logo_name.configure(text_color=T.text)
-        self._ytdlp_badge.configure(text_color=T.text3, fg_color=T.surface2)
         # Window-control buttons: — and ⬜ use surface3; ✕ uses close_hover
         for btn in self._wctrl_btns[:-1]:
             btn.configure(text_color=T.text3, hover_color=T.surface3)
@@ -387,7 +367,6 @@ class MainWindow(ctk.CTk):
                 ind.configure(fg_color="transparent")
         self._theme_btn.configure(
             fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2)
-        self._powered_lbl.configure(text_color=T.text3)
 
     # ── Toast ─────────────────────────────────────────────────────────────
 
@@ -422,16 +401,31 @@ class MainWindow(ctk.CTk):
             self.attributes("-zoomed", not self.attributes("-zoomed"))
 
     def _on_close(self) -> None:
-        active = [t for t in self._service.get_all_tasks()
-                  if t.status in DownloadStatus.active_states()]
-        if active:
+        # Check active downloads
+        active_dl = [t for t in self._service.get_all_tasks()
+                     if t.status in DownloadStatus.active_states()]
+
+        # Check active conversions via ConvertTab._active_count
+        convert_tab = self._tabs.get("convert")
+        active_cv = getattr(convert_tab, "_active_count", 0)
+
+        total_active = len(active_dl) + active_cv
+
+        if total_active:
+            parts = []
+            if active_dl:
+                parts.append(f"{len(active_dl)} download(s)")
+            if active_cv:
+                parts.append(f"{active_cv} conversion(s)")
+            summary = " và ".join(parts)
             if not mb.askyesno(
                 "OmniDL",
-                f"{len(active)} download(s) in progress.\nClose and cancel all?",
+                f"{summary} đang chạy.\nĐóng và huỷ tất cả?",
                 icon="warning",
             ):
                 return
-        for t in active:
+
+        for t in active_dl:
             self._service.cancel_download(t.id)
         self._config.save()
         self.after(200, self.destroy)
@@ -472,3 +466,15 @@ class ServiceFacade:
             on_done=on_done,
             on_error=on_error,
         )
+
+    def fetch_thumbnail(self, url: str, width: int, height: int,
+                        on_done, on_error) -> None:
+        """Route thumbnail fetch through ServiceFacade (SSRF validation included)."""
+        self._svc.fetch_thumbnail(
+            url=url, width=width, height=height,
+            on_done=on_done, on_error=on_error,
+        )
+
+    def check_profile_live(self, url: str, on_done, on_error) -> None:
+        """Check if an Instagram profile URL is currently live (background thread)."""
+        self._svc.check_profile_live(url=url, on_done=on_done, on_error=on_error)

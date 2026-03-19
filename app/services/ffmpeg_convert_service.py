@@ -12,16 +12,17 @@ All presets use:
   -pix_fmt yuv420p          broadest player compat (iPhone, Android, Windows)
   -movflags +faststart       moov atom at front for instant playback
   -vf scale=trunc…           force even dimensions (libx264 requirement)
-  -profile:v high -level 4.0 guarantees playback on every iPhone since 4S
+  -profile:v main -level 4.1 guarantees playback on every iPhone since 4S
   -progress pipe:1           accurate progress via FFmpeg progress API (not stderr regex)
 
 Features
 ──────────
   • ConvertQueue          – bounded concurrency with configurable max_concurrent
   • Accurate progress     – uses -progress pipe:1 + out_time_ms parsing (no regex fragility)
-  • MediaInfo / ffprobe   – structured metadata probe (codec, resolution, duration, bitrate)
+  • FfmpegMediaInfo / ffprobe – structured metadata probe (codec, resolution, duration, bitrate)
   • scan_folder_for_media – recursive folder scan for supported media files
-  • Resume support        – encodes to .part temp file; resumes interrupted jobs via concat
+  • Cancel support        – per-job cancel_event kills FFmpeg and its process group
+  • .part cleanup         – incomplete temp files deleted on failure or restart
   • GPU encoding          – NVENC / QSV / AMF / VideoToolbox with automatic detection
   • Quality system        – High / Standard / Small / Custom with per-encoder quality flags
   • Speed presets         – Quality / Balanced / Fast mapping per encoder
@@ -32,6 +33,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -62,14 +64,14 @@ _PRESETS: dict[str, dict] = {
         "preset":  "medium",
         "audio_b": "192k",
         "scale":   None,
-        "label":   "Chat luong cao",
+        "label":   "Chất lượng cao",
     },
     "standard": {
         "crf":     "23",
         "preset":  "fast",
         "audio_b": "128k",
         "scale":   None,
-        "label":   "Chuan",
+        "label":   "Chuẩn",
     },
     "small": {
         "crf":     "28",
@@ -79,14 +81,14 @@ _PRESETS: dict[str, dict] = {
             "scale='if(gt(ih,720),trunc(iw*720/ih/2)*2,trunc(iw/2)*2)'"
             ":'if(gt(ih,720),720,trunc(ih/2)*2)'"
         ),
-        "label":   "File nho (720p)",
+        "label":   "File nhỏ (720p)",
     },
     "custom": {
         "crf":     "23",
         "preset":  "fast",
         "audio_b": "128k",
         "scale":   None,
-        "label":   "Tuy chinh",
+        "label":   "Tuỳ chỉnh",
     },
 }
 
@@ -95,15 +97,21 @@ def _parse_duration(text: str) -> float:
     m = _TIME_RE.search(text)
     if not m:
         return 0.0
-    h, mn, s, cs = (int(g) for g in m.groups())
-    return h * 3600 + mn * 60 + s + cs / 100.0
+    h, mn, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    frac = m.group(4)
+    return h * 3600 + mn * 60 + s + int(frac) / (10 ** len(frac))
 
 
 # ── Public data types ─────────────────────────────────────────────────────────
 
 @dataclass
-class MediaInfo:
-    """Structured metadata retrieved by ffprobe for a media file."""
+class FfmpegMediaInfo:
+    """Structured metadata retrieved by ffprobe for a media file.
+
+    Named FfmpegMediaInfo to avoid collision with domain.models.download_task.MediaInfo
+    which represents yt-dlp video metadata. This class represents local file metadata
+    obtained via ffprobe (codecs, resolution, duration, bitrate).
+    """
     video_codec: str = ""
     audio_codec: str = ""
     width: int = 0
@@ -114,6 +122,10 @@ class MediaInfo:
 
 class ConversionError(RuntimeError):
     """Raised when ffmpeg exits with a non-zero return code."""
+
+
+class ConversionCancelledError(ConversionError):
+    """Raised when a conversion job is cancelled by the user."""
 
 
 # ── Hardware encoder catalogue ────────────────────────────────────────────────
@@ -324,7 +336,9 @@ def detect_available_encoders(
     Safe to call from any thread.
     """
     # ── Cache lookup (only when ffmpeg_bin is not explicitly overridden) ──
-    if ffmpeg_bin is None:
+    _use_cache = ffmpeg_bin is None
+
+    if _use_cache:
         cached = _encoder_cache_get()
         if cached is not None:
             logger.debug("detect_available_encoders: returning cached result %s", cached)
@@ -335,7 +349,8 @@ def detect_available_encoders(
     if ffmpeg_bin is None:
         loc = locate_ffmpeg()
         if loc is None:
-            _encoder_cache_set(available)
+            if _use_cache:
+                _encoder_cache_set(available)
             return available
         ffmpeg_bin = Path(loc.ffmpeg_bin)
 
@@ -350,7 +365,8 @@ def detect_available_encoders(
             errors="replace",
         )
         if result.returncode != 0:
-            _encoder_cache_set(available)
+            if _use_cache:
+                _encoder_cache_set(available)
             return available
 
         output = result.stdout
@@ -360,7 +376,8 @@ def detect_available_encoders(
 
     except Exception as exc:
         logger.debug("detect_available_encoders: list phase error: %s", exc)
-        _encoder_cache_set(available)
+        if _use_cache:
+            _encoder_cache_set(available)
         return available
 
     # ── Phase 2: validate each candidate with a short test encode ─────────
@@ -375,14 +392,15 @@ def detect_available_encoders(
                 key, codec,
             )
 
-    _encoder_cache_set(available)
+    if _use_cache:
+        _encoder_cache_set(available)
     return available
 
 
 # ── Module-level utility functions ────────────────────────────────────────────
 
-def probe_media_info(source: Path) -> Optional[MediaInfo]:
-    """Return MediaInfo for *source* by running ffprobe.
+def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
+    """Return FfmpegMediaInfo for *source* by running ffprobe.
 
     Returns ``None`` when ffprobe is unavailable or the probe fails.
     Safe to call from a background thread.
@@ -431,7 +449,7 @@ def probe_media_info(source: Path) -> Optional[MediaInfo]:
                 if not duration_s:
                     duration_s = float(stream.get("duration") or 0)
 
-        return MediaInfo(
+        return FfmpegMediaInfo(
             video_codec=video_codec,
             audio_codec=audio_codec,
             width=width,
@@ -452,7 +470,11 @@ def scan_folder_for_media(folder: Path) -> list[Path]:
     results: list[Path] = []
     try:
         for p in sorted(folder.rglob("*")):
-            if p.is_file() and p.suffix.lower().lstrip(".") in SUPPORTED_EXTS:
+            if (
+                p.is_file()
+                and p.suffix.lower().lstrip(".") in SUPPORTED_EXTS
+                and not p.name.endswith(".part.mp4")   # skip incomplete encode temps
+            ):
                 results.append(p)
     except PermissionError as exc:
         logger.warning("scan_folder_for_media: permission error under %s: %s", folder, exc)
@@ -465,6 +487,28 @@ def scan_folder_for_media(folder: Path) -> list[Path]:
 
 class FfmpegConvertService:
     """Converts a video file to iPhone-compatible MP4/H.264/AAC."""
+
+    @staticmethod
+    def _kill_proc(proc: subprocess.Popen) -> None:  # type: ignore[type-arg]
+        """Kill *proc* and its process group (Unix) or just the process (Windows).
+
+        On POSIX, ``start_new_session=True`` was used at Popen time, so ffmpeg
+        is the process group leader.  ``os.killpg`` terminates the whole group
+        (ffmpeg + any child processes it may have spawned).  Falls back to a
+        plain ``proc.kill()`` if the group kill fails for any reason.
+        """
+        try:
+            if sys.platform != "win32":
+                import os
+                import signal
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def convert(
         self,
@@ -501,12 +545,17 @@ class FfmpegConvertService:
         on_done: Optional[Callable[[Path], None]],
         on_error: Optional[Callable[[str], None]],
         encode_settings: Optional[EncodeSettings] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         try:
             out = self._convert_sync(source, quality, output_dir, on_progress,
-                                     encode_settings)
+                                     encode_settings, cancel_event=cancel_event)
             if on_done:
                 on_done(out)
+        except ConversionCancelledError:
+            logger.info("Conversion cancelled: %s", source.name)
+            if on_error:
+                on_error("Đã huỷ")
         except Exception as exc:
             logger.error("Conversion failed for %s: %s", source, exc)
             if on_error:
@@ -519,7 +568,12 @@ class FfmpegConvertService:
         output_dir: Optional[Path],
         on_progress: Optional[Callable[[float], None]],
         encode_settings: Optional[EncodeSettings] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Path:
+        # Pre-flight cancel check: job may have been cancelled while queued
+        if cancel_event is not None and cancel_event.is_set():
+            raise ConversionCancelledError("Đã huỷ")
+
         if not source.is_file():
             raise ConversionError(f"File không tồn tại: {source}")
 
@@ -533,27 +587,15 @@ class FfmpegConvertService:
 
         duration_s = self._probe_duration(ffmpeg_bin, source)
 
-        resume_from_s = 0.0
-        if temp_output.is_file() and temp_output.stat().st_size > 1_048_576:
-            partial_dur = self._probe_duration(ffmpeg_bin, temp_output)
-            if duration_s > 0 and 10.0 < partial_dur < duration_s - 5.0:
-                resume_from_s = partial_dur
-                logger.info(
-                    "Resume detected: %s starting from %.1f s / %.1f s",
-                    source.name, resume_from_s, duration_s,
-                )
+        if temp_output.is_file():
+            temp_output.unlink(missing_ok=True)
+            logger.info("Deleted stale .part file before restart: %s", temp_output.name)
 
-        if resume_from_s > 0:
-            output = self._resume_encode(
-                ffmpeg_bin, source, dest_dir, temp_output,
-                resume_from_s, duration_s, preset, on_progress,
-                encode_settings=encode_settings,
-            )
-        else:
-            output = self._try_encode_with_fallback(
-                ffmpeg_bin, source, dest_dir, temp_output,
-                duration_s, preset, on_progress, encode_settings,
-            )
+        output = self._try_encode_with_fallback(
+            ffmpeg_bin, source, dest_dir, temp_output,
+            duration_s, preset, on_progress, encode_settings,
+            cancel_event=cancel_event,
+        )
 
         size_mb = output.stat().st_size / 1_048_576
         logger.info("Done: %s (%.1f MB)", output.name, size_mb)
@@ -569,6 +611,7 @@ class FfmpegConvertService:
         preset: dict,
         on_progress: Optional[Callable[[float], None]],
         encode_settings: Optional[EncodeSettings],
+        cancel_event: Optional[threading.Event] = None,
     ) -> Path:
         """Attempt encode; if GPU fails, retry with CPU (libx264).
 
@@ -585,7 +628,10 @@ class FfmpegConvertService:
                 ffmpeg_bin, source, dest_dir, temp_output,
                 duration_s, preset, on_progress,
                 encode_settings=encode_settings,
+                cancel_event=cancel_event,
             )
+        except ConversionCancelledError:
+            raise   # cancelled — never retry
         except ConversionError as exc:
             if not is_gpu:
                 raise
@@ -605,6 +651,7 @@ class FfmpegConvertService:
                 ffmpeg_bin, source, dest_dir, temp_output,
                 duration_s, preset, on_progress,
                 encode_settings=cpu_settings,
+                cancel_event=cancel_event,
             )
 
     # ── Encode paths ──────────────────────────────────────────────────────
@@ -619,13 +666,23 @@ class FfmpegConvertService:
         preset: dict,
         on_progress: Optional[Callable[[float], None]],
         encode_settings: Optional[EncodeSettings] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Path:
-        """Encode the full source to temp_output, then atomically rename."""
+        """Encode the full source to temp_output, then atomically rename.
+
+        Guarantees that *temp_output* is deleted if the encode fails or is
+        cancelled, preventing orphaned ``.part`` files (BUG 8).
+        """
         cmd = self._build_cmd(
             ffmpeg_bin, source, temp_output, preset, seek=0.0,
             encode_settings=encode_settings,
         )
-        self._run_ffmpeg(cmd, duration_s, on_progress)
+        try:
+            self._run_ffmpeg(cmd, duration_s, on_progress,
+                             cancel_event=cancel_event)
+        except Exception:
+            temp_output.unlink(missing_ok=True)   # BUG 8: clean up on any failure
+            raise
 
         output = self._find_output_path(dest_dir, source)
         temp_output.rename(output)
@@ -633,44 +690,6 @@ class FfmpegConvertService:
         if on_progress:
             on_progress(100.0)
         return output
-
-    def _resume_encode(
-        self,
-        ffmpeg_bin: Path,
-        source: Path,
-        dest_dir: Path,
-        temp_output: Path,
-        resume_from_s: float,
-        duration_s: float,
-        preset: dict,
-        on_progress: Optional[Callable[[float], None]],
-        encode_settings: Optional[EncodeSettings] = None,
-    ) -> Path:
-        """Encode remaining portion, then concatenate with the existing partial."""
-        remaining_s = duration_s - resume_from_s
-        base_pct = resume_from_s / duration_s * 100.0 if duration_s > 0 else 0.0
-
-        def scaled_progress(pct: float) -> None:
-            if on_progress:
-                full_pct = base_pct + pct * (1.0 - base_pct / 100.0)
-                on_progress(min(99.0, full_pct))
-
-        temp2 = dest_dir / f"{source.stem}_iPhone.part2.mp4"
-        cmd = self._build_cmd(
-            ffmpeg_bin, source, temp2, preset, seek=resume_from_s,
-            encode_settings=encode_settings,
-        )
-        try:
-            self._run_ffmpeg(cmd, remaining_s, scaled_progress)
-            output = self._find_output_path(dest_dir, source)
-            self._concat(ffmpeg_bin, temp_output, temp2, output)
-            self._validate_output(output)
-            if on_progress:
-                on_progress(100.0)
-            return output
-        finally:
-            temp_output.unlink(missing_ok=True)
-            temp2.unlink(missing_ok=True)
 
     # ── FFmpeg command builder ────────────────────────────────────────────
 
@@ -689,8 +708,8 @@ class FfmpegConvertService:
         if encode_settings is None:
             return [
                 "-c:v", "libx264",
-                "-profile:v", "high",
-                "-level:v", "4.0",
+                "-profile:v", "main",
+                "-level:v", "4.1",
                 "-preset", preset["preset"],
                 "-crf", preset["crf"],
             ]
@@ -702,8 +721,8 @@ class FfmpegConvertService:
         )
         return [
             "-c:v", "libx264",
-            "-profile:v", "high",
-            "-level:v", "4.0",
+            "-profile:v", "main",
+            "-level:v", "4.1",
             "-preset", cpu_preset_val,
             "-crf", crf_val,
         ]
@@ -732,7 +751,7 @@ class FfmpegConvertService:
         flags: list[str] = ["-c:v", hw_spec.ffmpeg_codec]
 
         if hw_spec.supports_profile_level:
-            flags += ["-profile:v", "high", "-level:v", "4.0"]
+            flags += ["-profile:v", "main", "-level:v", "4.1"]
 
         flags += [hw_spec.quality_flag, quality_val]
 
@@ -812,6 +831,7 @@ class FfmpegConvertService:
         duration_s: float,
         on_progress: Optional[Callable[[float], None]],
         watchdog_timeout_s: float = 30.0,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         """Execute *cmd*, parse stdout for FFmpeg progress API data.
 
@@ -825,19 +845,30 @@ class FfmpegConvertService:
         catches encoders that silently stall (e.g. GPU drivers hanging on
         initialisation or a broken pipe).
 
+        A **cancel event** may be supplied; when set the watchdog kills the
+        process immediately and :class:`ConversionCancelledError` is raised.
+
+        On POSIX, FFmpeg is launched in a new session (``start_new_session``),
+        making it the process group leader so that ``_kill_proc`` can terminate
+        the full process tree — including any child processes spawned by exotic
+        codec wrappers.
+
         Raises :class:`ConversionError` on non-zero exit, overall timeout, or
-        watchdog timeout.
+        watchdog timeout.  Raises :class:`ConversionCancelledError` on cancel.
         """
         timeout_s = max(60.0, min(
             duration_s * 6 if duration_s > 0 else 3600.0,
             14400.0,
         ))
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        popen_kwargs: dict = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        if sys.platform != "win32":
+            popen_kwargs["start_new_session"] = True   # new process group on POSIX
+
+        proc = subprocess.Popen(cmd, **popen_kwargs)
 
         stderr_lines: list[str] = []
 
@@ -868,17 +899,22 @@ class FfmpegConvertService:
             _stdout_done.set()
 
         def _watchdog() -> None:
-            """Kill the process if stdout goes silent for too long."""
+            """Kill the process on cancel request or stdout silence timeout."""
             while not _stdout_done.wait(timeout=1.0):
                 if proc.poll() is not None:
                     break   # process already exited — watchdog not needed
+                # Cancel requested by user
+                if cancel_event is not None and cancel_event.is_set():
+                    logger.info("_run_ffmpeg: cancel requested — killing process")
+                    FfmpegConvertService._kill_proc(proc)
+                    break
                 elapsed_since_last = time.monotonic() - _last_stdout_activity[0]
                 if elapsed_since_last >= watchdog_timeout_s:
                     logger.warning(
                         "_run_ffmpeg: no stdout for %.0f s — killing stalled process",
                         elapsed_since_last,
                     )
-                    proc.kill()
+                    FfmpegConvertService._kill_proc(proc)
                     break
 
         stderr_thread = threading.Thread(
@@ -897,18 +933,21 @@ class FfmpegConvertService:
         try:
             proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired as exc:
-            proc.kill()
+            FfmpegConvertService._kill_proc(proc)
             proc.communicate()
             raise ConversionError(
                 f"ffmpeg timed out after {timeout_s:.0f} s"
             ) from exc
 
-        stderr_thread.join()
-        stdout_thread.join()
+        stderr_thread.join(timeout=5.0)
+        stdout_thread.join(timeout=5.0)
         # Watchdog exits naturally once _stdout_done is set or process exits.
         watchdog_thread.join(timeout=2.0)
 
         if proc.returncode != 0:
+            # Cancelled — raise the specific subclass so callers can distinguish
+            if cancel_event is not None and cancel_event.is_set():
+                raise ConversionCancelledError("Đã huỷ")
             tail = "\n".join(stderr_lines[-10:])
             raise ConversionError(
                 f"ffmpeg thoat voi loi {proc.returncode}.\n{tail}"
@@ -1024,12 +1063,16 @@ class ConvertQueue:
         on_error: Optional[Callable[[str], None]] = None,
         on_start: Optional[Callable[[], None]] = None,
         encode_settings: Optional[EncodeSettings] = None,
-    ) -> None:
-        """Queue a conversion job. Returns immediately.
+    ) -> Callable[[], None]:
+        """Queue a conversion job.  Returns immediately.
 
+        Returns a **cancel callable**: calling it signals the worker to stop
+        as soon as possible and cleans up any in-progress ``.part`` file.
         ``encode_settings`` is forwarded verbatim to the underlying service,
         enabling GPU encoding and custom quality control.
         """
+        cancel_event = threading.Event()
+
         def _worker() -> None:
             self._semaphore.acquire()
             try:
@@ -1039,6 +1082,7 @@ class ConvertQueue:
                     source, quality, output_dir,
                     on_progress, on_done, on_error,
                     encode_settings=encode_settings,
+                    cancel_event=cancel_event,
                 )
             finally:
                 self._semaphore.release()
@@ -1048,3 +1092,5 @@ class ConvertQueue:
             daemon=True,
             name=f"omnidl-queue-{source.stem[:20]}",
         ).start()
+
+        return cancel_event.set

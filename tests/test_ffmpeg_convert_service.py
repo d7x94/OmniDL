@@ -43,7 +43,7 @@ from app.services.ffmpeg_convert_service import (
     ConversionError,
     ConvertQueue,
     FfmpegConvertService,
-    MediaInfo,
+    FfmpegMediaInfo,
     SUPPORTED_EXTS,
     probe_media_info,
     scan_folder_for_media,
@@ -297,28 +297,29 @@ class TestConvertSync:
             svc._convert_sync(missing, "standard", None, None)
 
     def test_resume_skipped_when_no_partial(self, tmp_path: Path):
-        """When no .part file exists, _convert_sync calls _fresh_encode (not _resume_encode)."""
+        """When no .part file exists, _convert_sync calls _fresh_encode.
+        _resume_encode was removed (BUG A — timestamp discontinuity, disabled by design).
+        """
         source = tmp_path / "video.mkv"
         source.write_bytes(b"x" * 100)
 
         svc = FfmpegConvertService()
-
         fresh_calls: list = []
-        resume_calls: list = []
 
         with patch.object(svc, "_probe_duration", return_value=120.0):
             with patch.object(svc, "_fresh_encode", side_effect=lambda *a, **kw: fresh_calls.append(1) or tmp_path / "out.mp4"):
-                with patch.object(svc, "_resume_encode", side_effect=lambda *a, **kw: resume_calls.append(1) or tmp_path / "out.mp4"):
-                    try:
-                        svc._convert_sync(source, "standard", tmp_path, None)
-                    except Exception:
-                        pass
+                try:
+                    svc._convert_sync(source, "standard", tmp_path, None)
+                except Exception:
+                    pass
 
         assert len(fresh_calls) == 1
-        assert len(resume_calls) == 0
 
     def test_resume_triggered_when_large_partial_exists(self, tmp_path: Path):
-        """When a .part file > 1 MB with suitable duration exists, _resume_encode is called."""
+        """When a .part file exists, it must be deleted and _fresh_encode called.
+        Resume encoding is intentionally disabled (BUG A — timestamp discontinuity).
+        _resume_encode has been removed from the codebase entirely.
+        """
         source = tmp_path / "video.mkv"
         source.write_bytes(b"x" * 100)
         part = tmp_path / "video_iPhone.part.mp4"
@@ -326,24 +327,24 @@ class TestConvertSync:
 
         svc = FfmpegConvertService()
         fresh_calls: list = []
-        resume_calls: list = []
 
         def fake_probe(ffmpeg_bin: Path, src: Path) -> float:
-            # Source duration = 120 s, partial = 30 s
             return 30.0 if src == part else 120.0
 
         with patch.object(svc, "_probe_duration", side_effect=fake_probe):
-            with patch.object(svc, "_fresh_encode", side_effect=lambda *a, **kw: fresh_calls.append(1) or tmp_path / "out.mp4"):
-                with patch.object(svc, "_resume_encode", side_effect=lambda *a, **kw: resume_calls.append(1) or (tmp_path / "out.mp4")):
-                    # We need a valid ffmpeg bin reference; patch _locate_ffmpeg_bin
-                    with patch.object(svc.__class__, "_locate_ffmpeg_bin", staticmethod(lambda: tmp_path / "ffmpeg")):
-                        try:
-                            svc._convert_sync(source, "standard", tmp_path, None)
-                        except Exception:
-                            pass
+            with patch.object(svc, "_fresh_encode",
+                              side_effect=lambda *a, **kw: fresh_calls.append(1) or (tmp_path / "out.mp4")):
+                with patch.object(svc.__class__, "_locate_ffmpeg_bin",
+                                  staticmethod(lambda: tmp_path / "ffmpeg")):
+                    try:
+                        svc._convert_sync(source, "standard", tmp_path, None)
+                    except Exception:
+                        pass
 
-        assert len(resume_calls) == 1
-        assert len(fresh_calls) == 0
+        # .part file must have been deleted before encoding
+        assert not part.exists(), ".part file must be deleted before conversion restart"
+        # Fresh encode must be called — resume is permanently disabled
+        assert len(fresh_calls) == 1, "Expected _fresh_encode to be called once"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -933,7 +934,8 @@ class TestGpuFallback:
         call_count = [0]
 
         def fake_fresh(ffmpeg_bin, src, dest_dir, temp_output,
-                       duration_s, preset, on_progress, encode_settings=None):
+                       duration_s, preset, on_progress,
+                       encode_settings=None, cancel_event=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First call (GPU) — fail
@@ -1004,7 +1006,7 @@ class TestConvertQueueEncodeSettings:
         queue = ConvertQueue(max_concurrent=1)
 
         def fake_run(src, quality, output_dir, on_progress, on_done, on_error,
-                     encode_settings=None):
+                     encode_settings=None, cancel_event=None):
             received.append(encode_settings)
             done_event.set()
 
@@ -1028,7 +1030,7 @@ class TestConvertQueueEncodeSettings:
         queue = ConvertQueue(max_concurrent=1)
 
         def fake_run(src, quality, output_dir, on_progress, on_done, on_error,
-                     encode_settings=None):
+                     encode_settings=None, cancel_event=None):
             received.append(encode_settings)
             done_event.set()
 
@@ -1610,8 +1612,8 @@ class TestBuildCpuFlags:
     def test_always_includes_profile_and_level(self):
         from app.services.ffmpeg_convert_service import _PRESETS
         flags = FfmpegConvertService._build_cpu_flags(_PRESETS["standard"], None)
-        assert "-profile:v" in flags and flags[flags.index("-profile:v") + 1] == "high"
-        assert "-level:v" in flags and flags[flags.index("-level:v") + 1] == "4.0"
+        assert "-profile:v" in flags and flags[flags.index("-profile:v") + 1] == "main"
+        assert "-level:v" in flags and flags[flags.index("-level:v") + 1] == "4.1"
 
     def test_result_is_list_of_strings(self):
         from app.services.ffmpeg_convert_service import _PRESETS

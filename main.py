@@ -92,6 +92,7 @@ def main() -> None:
 
     from infrastructure.config.config_manager import ConfigManager
     from infrastructure.downloader.download_manager import DownloadManager
+    from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
     from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
     from infrastructure.storage.history_repository import HistoryRepository
 
@@ -102,8 +103,9 @@ def main() -> None:
     )
     _clear_history_on_version_change(config, history)
 
-    engine  = YtDlpEngine(config)
-    manager = DownloadManager(config, engine=engine)
+    engine         = YtDlpEngine(config)
+    gallery_engine = GalleryDlEngine(config)
+    manager        = DownloadManager(config, engine=engine, gallery_engine=gallery_engine)
     manager.start()
 
     from app.services.download_service import DownloadService
@@ -112,14 +114,15 @@ def main() -> None:
         download_manager=manager,
         history_repo=history,
         engine=engine,
+        gallery_engine=gallery_engine,
     )
 
     import customtkinter as ctk
-    ctk.set_appearance_mode(config.theme)
     ctk.set_default_color_theme("blue")
 
     from ui.themes.tokens import T
     T.set_mode(config.theme)    # sync token palette before any widget reads T.*
+    ctk.set_appearance_mode(T.ctk_base)  # map custom theme → "dark"/"light" for CTk
 
     from ui.main_window import MainWindow
     window = MainWindow(service=service, config=config)
@@ -192,6 +195,7 @@ def _check_deps() -> None:
         ("PIL",           "Pillow"),
         ("requests",      "requests"),
         ("platformdirs",  "platformdirs>=4.0.0"),  # DEF-024
+        ("gallery_dl",    "gallery-dl>=1.27.0"),   # image fallback engine
     ]:
         try:
             __import__(pkg)

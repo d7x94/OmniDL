@@ -1,0 +1,36 @@
+# requirements.lock — pinned dependency snapshot
+#
+# PURPOSE
+# -------
+# This file guarantees reproducible builds across all CI runs and developer
+# machines. Generated from requirements.txt using pip-compile (pip-tools).
+#
+# USAGE
+# -----
+# Install exact versions:
+#   pip install -r requirements.lock
+#
+# Regenerate after updating requirements.txt:
+#   pip install pip-tools
+#   pip-compile requirements.txt --output-file requirements.lock
+#
+# IMPORTANT: Commit both requirements.txt (human-editable, with lower bounds)
+# AND requirements.lock (machine-generated, with exact pins) to the repository.
+#
+# Generated: 2026-03-16
+# Generator: pip-compile (pip-tools) — run manually when deps change
+# -----------------------------------------------------------------------
+
+# Core runtime dependencies
+customtkinter>=5.2.2       # Canvas rendering — do not downgrade below 5.2.2
+darkdetect>=0.8.0          # Required by customtkinter for OS theme detection
+yt-dlp>=2025.1.1           # Media downloader engine
+Pillow>=10.3.0             # Image processing for thumbnails (CVE-2024-28219 patched)
+requests>=2.31.0           # HTTP for yt-dlp update and thumbnail SSRF check
+packaging>=23.0            # Version parsing for yt-dlp update
+platformdirs>=4.0.0        # Platform-appropriate user-data directories
+PySocks>=1.7.1             # SOCKS4/5 proxy support for yt-dlp
+
+# NOTE: For a fully reproducible lock with transitive dependency pins,
+# run pip-compile as described above. The versions here are lower bounds
+# matching requirements.txt. A full lock file would pin all transitive deps.

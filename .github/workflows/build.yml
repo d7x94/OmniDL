@@ -67,7 +67,18 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-cov
+        run: pip install -r requirements.txt pytest pytest-cov ruff mypy
+
+      # ── Lint (mirrors ci.yml — catches issues before building EXE/APP) ──
+      - name: Lint with ruff
+        run: ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+
+      # ── Type check ──────────────────────────────────────────────────────
+      - name: Type check with mypy
+        run: |
+          mypy domain/ app/ infrastructure/ utils/ \
+            --ignore-missing-imports \
+            --no-strict-optional
 
       - name: Run test suite
         run: |

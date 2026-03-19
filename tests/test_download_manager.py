@@ -159,7 +159,9 @@ class TestTaskLifecycle:
             mgr.shutdown(wait=False)
 
     def test_failed_task_has_error_msg(self):
-        cfg = make_config()
+        # max_retries=0: task fails immediately without retry sleep,
+        # keeping the test fast.  Retry behaviour is tested separately.
+        cfg = make_config(max_retries=0)
         engine = make_engine(fail=True)
         bus = make_bus()
         mgr = DownloadManager(config=cfg, engine=engine, event_bus=bus)
@@ -172,5 +174,82 @@ class TestTaskLifecycle:
                 time.sleep(0.05)
                 assert time.time() < deadline, "Task did not fail in time"
             assert task.error_msg != ""
+        finally:
+            mgr.shutdown(wait=False)
+
+
+class TestRetryBehavior:
+    """Verify the automatic retry logic introduced in _run_task."""
+
+    def test_transient_error_retried_then_succeeds(self):
+        """Engine fails once then succeeds — task ends COMPLETED."""
+        call_count = {"n": 0}
+
+        engine = MagicMock()
+        def flaky_download(task, on_progress=None, on_postprocess=None):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("Network timeout")   # transient
+            task.filename = "/tmp/ok.mp4"  # nosec B108
+        engine.download.side_effect = flaky_download
+
+        cfg = make_config(max_retries=2)
+        mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            deadline = time.time() + 10
+            while task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.05)
+                assert time.time() < deadline, "Timed out waiting for completion"
+            assert task.status == DownloadStatus.COMPLETED
+            assert call_count["n"] == 2   # 1 failure + 1 success
+        finally:
+            mgr.shutdown(wait=False)
+
+    def test_hard_error_not_retried(self):
+        """Private-video error must fail immediately — no retry."""
+        cfg = make_config(max_retries=3)
+        engine = MagicMock()
+        engine.download.side_effect = RuntimeError(
+            "Content is private. Try enabling cookies."
+        )
+        mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            deadline = time.time() + 5
+            while task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.05)
+                assert time.time() < deadline, "Timed out"
+            assert task.status == DownloadStatus.FAILED
+            assert engine.download.call_count == 1   # never retried
+        finally:
+            mgr.shutdown(wait=False)
+
+    def test_cancelled_during_backoff_stops_cleanly(self):
+        """Cancelling while waiting between retries → CANCELLED, not FAILED."""
+        cfg = make_config(max_retries=3)
+        engine = MagicMock()
+        engine.download.side_effect = RuntimeError("Network timeout")
+
+        mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            # Let first attempt fail, then cancel during back-off
+            deadline = time.time() + 3
+            while engine.download.call_count < 1:
+                time.sleep(0.02)
+                assert time.time() < deadline, "First attempt never ran"
+            task.cancel()
+            deadline = time.time() + 5
+            while task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.05)
+                assert time.time() < deadline, "Timed out waiting for cancellation"
+            assert task.status == DownloadStatus.CANCELLED
         finally:
             mgr.shutdown(wait=False)

@@ -28,6 +28,7 @@ class DownloadManager:
     1. Receives DownloadTask objects via enqueue()
     2. Submits them to a ThreadPoolExecutor (max_workers = config.max_concurrent)
     3. Publishes EventBus events on progress / completion / failure
+    4. Routes to GalleryDlEngine when task.media_info.source_engine == "gallery_dl"
     """
 
     def __init__(
@@ -35,14 +36,14 @@ class DownloadManager:
         config: ConfigManager,
         engine: YtDlpEngine,
         event_bus: Optional[EventBus] = None,
+        gallery_engine: Optional[object] = None,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
-        # A single shared engine instance is injected from main.py so that
-        # extract_info() (DownloadService) and download() (DownloadManager)
-        # use the same object.  Config changes and any engine-level state are
-        # therefore consistent across both call sites.
         self._engine = engine
+        # Optional gallery-dl engine — injected from main.py when available.
+        # Typed as object to avoid circular imports; duck-typed at call site.
+        self._gallery_engine = gallery_engine
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
@@ -134,7 +135,52 @@ class DownloadManager:
         with self._lock:
             return self._tasks.get(task_id)
 
+    # Keywords that identify unrecoverable errors — retrying these wastes time
+    # and may trigger platform rate-limiting or account flags.
+    _HARD_ERROR_KEYWORDS: tuple[str, ...] = (
+        # Generic unrecoverable states
+        "private",
+        "removed",
+        "not found",
+        "404",
+        "login",
+        "unsupported url",
+        "cancelled by user",
+        "age",              # age-restricted without login
+        "unavailable",      # "this video is unavailable"
+        # Instagram-specific — account/auth issues that retrying cannot fix
+        "checkpoint",       # account checkpoint verification required
+        "challenge_required",  # two-factor / bot challenge
+        "no video in this post",   # photo-only post — retry cannot add video
+        "no video formats found",  # photo-only post (with cookies, yt-dlp >= 2024)
+        # Facebook-specific
+        "content not available",    # post removed or region-blocked
+        "this content isn",         # "This content isn't available"
+        # Geographic / copyright blocks — retrying changes nothing
+        "geo-restricted",
+        "not available in your country",
+        "copyright",        # copyright claim block
+        "blocked",          # region/copyright blocked (from yt-dlp error text)
+        # Account-level blocks
+        "suspended",        # account suspended
+        "members only",     # paywalled content
+        "subscribers only",
+        # yt-dlp internal bugs — retrying the same broken extractor path
+        # never helps; user must update yt-dlp to fix these.
+        "extractor error",  # yt-dlp extractor crash (e.g. KeyError on shortcode)
+    )
+
     def _run_task(self, task: DownloadTask) -> None:
+        """Execute a download with automatic retry on transient network errors.
+
+        Retries up to ``config.max_retries`` times (default 3) with
+        exponential back-off (1 s, 2 s, 4 s, …).  Hard errors — private
+        videos, 404s, login-required, cancellation — are never retried.
+
+        All terminal-state writes are wrapped in ``task._lock`` so that a
+        concurrent ``snapshot()`` on the UI poll thread never observes a
+        half-updated task (e.g. COMPLETED with progress still at 0.0).
+        """
         # Guard the initial state transition inside the task lock so that a
         # concurrent snapshot() call on the UI poll thread never observes an
         # uninitialised started_at alongside DOWNLOADING status.
@@ -144,43 +190,94 @@ class DownloadManager:
         self._bus.publish(EventBus.DOWNLOAD_STARTED, task=task)
         logger.info("Download started: %s", task.id)
 
-        try:
-            self._engine.download(
-                task,
-                on_progress=self._on_progress,
-                on_postprocess=self._on_progress,
+        max_attempts = max(1, self._config.max_retries + 1)
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(max_attempts):
+            # Check for cancellation before each attempt (including before
+            # the very first one, in case cancel() was called while queued).
+            if task.is_cancellation_requested:
+                break
+
+            if attempt > 0:
+                # Exponential back-off: 1 s, 2 s, 4 s, …  capped at 30 s.
+                wait_s = min(2 ** (attempt - 1), 30)
+                logger.info(
+                    "Retrying task %s (attempt %d/%d) in %d s — previous error: %s",
+                    task.id, attempt + 1, max_attempts, wait_s, last_exc,
+                )
+                # Reset visible progress so the UI shows the retry clearly.
+                with task._lock:
+                    task.progress = 0.0
+                    task.speed = ""
+                    task.eta = ""
+                    task.status = DownloadStatus.DOWNLOADING
+                self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+                time.sleep(wait_s)
+
+                # Re-check cancellation after sleep (user may have cancelled
+                # during the back-off wait).
+                if task.is_cancellation_requested:
+                    break
+
+            try:
+                # Route to gallery-dl engine when MediaInfo carries the hint.
+                # Falls back to yt-dlp if gallery engine is not wired (e.g. tests).
+                use_gallery = (
+                    self._gallery_engine is not None
+                    and task.media_info is not None
+                    and getattr(task.media_info, "source_engine", "yt_dlp")
+                    == "gallery_dl"
+                )
+                active_engine = self._gallery_engine if use_gallery else self._engine
+                active_engine.download(
+                    task,
+                    on_progress=self._on_progress,
+                    on_postprocess=self._on_progress,
+                )
+                last_exc = None
+                break  # success — exit retry loop
+
+            except Exception as exc:
+                msg = str(exc).lower()
+
+                # Hard errors: stop immediately, no retry.
+                if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
+                    logger.warning(
+                        "Hard error for task %s (no retry): %s", task.id, exc
+                    )
+                    last_exc = exc
+                    break
+
+                last_exc = exc
+                # Loop continues to next attempt (if any remain).
+
+        # ── Resolve final state ───────────────────────────────────────────
+        if task.is_cancellation_requested:
+            with task._lock:
+                task.status = DownloadStatus.CANCELLED
+                task.finished_at = time.time()
+            logger.info("Task cancelled: %s", task.id)
+            self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
+
+        elif last_exc is None:
+            with task._lock:
+                task.status = DownloadStatus.COMPLETED
+                task.progress = 100.0
+                task.finished_at = time.time()
+            logger.info("Task completed: %s → %s", task.id, task.filename)
+            self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
+
+        else:
+            with task._lock:
+                task.status = DownloadStatus.FAILED
+                task.error_msg = str(last_exc)
+                task.finished_at = time.time()
+            logger.error(
+                "Task failed after %d attempt(s) %s: %s",
+                max_attempts, task.id, last_exc,
             )
-
-            # Wrap every terminal-state write in the task lock so the UI poll
-            # thread's snapshot() call never reads a half-updated task (e.g.
-            # status=COMPLETED with progress still at 0.0).
-            if task.is_cancellation_requested:
-                with task._lock:
-                    task.status = DownloadStatus.CANCELLED
-                    task.finished_at = time.time()
-                logger.info("Task cancelled: %s", task.id)
-                self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
-            else:
-                with task._lock:
-                    task.status = DownloadStatus.COMPLETED
-                    task.progress = 100.0
-                    task.finished_at = time.time()
-                logger.info("Task completed: %s → %s", task.id, task.filename)
-                self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
-
-        except Exception as exc:
-            if task.is_cancellation_requested:
-                with task._lock:
-                    task.status = DownloadStatus.CANCELLED
-                    task.finished_at = time.time()
-                self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
-            else:
-                with task._lock:
-                    task.status = DownloadStatus.FAILED
-                    task.error_msg = str(exc)
-                    task.finished_at = time.time()
-                logger.error("Task failed %s: %s", task.id, exc)
-                self._bus.publish(EventBus.DOWNLOAD_FAILED, task=task)
+            self._bus.publish(EventBus.DOWNLOAD_FAILED, task=task)
 
     def _on_progress(self, task: DownloadTask) -> None:
         self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)

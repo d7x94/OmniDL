@@ -26,6 +26,17 @@ class MediaInfo:
     is_live: bool = False
     was_live: bool = False
     video_id: str = ""         # yt-dlp's internal video ID (used for filename)
+    # Which engine produced this MediaInfo — routing hint for DownloadManager.
+    # "yt_dlp"     → YtDlpEngine.download()   (default, all video platforms)
+    # "gallery_dl" → GalleryDlEngine.download() (image/gallery platforms)
+    source_engine: str = "yt_dlp"
+    # Playlist / channel detection.
+    # Non-empty when the analysed URL is a playlist, channel, or user page.
+    # Each entry is the direct URL of one video in the playlist.
+    # HomeTab redirects to BatchTab when this list is non-empty.
+    # Empty list (default) = single-item result — existing behaviour unchanged.
+    playlist_entries: list = field(default_factory=list)   # list[str]
+    playlist_title: str = ""    # channel/playlist display name
 
 
 

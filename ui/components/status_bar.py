@@ -6,6 +6,7 @@ Polls the service every second.
 from __future__ import annotations
 
 import logging
+import queue
 import socket
 from typing import TYPE_CHECKING
 
@@ -55,12 +56,36 @@ class StatusBar(ctk.CTkFrame):
         self._net_ok: bool = True
         self._net_check_interval = 15_000   # ms between network checks
 
+        # Thread-safe callback queue — Python 3.14: self.after() and
+        # winfo_exists() are not callable from background threads.
+        self._ui_queue: queue.Queue = queue.Queue()
+
         self._build()
         self._poll()
         self._check_net()
+        self._drain_ui_queue()   # start pump
 
         # Re-style on theme change
         T.register(self._on_theme)
+
+    # ── Thread-safe UI callback pump ─────────────────────────────────────
+
+    def _drain_ui_queue(self) -> None:
+        """Drain _ui_queue every 100 ms on the UI thread (Python 3.14 safe)."""
+        if not self.winfo_exists():
+            return
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception as exc:
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "status_bar _ui_queue raised: %s", exc)
+        except queue.Empty:
+            pass
+        self.after(100, self._drain_ui_queue)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
@@ -179,9 +204,10 @@ class StatusBar(ctk.CTkFrame):
         self.after(self._net_check_interval, self._check_net)
 
     def _do_net_check(self) -> None:
+        # _check_network() is a pure network call — no Tkinter access.
+        # Post result to UI thread via _ui_queue (Python 3.14 safe).
         ok = _check_network()
-        if self.winfo_exists():
-            self.after(0, lambda: self._update_net(ok))
+        self._ui_queue.put(lambda result=ok: self._update_net(result))
 
     def _update_net(self, ok: bool) -> None:
         self._net_ok = ok

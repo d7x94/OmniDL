@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Optional
 
 import customtkinter as ctk
 
-from app.services.thumbnail_service import ThumbnailService
 from domain.models.download_task import MediaInfo
 from ui.themes.tokens import T
 
@@ -61,7 +60,9 @@ class HomeTab(ctk.CTkFrame):
         self._thumb_ref = None
         self._thumb_token: int = 0
         self._custom_output_dir: Optional[Path] = None
-        self._thumbnail_svc = ThumbnailService()
+        # Thumbnail fetching is now routed via self._app.service.fetch_thumbnail()
+        # (ServiceFacade) instead of a local ThumbnailService instance, keeping
+        # the architecture rule that tabs never instantiate infrastructure directly.
         self._build()
         T.register(self._on_theme)
 
@@ -248,6 +249,7 @@ class HomeTab(ctk.CTkFrame):
         # ── Quality picker ────────────────────────────────────────────────
         q_sec = ctk.CTkFrame(media_card, fg_color="transparent")
         q_sec.pack(fill="x", padx=18, pady=(14, 8))
+        self._q_sec = q_sec  # stored ref for photo-mode hide/show
 
         ctk.CTkLabel(
             q_sec, text="QUALITY",
@@ -375,6 +377,30 @@ class HomeTab(ctk.CTkFrame):
             if not info or not info.title:
                 self.on_analysis_error("No media information returned.")
                 return
+
+            # ── Playlist / channel detection ──────────────────────────────
+            # When yt-dlp returns multiple entries (TikTok @username, YouTube
+            # channel, playlist URL etc.), redirect to BatchTab instead of
+            # showing a single-video download card.  The user gets full
+            # per-video control: inspect, uncheck, queue individually.
+            if info.playlist_entries:
+                self._welcome.pack(fill="both", expand=True)  # reset HomeTab
+                self._media_info = None
+                batch_tab = self._app.get_tab("batch")
+                if batch_tab is not None:
+                    self._app.navigate_to("batch")
+                    # Defer one frame so BatchTab is fully mapped before we
+                    # populate it — prevents CTk layout glitch on first visit.
+                    self.after(50, lambda: batch_tab.load_playlist(
+                        urls=info.playlist_entries,
+                        playlist_title=info.playlist_title or info.uploader or "",
+                    ))
+                else:
+                    self.on_analysis_error(
+                        "BatchTab not available — cannot show playlist."
+                    )
+                return
+            # ── Single video / photo / live (existing behaviour) ──────────
             self._media_info = info
             self._populate_card(info)
             self._result_card.pack(fill="x", padx=0, pady=(0, 16))
@@ -435,6 +461,33 @@ class HomeTab(ctk.CTkFrame):
             self._set_status(
                 "🔴 Livestream — quality locked to Best Available", T.warning)
 
+        # ── Photo / image detection (Fix 3) ──────────────────────────────
+        # Instagram photos, Facebook images, and similar posts return
+        # formats=[] because they have no video streams.  We detect this
+        # condition and switch to format="best" so yt-dlp downloads the
+        # highest-resolution image directly.  The quality picker is hidden
+        # since quality options only apply to video.
+        is_photo = (
+            not info.is_live
+            and not info.formats
+            and info.duration == 0
+        )
+        if is_photo:
+            self._selected_quality.set("best")
+            # Hide quality picker section — not relevant for photos
+            if hasattr(self, '_q_sec') and self._q_sec.winfo_ismapped():
+                self._q_sec.pack_forget()
+            self._set_status(
+                "🖼  Photo / image — downloading at best available resolution",
+                T.text2,
+            )
+        else:
+            # Ensure quality picker is visible (may have been hidden for a prior photo)
+            if hasattr(self, '_q_sec') and not self._q_sec.winfo_ismapped():
+                self._q_sec.pack(fill="x", padx=18, pady=(14, 8))
+            if not info.is_live:
+                self._set_status("", T.text3)
+
         # Thumbnail
         try:
             self._thumb_lbl._label.configure(image="")
@@ -446,7 +499,7 @@ class HomeTab(ctk.CTkFrame):
         if info.thumbnail:
             self._thumb_token += 1
             token = self._thumb_token
-            self._thumbnail_svc.fetch_async(
+            self._app.service.fetch_thumbnail(
                 url=info.thumbnail,
                 width=180,
                 height=102,

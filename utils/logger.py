@@ -51,7 +51,19 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
         for h in root.handlers
     )
     if not has_console:
-        ch = logging.StreamHandler(sys.stdout)
+        # On Windows the default console encoding (cp1252/cp1258) cannot
+        # represent every Unicode character that may appear in filenames or
+        # yt-dlp output.  Wrapping stdout with errors='replace' prevents
+        # UnicodeEncodeError from spamming "--- Logging error ---" to the
+        # console while downloads with emoji/Vietnamese titles are in progress.
+        import io
+        safe_stdout = io.TextIOWrapper(
+            sys.stdout.buffer,
+            encoding=sys.stdout.encoding or "utf-8",
+            errors="replace",
+            line_buffering=True,
+        ) if hasattr(sys.stdout, "buffer") else sys.stdout
+        ch = logging.StreamHandler(safe_stdout)
         ch.setFormatter(fmt)
         root.addHandler(ch)
 

@@ -37,7 +37,11 @@ _DEFAULTS: dict[str, Any] = {
     "proxy": "",
     "use_cookies": False,
     "cookies_browser": "chrome",
-    "cookie_file": "",        # path to a Netscape-format .txt cookie file
+    "cookie_file": "",        # path to a Netscape-format .txt cookie file (global fallback)
+    # Per-platform cookie files — take priority over cookie_file for each platform.
+    # Keys: "tiktok", "instagram", "facebook", "twitter", "threads"
+    # Values: absolute path to a Netscape-format .txt file (empty = not set)
+    "platform_cookies": {},
     "embed_thumbnail": True,
     "embed_metadata": True,
     "default_quality": "bestvideo+bestaudio/best",
@@ -209,11 +213,14 @@ class ConfigManager:
 
     @property
     def max_concurrent(self) -> int:
-        return int(self.get("max_concurrent", 3))
+        # Clamp to [1, 10]: 0 would block all downloads; >10 is unnecessary
+        # on a desktop machine and risks exhausting network/disk resources.
+        return max(1, min(10, int(self.get("max_concurrent", 3))))
 
     @property
     def max_retries(self) -> int:
-        return int(self.get("max_retries", 3))
+        # Clamp to [0, 10]: 0 = no retry (valid); >10 = pathological loop.
+        return max(0, min(10, int(self.get("max_retries", 3))))
 
     @property
     def proxy(self) -> str:
@@ -271,7 +278,9 @@ class ConfigManager:
 
     @property
     def history_limit(self) -> int:
-        return int(self.get("history_limit", 500))
+        # Clamp to [10, 5000]: <10 makes history useless; >5000 risks
+        # noticeable memory and slow JSONL rewrites on app startup.
+        return max(10, min(5000, int(self.get("history_limit", 500))))
 
     @property
     def extra_args(self) -> str:
@@ -281,3 +290,39 @@ class ConfigManager:
     def cookie_file(self) -> str:
         """Path to a Netscape-format cookie file, or '' if not set."""
         return str(self.get("cookie_file", ""))
+
+    @property
+    def platform_cookies(self) -> "dict[str, str]":
+        """Per-platform cookie file paths.
+
+        Returns a dict mapping platform key → absolute path (or '').
+        Keys: "tiktok", "instagram", "facebook", "twitter", "threads".
+        Always returns a dict — never None.
+        """
+        val = self.get("platform_cookies", {})
+        if not isinstance(val, dict):
+            return {}
+        return {k: str(v) for k, v in val.items() if isinstance(v, str)}
+
+    def get_cookie_for_platform(self, platform_key: str) -> str:
+        """Return the cookie file path for *platform_key*, or '' if not set.
+
+        platform_key is one of: "tiktok", "instagram", "facebook",
+        "twitter", "threads".
+
+        Returns '' (not None) so callers can do .strip() safely.
+        """
+        return self.platform_cookies.get(platform_key, "")
+
+    def set_cookie_for_platform(self, platform_key: str, path: str) -> None:
+        """Set or clear the cookie path for *platform_key*.
+
+        Reads the current dict, modifies the key, writes back atomically.
+        Thread-safe: uses config.set() which holds self._lock.
+        """
+        d = dict(self.platform_cookies)   # copy
+        if path:
+            d[platform_key] = path
+        else:
+            d.pop(platform_key, None)
+        self.set("platform_cookies", d)

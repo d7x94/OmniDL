@@ -200,11 +200,14 @@ class TestAnalyzeURL:
         assert errors
         assert "private" in errors[0].lower()
 
-    def test_facebook_stories_always_blocked(self, app):
+    def test_facebook_stories_blocked_without_cookies(self, app):
         """
-        Facebook Stories bị chặn — yt-dlp không hỗ trợ, cookies cũng không giúp.
+        Facebook Stories bị chặn khi chưa cấu hình cookies.
+        Khi có cookies, yt-dlp CÓ THỂ tải Facebook Stories.
         """
         service = app["service"]
+        app["config"].set("use_cookies", False)
+        app["config"].set("cookie_file", "")
         errors  = []
         done    = threading.Event()
 
@@ -294,14 +297,15 @@ class TestDownloadFlow:
 
     def test_failed_download_has_error_message(self, app):
         """
-        yt-dlp gặp lỗi mạng → task chuyển sang FAILED, có thông báo lỗi.
+        yt-dlp gặp lỗi không thể khắc phục → task chuyển sang FAILED với thông báo lỗi.
+        Dùng "not found" (hard error) để tránh retry delay trong test.
         """
         service = app["service"]
         engine  = app["engine"]
         info    = fake_media_info()
 
         with patch.object(engine, "download",
-                          side_effect=RuntimeError("Network timeout")):
+                          side_effect=RuntimeError("Video not found")):
             task = service.start_download(
                 url=info.url, media_info=info,
                 format_id="best", output_ext="mp4",

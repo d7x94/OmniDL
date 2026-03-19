@@ -19,6 +19,7 @@ States:
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import tkinter as tk
 import tkinter.filedialog as fd
@@ -34,7 +35,7 @@ from app.services.ffmpeg_convert_service import (
     ConvertQueue,
     EncodeSettings,
     ENCODER_OPTIONS,
-    MediaInfo,
+    FfmpegMediaInfo,
     SPEED_OPTIONS,
     SUPPORTED_EXTS,
     get_available_encoder_options,
@@ -103,7 +104,8 @@ class FileJob:
     progress: float = 0.0
     output: Optional[Path] = None
     error_msg: str = ""
-    media_info: Optional[MediaInfo] = field(default=None)
+    media_info: Optional[FfmpegMediaInfo] = field(default=None)
+    cancel_fn: Optional[object] = field(default=None, repr=False)  # () -> None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +118,7 @@ class FileCard(ctk.CTkFrame):
     def __init__(self, master, job: FileJob,
                  on_remove,          # callable(job_id)
                  on_open_folder,     # callable(job_id)
+                 on_cancel,          # callable(job_id)
                  **kwargs) -> None:
         super().__init__(
             master,
@@ -126,6 +129,7 @@ class FileCard(ctk.CTkFrame):
         self.job = job
         self._on_remove = on_remove
         self._on_open_folder = on_open_folder
+        self._on_cancel = on_cancel
         self._build()
         T.register(self._on_theme)
 
@@ -178,6 +182,15 @@ class FileCard(ctk.CTkFrame):
         )
         self._remove_btn.pack(side="left")
 
+        self._cancel_btn = ctk.CTkButton(
+            self._btn_box, text="⏹  Huỷ", width=72, height=26, corner_radius=6,
+            fg_color=T.warning_bg, hover_color=T.error_bg,
+            text_color=T.warning,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=lambda: self._on_cancel(self.job.id),
+        )
+        # _cancel_btn starts hidden; refresh() shows it during QUEUED/CONVERTING
+
         self._open_btn = ctk.CTkButton(
             self._btn_box, text="📂  Mở", width=72, height=26, corner_radius=6,
             fg_color=T.success_bg, hover_color=T.success_bg,
@@ -228,7 +241,7 @@ class FileCard(ctk.CTkFrame):
         )
         self._out_lbl.pack(side="right")
 
-        # Apply MediaInfo if already available (e.g. on card rebuild)
+        # Apply FfmpegMediaInfo if already available (e.g. on card rebuild)
         if self.job.media_info is not None:
             self.update_info(self.job.media_info)
 
@@ -271,8 +284,17 @@ class FileCard(ctk.CTkFrame):
             ) else "normal"
         )
 
-    def update_info(self, info: Optional[MediaInfo]) -> None:
-        """Refresh the media-info label from an ffprobe MediaInfo result."""
+        # Show cancel button while active, hide otherwise
+        is_active = job.state in (FileState.QUEUED, FileState.CONVERTING)
+        if is_active:
+            if not self._cancel_btn.winfo_ismapped():
+                self._cancel_btn.pack(side="left", padx=(4, 0))
+        else:
+            if self._cancel_btn.winfo_ismapped():
+                self._cancel_btn.pack_forget()
+
+    def update_info(self, info: Optional[FfmpegMediaInfo]) -> None:
+        """Refresh the media-info label from an ffprobe FfmpegMediaInfo result."""
         if info is None:
             self._info_lbl.configure(text="")
             return
@@ -302,6 +324,10 @@ class FileCard(ctk.CTkFrame):
         self._info_lbl.configure(text_color=T.text3)
         self._out_lbl.configure(text_color=T.success_text)
         self._remove_btn.configure(fg_color=T.surface2)
+        self._cancel_btn.configure(
+            fg_color=T.warning_bg, hover_color=T.error_bg,
+            text_color=T.warning,
+        )
         self._open_btn.configure(fg_color=T.success_bg)
 
     # ── Helpers ───────────────────────────────────────────────────────────
@@ -343,7 +369,7 @@ class ConvertTab(ctk.CTkFrame):
         # GPU encoder + speed state
         self._encoder_key = tk.StringVar(value="cpu")
         self._speed_preset = tk.StringVar(value="balanced")
-        self._custom_quality = tk.IntVar(value=23)
+        self._custom_quality = tk.StringVar(value="23")
         self._available_encoders: set[str] = {"cpu"}
         # Filtered (key, label) pairs — kept in sync with _available_encoders.
         # Starts as CPU-only so the dropdown is always usable before detection
@@ -351,6 +377,11 @@ class ConvertTab(ctk.CTkFrame):
         self._available_encoder_options: list[tuple[str, str]] = [
             opt for opt in ENCODER_OPTIONS if opt[0] == "cpu"
         ]
+        # Thread-safe callback queue: background threads post callables here;
+        # _poll_ui_queue() drains it on the UI thread every 50 ms.
+        # Required for Python 3.14+ where self.after() is no longer callable
+        # from non-main threads (RuntimeError: main thread is not in main loop).
+        self._ui_queue: queue.Queue = queue.Queue()
         # Detect available encoders in background; UI enabled when ready
         threading.Thread(
             target=self._detect_encoders_async,
@@ -358,7 +389,33 @@ class ConvertTab(ctk.CTkFrame):
             name="omnidl-detect-encoders",
         ).start()
         self._build()
+        self._poll_ui_queue()   # start draining _ui_queue on UI thread
         T.register(self._on_theme)
+
+    # ── Thread-safe UI callback pump ─────────────────────────────────────
+
+    def _poll_ui_queue(self) -> None:
+        """Drain _ui_queue on the UI thread.
+
+        Background threads post callables to self._ui_queue instead of
+        calling self.after() directly.  Python 3.14 made self.after()
+        non-callable from non-main threads; this poller is the safe bridge.
+        Runs every 50 ms while the widget exists.
+        """
+        if not self.winfo_exists():
+            return
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception as exc:
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        "_poll_ui_queue callback raised: %s", exc)
+        except queue.Empty:
+            pass
+        self.after(50, self._poll_ui_queue)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
@@ -423,16 +480,22 @@ class ConvertTab(ctk.CTkFrame):
         q_row = ctk.CTkFrame(cfg, fg_color="transparent")
         q_row.pack(fill="x", padx=20, pady=(16, 8))
 
+        # col 0 = label cố định, col 1-4 = 4 card chia đều không gian còn lại
+        q_row.columnconfigure(0, minsize=90)
+        q_row.columnconfigure((1, 2, 3, 4), weight=1, uniform="qual_card")
+
         ctk.CTkLabel(
             q_row, text="Chất lượng",
             font=ctk.CTkFont(size=12, weight="bold"), text_color=T.text2,
             width=90, anchor="w",
-        ).pack(side="left")
+        ).grid(row=0, column=0, sticky="w", pady=4)
 
         self._quality_cards: dict[str, ctk.CTkFrame] = {}
-        for key, label, desc in _QUALITY_OPTIONS:
+        self._quality_main_labels: dict[str, ctk.CTkLabel] = {}
+        for i, (key, label, desc) in enumerate(_QUALITY_OPTIONS):
             card = self._make_quality_card(q_row, key, label, desc)
-            card.pack(side="left", padx=(0, 8))
+            pad_right = 8 if i < len(_QUALITY_OPTIONS) - 1 else 0
+            card.grid(row=0, column=i + 1, padx=(0, pad_right), sticky="nsew")
             self._quality_cards[key] = card
 
         # Custom quality value entry (shown only when "custom" is selected)
@@ -458,6 +521,10 @@ class ConvertTab(ctk.CTkFrame):
             text_color=T.text, font=ctk.CTkFont(size=12),
         )
         self._custom_entry.pack(side="left")
+        # Validate and clamp on FocusOut so user sees the corrected value
+        # immediately rather than being silently changed at convert time.
+        self._custom_entry.bind("<FocusOut>", self._validate_custom_quality)
+        self._custom_entry.bind("<Return>",   self._validate_custom_quality)
         custom_row.pack_forget()   # hidden until "custom" quality selected
         self._custom_row = custom_row
 
@@ -499,6 +566,7 @@ class ConvertTab(ctk.CTkFrame):
         ).pack(side="left")
 
         self._speed_cards: dict[str, ctk.CTkFrame] = {}
+        self._speed_main_labels: dict[str, ctk.CTkLabel] = {}
         for s_key, s_label in SPEED_OPTIONS:
             s_card = ctk.CTkFrame(
                 spd_row,
@@ -508,12 +576,14 @@ class ConvertTab(ctk.CTkFrame):
                 border_color=T.primary if s_key == "balanced" else T.border,
                 cursor="hand2",
             )
-            ctk.CTkLabel(
+            lbl = ctk.CTkLabel(
                 s_card, text=s_label,
                 font=ctk.CTkFont(size=11, weight="bold"),
                 text_color=T.text if s_key == "balanced" else T.text2,
-            ).pack(padx=12, pady=6)
-            for w in (s_card, *s_card.winfo_children()):
+            )
+            lbl.pack(padx=12, pady=6)
+            self._speed_main_labels[s_key] = lbl
+            for w in (s_card, lbl):
                 w.bind("<Button-1>", lambda _e, k=s_key: self._on_speed_change(k))
             s_card.pack(side="left", padx=(0, 6))
             self._speed_cards[s_key] = s_card
@@ -545,6 +615,37 @@ class ConvertTab(ctk.CTkFrame):
             command=self._browse_output,
         ).pack(side="left")
 
+        # ── Bottom action bar ─────────────────────────────────────────────
+        # QUAN TRỌNG: pack side="bottom" TRƯỚC khi pack fill+expand để tkinter
+        # cấp phát không gian cho bar trước — tránh bar bị scroll đẩy ra ngoài
+        # khi cửa sổ nhỏ.
+        bar = ctk.CTkFrame(self, fg_color=T.surface, corner_radius=0,
+                           border_width=1, border_color=T.border)
+        bar.pack(fill="x", side="bottom")
+        self._bar = bar
+
+        ctk.CTkFrame(bar, height=1, fg_color=T.border, corner_radius=0).pack(
+            fill="x", side="top")
+
+        inner_bar = ctk.CTkFrame(bar, fg_color="transparent")
+        inner_bar.pack(fill="both", expand=True, padx=20, pady=10)
+
+        self._status_lbl = ctk.CTkLabel(
+            inner_bar, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text3,
+        )
+        self._status_lbl.pack(side="left")
+
+        self._convert_btn = ctk.CTkButton(
+            inner_bar,
+            text="▶  Convert All",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=40, width=160, corner_radius=8,
+            fg_color=T.primary, hover_color=T.primary_hover, text_color="white",
+            command=self._start_all,
+        )
+        self._convert_btn.pack(side="right")
+
         # ── File list ─────────────────────────────────────────────────────
         self._scroll = ctk.CTkScrollableFrame(
             self, fg_color="transparent",
@@ -575,34 +676,6 @@ class ConvertTab(ctk.CTkFrame):
             font=ctk.CTkFont(size=10), text_color=T.text3,
         ).pack(pady=(2, 50))
 
-        # ── Bottom action bar ─────────────────────────────────────────────
-        bar = ctk.CTkFrame(self, fg_color=T.surface, corner_radius=0,
-                           border_width=1, border_color=T.border)
-        bar.pack(fill="x", side="bottom")
-        self._bar = bar
-
-        ctk.CTkFrame(bar, height=1, fg_color=T.border, corner_radius=0).pack(
-            fill="x", side="top")
-
-        inner_bar = ctk.CTkFrame(bar, fg_color="transparent")
-        inner_bar.pack(fill="both", expand=True, padx=20, pady=10)
-
-        self._status_lbl = ctk.CTkLabel(
-            inner_bar, text="",
-            font=ctk.CTkFont(size=11), text_color=T.text3,
-        )
-        self._status_lbl.pack(side="left")
-
-        self._convert_btn = ctk.CTkButton(
-            inner_bar,
-            text="▶  Convert All",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=40, width=160, corner_radius=8,
-            fg_color=T.primary, hover_color=T.primary_hover, text_color="white",
-            command=self._start_all,
-        )
-        self._convert_btn.pack(side="right")
-
         self._on_quality_change("standard")
 
     def _make_quality_card(
@@ -617,15 +690,17 @@ class ConvertTab(ctk.CTkFrame):
             border_color=T.primary if is_selected else T.border,
             cursor="hand2",
         )
-        ctk.CTkLabel(
+        main_lbl = ctk.CTkLabel(
             card, text=label,
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=T.text if is_selected else T.text2,
-        ).pack(padx=14, pady=(10, 2))
+        )
+        main_lbl.pack(padx=14, pady=(10, 2))
+        self._quality_main_labels[key] = main_lbl
         ctk.CTkLabel(
             card, text=desc,
             font=ctk.CTkFont(size=9), text_color=T.text3,
-            wraplength=160,
+            wraplength=130,
         ).pack(padx=14, pady=(0, 10))
         for w in (card, *card.winfo_children()):
             w.bind("<Button-1>", lambda _e, k=key: self._on_quality_change(k))
@@ -641,9 +716,9 @@ class ConvertTab(ctk.CTkFrame):
                 fg_color=T.primary_dim if selected else T.surface2,
                 border_color=T.primary if selected else T.border,
             )
-            children = card.winfo_children()
-            if children:
-                children[0].configure(
+            lbl = self._quality_main_labels.get(k)
+            if lbl and lbl.winfo_exists():
+                lbl.configure(
                     text_color=T.text if selected else T.text2
                 )
         # Show custom quality entry only when "custom" is selected
@@ -654,13 +729,32 @@ class ConvertTab(ctk.CTkFrame):
 
     # ── Encoder detection ─────────────────────────────────────────────────
 
+    def _validate_custom_quality(self, _event=None) -> None:
+        """Clamp the custom CRF entry to [16, 35] on FocusOut / Enter.
+
+        Provides immediate feedback: the field is corrected in place so the
+        user sees the actual value that will be used, instead of silently
+        being clamped only at convert time.  Border turns red briefly when
+        the value was out of range.
+        """
+        try:
+            val = int(self._custom_quality.get())
+        except (ValueError, tk.TclError):
+            val = 23
+        clamped = max(16, min(35, val))
+        self._custom_quality.set(str(clamped))
+        if val != clamped:
+            # Flash border red to signal the value was out of range
+            self._custom_entry.configure(border_color=T.error)
+            self.after(1200, lambda: self._custom_entry.configure(
+                border_color=T.border2))
+
     def _detect_encoders_async(self) -> None:
         """Background thread: call get_available_encoder_options(), then hand
         the result to the UI thread via after(0, …).  Never touches widgets
         directly — Tkinter is not thread-safe."""
         available_opts = get_available_encoder_options()
-        if self.winfo_exists():
-            self.after(0, lambda opts=available_opts: self._apply_available_encoders(opts))
+        self._ui_queue.put(lambda opts=available_opts: self._apply_available_encoders(opts))
 
     def _apply_available_encoders(
         self, available_opts: list[tuple[str, str]]
@@ -672,6 +766,10 @@ class ConvertTab(ctk.CTkFrame):
         encoders that are detected *and* validated on this machine, with CPU
         always first.
         """
+        # Guard: widget may have been destroyed while encoder detection ran
+        # (e.g. app closed in the first 1-2 s after startup).
+        if not self.winfo_exists():
+            return
         # Guarantee CPU is present even if something went wrong upstream
         if not any(key == "cpu" for key, _ in available_opts):
             cpu_opt = next((o for o in ENCODER_OPTIONS if o[0] == "cpu"), ("cpu", "CPU (libx264)"))
@@ -720,9 +818,9 @@ class ConvertTab(ctk.CTkFrame):
                 fg_color=T.primary_dim if selected else T.surface2,
                 border_color=T.primary if selected else T.border,
             )
-            children = card.winfo_children()
-            if children:
-                children[0].configure(
+            lbl = self._speed_main_labels.get(k)
+            if lbl and lbl.winfo_exists():
+                lbl.configure(
                     text_color=T.text if selected else T.text2
                 )
 
@@ -751,8 +849,7 @@ class ConvertTab(ctk.CTkFrame):
     def _scan_folder_async(self, folder: Path) -> None:
         """Background: scan folder, then dispatch results back to the UI thread."""
         found = scan_folder_for_media(folder)
-        if self.winfo_exists():
-            self.after(0, lambda: self._add_files_from_scan(found, folder))
+        self._ui_queue.put(lambda f=found, d=folder: self._add_files_from_scan(f, d))
 
     def _add_files_from_scan(self, files: list[Path], folder: Path) -> None:
         """UI-thread: bulk-add scanned files and refresh."""
@@ -799,11 +896,10 @@ class ConvertTab(ctk.CTkFrame):
         """Background: run ffprobe and update the card with the result."""
         info = probe_media_info(job.source)
         job.media_info = info
-        if self.winfo_exists():
-            self.after(0, lambda j=job: self._update_card_info(j))
+        self._ui_queue.put(lambda j=job: self._update_card_info(j))
 
     def _update_card_info(self, job: FileJob) -> None:
-        """UI-thread: push MediaInfo result into the job's FileCard."""
+        """UI-thread: push FfmpegMediaInfo result into the job's FileCard."""
         card = self._cards.get(job.id)
         if card and card.winfo_exists():
             card.update_info(job.media_info)
@@ -834,12 +930,13 @@ class ConvertTab(ctk.CTkFrame):
             custom_val = int(self._custom_quality.get())
         except (ValueError, tk.TclError):
             custom_val = 23
+            self._custom_quality.set("23")  # restore valid value in UI
 
         encode_settings = EncodeSettings(
             encoder_key=encoder_key,
             quality=quality,
             speed_preset=self._speed_preset.get(),
-            custom_quality=max(1, min(51, custom_val)),
+            custom_quality=max(16, min(35, custom_val)),
         )
 
         self._convert_btn.configure(state="disabled")
@@ -869,31 +966,24 @@ class ConvertTab(ctk.CTkFrame):
             """Called from worker thread when the semaphore slot is acquired."""
             job.state = FileState.CONVERTING
             job.progress = 0.0
-            if self.winfo_exists():
-                self.after(0, lambda j=job: self._tick_card(j))
+            self._ui_queue.put(lambda j=job: self._tick_card(j))
 
         def on_progress(pct: float) -> None:
-            if not self.winfo_exists():
-                return
             job.progress = pct
-            self.after(0, lambda j=job: self._tick_card(j))
+            self._ui_queue.put(lambda j=job: self._tick_card(j))
 
         def on_done(out_path: Path) -> None:
             job.state = FileState.DONE
             job.progress = 100.0
             job.output = out_path
-            self._active_count -= 1
-            if self.winfo_exists():
-                self.after(0, lambda j=job: self._finish_card(j))
+            self._ui_queue.put(lambda j=job: self._finish_job(j))
 
         def on_error(msg: str) -> None:
             job.state = FileState.FAILED
             job.error_msg = msg
-            self._active_count -= 1
-            if self.winfo_exists():
-                self.after(0, lambda j=job: self._finish_card(j))
+            self._ui_queue.put(lambda j=job: self._finish_job(j))
 
-        self._queue.submit(
+        job.cancel_fn = self._queue.submit(
             source=job.source,
             quality=quality,        # type: ignore[arg-type]
             output_dir=output_dir,
@@ -914,6 +1004,7 @@ class ConvertTab(ctk.CTkFrame):
             self._scroll, job,
             on_remove=self._remove_job,
             on_open_folder=self._open_output,
+            on_cancel=self._cancel_job,
         )
         card.pack(fill="x", pady=(0, 8))
         self._cards[job.id] = card
@@ -923,6 +1014,11 @@ class ConvertTab(ctk.CTkFrame):
         if card and card.winfo_exists():
             card.refresh()
         self._refresh_status()
+
+    def _finish_job(self, job: FileJob) -> None:
+        """UI-thread: decrement active count then refresh the card."""
+        self._active_count -= 1
+        self._finish_card(job)
 
     def _finish_card(self, job: FileJob) -> None:
         card = self._cards.get(job.id)
@@ -946,6 +1042,7 @@ class ConvertTab(ctk.CTkFrame):
                     self._scroll, job,
                     on_remove=self._remove_job,
                     on_open_folder=self._open_output,
+                    on_cancel=self._cancel_job,
                 )
                 card.pack(fill="x", pady=(0, 8))
                 self._cards[job.id] = card
@@ -958,6 +1055,9 @@ class ConvertTab(ctk.CTkFrame):
         self._refresh_status()
 
     def _refresh_status(self) -> None:
+        # Guard: widget may be destroyed when called from _finish_card during shutdown.
+        if not self.winfo_exists():
+            return
         total      = len(self._jobs)
         done       = sum(1 for j in self._jobs.values() if j.state == FileState.DONE)
         converting = sum(1 for j in self._jobs.values() if j.state == FileState.CONVERTING)
@@ -999,6 +1099,14 @@ class ConvertTab(ctk.CTkFrame):
         self._jobs.pop(job_id, None)
         self._refresh_ui()
 
+    def _cancel_job(self, job_id: str) -> None:
+        """Signal the worker to stop, then remove the card immediately."""
+        job = self._jobs.get(job_id)
+        if job and job.cancel_fn is not None:
+            job.cancel_fn()           # type: ignore[operator]
+        self._jobs.pop(job_id, None)
+        self._refresh_ui()
+
     def _clear_done(self) -> None:
         done_ids = [
             jid for jid, j in self._jobs.items()
@@ -1037,3 +1145,8 @@ class ConvertTab(ctk.CTkFrame):
         self._scroll.configure(scrollbar_button_color=T.scrollbar,
                                scrollbar_button_hover_color=T.scrollbar_hover)
         self._on_quality_change(self._quality.get())
+        self._on_speed_change(self._speed_preset.get())
+        # Refresh custom entry border in case it was left in error state
+        self._custom_entry.configure(
+            fg_color=T.input, border_color=T.border2, text_color=T.text
+        )

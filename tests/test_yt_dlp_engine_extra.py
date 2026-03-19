@@ -209,12 +209,12 @@ class TestExtractInfoErrors:
         msg = self._extract_with_error("Unsupported URL")
         assert "not supported" in msg.lower()
 
-    def test_facebook_stories_always_blocked(self):
-        """Facebook Stories are always blocked.
+    def test_facebook_stories_blocked_without_cookies(self):
+        """Facebook Stories are blocked when no cookies are configured.
 
-        No cookie can help (yt-dlp limitation).
+        With valid cookies, yt-dlp CAN download Facebook Stories.
         """
-        cfg = make_config()
+        cfg = make_config(use_cookies=False, cookie_file="")
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
         mock_ydl = MagicMock()
@@ -702,4 +702,494 @@ class TestOutputDirAlwaysAbsolute:
         import os
         assert os.path.isabs(task.filename), (
             f"task.filename must be absolute after download, got: {task.filename!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Instagram Live — URL detection and progress hook behaviour (FIX-1,2,3,4)
+# ---------------------------------------------------------------------------
+
+class TestInstagramLive:
+    """Regression tests for Instagram Live fixes.
+
+    FIX-2: extract_info() forces is_live=True for IG live URLs even when
+            yt-dlp returns is_live=False (race condition during stream prep).
+    FIX-3: checkpoint / challenge_required skip retry in extract_info().
+    FIX-4: Checkpoint error message includes actionable Vietnamese steps.
+    FIX-1: _make_progress_hook shows bytes recorded in eta when total_bytes==0
+            (live streams) — VODs with total_bytes>0 are unaffected.
+    BUG-Y: Both old (/username/live/) and new (/live/shortcode/) URL formats
+            are matched by the Instagram Live regex.
+    """
+
+    # ── URL pattern helpers ────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("url", [
+        "https://www.instagram.com/someuser/live/",
+        "https://www.instagram.com/someuser/live",
+        "https://www.instagram.com/live/ABC123xyz/",
+        "https://www.instagram.com/live/ABC123xyz",
+    ])
+    def test_instagram_live_urls_blocked_without_cookies(self, url):
+        """All Instagram Live URL formats must be rejected when no cookies set."""
+        cfg = make_config(cookie_file="", use_cookies=False)
+        engine = YtDlpEngine(cfg)
+
+        with pytest.raises(RuntimeError, match="cookie"):
+            engine.extract_info(url)
+
+    @pytest.mark.parametrize("url", [
+        "https://www.instagram.com/someuser/live/",
+        "https://www.instagram.com/live/ABC123xyz/",
+    ])
+    def test_instagram_live_allowed_with_cookie_file(self, url, tmp_path, monkeypatch):
+        """Instagram Live URLs pass the cookie gate when a cookie file is configured."""
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+
+        cfg = make_config(cookie_file=str(cookie_file), use_cookies=False)
+        # Patch config_path so _validate_cookie_path considers it safe
+        cfg.config_path = tmp_path / "config.json"
+
+        engine = YtDlpEngine(cfg)
+
+        fake_info = {
+            "title": "Live Test",
+            "uploader": "testuser",
+            "duration": 0,
+            "thumbnail": "",
+            "formats": [],
+            "is_live": False,   # ← yt-dlp did NOT set is_live (race condition)
+            "was_live": False,
+            "id": "abc123",
+        }
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download): return fake_info
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            info = engine.extract_info(url)
+
+        # FIX-2: even though yt-dlp returned is_live=False, engine must force True
+        assert info.is_live is True, (
+            "extract_info() must force is_live=True for Instagram Live URLs "
+            "regardless of what yt-dlp returns (BUG-Y / FIX-2)"
+        )
+
+    def test_instagram_live_is_live_true_preserved(self, tmp_path):
+        """When yt-dlp correctly returns is_live=True, result must remain True."""
+        url = "https://www.instagram.com/someuser/live/"
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+
+        cfg = make_config(cookie_file=str(cookie_file))
+        cfg.config_path = tmp_path / "config.json"
+        engine = YtDlpEngine(cfg)
+
+        fake_info = {
+            "title": "Live",
+            "uploader": "u",
+            "duration": 0,
+            "thumbnail": "",
+            "formats": [],
+            "is_live": True,   # yt-dlp set it correctly
+            "was_live": False,
+            "id": "x1",
+        }
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download): return fake_info
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            info = engine.extract_info(url)
+
+        assert info.is_live is True
+
+    # ── FIX-3: checkpoint skips retry ─────────────────────────────────────
+
+    def test_checkpoint_error_not_retried(self, tmp_path):
+        """checkpoint_required must raise immediately, no retry sleep."""
+        url = "https://www.instagram.com/someuser/live/"
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+
+        cfg = make_config(cookie_file=str(cookie_file))
+        cfg.config_path = tmp_path / "config.json"
+        engine = YtDlpEngine(cfg)
+
+        call_count = {"n": 0}
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download):
+                call_count["n"] += 1
+                raise yt_dlp.utils.DownloadError("checkpoint_required")
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch.object(mod.time, "sleep") as mock_sleep:
+                with pytest.raises(RuntimeError):
+                    engine.extract_info(url)
+
+        # Must raise after exactly 1 attempt — no retry, no sleep
+        assert call_count["n"] == 1, (
+            f"checkpoint error must not be retried, but YoutubeDL was called "
+            f"{call_count['n']} time(s) (FIX-3)"
+        )
+        mock_sleep.assert_not_called()
+
+    # ── FIX-4: checkpoint message ─────────────────────────────────────────
+
+    def test_checkpoint_error_message_is_actionable(self, tmp_path):
+        """Checkpoint error message must contain actionable Vietnamese steps."""
+        url = "https://www.instagram.com/someuser/live/"
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+
+        cfg = make_config(cookie_file=str(cookie_file))
+        cfg.config_path = tmp_path / "config.json"
+        engine = YtDlpEngine(cfg)
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download):
+                raise yt_dlp.utils.DownloadError("checkpoint_required")
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with pytest.raises(RuntimeError) as exc_info:
+                engine.extract_info(url)
+
+        msg = str(exc_info.value)
+        # FIX-4: message must guide user through cookie refresh steps
+        assert "cookie" in msg.lower(), "Message must mention cookie file (FIX-4)"
+        assert "Settings" in msg, "Message must reference Settings path (FIX-4)"
+
+    # ── FIX-1: progress hook live eta ─────────────────────────────────────
+
+    def test_live_hook_shows_bytes_recorded_when_no_total(self):
+        """
+        When is_live=True and total_bytes==0, the progress hook must set
+        task.eta to a 'bytes recorded' string so the user sees activity.
+        """
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        task = make_task("https://www.instagram.com/someuser/live/")
+
+        hook = engine._make_progress_hook(task, callback=None, is_live=True)
+        hook({
+            "status": "downloading",
+            "downloaded_bytes": 5 * 1024 * 1024,   # 5 MiB recorded
+            "total_bytes": 0,
+            "total_bytes_estimate": 0,
+            "speed": None,
+            "eta": None,
+        })
+
+        assert task.eta != "", "eta must not be empty for live with no total_bytes (FIX-1)"
+        assert "ghi" in task.eta, (
+            f"eta must mention 'đã ghi' for live recording, got: {task.eta!r} (FIX-1)"
+        )
+
+    def test_vod_hook_not_affected_by_live_fix(self):
+        """
+        VOD downloads (is_live=False, default) must NOT be affected by FIX-1.
+        When total_bytes==0 for a VOD, eta stays as-is (no 'đã ghi' string).
+        This guards against regression on YouTube, TikTok, Facebook, etc.
+        """
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        task = make_task("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+        # is_live defaults to False — VOD path
+        hook = engine._make_progress_hook(task, callback=None, is_live=False)
+        task.eta = "original"
+        hook({
+            "status": "downloading",
+            "downloaded_bytes": 1024,
+            "total_bytes": 0,
+            "total_bytes_estimate": 0,
+            "speed": None,
+            "eta": None,       # yt-dlp returns None eta for this frame
+        })
+
+        assert task.eta == "original", (
+            "VOD hook must NOT overwrite task.eta with live recording string "
+            f"when total_bytes==0, got: {task.eta!r} (regression guard FIX-1)"
+        )
+
+    def test_live_hook_normal_eta_takes_precedence(self):
+        """
+        If yt-dlp does provide an eta (unusual for live but possible),
+        the normal eta formatting takes precedence over the bytes string.
+        """
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        task = make_task("https://www.instagram.com/someuser/live/")
+
+        hook = engine._make_progress_hook(task, callback=None, is_live=True)
+        hook({
+            "status": "downloading",
+            "downloaded_bytes": 1024,
+            "total_bytes": 0,
+            "total_bytes_estimate": 0,
+            "speed": None,
+            "eta": 90,   # yt-dlp provided eta = 90 seconds
+        })
+
+        assert task.eta == "01:30", (
+            f"When yt-dlp provides eta, it must be used as-is, got: {task.eta!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Instagram Photo — no-video interception (FIX-A, FIX-B, FIX-D)
+# ---------------------------------------------------------------------------
+
+class TestInstagramPhoto:
+    """Regression tests for Instagram photo post handling.
+
+    FIX-A: extract_info() intercepts 'no video in this post' for Instagram
+            /p/ /reel/ /tv/ URLs and returns synthetic MediaInfo(formats=[],
+            duration=0) so BUG Z photo path in home_tab can handle it.
+    FIX-B: 'no video in this post' and 'extractor error' are added to the
+            _hard tuple in extract_info() — no retry attempted.
+    FIX-C: 'no video in this post' added to _HARD_ERROR_KEYWORDS in
+            download_manager — no retry if error surfaces at download stage.
+    FIX-D: _friendly_error() returns actionable Vietnamese message for these.
+    """
+
+    # ── FIX-A: synthetic MediaInfo returned for photo post ─────────────────
+
+    @pytest.mark.parametrize("url,expected_id,error_msg", [
+        (
+            "https://www.instagram.com/p/DV8iEFpEfTl/",
+            "DV8iEFpEfTl",
+            "[Instagram] DV8iEFpEfTl: There is no video in this post",
+        ),
+        (
+            "https://www.instagram.com/p/DV8iEFpEfTl",
+            "DV8iEFpEfTl",
+            "[Instagram] DV8iEFpEfTl: There is no video in this post",
+        ),
+        (
+            "https://www.instagram.com/reel/ABC123xyz/",
+            "ABC123xyz",
+            "[Instagram] ABC123xyz: There is no video in this post",
+        ),
+        (
+            "https://www.instagram.com/tv/XYZ789/",
+            "XYZ789",
+            "[Instagram] XYZ789: There is no video in this post",
+        ),
+        # With valid cookies, yt-dlp raises "No video formats found!" instead
+        (
+            "https://www.instagram.com/p/DV-424dD66n/",
+            "DV-424dD66n",
+            "[Instagram] DV-424dD66n: No video formats found!; please report this issue",
+        ),
+        (
+            "https://www.instagram.com/p/DV-424dD66n/",
+            "DV-424dD66n",
+            "No video formats found!",
+        ),
+    ])
+    def test_photo_post_returns_synthetic_media_info(self, url, expected_id, error_msg, tmp_path):
+        """
+        When yt-dlp raises 'no video in this post' for an IG /p/ /reel/ /tv/ URL,
+        extract_info() must return MediaInfo with formats=[], duration=0, is_live=False.
+        This activates the BUG Z photo detection path in home_tab.
+        """
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        cfg = make_config(cookie_file=str(cookie_file))
+        cfg.config_path = tmp_path / "config.json"
+        engine = YtDlpEngine(cfg)
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download):
+                raise yt_dlp.utils.DownloadError(error_msg)
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            info = engine.extract_info(url)
+
+        assert info.formats == [], (
+            "Photo MediaInfo must have formats=[] to trigger BUG Z path (FIX-A)"
+        )
+        assert info.duration == 0, (
+            "Photo MediaInfo must have duration=0 to trigger BUG Z path (FIX-A)"
+        )
+        assert info.is_live is False, "Photo must not be flagged as live (FIX-A)"
+        assert info.platform == "Instagram", "Platform must be Instagram (FIX-A)"
+        assert info.video_id == expected_id, (
+            f"video_id must be shortcode {expected_id!r}, got {info.video_id!r} (FIX-A)"
+        )
+
+    def test_photo_post_not_retried(self, tmp_path):
+        """
+        'no video in this post' must NOT trigger retry — it returns immediately.
+        Previously this caused 2 unnecessary retries (1s + 2s sleep).
+        """
+        url = "https://www.instagram.com/p/DV8iEFpEfTl/"
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        cfg = make_config(cookie_file=str(cookie_file))
+        cfg.config_path = tmp_path / "config.json"
+        engine = YtDlpEngine(cfg)
+
+        call_count = {"n": 0}
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download):
+                call_count["n"] += 1
+                raise yt_dlp.utils.DownloadError(
+                    "[Instagram] DV8iEFpEfTl: There is no video in this post"
+                )
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch.object(mod.time, "sleep") as mock_sleep:
+                # Returns synthetic MediaInfo — does not raise
+                result = engine.extract_info(url)
+
+        assert call_count["n"] == 1, (
+            f"Photo post must be handled after exactly 1 call, got {call_count['n']} (FIX-B)"
+        )
+        mock_sleep.assert_not_called()
+        assert result.formats == []
+
+    # ── FIX-B: extractor error (KeyError '=') not retried ──────────────────
+
+    def test_extractor_error_not_retried(self):
+        """
+        yt-dlp extractor crashes (e.g. KeyError('=') on base64 shortcodes) must
+        raise immediately — no retry, no sleep.  User must update yt-dlp.
+        """
+        url = "https://www.instagram.com/p/DV8iEFpEfTl/"
+        cfg = make_config(cookie_file="", use_cookies=False)
+        # Bypass cookie gate — we want to reach the extractor path
+        engine = YtDlpEngine(cfg)
+
+        call_count = {"n": 0}
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        # Simulate the _check_unsupported_url gate passing (no cookies required
+        # for /p/ URLs — only stories and live require cookies)
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download):
+                call_count["n"] += 1
+                # This is the actual yt-dlp error text for KeyError('=')
+                raise yt_dlp.utils.DownloadError(
+                    "DV8iEFpEfTlTc4MTIwNjQ2YQ==: An extractor error has occurred. "
+                    "(caused by KeyError('=')); please report this issue"
+                )
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch.object(mod.time, "sleep") as mock_sleep:
+                with pytest.raises(RuntimeError) as exc_info:
+                    engine.extract_info(url)
+
+        assert call_count["n"] == 1, (
+            f"Extractor error must not be retried, got {call_count['n']} call(s) (FIX-B)"
+        )
+        mock_sleep.assert_not_called()
+
+        # FIX-D: message must guide user to update yt-dlp
+        msg = str(exc_info.value).lower()
+        assert "yt-dlp" in msg, "Error message must mention yt-dlp (FIX-D)"
+
+    # ── FIX-D: friendly error messages ─────────────────────────────────────
+
+    def test_no_video_error_message_mentions_instagram_cookie(self):
+        """
+        'no video in this post' or 'no video formats found' must
+        return a message that mentions Instagram cookie context.
+        """
+        from infrastructure.downloader.yt_dlp_engine import _friendly_error
+        for msg in ["There is no video in this post", "No video formats found!"]:
+            result = _friendly_error(msg)
+            assert "cookie" in result.lower() or "ảnh" in result.lower(), (
+                f"no-video error must mention cookies or photo context, got: {result!r} (FIX-D)"
+            )
+
+    def test_no_video_formats_found_not_retried(self, tmp_path):
+        """
+        'No video formats found!' (raised when cookies are valid but post is photo)
+        must NOT trigger retry — same rule as 'no video in this post'.
+        Previously caused 3 unnecessary retries per attempt.
+        """
+        url = "https://www.instagram.com/p/DV-424dD66n/"
+        cookie_file = tmp_path / "cookies.txt"
+        cookie_file.write_text("# Netscape HTTP Cookie File\n")
+        cfg = make_config(cookie_file=str(cookie_file))
+        cfg.config_path = tmp_path / "config.json"
+        engine = YtDlpEngine(cfg)
+
+        call_count = {"n": 0}
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, u, download):
+                call_count["n"] += 1
+                raise yt_dlp.utils.DownloadError(
+                    "[Instagram] DV-424dD66n: No video formats found!; "
+                    "please report this issue on https://github.com/yt-dlp/yt-dlp/issues"
+                )
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch.object(mod.time, "sleep") as mock_sleep:
+                # Should return synthetic MediaInfo, not raise
+                result = engine.extract_info(url)
+
+        assert call_count["n"] == 1, (
+            f"'No video formats found!' must be handled in 1 call, got {call_count['n']} (FIX-B)"
+        )
+        mock_sleep.assert_not_called()
+        assert result.formats == [], "Synthetic MediaInfo must have formats=[] (FIX-A)"
+        assert result.video_id == "DV-424dD66n", "Hyphen in shortcode must be preserved"
+
+    def test_extractor_error_message_mentions_update(self):
+        """
+        'extractor error' must return a message telling user to update yt-dlp.
+        """
+        from infrastructure.downloader.yt_dlp_engine import _friendly_error
+        msg = _friendly_error(
+            "DV8iEFpEfTlTc4MTIwNjQ2YQ==: An extractor error has occurred. "
+            "(caused by KeyError('='))"
+        )
+        assert "yt-dlp" in msg.lower(), (
+            f"extractor error must mention yt-dlp update, got: {msg!r} (FIX-D)"
         )

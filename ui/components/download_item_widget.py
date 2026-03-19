@@ -5,6 +5,7 @@ One row per DownloadTask — compact, IDM-inspired, fully themed.
 from __future__ import annotations
 
 import logging
+import queue
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -58,8 +59,32 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._completed_path: str = ""
         self._converting: bool = False   # True while background conversion runs
         self._convert_pct: float = 0.0
+        # Thread-safe callback queue for FFmpeg conversion callbacks
+        # (Python 3.14: self.after() not callable from background threads)
+        self._ui_queue: queue.Queue = queue.Queue()
         self._build()
+        self._drain_ui_queue()   # start poller
         T.register(self._on_theme)
+
+    def _drain_ui_queue(self) -> None:
+        """Drain _ui_queue on the UI thread (Python 3.14 thread-safety).
+
+        FFmpeg conversion callbacks fire on a worker thread and post
+        callables here instead of calling self.after() directly.
+        Runs every 50 ms while widget exists.
+        """
+        if not self.winfo_exists():
+            return
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception as exc:
+                    logger.warning("_ui_queue callback raised: %s", exc)
+        except queue.Empty:
+            pass
+        self.after(50, self._drain_ui_queue)
 
     def _build(self) -> None:
         # Row 1: dot + title + badge + buttons
@@ -187,6 +212,13 @@ class DownloadItemWidget(ctk.CTkFrame):
 
         terminal   = st in DownloadStatus.terminal_states()
         processing = st == DownloadStatus.PROCESSING
+        # gallery-dl downloads run as subprocesses — pause has no effect.
+        # Disable the pause button for these tasks so the user is not misled.
+        # Safe guard: task.media_info may be None before analysis completes.
+        is_gallery_dl = (
+            task.media_info is not None
+            and getattr(task.media_info, "source_engine", "yt_dlp") == "gallery_dl"
+        )
 
         if terminal:
             self._pause_btn.configure(state="disabled", text_color=T.text3)
@@ -196,8 +228,9 @@ class DownloadItemWidget(ctk.CTkFrame):
             self._cancel_btn.configure(state="normal",  text_color=T.error)
         else:
             self._pause_btn.configure(
-                state="normal", text_color=T.text2,
-                text="▶" if st == DownloadStatus.PAUSED else "⏸")
+                state="disabled" if is_gallery_dl else "normal",
+                text_color=T.text3 if is_gallery_dl else T.text2,
+                text="⏸")
             self._cancel_btn.configure(state="normal", text_color=T.error)
 
         if st == DownloadStatus.COMPLETED and task.filename:
@@ -249,18 +282,15 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._prog.set_state("active")
 
         def _on_progress(pct: float) -> None:
-            if self.winfo_exists():
-                self.after(0, lambda p=pct: self._prog.set_progress(p))
+            self._ui_queue.put(lambda p=pct: self._prog.set_progress(p))
 
         def _on_done(output_path) -> None:
             self._converting = False
-            if self.winfo_exists():
-                self.after(0, self._on_convert_done)
+            self._ui_queue.put(self._on_convert_done)
 
         def _on_error(msg: str) -> None:
             self._converting = False
-            if self.winfo_exists():
-                self.after(0, lambda m=msg: self._on_convert_error(m))
+            self._ui_queue.put(lambda m=msg: self._on_convert_error(m))
 
         self._on_convert(
             Path(path),

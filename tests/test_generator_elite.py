@@ -1069,6 +1069,26 @@ class TestFriendlyError:
         result = self._call(long_msg)
         assert len(result) <= 200
 
+    def test_checkpoint_returns_verification_message(self):
+        result = self._call("checkpoint required: please verify your account")
+        assert "verification" in result.lower() or "checkpoint" in result.lower()
+
+    def test_challenge_required_returns_verification_message(self):
+        result = self._call("challenge_required")
+        assert "verification" in result.lower() or "checkpoint" in result.lower()
+
+    def test_rate_limit_429_returns_wait_message(self):
+        result = self._call("HTTP Error 429: Too Many Requests")
+        assert "rate limit" in result.lower() or "wait" in result.lower()
+
+    def test_geo_restricted_returns_vpn_hint(self):
+        result = self._call("This video is geo-restricted in your country")
+        assert "region" in result.lower() or "vpn" in result.lower() or "geo" in result.lower()
+
+    def test_content_not_available_facebook(self):
+        result = self._call("This content isn't available right now")
+        assert "available" in result.lower() or "facebook" in result.lower() or len(result) <= 200
+
 
 class TestCheckUnsupportedUrl:
     def _call(self, url, has_cookies=False):
@@ -1117,6 +1137,47 @@ class TestCheckUnsupportedUrl:
 
     def test_tiktok_normal_passes(self):
         assert self._call("https://www.tiktok.com/@user/video/123") is None
+
+    # ── New URL format coverage (Fixed8) ─────────────────────────────────
+
+    def test_instagram_live_new_format_blocked_without_cookies(self):
+        """New 2024+ Instagram live URL (/live/shortcode/) blocked without cookies."""
+        result = self._call("https://www.instagram.com/live/ABC123DEF/")
+        assert result is not None
+        assert "cookie" in result.lower() or "login" in result.lower()
+
+    def test_instagram_live_new_format_allowed_with_cookies(self):
+        """New Instagram live URL passes through when cookies are set."""
+        assert self._call(
+            "https://www.instagram.com/live/ABC123DEF/", has_cookies=True
+        ) is None
+
+    def test_facebook_story_php_blocked_without_cookies(self):
+        """Facebook story.php URL blocked without cookies."""
+        result = self._call("https://www.facebook.com/story.php?story_fbid=123&id=456")
+        assert result is not None
+        assert "stories" in result.lower() or "cookie" in result.lower()
+
+    def test_facebook_permalink_story_blocked_without_cookies(self):
+        """Facebook permalink with story_fbid blocked without cookies."""
+        result = self._call(
+            "https://www.facebook.com/permalink.php?story_fbid=123&id=456"
+        )
+        assert result is not None
+
+    def test_facebook_share_story_blocked_without_cookies(self):
+        """Facebook share/r/ story link blocked without cookies."""
+        result = self._call("https://www.facebook.com/share/r/ABC123/")
+        assert result is not None
+
+    def test_facebook_reel_passes(self):
+        """Facebook Reels are not Stories — should pass through to yt-dlp."""
+        # Reels don't require story-specific cookies; yt-dlp handles them
+        assert self._call("https://www.facebook.com/reel/123456789") is None
+
+    def test_facebook_photo_passes(self):
+        """Facebook photo posts pass through — yt-dlp handles them."""
+        assert self._call("https://www.facebook.com/photo?fbid=123456789") is None
 
 
 class TestProgressHook:

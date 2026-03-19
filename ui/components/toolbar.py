@@ -153,36 +153,42 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         self._analyse_token += 1
         my_token = self._analyse_token
 
-        self._analyse_btn.configure(state="disabled", text="Analyzing…")
-        self._set_status("Fetching media info…", T.text2)
-        self._start_spinner()
+        try:
+            self._analyse_btn.configure(state="disabled", text="Analyzing…")
+            self._set_status("Fetching media info…", T.text2)
+            self._start_spinner()
 
-        # Navigate to home tab immediately so user sees it loading
-        self._app.navigate_to("home")
+            # Navigate to home tab immediately so user sees it loading
+            self._app.navigate_to("home")
 
-        # Notify HomeTab to clear its previous result
-        home = self._app.get_tab("home")
-        if home:
-            home.on_analysis_start()
+            # Notify HomeTab to clear its previous result
+            home = self._app.get_tab("home")
+            if home:
+                home.on_analysis_start()
 
-        def _safe_done(info) -> None:
-            if not self.winfo_exists():
-                return
-            if my_token != self._analyse_token:
-                self.after(0, self._reset_btn)
-                return
-            self.after(0, lambda: self._on_done(info))
+            def _safe_done(info) -> None:
+                if not self.winfo_exists():
+                    return
+                if my_token != self._analyse_token:
+                    self.after(0, self._reset_btn)
+                    return
+                self.after(0, lambda: self._on_done(info))
 
-        def _safe_error(err: str) -> None:
-            if not self.winfo_exists():
-                return
-            if my_token != self._analyse_token:
-                self.after(0, self._reset_btn)
-                return
-            self.after(0, lambda: self._on_error(err))
+            def _safe_error(err: str) -> None:
+                if not self.winfo_exists():
+                    return
+                if my_token != self._analyse_token:
+                    self.after(0, self._reset_btn)
+                    return
+                self.after(0, lambda: self._on_error(err))
 
-        self._app.service.analyse_url(
-            url=url, on_done=_safe_done, on_error=_safe_error)
+            self._app.service.analyse_url(
+                url=url, on_done=_safe_done, on_error=_safe_error)
+
+        except Exception:
+            # Guarantee _analysing is always reset even if setup raises,
+            # so the Analyze button never gets permanently disabled.
+            self._reset_btn()
 
     def _on_done(self, info) -> None:
         self._stop_spinner()

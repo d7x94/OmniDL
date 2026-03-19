@@ -8,7 +8,10 @@ from __future__ import annotations
 import logging
 import threading
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from domain.models.download_task import DownloadTask, MediaInfo
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,10 @@ class EventBus:
 
     Events are delivered on the publisher's thread.
     The UI must marshal callbacks to the main thread via after().
+
+    Typed convenience methods (publish_download_started etc.) are provided
+    for IDE auto-complete and static analysis.  The underlying publish()
+    method with **kwargs remains fully supported for backward compatibility.
     """
 
     def __init__(self) -> None:
@@ -53,6 +60,32 @@ class EventBus:
                 h(**kwargs)
             except Exception:
                 logger.exception("EventBus handler error for event=%s", event)
+
+    # ── Typed convenience publishers ─────────────────────────────────────
+    # These are thin wrappers that make call-sites self-documenting and
+    # allow IDE type-checking to catch wrong payload keys at write time.
+    # Runtime behaviour is identical to calling publish() directly.
+
+    def publish_download_started(self, task: "DownloadTask") -> None:
+        self.publish(self.DOWNLOAD_STARTED, task=task)
+
+    def publish_download_progress(self, task: "DownloadTask") -> None:
+        self.publish(self.DOWNLOAD_PROGRESS, task=task)
+
+    def publish_download_completed(self, task: "DownloadTask") -> None:
+        self.publish(self.DOWNLOAD_COMPLETED, task=task)
+
+    def publish_download_failed(self, task: "DownloadTask") -> None:
+        self.publish(self.DOWNLOAD_FAILED, task=task)
+
+    def publish_download_cancelled(self, task: "DownloadTask") -> None:
+        self.publish(self.DOWNLOAD_CANCELLED, task=task)
+
+    def publish_analysis_done(self, info: "MediaInfo") -> None:
+        self.publish(self.ANALYSIS_DONE, info=info)
+
+    def publish_analysis_failed(self, error: str) -> None:
+        self.publish(self.ANALYSIS_FAILED, error=error)
 
     # ── Well-known event name constants ──────────────────────────────────
 

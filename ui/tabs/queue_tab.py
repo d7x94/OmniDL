@@ -92,7 +92,8 @@ class QueueTab(ctk.CTkFrame):
                 w = DownloadItemWidget(
                     self._scroll, task,
                     on_pause=self._on_pause,
-                    on_cancel=self._on_cancel)
+                    on_cancel=self._on_cancel,
+                    on_convert=lambda p, **kw: self._app.convert_to_mp4(p, **kw))
                 w.pack(fill="x", pady=(0, 8))
                 self._widgets[task.id] = w
             else:
