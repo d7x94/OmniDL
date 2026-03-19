@@ -57,12 +57,25 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
         # UnicodeEncodeError from spamming "--- Logging error ---" to the
         # console while downloads with emoji/Vietnamese titles are in progress.
         import io
-        safe_stdout = io.TextIOWrapper(
-            sys.stdout.buffer,
-            encoding=sys.stdout.encoding or "utf-8",
-            errors="replace",
-            line_buffering=True,
-        ) if hasattr(sys.stdout, "buffer") else sys.stdout
+        # Wrap stdout only in real Windows deployments where UnicodeEncodeError
+        # can occur on cp1252/cp1258 consoles.  In test environments (pytest
+        # replaces sys.stdout with a capture object) we must NOT wrap because
+        # TextIOWrapper takes ownership of the underlying buffer and causes
+        # pytest's capture mechanism to hit "I/O on closed file" at teardown.
+        _is_real_file = (
+            hasattr(sys.stdout, "buffer")
+            and hasattr(sys.stdout.buffer, "raw")
+        )
+        safe_stdout = (
+            io.TextIOWrapper(
+                sys.stdout.buffer,
+                encoding=sys.stdout.encoding or "utf-8",
+                errors="replace",
+                line_buffering=True,
+            )
+            if _is_real_file
+            else sys.stdout
+        )
         ch = logging.StreamHandler(safe_stdout)
         ch.setFormatter(fmt)
         root.addHandler(ch)

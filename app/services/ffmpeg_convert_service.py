@@ -49,6 +49,16 @@ logger = logging.getLogger(__name__)
 _PROG_MS_RE = re.compile(r"^out_time_ms=(-?\d+)")
 _TIME_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)")
 
+
+def _parse_seconds(m: "re.Match[str]") -> float:
+    """Convert a time=HH:MM:SS.cs regex match to total seconds (float).
+
+    Accepts a match from a pattern with 4 groups: hours, minutes,
+    seconds, centiseconds (0-99). Used by tests and inline progress parsing.
+    """
+    h, m_, s, cs = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    return h * 3600 + m_ * 60 + s + cs / 100
+
 Quality = Literal["high", "standard", "small", "custom"]
 
 # ── Supported media extensions (without leading dot) ─────────────────────────
@@ -950,7 +960,7 @@ class FfmpegConvertService:
                 raise ConversionCancelledError("Đã huỷ")
             tail = "\n".join(stderr_lines[-10:])
             raise ConversionError(
-                f"ffmpeg thoat voi loi {proc.returncode}.\n{tail}"
+                f"ffmpeg thoát với lỗi {proc.returncode}.\n{tail}"
             )
 
     @staticmethod

@@ -266,10 +266,11 @@ class MainWindow(ctk.CTk):
         bottom = ctk.CTkFrame(self._sidebar, fg_color="transparent")
         bottom.pack(side="bottom", fill="x", padx=12, pady=12)
 
-        ctk.CTkLabel(
+        self._powered_lbl = ctk.CTkLabel(
             bottom, text="v16.0.0",
             font=ctk.CTkFont(size=10), text_color=T.text3,
-        ).pack(side="left")
+        )
+        self._powered_lbl.pack(side="left")
 
         self._theme_btn = ctk.CTkButton(
             bottom, text="☀ Light",

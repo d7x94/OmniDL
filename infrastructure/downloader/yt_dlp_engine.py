@@ -200,7 +200,8 @@ def _friendly_error(msg: str) -> str:
             "3. Cập nhật cookie file trong Settings → Network → Cookie file.\n"
             "Lưu ý: Cookie Instagram thường hết hạn sau 1–2 tuần."
         )
-    if "rate" in msg_l and ("limit" in msg_l or "429" in msg_l or "too many" in msg_l):
+    if ("rate" in msg_l and ("limit" in msg_l or "429" in msg_l or "too many" in msg_l)
+            or "429" in msg_l or "too many requests" in msg_l):
         return (
             "Rate limit reached — too many requests in a short time.\n"
             "Wait 5–10 minutes and try again. "

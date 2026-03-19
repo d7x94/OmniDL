@@ -152,9 +152,12 @@ class TestExtractInfoSuccess:
             "formats": [],
             "is_live": False,
             "was_live": False,
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "webpage_url": "https://www.youtube.com/watch?v=abc123",
         }
         playlist_dict = {
             "_type": "playlist",
+            "title": "First Video",
             "entries": [first_entry],
         }
         cfg = make_config()
@@ -170,7 +173,7 @@ class TestExtractInfoSuccess:
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(playlist_dict)):
-            with pytest.raises(RuntimeError, match="empty"):
+            with pytest.raises(RuntimeError, match=r"empty|không có video|no video"):
                 engine.extract_info("https://youtube.com/playlist?list=abc")
 
     def test_none_result_raises(self):

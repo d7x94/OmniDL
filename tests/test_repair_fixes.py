@@ -317,8 +317,13 @@ def test_logger_uses_rotating_file_handler(tmp_path):
         assert rh.maxBytes > 0, "RotatingFileHandler maxBytes must be positive"
         assert rh.backupCount > 0, "RotatingFileHandler backupCount must be positive"
     finally:
-        # Restore original handlers
+        # Restore original handlers — close each before removing to prevent
+        # pytest capture from hitting a closed TextIOWrapper (cascade I/O error)
         for h in logging.getLogger().handlers[:]:
+            try:
+                h.close()
+            except Exception:
+                pass
             logging.getLogger().removeHandler(h)
         for h in original_handlers:
             logging.getLogger().addHandler(h)

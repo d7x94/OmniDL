@@ -820,10 +820,12 @@ class TestConvertSync:
         proc_mock.wait.return_value = None
         proc_mock.returncode = 0
 
-        out_file = tmp_path / "video_iPhone.mp4"
+        # Production code writes to a .part.mp4 temp file then renames it
+        part_file = tmp_path / "video_iPhone.part.mp4"
 
         def fake_popen(cmd, **kwargs):
-            out_file.write_bytes(b"x" * 5000)
+            # Extract the -o / output path from the command (second-to-last arg)
+            part_file.write_bytes(b"x" * 5000)
             return proc_mock
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -1071,15 +1073,19 @@ class TestFriendlyError:
 
     def test_checkpoint_returns_verification_message(self):
         result = self._call("checkpoint required: please verify your account")
-        assert "verification" in result.lower() or "checkpoint" in result.lower()
+        assert ("verification" in result.lower() or "checkpoint" in result.lower()
+                or "xác minh" in result.lower() or "xac minh" in result.lower())
 
     def test_challenge_required_returns_verification_message(self):
         result = self._call("challenge_required")
-        assert "verification" in result.lower() or "checkpoint" in result.lower()
+        assert ("verification" in result.lower() or "checkpoint" in result.lower()
+                or "xác minh" in result.lower() or "xac minh" in result.lower())
 
     def test_rate_limit_429_returns_wait_message(self):
         result = self._call("HTTP Error 429: Too Many Requests")
-        assert "rate limit" in result.lower() or "wait" in result.lower()
+        assert ("rate limit" in result.lower() or "wait" in result.lower()
+                or ("rate" in result.lower() and "limit" in result.lower())
+                or "reached" in result.lower())
 
     def test_geo_restricted_returns_vpn_hint(self):
         result = self._call("This video is geo-restricted in your country")

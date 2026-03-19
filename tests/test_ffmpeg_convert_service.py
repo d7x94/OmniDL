@@ -307,11 +307,13 @@ class TestConvertSync:
         fresh_calls: list = []
 
         with patch.object(svc, "_probe_duration", return_value=120.0):
-            with patch.object(svc, "_fresh_encode", side_effect=lambda *a, **kw: fresh_calls.append(1) or tmp_path / "out.mp4"):
-                try:
-                    svc._convert_sync(source, "standard", tmp_path, None)
-                except Exception:
-                    pass
+            with patch.object(svc, "_fresh_encode", side_effect=lambda *a, **kw: fresh_calls.append(1) or (tmp_path / "out.mp4")):
+                with patch.object(svc.__class__, "_locate_ffmpeg_bin",
+                                  staticmethod(lambda: tmp_path / "ffmpeg")):
+                    try:
+                        svc._convert_sync(source, "standard", tmp_path, None)
+                    except Exception:
+                        pass
 
         assert len(fresh_calls) == 1
 
@@ -394,7 +396,7 @@ class TestConvertQueue:
         finished = [0]
 
         def make_run(delay: float = 0.05):
-            def _run(source, quality, output_dir, on_progress, on_done, on_error):
+            def _run(source, quality, output_dir, on_progress, on_done, on_error, **kwargs):
                 with lock:
                     active.append(1)
                     max_seen.append(len(active))
@@ -425,7 +427,7 @@ class TestConvertQueue:
         done_event = threading.Event()
         queue = ConvertQueue(max_concurrent=1)
 
-        def fake_run(src, quality, output_dir, on_progress, on_done, on_error):
+        def fake_run(src, quality, output_dir, on_progress, on_done, on_error, **kwargs):
             if on_done:
                 on_done(src)
 
@@ -446,7 +448,7 @@ class TestConvertQueue:
         err_event = threading.Event()
         queue = ConvertQueue(max_concurrent=1)
 
-        def fake_run(src, quality, output_dir, on_progress, on_done, on_error):
+        def fake_run(src, quality, output_dir, on_progress, on_done, on_error, **kwargs):
             if on_error:
                 on_error("boom")
 
@@ -482,7 +484,7 @@ class TestConvertQueue:
 
         # Patch _run differently for each call
         run_count = [0]
-        def dispatch(src, quality, output_dir, on_progress, on_done, on_error):
+        def dispatch(src, quality, output_dir, on_progress, on_done, on_error, **kwargs):
             i = run_count[0]
             run_count[0] += 1
             fail = (i == 0)
