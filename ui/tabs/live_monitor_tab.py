@@ -35,7 +35,7 @@ import customtkinter as ctk
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import MediaInfo
 from ui.themes.tokens import T
-from utils.helpers import is_valid_url, reveal_in_explorer, open_folder
+from utils.helpers import is_valid_url, open_folder, reveal_in_explorer
 from utils.instagram_live_checker import (
     extract_instagram_username,
     is_instagram_profile_url,

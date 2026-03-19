@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import queue
-import threading
 import tkinter as tk
 import tkinter.filedialog as fd
 from dataclasses import dataclass, field

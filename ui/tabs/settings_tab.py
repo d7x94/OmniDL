@@ -17,8 +17,7 @@ try:
 except ImportError:  # pragma: no cover -- only missing in headless CI/tests
     ctk = None  # type: ignore[assignment]
 
-from ui.themes.tokens import T, THEME_NAMES
-from utils.helpers import is_valid_url
+from ui.themes.tokens import THEME_NAMES, T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow

@@ -254,11 +254,12 @@ class DownloadService:
         Calls on_done(live_url_or_None) or on_error(message).
         Callers must use after() to marshal UI updates.
         """
+        import threading
+
         from utils.instagram_live_checker import (
             check_instagram_live,
             extract_instagram_username,
         )
-        import threading
 
         username = extract_instagram_username(url)
         if not username:

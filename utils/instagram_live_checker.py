@@ -134,7 +134,7 @@ def check_instagram_live(
     except requests.exceptions.ConnectionError as exc:
         raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
     except requests.exceptions.Timeout:
-        raise RuntimeError("Instagram API hết thời gian chờ. Thử lại sau.")
+        raise RuntimeError("Instagram API hết thời gian chờ. Thử lại sau.") from None
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
 

@@ -171,11 +171,11 @@ class GalleryDlEngine:
                 errors="replace",
             )
         except subprocess.TimeoutExpired:
-            raise RuntimeError("gallery-dl hết thời gian khi lấy thông tin URL.")
+            raise RuntimeError("gallery-dl hết thời gian khi lấy thông tin URL.") from None
         except FileNotFoundError:
             raise RuntimeError(
                 "gallery-dl không tìm thấy.\nCài đặt: pip install gallery-dl"
-            )
+            ) from None
 
         # gallery-dl --dump-json emits one JSON array per line:
         # [1, "url", {metadata}]  → type 1 = image URL
@@ -292,7 +292,7 @@ class GalleryDlEngine:
         except FileNotFoundError:
             raise RuntimeError(
                 "gallery-dl không tìm thấy.\nCài đặt: pip install gallery-dl"
-            )
+            ) from None
 
         task.status = DownloadStatus.DOWNLOADING
         task.progress = 0.0

@@ -29,7 +29,7 @@ import customtkinter as ctk
 from app.services.download_service import DownloadService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
-from ui.themes.tokens import T, THEME_NAMES
+from ui.themes.tokens import T
 
 logger = logging.getLogger(__name__)
 

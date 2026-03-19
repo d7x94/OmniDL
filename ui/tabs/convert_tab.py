@@ -32,12 +32,12 @@ from typing import TYPE_CHECKING, Optional
 import customtkinter as ctk
 
 from app.services.ffmpeg_convert_service import (
-    ConvertQueue,
-    EncodeSettings,
     ENCODER_OPTIONS,
-    FfmpegMediaInfo,
     SPEED_OPTIONS,
     SUPPORTED_EXTS,
+    ConvertQueue,
+    EncodeSettings,
+    FfmpegMediaInfo,
     get_available_encoder_options,
     probe_media_info,
     scan_folder_for_media,
@@ -790,11 +790,11 @@ class ConvertTab(ctk.CTkFrame):
         current_key = self._encoder_key.get()
         if current_key not in self._available_encoders:
             self._encoder_key.set("cpu")
-            cpu_label = next((l for k, l in available_opts if k == "cpu"), labels[0])
+            cpu_label = next((lbl for k, lbl in available_opts if k == "cpu"), labels[0])
             self._encoder_menu.set(cpu_label)
 
         # Update status label
-        gpu_labels = [l for k, l in available_opts if k != "cpu"]
+        gpu_labels = [lbl for k, lbl in available_opts if k != "cpu"]
         status = f"GPU: {', '.join(gpu_labels)}" if gpu_labels else "Chỉ CPU"
         self._encoder_status_lbl.configure(text=status, text_color=T.text3)
 
