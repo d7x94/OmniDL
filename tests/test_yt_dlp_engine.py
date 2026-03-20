@@ -210,3 +210,59 @@ class TestCancellationDetection:
             with pytest.raises(RuntimeError) as exc_info:
                 engine.download(task)
         assert "private" in str(exc_info.value).lower()
+
+
+# ── Regression: .txt → .enc auto-fallback in cookie validation ───────────────
+
+class TestCookiePathEncFallback:
+    """BUG BC regression: validate_cookie_path_raw must accept .enc when
+    config stores .txt but encrypt_cookie_file renamed it to .enc."""
+
+    def _make_config(self, tmp_path):
+        from infrastructure.config.config_manager import ConfigManager
+        cfg = ConfigManager(tmp_path / "config.json")
+        return cfg
+
+    def test_raw_txt_path_accepted_when_txt_exists(self, tmp_path):
+        from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+        cfg = self._make_config(tmp_path)
+        cookie_dir = cfg.config_path.parent / "cookies"
+        cookie_dir.mkdir(parents=True, exist_ok=True)
+        txt = cookie_dir / "instagram_brave_cdp_cookies.txt"
+        txt.write_text("# Netscape\n.instagram.com TRUE / TRUE 0 sid abc\n")
+        result = _validate_cookie_path_raw(str(txt), cfg)
+        assert result == str(txt)
+
+    def test_raw_txt_path_falls_back_to_enc(self, tmp_path):
+        """Config stores .txt but only .enc exists → return .enc path."""
+        from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+        cfg = self._make_config(tmp_path)
+        cookie_dir = cfg.config_path.parent / "cookies"
+        cookie_dir.mkdir(parents=True, exist_ok=True)
+        txt = cookie_dir / "instagram_brave_cdp_cookies.txt"
+        enc = txt.with_suffix(".enc")
+        enc.write_bytes(b"encrypted_data")
+        # .txt does NOT exist, only .enc
+        result = _validate_cookie_path_raw(str(txt), cfg)
+        assert result == str(enc), f"Expected .enc path, got {result!r}"
+
+    def test_raw_outside_safe_dir_rejected(self, tmp_path):
+        from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+        cfg = self._make_config(tmp_path)
+        outside = tmp_path.parent / "evil_cookies.txt"
+        outside.write_text("bad")
+        result = _validate_cookie_path_raw(str(outside), cfg)
+        assert result is None
+
+    def test_global_txt_falls_back_to_enc(self, tmp_path):
+        """Global cookie_file: config stores .txt, only .enc on disk → enc used."""
+        from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+        cfg = self._make_config(tmp_path)
+        cookie_dir = cfg.config_path.parent / "cookies"
+        cookie_dir.mkdir(parents=True, exist_ok=True)
+        txt = cookie_dir / "brave_global_cookies.txt"
+        enc = txt.with_suffix(".enc")
+        enc.write_bytes(b"encrypted_global")
+        cfg.set("cookie_file", str(txt))
+        result = _validate_cookie_path(cfg)
+        assert result == str(enc)

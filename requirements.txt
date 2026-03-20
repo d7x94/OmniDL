@@ -6,4 +6,7 @@ requests>=2.31.0
 packaging>=23.0
 platformdirs>=4.0.0           # FIX SEC-3: platform-appropriate user-data directories
 PySocks>=1.7.1                # required by yt-dlp for SOCKS4/5 proxy support
+keyring>=24.0.0               # required by yt-dlp to decrypt Brave/Chrome 127+ App-Bound cookies (issue #10927)
+                              # also used by OmniDL to store macOS Keychain encryption key (BUG BC)
+cryptography>=41.0.0          # Fernet (AES-128-CBC + HMAC-SHA256) for macOS cookie at-rest encryption (BUG BC)
 # pyinstaller moved to requirements-dev.txt

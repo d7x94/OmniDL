@@ -225,6 +225,20 @@ class BatchTab(ctk.CTkFrame):
         )
         self._queue_all_btn.pack(side="right")
 
+        # Retry Errors button — shows only when there are failed items
+        self._retry_btn = ctk.CTkButton(
+            results_hdr,
+            text="🔄  Thử lại lỗi",
+            width=130, height=36, corner_radius=8,
+            fg_color=T.warning_bg if hasattr(T, "warning_bg") else T.surface2,
+            hover_color=T.surface3,
+            text_color=T.warning_text,
+            font=ctk.CTkFont(size=12),
+            state="disabled",
+            command=self._retry_errors,
+        )
+        self._retry_btn.pack(side="right", padx=(0, 8))
+
         # Quality + format selectors — right of results header
         self._format_var  = ctk.StringVar(value=self._app.config.default_format)
         self._quality_var = ctk.StringVar(value=self._app.config.default_quality)
@@ -401,8 +415,35 @@ class BatchTab(ctk.CTkFrame):
         self._analyse_next(my_token)
         self._tick_spinner(my_token)
 
+    # Per-platform delay between batch analyses (seconds).
+    # Prevents rate-limiting: Instagram/TikTok are most aggressive.
+    _PLATFORM_ANALYSIS_DELAY: dict[str, float] = {
+        "instagram.com": 2.5,
+        "tiktok.com":    2.0,
+        "facebook.com":  1.5,
+        "fb.watch":      1.5,
+        "twitter.com":   1.5,
+        "x.com":         1.5,
+        "threads.net":   2.0,
+        "youtube.com":   0.8,
+        "youtu.be":      0.8,
+    }
+
+    @staticmethod
+    def _get_analysis_delay(url: str) -> float:
+        """Return the recommended delay (seconds) before analysing *url*."""
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            host = ""
+        for domain, delay in BatchTab._PLATFORM_ANALYSIS_DELAY.items():
+            if host == domain or host.endswith("." + domain):
+                return delay
+        return 0.3  # default small delay for unknown platforms
+
     def _analyse_next(self, token: int) -> None:
-        """Find next PENDING item and analyse it. Called sequentially."""
+        """Find next PENDING item and analyse it (with per-platform delay)."""
         if token != self._batch_token:
             return
 
@@ -432,7 +473,29 @@ class BatchTab(ctk.CTkFrame):
                 return
             self._ui_queue.put(lambda i=pending, e=err: self._on_item_error(i, e, token))
 
-        self._app.service.analyse_url(url=url, on_done=on_done, on_error=on_error)
+        # Apply per-platform delay in a daemon thread so UI stays responsive.
+        # The delay fires BEFORE analyse_url() — not inside service layer.
+        import threading, time as _time
+
+        def _delayed_analyse():
+            delay = self._get_analysis_delay(url)
+            # Only delay if this is not the very first item in the batch
+            is_first = all(
+                i.state in (_ItemState.PENDING, _ItemState.ANALYSING)
+                for i in self._items
+                if i is not pending
+            )
+            if not is_first and delay > 0:
+                _time.sleep(delay)
+            if token != self._batch_token:
+                return
+            self._app.service.analyse_url(url=url, on_done=on_done, on_error=on_error)
+
+        threading.Thread(
+            target=_delayed_analyse,
+            daemon=True,
+            name=f"omnidl-batch-delay-{url[:30]}",
+        ).start()
 
     def _on_item_done(self, item: _BatchItem, info: MediaInfo, token: int) -> None:
         if token != self._batch_token:
@@ -464,6 +527,15 @@ class BatchTab(ctk.CTkFrame):
         errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
 
         self._analyse_btn.configure(state="normal", text="🔍  Phân tích lại")
+
+        # Show "Retry errors" button when there are failed items
+        if errors > 0:
+            self._retry_btn.configure(
+                state="normal",
+                text=f"🔄  Thử lại {errors} lỗi",
+            )
+        else:
+            self._retry_btn.configure(state="disabled", text="🔄  Thử lại lỗi")
 
         if ready == 0:
             self._status_lbl.configure(
@@ -622,8 +694,11 @@ class BatchTab(ctk.CTkFrame):
         elif state == _ItemState.ERROR:
             item.state_lbl.configure(text="✗", text_color=T.error)
             item.row_frame.configure(fg_color=T.error_bg)
+            # Show URL first so user knows which link failed, then error below
+            short_url = self._short_url(item.url, 65)
+            err_preview = item.error_msg[:80] if item.error_msg else "Analysis failed"
             item.title_lbl.configure(
-                text=item.error_msg or item.url[:60],
+                text=f"{short_url}  ·  {err_preview}",
                 text_color=T.error_text,
             )
             if item.check_btn:
@@ -708,6 +783,39 @@ class BatchTab(ctk.CTkFrame):
 
     # ── Clear all ─────────────────────────────────────────────────────────
 
+    def _retry_errors(self) -> None:
+        """Reset ERROR items back to PENDING and re-run analysis on them.
+
+        Keeps READY / QUEUED items intact — only failed URLs are retried.
+        Applies the same per-platform delay so retries don't immediately
+        hit the rate limiter again.
+        """
+        error_items = [i for i in self._items if i.state == _ItemState.ERROR]
+        if not error_items:
+            return
+
+        # Cancel any in-flight batch, start a new token for retry pass
+        self._batch_token += 1
+        my_token = self._batch_token
+
+        for item in error_items:
+            item.state = _ItemState.PENDING
+            item.error_msg = ""
+            item.checked = True
+            self._refresh_item_ui(item)
+
+        self._analysing_count = 0
+        self._retry_btn.configure(state="disabled", text="🔄  Thử lại lỗi")
+        self._analyse_btn.configure(state="disabled", text="⟳  Đang thử lại…")
+        self._queue_all_btn.configure(state="disabled")
+        self._status_lbl.configure(
+            text=f"Đang thử lại {len(error_items)} URL lỗi…",
+            text_color=T.text3,
+        )
+
+        self._analyse_next(my_token)
+        self._tick_spinner(my_token)
+
     def _clear_all(self) -> None:
         """Reset everything — textarea + results."""
         # Cancel any in-flight batch
@@ -726,6 +834,7 @@ class BatchTab(ctk.CTkFrame):
         # Reset UI
         self._analyse_btn.configure(state="disabled", text="🔍  Phân tích")
         self._queue_all_btn.configure(state="disabled", text="⬇  Queue All")
+        self._retry_btn.configure(state="disabled", text="🔄  Thử lại lỗi")
         self._url_count_lbl.configure(text="")
         self._status_lbl.configure(text="")
         self._show_empty()

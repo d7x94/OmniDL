@@ -103,6 +103,22 @@ def main() -> None:
     )
     _clear_history_on_version_change(config, history)
 
+    # ── Cookie security maintenance ───────────────────────────────────────
+    # 1. Clean up leftover decrypted temp files from any previous crash
+    # 2. Auto-delete cookie files older than 30 days
+    _cookie_dir = DATA_DIR / "cookies"
+    try:
+        from infrastructure.downloader.cookie_storage import (
+            cleanup_leftover_temp_files,
+            cleanup_stale_cookies,
+        )
+        cleanup_leftover_temp_files(_cookie_dir)
+        n_deleted = cleanup_stale_cookies(_cookie_dir, max_age_days=30)
+        if n_deleted:
+            logger.info("Startup cookie cleanup: %d stale file(s) removed", n_deleted)
+    except Exception as exc:
+        logger.warning("Cookie startup cleanup failed (non-fatal): %s", exc)
+
     engine         = YtDlpEngine(config)
     gallery_engine = GalleryDlEngine(config)
     manager        = DownloadManager(config, engine=engine, gallery_engine=gallery_engine)

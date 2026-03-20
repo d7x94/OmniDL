@@ -62,6 +62,9 @@ class DownloadItemWidget(ctk.CTkFrame):
         # Thread-safe callback queue for FFmpeg conversion callbacks
         # (Python 3.14: self.after() not callable from background threads)
         self._ui_queue: queue.Queue = queue.Queue()
+        # URL label shown below title on FAILED — initialised here so
+        # refresh() is safe even if _build() is mocked in tests
+        self._url_lbl: object = None
         self._build()
         self._drain_ui_queue()   # start poller
         T.register(self._on_theme)
@@ -163,6 +166,11 @@ class DownloadItemWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=10), text_color=T.text3)
         self._size_lbl.pack(side="right")
 
+        # URL label — shown only when download fails so user knows which link to retry
+        self._url_lbl = ctk.CTkLabel(self, text="",
+            font=ctk.CTkFont(size=10), text_color=T.text3,
+            wraplength=680, justify="left", anchor="w")
+
         self._err_lbl = ctk.CTkLabel(self, text="",
             font=ctk.CTkFont(size=11), text_color=T.error_text,
             wraplength=600, justify="left")
@@ -204,10 +212,27 @@ class DownloadItemWidget(ctk.CTkFrame):
         else:
             self._size_lbl.configure(text="")
 
-        if st == DownloadStatus.FAILED and task.error_msg:
-            self._err_lbl.configure(text=f"  {task.error_msg}")
-            self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
+        if st == DownloadStatus.FAILED:
+            # Show the source URL so user knows which link to retry
+            _url_display = task.url if hasattr(task, "url") and task.url else ""
+            _ulbl = getattr(self, "_url_lbl", None)
+            if _url_display and _ulbl is not None:
+                try:
+                    if not _ulbl.winfo_ismapped():
+                        _ulbl.pack(fill="x", padx=16, pady=(0, 2))
+                    _ulbl.configure(text=f"🔗 {_url_display[:100]}")
+                except Exception:
+                    pass
+            if task.error_msg:
+                self._err_lbl.configure(text=f"  {task.error_msg}")
         else:
+            _ulbl = getattr(self, "_url_lbl", None)
+            if _ulbl is not None:
+                try:
+                    if _ulbl.winfo_ismapped():
+                        _ulbl.pack_forget()
+                except Exception:
+                    pass
             self._err_lbl.pack_forget()
 
         terminal   = st in DownloadStatus.terminal_states()

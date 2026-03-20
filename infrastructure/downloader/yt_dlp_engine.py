@@ -24,40 +24,68 @@ logger = logging.getLogger(__name__)
 def _validate_cookie_path(config: "ConfigManager") -> str | None:
     """Resolve and validate the configured cookie_file path (CWE-22).
 
-    Returns the resolved absolute path string when the file exists and is
-    safely contained within the OmniDL data directory.  Returns None in all
-    other cases (absent, empty, outside the allowed root, or not a file).
+    Returns the resolved absolute path string (plaintext or .enc) when the
+    file exists and is safely contained within the OmniDL data directory.
+    Returns None in all other cases.
+
+    DPAPI-encrypted files (.enc) are validated here but NOT decrypted — the
+    caller must call _prepare_cookie_for_use() to get a usable path.
 
     Security rationale
     ──────────────────
     The allowed root is restricted to *config_path.parent* only (the OmniDL
-    data directory).  The previous implementation also allowed Path.home() as
-    a valid root, which permitted any file under the user's home directory —
-    including ~/.ssh/id_rsa or ~/.gnupg/secring.gpg — to be silently forwarded
-    as ``cookiefile`` to yt-dlp, which transmits it to the remote server.
-
-    Path.parents is used instead of str.startswith() to prevent the sibling-
-    directory bypass: /home/user_evil/cookies.txt passes a startswith check
-    against /home/user but fails the exact-ancestor check via Path.parents.
+    data directory).  Path.parents is used instead of str.startswith() to
+    prevent the sibling-directory bypass.
     """
     cookie_file = config.cookie_file.strip()
     if not cookie_file:
         return None
     cp = Path(cookie_file).resolve()
-    # Accept ONLY files inside the OmniDL data directory (config_path.parent).
-    # Path.home() is NOT included -- SSH keys and other home-dir files must
-    # not be silently forwarded to remote servers via yt-dlp (SEC-1 fix).
-    # Path.parents is used (not str.startswith) to prevent CWE-22 bypass.
     safe_root = config.config_path.parent.resolve()
     is_safe = cp == safe_root or safe_root in cp.parents
-    if cp.is_file() and is_safe:
+
+    if not is_safe:
+        logger.warning(
+            "cookie_file rejected — not inside a safe directory: %s",
+            cookie_file,
+        )
+        return None
+
+    if cp.is_file():
         logger.info("Using cookie file: %s", cp)
         return str(cp)
+
+    # Auto-fallback: config stores .txt but encrypt_cookie_file renamed to .enc
+    if cp.suffix == ".txt":
+        enc_cp = cp.with_suffix(".enc")
+        if enc_cp.is_file():
+            logger.info("Cookie file auto-upgraded .txt → .enc: %s", enc_cp.name)
+            return str(enc_cp)
+
     logger.warning(
-        "cookie_file rejected — not inside a safe directory: %s",
+        "cookie_file rejected — not found on disk: %s",
         cookie_file,
     )
     return None
+
+
+def _prepare_cookie_for_use(cookie_path: str) -> "tuple[str, bool]":
+    """Decrypt .enc cookie to a temp file if needed.
+
+    Returns (usable_path, is_temp).
+    If is_temp=True, the caller MUST delete the file after use.
+    If is_temp=False, the path is the original file — do not delete.
+    """
+    from infrastructure.downloader.cookie_storage import decrypt_to_tempfile, is_encrypted
+    p = Path(cookie_path)
+    if is_encrypted(p):
+        try:
+            tmp = decrypt_to_tempfile(p)
+            return str(tmp), True
+        except Exception as exc:
+            logger.warning("Failed to decrypt cookie file %s: %s", p.name, exc)
+            return cookie_path, False  # fallback: pass enc path (will fail in yt-dlp, but safe)
+    return cookie_path, False
 
 # ── Per-platform cookie resolution ───────────────────────────────────────────
 
@@ -67,6 +95,8 @@ def _validate_cookie_path(config: "ConfigManager") -> str | None:
 #   malicious.tiktok.com.evil → hostname does NOT end with ".tiktok.com"
 #   www.tiktok.com            → hostname ends with ".tiktok.com" ✅
 _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
+    ("youtube.com",   "youtube"),   # age-restricted content requires Google account cookies
+    ("youtu.be",      "youtube"),
     ("tiktok.com",    "tiktok"),
     ("instagram.com", "instagram"),
     ("facebook.com",  "facebook"),
@@ -85,7 +115,7 @@ def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
       2. config.cookie_file                       — global fallback
       3. None                                     — no cookie configured
 
-    Platforms with no entry in _COOKIE_PLATFORM_MAP (YouTube, Twitch, Vimeo …)
+    Platforms with no entry in _COOKIE_PLATFORM_MAP (Twitch, Vimeo, Dailymotion …)
     skip step 1 and go straight to the global fallback.  This means YouTube
     downloads never accidentally receive an Instagram session cookie.
 
@@ -123,9 +153,11 @@ def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
 def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str | None:
     """Validate a raw cookie file path string (CWE-22).
 
-    Identical logic to _validate_cookie_path() but accepts the path
-    as a parameter rather than reading from config.cookie_file.
-    Used by _resolve_cookie() to validate per-platform paths.
+    Accepts both .txt (plaintext) and .enc (DPAPI-encrypted) files.
+    Auto-fallback: if config stores .txt but only .enc exists on disk
+    (encrypt_cookie_file renamed it after the path was saved), silently
+    use the .enc file — prevents the "rejected — not inside safe directory"
+    false-positive that occurs when the .txt no longer exists.
 
     Returns the resolved absolute path string, or None if invalid.
     """
@@ -134,10 +166,29 @@ def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str 
     cp = Path(cookie_file).resolve()
     safe_root = config.config_path.parent.resolve()
     is_safe = cp == safe_root or safe_root in cp.parents
-    if cp.is_file() and is_safe:
+
+    if not is_safe:
+        logger.warning(
+            "platform cookie_file rejected — not inside safe directory: %s",
+            cookie_file,
+        )
+        return None
+
+    if cp.is_file():
         return str(cp)
+
+    # Auto-fallback: .txt stored in config but .enc exists on disk
+    # (encrypt_cookie_file renamed .txt → .enc after config was saved)
+    if cp.suffix == ".txt":
+        enc_cp = cp.with_suffix(".enc")
+        if enc_cp.is_file():
+            logger.debug(
+                "Platform cookie auto-upgraded .txt → .enc: %s", enc_cp.name
+            )
+            return str(enc_cp)
+
     logger.warning(
-        "platform cookie_file rejected — not inside safe directory: %s",
+        "platform cookie_file rejected — file not found on disk: %s",
         cookie_file,
     )
     return None
@@ -393,14 +444,24 @@ class YtDlpEngine:
         # _resolve_cookie() uses urlparse hostname matching (not regex substring)
         # to prevent subdomain-spoofing. CWE-22 guard applied inside.
         _cookie_path = _resolve_cookie(url, self._config)
+        _cookie_temp_ei: str | None = None   # temp file to clean up after extract
         if _cookie_path:
-            opts["cookiefile"] = _cookie_path
+            _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
+            opts["cookiefile"] = _usable
+            if _is_temp:
+                _cookie_temp_ei = _usable
         if not opts.get("cookiefile") and self._config.use_cookies:
             opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
 
         # Profile / channel fast-path (after opts are built so cookie/proxy
         # are included in the flat playlist fetch).
         if _PROFILE_URL_RE.search(url):
+            # Clean temp cookie before early return (playlist path)
+            if _cookie_temp_ei:
+                try:
+                    Path(_cookie_temp_ei).unlink(missing_ok=True)
+                except Exception:
+                    pass
             return self._extract_playlist_flat(url, opts)
 
         # Retry up to 2 times on transient errors (rate limit, network blip).
@@ -444,6 +505,12 @@ class YtDlpEngine:
                         "returning synthetic MediaInfo for photo path: %s",
                         shortcode,
                     )
+                    # Clean temp cookie before early return (photo path)
+                    if _cookie_temp_ei:
+                        try:
+                            Path(_cookie_temp_ei).unlink(missing_ok=True)
+                        except Exception:
+                            pass
                     return MediaInfo(
                         url=url,
                         title=shortcode or "Instagram Photo",
@@ -505,6 +572,13 @@ class YtDlpEngine:
             r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
         )
         is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
+
+        # Clean up decrypted temp cookie file now that extraction is complete
+        if _cookie_temp_ei:
+            try:
+                Path(_cookie_temp_ei).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         return MediaInfo(
             url=url,
@@ -821,9 +895,14 @@ class YtDlpEngine:
             opts["proxy"] = self._config.proxy
         # Cookie resolution: per-platform first, global fallback second.
         # _resolve_cookie() applies CWE-22 guard via _validate_cookie_path_raw().
+        # If cookie is DPAPI-encrypted (.enc), decrypt to temp file for this download.
         _cookie_path = _resolve_cookie(task.url, self._config)
+        _cookie_temp_dl: str | None = None  # temp file to clean up in finally
         if _cookie_path:
-            opts["cookiefile"] = _cookie_path
+            _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
+            opts["cookiefile"] = _usable
+            if _is_temp:
+                _cookie_temp_dl = _usable
         if not opts.get("cookiefile") and self._config.use_cookies:
             opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
 
@@ -928,6 +1007,14 @@ class YtDlpEngine:
                     logger.warning("No media file found in %s", output_dir)
             except Exception as e:
                 logger.warning("Size scan failed: %s", e)
+
+        # Always clean up the decrypted temp cookie file, even on error
+        if _cookie_temp_dl:
+            try:
+                Path(_cookie_temp_dl).unlink(missing_ok=True)
+                logger.debug("Cleaned up temp cookie file: %s", _cookie_temp_dl)
+            except Exception:
+                pass
 
     # ── Internal helpers ──────────────────────────────────────────────────
 

@@ -371,11 +371,81 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         )
         self._browser_om.pack(side="right")
 
+        # ── Cookie Fallback (YouTube, Twitch, Vimeo... chưa có per-platform) ──
+        # Chú ý: chứa TẤT CẢ cookies của trình duyệt — chỉ dùng khi nền tảng
+        # chưa có hàng riêng trong bảng Per-Platform bên dưới.
+        # ─────────────────────────────────────────────────────────────────────
         ctk.CTkLabel(
             net,
-            text="⚠  Chrome/Brave locked? Export cookies to a .txt file instead:",
-            font=ctk.CTkFont(size=11), text_color=T.warning_text,
-        ).pack(anchor="w", padx=16, pady=(10, 2))
+            text=(
+                "🌐  Cookie fallback — cho YouTube, Twitch, Vimeo...  "
+                "(dùng khi nền tảng chưa có trong bảng Per-Platform bên dưới)"
+            ),
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T.text2,
+            anchor="w",
+        ).pack(anchor="w", padx=16, pady=(12, 2))
+
+        ctk.CTkLabel(
+            net,
+            text=(
+                "⚠  File này chứa toàn bộ cookies của trình duyệt (Google, email, banking...).\n"
+                "   Ưu tiên dùng bảng Per-Platform bên dưới để bảo mật hơn."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color=T.warning_text,
+            anchor="w",
+            justify="left",
+            wraplength=480,
+        ).pack(anchor="w", padx=16, pady=(0, 6))
+
+        extract_row = ctk.CTkFrame(net, fg_color="transparent")
+        extract_row.pack(fill="x", padx=16, pady=(0, 4))
+        self._extract_global_btn = ctk.CTkButton(
+            extract_row,
+            text="🔄  Firefox / Edge / Opera",
+            height=30, corner_radius=8,
+            fg_color=T.surface3, hover_color=T.border2,
+            text_color=T.text2, font=ctk.CTkFont(size=12),
+            command=self._extract_global_cookies,
+        )
+        self._extract_global_btn.pack(side="left")
+
+        self._extract_cdp_btn = ctk.CTkButton(
+            extract_row,
+            text="🦁  Brave / Chrome 127+",
+            height=30, corner_radius=8,
+            fg_color=T.surface3, hover_color=T.border2,
+            text_color=T.text2, font=ctk.CTkFont(size=12),
+            command=self._extract_global_cdp,
+        )
+        self._extract_cdp_btn.pack(side="left", padx=(8, 0))
+        self._extract_global_status = ctk.CTkLabel(
+            extract_row, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text2,
+        )
+        self._extract_global_status.pack(side="left", padx=(10, 0))
+
+        # Hint nhỏ về điểm khác biệt 2 nút
+        self._extract_global_hint = ctk.CTkLabel(
+            net,
+            text=(
+                "🔄 = yt-dlp đọc trực tiếp (cần đóng Brave/Chrome trước).  "
+                "🦁 = CDP — không cần đóng trình duyệt, Brave 127+ an toàn."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+            anchor="w",
+            wraplength=500,
+        )
+        self._extract_global_hint.pack(anchor="w", padx=16, pady=(0, 4))
+
+        # Import thủ công (fallback cuối cùng)
+        ctk.CTkLabel(
+            net,
+            text="📁  Hoặc import file .txt thủ công:",
+            font=ctk.CTkFont(size=11), text_color=T.text3,
+        ).pack(anchor="w", padx=16, pady=(6, 2))
 
         cf_row = ctk.CTkFrame(net, fg_color="transparent")
         cf_row.pack(fill="x", padx=16, pady=(0, 14))
@@ -402,28 +472,30 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._clear_cf_btn.pack(side="left")
 
         # -- Per-platform cookies ------------------------------------------
-        self._section(p, "🍪   PER-PLATFORM COOKIES")
+        self._section(p, "🍪   PER-PLATFORM COOKIES  ✅ Khuyến nghị — bảo mật hơn")
         self._card_cookies = pc_card = self._card(p)
 
         ctk.CTkLabel(
             pc_card,
             text=(
-                "Mỗi nền tảng có thể dùng cookie riêng — "
-                "ưu tiên hơn cookie chung bên trên.\n"
-                "Để trống nếu không cần, hoặc dùng cookie chung làm fallback."
+                "✅ Ưu tiên dùng bảng này — mỗi file chỉ chứa cookies của đúng nền tảng đó.\n"
+                "File TikTok không có cookies Google/email, file Instagram không có cookies banking.\n"
+                "Nếu nền tảng có hàng riêng ở đây → KHÔNG cần dùng Cookie fallback bên trên."
             ),
             font=ctk.CTkFont(size=11),
             text_color=T.text3,
             justify="left",
-            wraplength=460,
+            wraplength=480,
         ).pack(anchor="w", padx=16, pady=(10, 6))
 
         # Widget refs for _on_theme(): lists indexed by platform slot
         self._pc_lbls:        list = []   # CTkLabel showing path
         self._pc_browse_btns: list = []   # 📂 Browse buttons
         self._pc_clear_btns:  list = []   # 🗑 Clear buttons
+        self._pc_extract_btns: list = []  # 🔄 Extract-from-browser buttons
 
         _PC_PLATFORMS = [
+            ("youtube",    "YouTube"),
             ("tiktok",     "TikTok"),
             ("instagram",  "Instagram"),
             ("facebook",   "Facebook"),
@@ -468,9 +540,42 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             browse_btn.pack(side="right", padx=(4, 0))
             self._pc_browse_btns.append(browse_btn)
 
+            extract_btn = ctk.CTkButton(
+                row, text="🔄", width=40, height=28, corner_radius=6,
+                fg_color=T.surface3, hover_color=T.border2,
+                text_color=T.text2, font=ctk.CTkFont(size=11),
+                command=lambda k=key, lbl=path_lbl: self._extract_platform_cookie(k, lbl),
+            )
+            extract_btn.pack(side="right", padx=(4, 0))
+            self._pc_extract_btns.append(extract_btn)
+
+            cdp_btn = ctk.CTkButton(
+                row, text="🦁", width=40, height=28, corner_radius=6,
+                fg_color=T.surface3, hover_color=T.border2,
+                text_color=T.text2, font=ctk.CTkFont(size=11),
+                command=lambda k=key, lbl=path_lbl: self._extract_platform_cdp(k, lbl),
+            )
+            cdp_btn.pack(side="right", padx=(4, 0))
+            self._pc_extract_btns.append(cdp_btn)
+
         ctk.CTkFrame(pc_card, fg_color=T.border, height=1).pack(
-            fill="x", padx=16, pady=(6, 10)
+            fill="x", padx=16, pady=(6, 6)
         )
+
+        # Shared status label for 🔄 extract actions on all platform rows
+        self._pc_extract_status = ctk.CTkLabel(
+            pc_card, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text2, anchor="w",
+        )
+        self._pc_extract_status.pack(anchor="w", padx=16, pady=(0, 4))
+
+        ctk.CTkLabel(
+            pc_card,
+            text="🔄 = yt-dlp (Firefox/Opera).  🦁 = CDP (Brave/Chrome 127+, không cần đóng trình duyệt).",
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 10))
 
         # -- Appearance ----------------------------------------------------
         self._section(p, "🎨   APPEARANCE")
@@ -514,6 +619,30 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._upd_status = ctk.CTkLabel(
             upd_row, text="", font=ctk.CTkFont(size=11), text_color=T.text2)
         self._upd_status.pack(side="left", padx=(12, 0))
+
+        # -- Keyring (App-Bound Encryption support for Brave/Chrome 127+) ----
+        keyring_row = ctk.CTkFrame(ytdlp, fg_color="transparent")
+        keyring_row.pack(fill="x", padx=16, pady=(4, 4))
+        self._keyring_btn = ctk.CTkButton(
+            keyring_row,
+            text="Cài keyring (hỗ trợ Brave/Chrome 127+)",
+            height=32, corner_radius=8,
+            fg_color=T.surface3, hover_color=T.border2,
+            text_color=T.text2, font=ctk.CTkFont(size=12),
+            command=self._install_keyring,
+        )
+        self._keyring_btn.pack(side="left")
+        self._keyring_status = ctk.CTkLabel(
+            keyring_row, text=self._keyring_installed_text(),
+            font=ctk.CTkFont(size=11), text_color=T.text2,
+        )
+        self._keyring_status.pack(side="left", padx=(12, 0))
+
+        ctk.CTkLabel(
+            ytdlp,
+            text="⚠  Cần thiết nếu Brave/Chrome báo lỗi DPAPI khi lấy cookies.",
+            font=ctk.CTkFont(size=11), text_color=T.warning_text,
+        ).pack(anchor="w", padx=16, pady=(0, 4))
 
         extra_row = ctk.CTkFrame(ytdlp, fg_color="transparent")
         extra_row.pack(fill="x", padx=16, pady=(4, 14))
@@ -777,6 +906,325 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             f"Cookie {platform_name} đã được lưu vào thư mục an toàn.", "info"
         )
 
+    @staticmethod
+    def _resolve_saved_cookie_path(output_path: "Path") -> str:
+        """Return the actual path to save in config after extraction.
+
+        encrypt_cookie_file() renames .txt → .enc on Windows/macOS.
+        Always check for .enc first; fall back to .txt if .enc doesn't exist.
+        This prevents CWE-22 rejection caused by saving a .txt path when
+        only the .enc version exists on disk.
+        """
+        enc = output_path.with_suffix(".enc")
+        if enc.exists():
+            return str(enc)
+        return str(output_path)
+
+    def _extract_global_cdp(self) -> None:
+        """Extract all cookies via CDP (Brave/Chrome 127+ App-Bound safe).
+
+        Shows a confirmation dialog — global extraction captures ALL cookies.
+        Uses Chrome DevTools Protocol with random port + localhost-only binding.
+        """
+        import tkinter.messagebox as mb
+        confirmed = mb.askyesno(
+            "OmniDL — Xác nhận lấy toàn bộ cookies (CDP)",
+            (
+                "⚠ Thao tác này lấy TẤT CẢ cookies của Brave/Chrome,\n"
+                "bao gồm cả Google, email, banking...\n\n"
+                "Cookies sẽ được mã hóa DPAPI và chỉ lưu trên máy này.\n"
+                "Một port ngẫu nhiên trên localhost sẽ được mở trong ~10 giây.\n\n"
+                "➡ Khuyến nghị: Dùng nút 🦁 ở từng platform bên dưới\n"
+                "   để chỉ lấy đúng cookies cần thiết (an toàn hơn).\n\n"
+                "Tiếp tục lấy toàn bộ?"
+            ),
+            icon="warning",
+        )
+        if not confirmed:
+            return
+
+        browser = self._browser_var.get()
+        if browser not in ("brave", "chrome", "chromium", "edge"):
+            self._app.toast(
+                f"CDP chỉ hỗ trợ Brave/Chrome/Edge. Trình duyệt hiện tại: {browser}.\n"
+                "Dùng nút 🔄 cho Firefox/Opera/Safari.",
+                "error",
+            )
+            return
+
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        output_path = safe_dir / f"{browser}_cdp_cookies.txt"
+
+        btn = self._extract_cdp_btn
+        status = self._extract_global_status
+
+        def _worker() -> None:
+            try:
+                from infrastructure.downloader.cookie_extractor import extract_via_cdp
+                count, error = extract_via_cdp(output_path, platform_key=None, browser=browser)
+            except Exception as exc:
+                error = str(exc); count = 0
+
+            if error:
+                self._ui_queue.put(lambda e=error: (
+                    status.configure(text=f"❌ {e.splitlines()[0][:70]}", text_color=T.error),
+                    self._app.toast(f"CDP thất bại: {e.splitlines()[0][:60]}", "error"),
+                ))
+            else:
+                path_str = self._resolve_saved_cookie_path(output_path)
+                self._app.config.set("cookie_file", path_str)
+                self._ui_queue.put(lambda c=count, ps=path_str: (
+                    self._cf_lbl.configure(text=self._short_cookie_path(ps)),
+                    status.configure(text=f"✓ {c} cookies đã lưu (CDP)", text_color=T.success),
+                    self._app.toast(f"CDP: đã lấy {c} cookies từ {browser.title()}.", "success"),
+                ))
+                self._ui_queue.put(lambda: self.after(
+                    6000,
+                    lambda: status.configure(text="", text_color=T.text2)
+                    if status.winfo_exists() else None,
+                ))
+            self._ui_queue.put(lambda: btn.configure(state="normal"))
+
+        btn.configure(state="disabled")
+        status.configure(
+            text=f"Đang khởi động {browser.title()} (CDP)…", text_color=T.text2
+        )
+        threading.Thread(target=_worker, daemon=True, name="omnidl-cdp-extract").start()
+
+    def _extract_global_cookies(self) -> None:
+        """Extract all cookies from the selected browser and save as global cookie file.
+
+        Shows a confirmation dialog because global extraction captures ALL cookies
+        (banking, email, etc.), not just media platform cookies.
+        Runs in a worker thread (Python 3.14 safe — all UI updates via _ui_queue).
+        """
+        import tkinter.messagebox as mb
+        confirmed = mb.askyesno(
+            "OmniDL — Xác nhận lấy toàn bộ cookies",
+            (
+                "⚠ Thao tác này lấy TẤT CẢ cookies của trình duyệt,\n"
+                "bao gồm cả Google, email, banking...\n\n"
+                "Cookies sẽ được mã hóa DPAPI và chỉ lưu trên máy này.\n\n"
+                "➡ Khuyến nghị: Dùng nút 🔄 / 🦁 ở từng platform bên dưới\n"
+                "   để chỉ lấy đúng cookies cần thiết (an toàn hơn).\n\n"
+                "Tiếp tục lấy toàn bộ?"
+            ),
+            icon="warning",
+        )
+        if not confirmed:
+            return
+
+        browser = self._browser_var.get()
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        output_path = safe_dir / f"{browser}_global_cookies.txt"
+
+        btn = self._extract_global_btn
+        status = self._extract_global_status
+
+        def _worker() -> None:
+            try:
+                from infrastructure.downloader.cookie_extractor import extract_browser_cookies
+                count, error = extract_browser_cookies(browser, output_path, platform_key=None)
+            except Exception as exc:
+                error = str(exc)
+                count = 0
+
+            if error:
+                self._ui_queue.put(lambda e=error: (
+                    status.configure(
+                        text=f"❌ {e.splitlines()[0][:70]}",
+                        text_color=T.error,
+                    ),
+                    self._app.toast(f"Lấy cookies thất bại: {e.splitlines()[0][:60]}", "error"),
+                ))
+            else:
+                # cookie_extractor may have encrypted the file → path may now be .enc
+                # Use the returned path (which extract_browser_cookies already updated)
+                from infrastructure.downloader.cookie_storage import is_encrypted
+                actual_path = output_path.with_suffix(".enc") if is_encrypted(output_path.with_suffix(".enc")) and not is_encrypted(output_path) else output_path
+                # Find final saved path: check if .enc exists (encryption succeeded)
+                enc_candidate = output_path.parent / (output_path.stem + ".enc")
+                final_path = enc_candidate if enc_candidate.exists() else output_path
+                path_str = str(final_path)
+                self._app.config.set("cookie_file", path_str)
+                enc_note = " 🔒 (mã hóa DPAPI)" if path_str.endswith(".enc") else ""
+                self._ui_queue.put(lambda c=count, ps=path_str, n=enc_note: (
+                    self._cf_lbl.configure(text=self._short_cookie_path(ps)),
+                    status.configure(
+                        text=f"✓ {c} cookies đã lưu{n}",
+                        text_color=T.success,
+                    ),
+                    self._app.toast(
+                        f"Đã lấy {c} cookies từ {browser}{n}.",
+                        "success",
+                    ),
+                ))
+                # Auto-fade status after 6 s
+                self._ui_queue.put(lambda: self.after(
+                    6000,
+                    lambda: status.configure(text="", text_color=T.text2)
+                    if status.winfo_exists() else None,
+                ))
+
+            self._ui_queue.put(lambda: btn.configure(state="normal"))
+
+        btn.configure(state="disabled")
+        status.configure(text=f"Đang đọc cookies từ {browser}…", text_color=T.text2)
+        threading.Thread(target=_worker, daemon=True, name="omnidl-cookie-extract").start()
+
+    def _extract_platform_cookie(self, platform_key: str, path_lbl: "ctk.CTkLabel") -> None:
+        """Extract platform-specific cookies from the selected browser.
+
+        Filters the full browser cookie jar to only the domains belonging to
+        *platform_key*, then saves the minimal file to the safe directory and
+        updates the per-platform config entry.
+
+        Runs in a worker thread (Python 3.14 safe — all UI updates via _ui_queue).
+        """
+        browser = self._browser_var.get()
+        platform_name = {
+            "tiktok": "TikTok", "instagram": "Instagram",
+            "facebook": "Facebook", "twitter": "Twitter/X",
+            "threads": "Threads",
+        }.get(platform_key, platform_key.title())
+
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        # Use same naming convention as _browse_platform_cookie (prefix + name)
+        output_path = safe_dir / f"{platform_key}_{browser}_cookies.txt"
+
+        status = self._pc_extract_status
+
+        # Disable ALL per-platform extract buttons while one is running to prevent
+        # concurrent extractions that could corrupt the tmp file.
+        for btn in self._pc_extract_btns:
+            if btn.winfo_exists():
+                btn.configure(state="disabled")
+
+        def _worker() -> None:
+            try:
+                from infrastructure.downloader.cookie_extractor import extract_browser_cookies
+                count, error = extract_browser_cookies(
+                    browser, output_path, platform_key=platform_key
+                )
+            except Exception as exc:
+                error = str(exc)
+                count = 0
+
+            if error:
+                self._ui_queue.put(lambda e=error: (
+                    status.configure(
+                        text=f"❌ {platform_name}: {e.splitlines()[0][:65]}",
+                        text_color=T.error,
+                    ),
+                    self._app.toast(
+                        f"Lấy cookies {platform_name} thất bại: {e.splitlines()[0][:55]}",
+                        "error",
+                    ),
+                ))
+            else:
+                path_str = self._resolve_saved_cookie_path(output_path)
+                self._app.config.set_cookie_for_platform(platform_key, path_str)
+                self._ui_queue.put(lambda c=count, ps=path_str, pn=platform_name: (
+                    path_lbl.configure(text=self._short_cookie_path(ps)),
+                    status.configure(
+                        text=f"✓ {pn}: {c} cookies đã lưu",
+                        text_color=T.success,
+                    ),
+                    self._app.toast(
+                        f"Đã lấy {c} cookies {pn} từ {browser}.",
+                        "success",
+                    ),
+                ))
+                self._ui_queue.put(lambda: self.after(
+                    6000,
+                    lambda: status.configure(text="", text_color=T.text2)
+                    if status.winfo_exists() else None,
+                ))
+
+            # Re-enable all extract buttons
+            self._ui_queue.put(lambda: [
+                btn.configure(state="normal")
+                for btn in self._pc_extract_btns
+                if btn.winfo_exists()
+            ])
+
+        status.configure(
+            text=f"Đang đọc cookies {platform_name} từ {browser}…",
+            text_color=T.text2,
+        )
+        threading.Thread(
+            target=_worker, daemon=True,
+            name=f"omnidl-cookie-extract-{platform_key}",
+        ).start()
+
+    def _extract_platform_cdp(self, platform_key: str, path_lbl: "ctk.CTkLabel") -> None:
+        """Extract per-platform cookies via CDP (Brave/Chrome 127+ safe)."""
+        browser = self._browser_var.get()
+        if browser not in ("brave", "chrome", "chromium", "edge"):
+            self._app.toast(
+                f"CDP chỉ hỗ trợ Brave/Chrome/Edge. Dùng 🔄 cho {browser}.", "error"
+            )
+            return
+
+        platform_name = {
+            "tiktok": "TikTok", "instagram": "Instagram",
+            "facebook": "Facebook", "twitter": "Twitter/X", "threads": "Threads",
+        }.get(platform_key, platform_key.title())
+
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
+        status = self._pc_extract_status
+
+        for btn in self._pc_extract_btns:
+            if btn.winfo_exists():
+                btn.configure(state="disabled")
+
+        def _worker() -> None:
+            try:
+                from infrastructure.downloader.cookie_extractor import extract_via_cdp
+                count, error = extract_via_cdp(
+                    output_path, platform_key=platform_key, browser=browser
+                )
+            except Exception as exc:
+                error = str(exc); count = 0
+
+            if error:
+                self._ui_queue.put(lambda e=error, pn=platform_name: (
+                    status.configure(
+                        text=f"❌ {pn} CDP: {e.splitlines()[0][:60]}", text_color=T.error
+                    ),
+                    self._app.toast(f"CDP {pn} thất bại: {e.splitlines()[0][:50]}", "error"),
+                ))
+            else:
+                path_str = self._resolve_saved_cookie_path(output_path)
+                self._app.config.set_cookie_for_platform(platform_key, path_str)
+                self._ui_queue.put(lambda c=count, ps=path_str, pn=platform_name: (
+                    path_lbl.configure(text=self._short_cookie_path(ps)),
+                    status.configure(
+                        text=f"✓ {pn}: {c} cookies (CDP)", text_color=T.success
+                    ),
+                    self._app.toast(f"CDP: đã lấy {c} cookies {pn}.", "success"),
+                ))
+                self._ui_queue.put(lambda: self.after(
+                    6000,
+                    lambda: status.configure(text="", text_color=T.text2)
+                    if status.winfo_exists() else None,
+                ))
+
+            self._ui_queue.put(lambda: [
+                btn.configure(state="normal")
+                for btn in self._pc_extract_btns if btn.winfo_exists()
+            ])
+
+        status.configure(
+            text=f"Đang khởi động {browser.title()} để lấy cookies {platform_name}…",
+            text_color=T.text2,
+        )
+        threading.Thread(
+            target=_worker, daemon=True,
+            name=f"omnidl-cdp-extract-{platform_key}",
+        ).start()
+
     def _clear_platform_cookie(self, platform_key: str, path_lbl: "ctk.CTkLabel") -> None:
         """Clear the per-platform cookie path from config."""
         self._app.config.set_cookie_for_platform(platform_key, "")
@@ -859,6 +1307,64 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                 self._ui_queue.put(lambda: self._upd_btn.configure(state="normal"))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    @staticmethod
+    def _keyring_installed_text() -> str:
+        """Return a short status string showing whether keyring is installed."""
+        try:
+            import keyring as _kr
+            ver = getattr(_kr, "__version__", "installed")
+            return f"✓ keyring {ver}"
+        except ImportError:
+            return "⚠ Chưa cài — cần cho Brave/Chrome 127+"
+
+    def _install_keyring(self) -> None:
+        """Install or upgrade the `keyring` package via pip.
+
+        Runs in a daemon worker thread (Python 3.14 safe — all UI updates
+        posted through _ui_queue).  Works in both source/dev and frozen modes.
+        In frozen mode the EXE bundles Python so pip is available via sys.executable.
+        """
+        import sys
+        self._keyring_btn.configure(state="disabled")
+        self._keyring_status.configure(
+            text="Đang cài keyring…", text_color=T.primary_text
+        )
+
+        def _worker() -> None:
+            import importlib
+            import subprocess
+            try:
+                r = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--upgrade", "keyring"],
+                    capture_output=True, timeout=120,
+                )
+                if r.returncode != 0:
+                    raise RuntimeError(r.stderr.decode(errors="replace")[:200])
+
+                # Invalidate import caches so newly installed keyring is found
+                importlib.invalidate_caches()
+                status_text = self._keyring_installed_text()
+                self._ui_queue.put(lambda t=status_text: (
+                    self._keyring_status.configure(text=t, text_color=T.success),
+                    self._app.toast(
+                        "keyring đã cài. Thử lại lấy cookies từ Brave/Chrome.", "success"
+                    ),
+                ))
+            except Exception as exc:
+                msg = str(exc)[:80]
+                self._ui_queue.put(lambda m=msg: (
+                    self._keyring_status.configure(
+                        text=f"Lỗi: {m}", text_color=T.error
+                    ),
+                    self._app.toast(f"Cài keyring thất bại: {m}", "error"),
+                ))
+            finally:
+                self._ui_queue.put(
+                    lambda: self._keyring_btn.configure(state="normal")
+                )
+
+        threading.Thread(target=_worker, daemon=True, name="omnidl-install-keyring").start()
 
     def _get_gallery_dl_version(self) -> str:
         try:
@@ -1065,16 +1571,38 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             if lbl.winfo_exists():
                 lbl.configure(text_color=T.primary_text)
         # Status / update labels
-        for attr in ("_upd_status", "_gdl_upd_status"):
+        for attr in ("_upd_status", "_gdl_upd_status", "_keyring_status"):
             w = getattr(self, attr, None)
             if w and w.winfo_exists():
                 w.configure(text_color=T.text2)
         # Browse / action buttons
-        for attr in ("_browse_dir_btn", "_browse_cf_btn", "_upd_btn", "_gdl_upd_btn"):
+        for attr in ("_browse_dir_btn", "_browse_cf_btn", "_upd_btn", "_gdl_upd_btn", "_keyring_btn"):
             w = getattr(self, attr, None)
             if w and w.winfo_exists():
                 w.configure(fg_color=T.surface3, hover_color=T.border2,
                             text_color=T.text2)
+        # Per-platform cookie extract buttons
+        for btn in getattr(self, "_pc_extract_btns", []):
+            if btn.winfo_exists():
+                btn.configure(fg_color=T.surface3, hover_color=T.border2,
+                              text_color=T.text2)
+        # Per-platform extract status label
+        w = getattr(self, "_pc_extract_status", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)
+        # Global extract button + status
+        w = getattr(self, "_extract_global_btn", None)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.surface3, hover_color=T.border2, text_color=T.text2)
+        w = getattr(self, "_extract_cdp_btn", None)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.surface3, hover_color=T.border2, text_color=T.text2)
+        w = getattr(self, "_extract_global_status", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)
+        w = getattr(self, "_extract_global_hint", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.warning_text)
         # Per-platform cookie browse buttons
         for btn in getattr(self, "_pc_browse_btns", []):
             if btn.winfo_exists():
