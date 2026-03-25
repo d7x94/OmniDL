@@ -72,14 +72,14 @@ def _dpapi_encrypt(data: bytes) -> "bytes | None":
 
     buf = ctypes.create_string_buffer(data)
     ib, ob = _B(len(data), buf), _B()
-    if not ctypes.windll.crypt32.CryptProtectData(
+    if not ctypes.windll.crypt32.CryptProtectData(  # type: ignore[attr-defined]
         ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob)
     ):
         logger.warning("CryptProtectData failed (%d)",
-                       ctypes.windll.kernel32.GetLastError())
+                       ctypes.windll.kernel32.GetLastError())  # type: ignore[attr-defined]
         return None
     result = bytes(ob.pbData[: ob.cbData])
-    ctypes.windll.kernel32.LocalFree(ob.pbData)
+    ctypes.windll.kernel32.LocalFree(ob.pbData)  # type: ignore[attr-defined]
     return result
 
 
@@ -93,14 +93,14 @@ def _dpapi_decrypt(data: bytes) -> "bytes | None":
 
     buf = ctypes.create_string_buffer(data)
     ib, ob = _B(len(data), buf), _B()
-    if not ctypes.windll.crypt32.CryptUnprotectData(
+    if not ctypes.windll.crypt32.CryptUnprotectData(  # type: ignore[attr-defined]
         ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob)
     ):
         logger.warning("CryptUnprotectData failed (%d)",
-                       ctypes.windll.kernel32.GetLastError())
+                       ctypes.windll.kernel32.GetLastError())  # type: ignore[attr-defined]
         return None
     result = bytes(ob.pbData[: ob.cbData])
-    ctypes.windll.kernel32.LocalFree(ob.pbData)
+    ctypes.windll.kernel32.LocalFree(ob.pbData)  # type: ignore[attr-defined]
     return result
 
 

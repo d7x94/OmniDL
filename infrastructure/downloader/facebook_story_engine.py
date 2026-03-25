@@ -258,6 +258,8 @@ def _find_browser_exe(browser: str) -> str:
 
     browser = browser.lower()
 
+    candidates: list[str] = []
+
     if sys.platform == "win32":
         if browser == "brave":
             candidates = [
