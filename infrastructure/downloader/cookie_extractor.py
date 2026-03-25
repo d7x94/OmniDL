@@ -326,7 +326,8 @@ def _is_browser_running(browser: str) -> bool:
     Uses `tasklist /FI "IMAGENAME eq brave.exe"` (Windows only, stdlib only).
     Returns False on non-Windows or if detection fails — safe default.
     """
-    import subprocess, sys
+    import subprocess
+    import sys
     if sys.platform != "win32":
         return False
     exe_name = f"{browser.lower()}.exe"
@@ -355,7 +356,8 @@ def _find_browser_exe(browser: str) -> "Path | None":
 
 
 def _cdp_wait_ready(port: int, timeout: float = 20.0) -> bool:
-    import http.client, time
+    import http.client
+    import time
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -366,8 +368,10 @@ def _cdp_wait_ready(port: int, timeout: float = 20.0) -> bool:
         except Exception:
             pass
         finally:
-            try: conn.close()
-            except Exception: pass
+            try:
+                conn.close()
+            except Exception:
+                pass
         time.sleep(0.4)
     return False
 
@@ -379,16 +383,20 @@ def _cdp_get_page_ws_url(port: int) -> str:
     Fetches /json/list, returns the first page-type target's wsDebuggerUrl.
     If none exists, asks Chrome to create one via /json/new.
     """
-    import http.client, json, time
+    import http.client
+    import json
+    import time
 
-    for attempt in range(5):
+    for _ in range(5):
         conn = http.client.HTTPConnection("localhost", port, timeout=5)
         try:
             conn.request("GET", "/json/list")
             targets = json.loads(conn.getresponse().read())
         finally:
-            try: conn.close()
-            except Exception: pass
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         for t in targets:
             if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
@@ -402,15 +410,19 @@ def _cdp_get_page_ws_url(port: int) -> str:
         except Exception:
             pass
         finally:
-            try: conn2.close()
-            except Exception: pass
+            try:
+                conn2.close()
+            except Exception:
+                pass
         time.sleep(0.8)
 
     raise RuntimeError("CDP: no page target available — browser may still be initialising")
 
 
 def _cdp_ws_connect(port: int, path: str):
-    import base64, os, socket
+    import base64
+    import os
+    import socket
     key = base64.b64encode(os.urandom(16)).decode()
     handshake = (
         f"GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n"
@@ -431,7 +443,8 @@ def _cdp_ws_connect(port: int, path: str):
 
 
 def _cdp_ws_send(sock, message: str) -> None:
-    import os, struct
+    import os
+    import struct
     payload = message.encode()
     n = len(payload)
     mask = os.urandom(4)
@@ -440,9 +453,11 @@ def _cdp_ws_send(sock, message: str) -> None:
     if n < 126:
         header.append(0x80 | n)
     elif n < 65536:
-        header.append(0x80 | 126); header += struct.pack(">H", n)
+        header.append(0x80 | 126)
+        header += struct.pack(">H", n)
     else:
-        header.append(0x80 | 127); header += struct.pack(">Q", n)
+        header.append(0x80 | 127)
+        header += struct.pack(">Q", n)
     header += mask
     sock.sendall(bytes(header) + masked)
 
@@ -459,8 +474,10 @@ def _cdp_ws_recv(sock) -> str:
         return buf
     h = _exact(2)
     n = h[1] & 0x7F
-    if n == 126: n = struct.unpack(">H", _exact(2))[0]
-    elif n == 127: n = struct.unpack(">Q", _exact(8))[0]
+    if n == 126:
+        n = struct.unpack(">H", _exact(2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", _exact(8))[0]
     return _exact(n).decode(errors="replace")
 
 
@@ -478,7 +495,8 @@ def _cdp_get_all_cookies(sock) -> "list[dict]":
     instead of indefinite blocking when a browser hangs after receiving the
     command.
     """
-    import json, socket as _socket
+    import json
+    import socket as _socket
 
     # Explicit per-recv timeout — guards against a browser that accepts the
     # WebSocket connection but never responds to Network.getAllCookies.
@@ -545,7 +563,8 @@ def extract_via_cdp(
 
     Returns (cookie_count, error_message | None).
     """
-    import http.client, json, subprocess
+    import http.client
+    import subprocess
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -570,8 +589,10 @@ def extract_via_cdp(
     except Exception:
         pass
     finally:
-        try: c.close()
-        except Exception: pass
+        try:
+            c.close()
+        except Exception:
+            pass
 
     proc = None
     try:
@@ -644,8 +665,10 @@ def extract_via_cdp(
         try:
             raw_cookies: list[dict] = _cdp_get_all_cookies(sock)
         finally:
-            try: sock.close()
-            except Exception: pass
+            try:
+                sock.close()
+            except Exception:
+                pass
 
         if not raw_cookies:
             return 0, (
@@ -691,8 +714,10 @@ def extract_via_cdp(
                 proc.terminate()
                 proc.wait(timeout=5)
             except Exception:
-                try: proc.kill()
-                except Exception: pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
 
 

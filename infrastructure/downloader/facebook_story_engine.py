@@ -320,11 +320,11 @@ def _cdp_intercept(
     """
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
-    except ImportError:
+    except ImportError as err:
         raise RuntimeError(
             "Thiếu thư viện Playwright.\n"
             "Chạy: pip install playwright"
-        )
+        ) from err
 
     import os
 
@@ -661,8 +661,6 @@ def download_story(
             "URL không phải Facebook Story.\n"
             "Hãy dán URL dạng facebook.com/stories/..."
         )
-
-    import os
 
     output_dir = Path(config.download_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

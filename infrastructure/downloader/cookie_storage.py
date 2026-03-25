@@ -63,7 +63,8 @@ def is_encrypted(path: Path) -> bool:
 # ── Windows — DPAPI ───────────────────────────────────────────────────────────
 
 def _dpapi_encrypt(data: bytes) -> "bytes | None":
-    import ctypes, ctypes.wintypes
+    import ctypes
+    import ctypes.wintypes
 
     class _B(ctypes.Structure):
         _fields_ = [("cbData", ctypes.wintypes.DWORD),
@@ -83,7 +84,8 @@ def _dpapi_encrypt(data: bytes) -> "bytes | None":
 
 
 def _dpapi_decrypt(data: bytes) -> "bytes | None":
-    import ctypes, ctypes.wintypes
+    import ctypes
+    import ctypes.wintypes
 
     class _B(ctypes.Structure):
         _fields_ = [("cbData", ctypes.wintypes.DWORD),
@@ -110,7 +112,8 @@ def _macos_get_or_create_key() -> bytes:
     Stored under: service="OmniDL", account="cookie_encryption_key_v1".
     Raises RuntimeError if Keychain is inaccessible.
     """
-    import base64, os
+    import base64
+    import os
 
     try:
         import keyring
@@ -145,6 +148,7 @@ def _macos_get_or_create_key() -> bytes:
 
 def _macos_fernet(key: bytes):
     import base64
+
     from cryptography.fernet import Fernet
     return Fernet(base64.urlsafe_b64encode(key))
 

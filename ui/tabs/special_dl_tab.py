@@ -446,7 +446,7 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
         self._last_dest = None
 
     def _open_output_folder(self) -> None:
-        from utils.helpers import reveal_in_explorer, open_folder
+        from utils.helpers import open_folder, reveal_in_explorer
         dest = self._last_dest
         if dest and dest.exists():
             if not reveal_in_explorer(dest):

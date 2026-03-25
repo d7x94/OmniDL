@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import queue
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -100,15 +102,13 @@ def safe_path(base: Path, untrusted: str) -> Path:
 
 _app_hwnd: int = 0
 
-import queue as _queue_mod
-_focus_queue: "_queue_mod.Queue" = _queue_mod.Queue()
+_focus_queue: queue.Queue = queue.Queue()
 
 # Track active player-watch threads by process handle to avoid accumulation.
 # Multiple open_file() calls while a previous player is still open would
 # otherwise spawn unbounded threads each blocking up to 4 hours.
-import threading as _threading_mod
 _watch_set: set[int] = set()
-_watch_set_lock: "_threading_mod.Lock" = _threading_mod.Lock()
+_watch_set_lock: threading.Lock = threading.Lock()
 
 
 def register_app_hwnd(hwnd: int) -> None:
@@ -256,7 +256,6 @@ def open_file(path: Path) -> None:
         if sys.platform == "win32":
             import ctypes as _ctypes
             import ctypes.wintypes as _wt
-            import threading as _threading
 
             _p    = str(path.resolve())
             _hwnd = _app_hwnd
@@ -312,7 +311,7 @@ def open_file(path: Path) -> None:
                                 _watch_set.discard(hp)
                             _focus_queue.put_nowait(True)
 
-                        _threading.Thread(
+                        threading.Thread(
                             target=_wait, daemon=True,
                             name="omnidl-player-watch",
                         ).start()

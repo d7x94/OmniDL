@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import os
 import yt_dlp
 
 from domain.enums.download_status import DownloadStatus

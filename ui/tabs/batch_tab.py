@@ -475,7 +475,8 @@ class BatchTab(ctk.CTkFrame):
 
         # Apply per-platform delay in a daemon thread so UI stays responsive.
         # The delay fires BEFORE analyse_url() — not inside service layer.
-        import threading, time as _time
+        import threading
+        import time as _time
 
         def _delayed_analyse():
             delay = self._get_analysis_delay(url)

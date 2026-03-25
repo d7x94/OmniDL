@@ -44,11 +44,9 @@ def _install_ytdlp_frozen() -> None:
     compromise both the PyPI API endpoint and the CDN simultaneously.
     """
     import hashlib
-    import importlib
     import json
     import os
     import shutil
-    import sys
     import zipfile
     from pathlib import Path
 
@@ -153,11 +151,9 @@ def _install_gallery_dl_frozen() -> None:
     connection — same model as yt-dlp update.
     """
     import hashlib
-    import importlib
     import json
     import os
     import shutil
-    import sys
     import zipfile
     from pathlib import Path
 
@@ -959,7 +955,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
                 count, error = extract_via_cdp(output_path, platform_key=None, browser=browser)
             except Exception as exc:
-                error = str(exc); count = 0
+                error = str(exc)
+                count = 0
 
             if error:
                 self._ui_queue.put(lambda e=error: (
@@ -1035,9 +1032,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                 ))
             else:
                 # cookie_extractor may have encrypted the file → path may now be .enc
-                # Use the returned path (which extract_browser_cookies already updated)
                 from infrastructure.downloader.cookie_storage import is_encrypted
-                actual_path = output_path.with_suffix(".enc") if is_encrypted(output_path.with_suffix(".enc")) and not is_encrypted(output_path) else output_path
                 # Find final saved path: check if .enc exists (encryption succeeded)
                 enc_candidate = output_path.parent / (output_path.stem + ".enc")
                 final_path = enc_candidate if enc_candidate.exists() else output_path
@@ -1182,7 +1177,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                     output_path, platform_key=platform_key, browser=browser
                 )
             except Exception as exc:
-                error = str(exc); count = 0
+                error = str(exc)
+                count = 0
 
             if error:
                 self._ui_queue.put(lambda e=error, pn=platform_name: (
