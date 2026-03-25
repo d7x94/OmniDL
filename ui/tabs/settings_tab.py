@@ -1032,7 +1032,6 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                 ))
             else:
                 # cookie_extractor may have encrypted the file → path may now be .enc
-                from infrastructure.downloader.cookie_storage import is_encrypted
                 # Find final saved path: check if .enc exists (encryption succeeded)
                 enc_candidate = output_path.parent / (output_path.stem + ".enc")
                 final_path = enc_candidate if enc_candidate.exists() else output_path

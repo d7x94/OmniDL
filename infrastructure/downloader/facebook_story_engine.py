@@ -319,7 +319,7 @@ def _cdp_intercept(
     The browser process is always terminated in a finally block.
     """
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+        from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright
     except ImportError as err:
         raise RuntimeError(
             "Thiếu thư viện Playwright.\n"
