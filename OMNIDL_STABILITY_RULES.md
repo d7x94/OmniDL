@@ -1,8 +1,8 @@
 # OmniDL Stability Rules
-Version: 15.0
+Version: 15.1
 Status: ACTIVE
 Scope: Entire OmniDL codebase — AI-assisted development
-Last updated: 2026-03-19 (BatchUX; CookieFix .enc fallback; YouTube cookie; SecurityAudit temp-leak; GlobalDemote UI)
+Last updated: 2026-03-21 (toolbar _ui_queue migration; Editor + Threads removal; coverage omit fix; deno_locator protection added)
 
 ---
 
@@ -83,8 +83,8 @@ The following systems must not be modified without explicit approval:
 - `YtDlpEngine` live outtmpl: MUST use hardcoded `.ts` extension — NOT `%(ext)s` (BUG AX)
 - `ConvertTab._ui_queue` + `_poll_ui_queue()`: the ONLY safe bridge for bg→UI thread communication
   Background threads MUST use `self._ui_queue.put(fn)` — NEVER `self.after()` or `self.winfo_exists()` (BUG AY)
-- Same `_ui_queue` pattern required in ALL 6 affected classes: `ConvertTab`, `LiveMonitorTab`,
-  `BatchTab`, `DownloadItemWidget`, `StatusBar`, `SettingsTab` (BUG AY/AZ/BA)
+- Same `_ui_queue` pattern required in ALL 7 affected classes: `ConvertTab`, `LiveMonitorTab`,
+  `BatchTab`, `DownloadItemWidget`, `StatusBar`, `SettingsTab`, `Toolbar` (BUG AY/AZ/BA + v16.3.0)
 - `QueueTab.DownloadItemWidget` MUST receive `on_convert=` param — enables → MP4 button (Fix)
 - `_apply_available_encoders()` and `_refresh_status()` MUST have `winfo_exists()` guard at top
 - `_PROFILE_URL_RE` in `yt_dlp_engine.py` — conservative profile/channel URL regex; single-video URLs must NOT match
@@ -95,6 +95,12 @@ The following systems must not be modified without explicit approval:
 
 **Minimum dependency versions (from `requirements.txt`):**
 - `gallery-dl>=1.27.0` — lower versions may lack `--dump-json` or `-q` flag support
+
+**Deno PATH injection (`utils/deno_locator.py`):**
+- `locate_deno()` — 3-step resolution: PyInstaller bundle → `resources/deno/` → `shutil.which`
+- `get_deno_env()` — returns modified env dict with deno directory prepended to PATH
+- `extract_info()` and `download()` in `yt_dlp_engine.py` MUST call `get_deno_env()` and pass result to subprocess environment; removing this breaks YouTube throttle-bypass on bundled builds
+- Do NOT hardcode a deno path — the 3-step resolution order handles frozen, source, and system installs
 
 **Exception — Surgical Fix Rule:**
 A protected system MAY be modified ONLY when required to fix an explicitly listed bug,
@@ -123,6 +129,7 @@ the architecture behavior remains unchanged, and the modification is minimal and
 - `_active_count` in ConvertTab must only be decremented inside `_finish_job()` on the UI thread
 - `DownloadTask.snapshot()` must be used by UI poll loop (atomic multi-field read)
 - `LiveMonitorTab` background callbacks MUST dispatch via `self._ui_queue.put()` — NOT `self.after(0, ...)` directly (BUG AY)
+- `Toolbar` analyse callbacks (`_safe_done`, `_safe_error`) MUST dispatch via `self._ui_queue.put()` — NOT `self.after(0, ...)` (v16.3.0)
 
 ---
 
@@ -239,8 +246,9 @@ resets item to WAITING with `last_check=0.0` for immediate re-check.
 - All background threads in `ConvertTab` post callables to `self._ui_queue`
   (a `queue.Queue`). `_poll_ui_queue()` drains it every 50 ms on the UI thread.
 - This pattern must be used in any future background thread added to any UI class.
-- All 6 affected files now fixed: `convert_tab.py`, `live_monitor_tab.py`,
-  `batch_tab.py`, `download_item_widget.py`, `status_bar.py`, `settings_tab.py` — see BUG AY/AZ/BA.
+- All 7 affected files now fixed: `convert_tab.py`, `live_monitor_tab.py`,
+  `batch_tab.py`, `download_item_widget.py`, `status_bar.py`, `settings_tab.py`,
+  `toolbar.py` — see BUG AY/AZ/BA + v16.3.0.
 - CI matrix currently covers 3.11–3.13; 3.14 not yet added but fix is forward-compatible.
 
 
@@ -446,6 +454,8 @@ resets item to WAITING with `last_check=0.0` for immediate re-check.
 - Remove `_poll_ui_queue()` or `_ui_queue` from `ConvertTab` — they are the Python 3.14 thread-safety mechanism
 - Add new background thread to `ConvertTab` without using `self._ui_queue.put()` for all UI callbacks
 - Add new background thread to ANY UI class without `_ui_queue` pattern (BUG AY/AZ/BA)
+- Call `self.after(0, ...)` from `_safe_done` or `_safe_error` in `toolbar.py` — use `_ui_queue.put()` (v16.3.0)
+- Remove `_drain_ui_queue()` or `_ui_queue` from `toolbar.py` — required for Python 3.14 (v16.3.0)
 - Create `DownloadItemWidget` in `QueueTab` without `on_convert=` parameter — hides → MP4 button
 - Remove `winfo_exists()` guard from `_apply_available_encoders()` or `_refresh_status()` in `ConvertTab`
 - Remove `winfo_exists()` guards from `LiveMonitorTab._on_theme()`
@@ -1068,8 +1078,8 @@ non-main thread. The first crash occurred in `_detect_encoders_async` at startup
 'ConvertTab' object has no attribute '_poll_ui_queue'` at startup. Fixed by
 explicitly searching for the ConvertTab-specific `# ── Build` separator.
 
-**Scope — all 4 files fixed:**
-Same fix applied to the other 3 affected files:
+**Scope — all 7 files fixed:**
+Same fix applied to the other affected files:
 
 | File | Callbacks fixed | Pump method | Interval |
 |---|---|---|---|
@@ -1079,6 +1089,7 @@ Same fix applied to the other 3 affected files:
 | `download_item_widget.py` | 3 (`_on_progress`, `_on_done`, `_on_error`) | `_drain_ui_queue()` | 50 ms |
 | `status_bar.py` | 1 (`_do_net_check`) | `_drain_ui_queue()` | 100 ms |
 | `settings_tab.py` | 10 (`_worker` ×2: yt-dlp update + gallery-dl update) | `_drain_ui_queue()` | 150 ms |
+| `toolbar.py` | 2 (`_safe_done`, `_safe_error` from `analyse_url` background thread) | `_drain_ui_queue()` | 50 ms |
 
 `live_monitor_tab` integrates queue draining directly into the existing `_poll()` loop
 rather than adding a separate poller — consistent with its 5-second poll cadence.
@@ -1435,7 +1446,7 @@ Button shows whenever `.ts` file is ready (even while → MP4 is converting).
 | `FfmpegMediaInfo` name | Never `MediaInfo` in ffmpeg module |
 | build.yml gate order | ruff → mypy → pytest |
 | Coverage threshold | `fail_under = 80` |
-| Coverage omit | `ui/*`, `tests/*`, `build/*`, `main.py`, `gallery_dl_engine.py`, `instagram_live_checker.py` |
+| Coverage omit | `ui/*`, `tests/*`, `build/*`, `main.py`, `gallery_dl_engine.py`, `instagram_live_checker.py`, `facebook_story_engine.py` |
 | `_parse_seconds()` | Pure function in `ffmpeg_convert_service.py` — must remain importable for tests |
 | ConversionError message | Full Unicode: `"ffmpeg thoát với lỗi {returncode}"` — NOT ASCII transliteration |
 | `_friendly_error` 429 | Standalone `"429" in msg_l or "too many requests" in msg_l` branch MUST remain |
@@ -1531,7 +1542,8 @@ Button shows whenever `.ts` file is ready (even while → MP4 is converting).
 | `_poll_ui_queue()` | Must be in `ConvertTab`, called after `_build()` (BUG AY) |
 | bg threads → `_ui_queue.put()` | NEVER `self.after()` from non-main thread (BUG AY) |
 | `_poll_ui_queue` reschedule | `after(50,...)` NOT `after(0,...)` |
-| All 6 UI classes | MUST have `_ui_queue` + pump (BUG AY/AZ/BA) |
+| All 7 UI classes | MUST have `_ui_queue` + pump (BUG AY/AZ/BA + v16.3.0) |
+| `toolbar._safe_done/_safe_error` | `_ui_queue.put()` — NOT `self.after(0,...)` (v16.3.0) |
 | `settings_tab._worker` | 10 `_ui_queue.put()` calls — no `self.after(0,...)` (BUG AZ) |
 | `status_bar._do_net_check` | `_ui_queue.put()` — no `winfo_exists()` (BUG BA) |
 | `QueueTab on_convert=` | MUST be wired — enables → MP4 in Queue tab |
@@ -1542,4 +1554,4 @@ Button shows whenever `.ts` file is ready (even while → MP4 is converting).
 
 ---
 
-*End of OMNIDL_STABILITY_RULES.md v15.0*
+*End of OMNIDL_STABILITY_RULES.md v15.1*

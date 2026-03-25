@@ -9,4 +9,5 @@ PySocks>=1.7.1                # required by yt-dlp for SOCKS4/5 proxy support
 keyring>=24.0.0               # required by yt-dlp to decrypt Brave/Chrome 127+ App-Bound cookies (issue #10927)
                               # also used by OmniDL to store macOS Keychain encryption key (BUG BC)
 cryptography>=41.0.0          # Fernet (AES-128-CBC + HMAC-SHA256) for macOS cookie at-rest encryption (BUG BC)
+playwright>=1.40              # Facebook Story CDP via connect_over_cdp() — no playwright install needed
 # pyinstaller moved to requirements-dev.txt

@@ -24,6 +24,8 @@ import multiprocessing
 import sys
 from pathlib import Path
 
+from utils.__version__ import __version__ as _APP_VERSION
+
 multiprocessing.freeze_support()
 
 
@@ -73,17 +75,98 @@ if str(APP_BINARY_DIR) not in sys.path:
     sys.path.insert(0, str(APP_BINARY_DIR))
 
 
-_APP_VERSION = "16.0.0"
+# Saved by _hide_console() so _close_console() can send WM_CLOSE at exit.
+_console_hwnd: int = 0
+
+
+def _hide_console() -> None:
+    """Hide the PowerShell/cmd console window on Windows without freeing it.
+
+    Called once at startup, AFTER setup_logging() so RotatingFileHandler is
+    already open before the console handle is hidden.
+
+    Hides the window (SW_HIDE) so:
+      • PowerShell never surfaces over OmniDL when a media player closes.
+      • Subprocess inheritance continues to work (HANDLE stays valid).
+      • yt-dlp internal stdout writes succeed — downloads unaffected.
+
+    Also removes the console from the Windows activation stack by adding
+    WS_EX_TOOLWINDOW so Windows skips it entirely when searching for the
+    next window to activate after a media player closes.
+
+    The console HWND is saved in _console_hwnd so _close_console() can
+    send WM_CLOSE when OmniDL exits, preventing orphan PowerShell processes.
+
+    No-op on macOS/Linux (guarded by caller). No-op on frozen builds
+    (GetConsoleWindow() returns 0 when no console is attached).
+    Bandit/ruff/mypy clean — ctypes stdlib, no shell=True.
+    """
+    global _console_hwnd
+    import ctypes as _ctypes
+
+    hwnd = _ctypes.windll.kernel32.GetConsoleWindow()
+    if not hwnd:
+        return   # no console attached (frozen build) — nothing to do
+
+    _console_hwnd = hwnd
+
+    # Step 1: hide the window so it is never visible.
+    _ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE = 0
+
+    # Step 2: remove from Windows activation stack so it cannot surface
+    # when a media player closes.  WS_EX_TOOLWINDOW = 0x00000080.
+    _GWL_EXSTYLE      = -20
+    _WS_EX_APPWINDOW  = 0x00040000
+    _WS_EX_TOOLWINDOW = 0x00000080
+    style = _ctypes.windll.user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    style = (style & ~_WS_EX_APPWINDOW) | _WS_EX_TOOLWINDOW
+    _ctypes.windll.user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, style)
+
+
+def _close_console() -> None:
+    """Send WM_CLOSE to the hidden console so PowerShell exits with OmniDL.
+
+    Problem solved:
+      _hide_console() hides the PowerShell window but the process keeps
+      running. When python.exe exits, PS returns to its command prompt —
+      with a HIDDEN window. The user cannot see it or close it. Each
+      OmniDL session leaves one orphan PS process in the background.
+
+    Fix:
+      PostMessage(console_hwnd, WM_CLOSE, 0, 0) sends a non-blocking
+      close request to the hidden console window. Windows delivers it
+      after the calling process exits. PowerShell receives the close
+      signal and terminates cleanly — no orphan process remains.
+
+      PostMessage (not SendMessage) is used so the call returns
+      immediately and never blocks the shutdown sequence.
+
+    Only called when _hide_console() successfully ran (hwnd != 0).
+    No-op if _console_hwnd was never set (non-Windows, frozen build).
+    """
+    if not _console_hwnd:
+        return
+    import ctypes as _ctypes
+    _WM_CLOSE = 0x0010
+    _ctypes.windll.user32.PostMessageW(_console_hwnd, _WM_CLOSE, 0, 0)
 
 
 def main() -> None:
     from utils.logger import setup_logging
     setup_logging(LOG_DIR)
 
+    # Hide the console window so PowerShell never surfaces over OmniDL.
+    # Must be called AFTER setup_logging() so the RotatingFileHandler is
+    # already configured before we hide the console.
+    # No-op on macOS/Linux. No-op on frozen builds (no console attached).
+    if sys.platform == "win32":
+        _hide_console()
+
     import logging
     logger = logging.getLogger("omnidl.main")
     logger.info(
-        "OmniDL v16 starting | binary=%s | data=%s | frozen=%s",
+        "OmniDL v%s starting | binary=%s | data=%s | frozen=%s",
+        _APP_VERSION,
         APP_BINARY_DIR, DATA_DIR, getattr(sys, "frozen", False),
     )
 
@@ -121,6 +204,20 @@ def main() -> None:
 
     engine         = YtDlpEngine(config)
     gallery_engine = GalleryDlEngine(config)
+
+    # Inject bundled Deno into PATH once on the main thread before any worker
+    # thread starts.  os.environ.update() is not thread-safe on CPython — calling
+    # it from ThreadPoolExecutor workers (the old approach) was a latent race.
+    try:
+        from utils.deno_locator import get_deno_env as _get_deno_env
+        _deno_env = _get_deno_env()
+        if _deno_env:
+            import os as _os
+            _os.environ.update(_deno_env)
+            logger.info("Deno PATH injected into environment (startup, main thread)")
+    except Exception as _deno_exc:
+        logger.warning("Deno PATH injection failed (non-fatal): %s", _deno_exc)
+
     manager        = DownloadManager(config, engine=engine, gallery_engine=gallery_engine)
     manager.start()
 
@@ -153,6 +250,11 @@ def main() -> None:
         service.close()               # then flush history writes
         config.save()
         logger.info("OmniDL shutdown complete")
+        # Close the hidden PowerShell console so it does not linger as an
+        # orphan process after python.exe exits.  PostMessage is async and
+        # never blocks.  No-op if running without a console (frozen build).
+        if sys.platform == "win32":
+            _close_console()
 
 
 def _clear_history_on_version_change(config, history) -> None:
@@ -206,12 +308,13 @@ def _migrate_legacy_data() -> None:
 def _check_deps() -> None:
     missing = []
     for pkg, install in [
-        ("customtkinter", "customtkinter==5.2.2"),
-        ("yt_dlp",        "yt-dlp"),
-        ("PIL",           "Pillow"),
-        ("requests",      "requests"),
+        ("customtkinter", "customtkinter>=5.2.2"),
+        ("yt_dlp",        "yt-dlp>=2025.1.1"),
+        ("PIL",           "Pillow>=10.3.0"),
+        ("requests",      "requests>=2.31.0"),
         ("platformdirs",  "platformdirs>=4.0.0"),  # DEF-024
         ("gallery_dl",    "gallery-dl>=1.27.0"),   # image fallback engine
+        ("playwright",    "playwright>=1.40"),      # Facebook Story CDP
     ]:
         try:
             __import__(pkg)

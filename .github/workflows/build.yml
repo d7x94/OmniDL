@@ -89,11 +89,71 @@ jobs:
             --cov=. \
             --cov-report=term-missing
 
-  # ── JOB 2: Windows EXE ───────────────────────────────────────────────────
+  # ── JOB 2: Security scan ─────────────────────────────────────────────────
+  # Runs in parallel with builds but gates the release job.
+  # Mirrors the security job in ci.yml so every release artifact is scanned.
+  security:
+    name: "Security scan"
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install security tools
+        run: pip install bandit pip-audit
+
+      # ── bandit: static analysis ──────────────────────────────────────────
+      # Severity threshold: MEDIUM (-ll).  HIGH findings fail the build.
+      # Skips test files (B101 assert usage is expected in tests).
+      - name: bandit SAST scan
+        run: |
+          bandit \
+            -r . \
+            -x tests/,build/,venv_build/ \
+            -ll \
+            --format txt \
+            --output bandit_report.txt \
+            || (cat bandit_report.txt && exit 1)
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report-build
+          path: bandit_report.txt
+          retention-days: 7
+
+      # ── pip-audit: CVE scan ──────────────────────────────────────────────
+      - name: pip-audit CVE scan
+        run: |
+          pip install -r requirements.txt
+          pip-audit \
+            --requirement requirements.txt \
+            --format markdown \
+            --output pip_audit_report.md \
+            || (cat pip_audit_report.md && exit 1)
+
+      - name: Upload pip-audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report-build
+          path: pip_audit_report.md
+          retention-days: 7
+
+  # ── JOB 3: Windows EXE ───────────────────────────────────────────────────
   build-windows:
     name: "Build — Windows EXE"
     runs-on: windows-latest
-    needs: test
+    needs: [test, security]
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -163,6 +223,33 @@ jobs:
           & "resources\ffmpeg\ffprobe.exe" -version 2>&1 | Select-Object -First 1
           Write-Output "OK  FFmpeg binaries verified"
 
+
+      # ── Download & stage Deno (Windows) ────────────────────────────────
+      # Deno is required by yt-dlp to solve YouTube JS n-challenge.
+      # Bundled so users need NOT install Deno separately.
+      - name: Download Deno (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+          $zip = "$env:RUNNER_TEMP\deno.zip"
+          Write-Output "Downloading Deno from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          New-Item -ItemType Directory -Path "resources\deno" -Force | Out-Null
+          Expand-Archive -Path $zip -DestinationPath "resources\deno" -Force
+          Remove-Item -Force $zip
+          Write-Output "Deno staged:"
+          Get-Item "resources\deno\deno.exe" | Format-Table Name, @{N="Size";E={"{0:N0} bytes" -f $_.Length}}
+
+      - name: Verify Deno (Windows)
+        shell: pwsh
+        run: |
+          $deno = "resources\deno\deno.exe"
+          if (-not (Test-Path $deno)) { Write-Error "deno.exe missing"; exit 1 }
+          & $deno --version 2>&1 | Select-Object -First 1
+          Write-Output "OK  Deno binary verified"
+
+
       - name: Resolve icon flag
         id: icon
         shell: pwsh
@@ -188,6 +275,7 @@ jobs:
             ${{ steps.icon.outputs.flag }} `
             --add-data "config.json;." `
             --add-data "resources/ffmpeg;ffmpeg" `
+            --add-data "resources/deno;deno" `
             --hidden-import multiprocessing `
             --hidden-import multiprocessing.freeze_support `
             --hidden-import customtkinter `
@@ -264,7 +352,7 @@ jobs:
   build-macos:
     name: "Build — macOS .app"
     runs-on: macos-latest
-    needs: test
+    needs: [test, security]
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_P12 != '' }}
 
@@ -323,6 +411,25 @@ jobs:
           done
           echo "OK  FFmpeg binaries verified"
 
+
+      # ── Download & stage Deno (macOS) ──────────────────────────────────
+      - name: Download Deno (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/deno
+          curl -fsSL --retry 3             "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip"             -o /tmp/deno.zip 2>/dev/null ||           curl -fsSL --retry 3             "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip"             -o /tmp/deno.zip
+          unzip -jo /tmp/deno.zip -d resources/deno
+          rm /tmp/deno.zip
+          chmod +x resources/deno/deno
+          echo "Deno staged: $(resources/deno/deno --version | head -1)"
+
+      - name: Verify Deno (macOS)
+        run: |
+          [ -f resources/deno/deno ] || { echo "ERROR: deno missing"; exit 1; }
+          resources/deno/deno --version 2>&1 | head -1
+          echo "OK  Deno binary verified"
+
+
       - name: Resolve icon flag
         id: icon
         run: |
@@ -346,6 +453,7 @@ jobs:
             ${{ steps.icon.outputs.flag }} \
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
+            --add-data "resources/deno:deno" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \
@@ -466,7 +574,7 @@ jobs:
   build-linux:
     name: "Build — Linux tarball"
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, security]
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -528,6 +636,25 @@ jobs:
 
       # ── PyInstaller build (Linux) ─────────────────────────────────────
       # Colon separator for --add-data on POSIX.
+
+      # ── Download & stage Deno (Linux) ──────────────────────────────────
+      - name: Download Deno (Linux)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/deno
+          curl -fsSL --retry 3             "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip"             -o /tmp/deno.zip
+          unzip -jo /tmp/deno.zip -d resources/deno
+          rm /tmp/deno.zip
+          chmod +x resources/deno/deno
+          echo "Deno staged: $(resources/deno/deno --version | head -1)"
+
+      - name: Verify Deno (Linux)
+        run: |
+          [ -f resources/deno/deno ] || { echo "ERROR: deno missing"; exit 1; }
+          resources/deno/deno --version 2>&1 | head -1
+          echo "OK  Deno binary verified"
+
+
       - name: PyInstaller build
         run: |
           pyinstaller \
@@ -536,6 +663,7 @@ jobs:
             --name "${{ env.APP_NAME }}" \
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
+            --add-data "resources/deno:deno" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \

@@ -131,13 +131,11 @@ def _install_ytdlp_frozen() -> None:
     finally:
         tmp_whl.unlink(missing_ok=True)
 
-    # -- 5. Prepend override_dir to sys.path -------------------------------
-    override_str = str(override_dir)
-    if override_str not in sys.path:
-        sys.path.insert(0, override_str)
-
-    # Invalidate import caches so the freshly extracted files are found
-    importlib.invalidate_caches()
+    # -- 5. Return override_dir path — caller must do sys.path.insert() ---
+    # sys.path mutation is NOT thread-safe. The background worker thread that
+    # calls this function must post sys.path.insert() + invalidate_caches()
+    # to the UI thread via _ui_queue so they run on the main thread.
+    return str(override_dir)
 
 
 def _install_gallery_dl_frozen() -> None:
@@ -232,11 +230,9 @@ def _install_gallery_dl_frozen() -> None:
     finally:
         tmp_whl.unlink(missing_ok=True)
 
-    # -- 5. Prepend override_dir to sys.path and reload --------------------
-    override_str = str(override_dir)
-    if override_str not in sys.path:
-        sys.path.insert(0, override_str)
-    importlib.invalidate_caches()
+    # -- 5. Return override_dir path — caller must do sys.path.insert() ---
+    # Same thread-safety reason as _install_ytdlp_frozen().
+    return str(override_dir)
 
 
 _BaseFrame = ctk.CTkFrame if ctk is not None else object
@@ -1273,8 +1269,12 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             import importlib
             try:
                 if getattr(sys, "frozen", False):
-                    _install_ytdlp_frozen()
+                    # _install_ytdlp_frozen() downloads, verifies, extracts the wheel
+                    # and returns the override_dir path WITHOUT touching sys.path.
+                    # sys.path.insert() must run on the main/UI thread (thread-safety).
+                    override_str = _install_ytdlp_frozen()
                 else:
+                    override_str = None
                     import subprocess
                     r = subprocess.run(
                         [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
@@ -1282,21 +1282,25 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                     if r.returncode != 0:
                         raise RuntimeError(r.stderr.decode(errors="replace")[:200])
 
-                # Reload version module so label shows the new version right away.
-                try:
-                    import yt_dlp.version as _yv
-                    importlib.reload(_yv)
-                except Exception:
-                    pass
+                # Marshal sys.path mutation + cache invalidation + reload to UI thread.
+                # importlib operations involving sys.path are not thread-safe on CPython.
+                def _apply_on_ui(override=override_str):
+                    if override and override not in sys.path:
+                        sys.path.insert(0, override)
+                    importlib.invalidate_caches()
+                    # Reload version module so label shows the new version right away.
+                    try:
+                        import yt_dlp.version as _yv
+                        importlib.reload(_yv)
+                    except Exception:
+                        pass
+                    ver = self._get_ytdlp_version()
+                    self._upd_status.configure(text=f"Updated → {ver}", text_color=T.success)
+                    self._ver_lbl.configure(text=ver)
+                    self._app.toast(f"yt-dlp updated to {ver}", "success")
 
-                ver = self._get_ytdlp_version()
-                self._ui_queue.put(lambda: self._upd_status.configure(
-                    text=f"Updated → {ver}", text_color=T.success))
-                self._ui_queue.put(lambda: self._ver_lbl.configure(text=ver))
-                self._ui_queue.put(lambda: self._app.toast(
-                        f"yt-dlp updated to {ver}", "success"
-                    )
-                )
+                self._ui_queue.put(_apply_on_ui)
+
             except Exception as exc:
                 msg = str(exc)
                 self._ui_queue.put(lambda: self._upd_status.configure(
@@ -1394,8 +1398,9 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             import importlib
             try:
                 if getattr(sys, "frozen", False):
-                    _install_gallery_dl_frozen()
+                    override_str = _install_gallery_dl_frozen()
                 else:
+                    override_str = None
                     import subprocess
                     r = subprocess.run(
                         [sys.executable, "-m", "pip", "install",
@@ -1404,19 +1409,23 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                     if r.returncode != 0:
                         raise RuntimeError(r.stderr.decode(errors="replace")[:200])
 
-                # Reload so the version label reflects the new version immediately
-                try:
-                    import gallery_dl as _gdl
-                    importlib.reload(_gdl)
-                except Exception:
-                    pass
+                # Marshal sys.path mutation + cache invalidation + reload to UI thread.
+                def _apply_on_ui(override=override_str):
+                    if override and override not in sys.path:
+                        sys.path.insert(0, override)
+                    importlib.invalidate_caches()
+                    try:
+                        import gallery_dl as _gdl
+                        importlib.reload(_gdl)
+                    except Exception:
+                        pass
+                    ver = self._get_gallery_dl_version()
+                    self._gdl_upd_status.configure(text=f"Updated → {ver}", text_color=T.success)
+                    self._gdl_ver_lbl.configure(text=ver)
+                    self._app.toast(f"gallery-dl updated to {ver}", "success")
 
-                ver = self._get_gallery_dl_version()
-                self._ui_queue.put(lambda: self._gdl_upd_status.configure(
-                    text=f"Updated → {ver}", text_color=T.success))
-                self._ui_queue.put(lambda: self._gdl_ver_lbl.configure(text=ver))
-                self._ui_queue.put(lambda: self._app.toast(
-                    f"gallery-dl updated to {ver}", "success"))
+                self._ui_queue.put(_apply_on_ui)
+
             except Exception as exc:
                 msg = str(exc)
                 self._ui_queue.put(lambda: self._gdl_upd_status.configure(

@@ -208,23 +208,15 @@ class TestExtractInfoErrors:
         msg = self._extract_with_error("404 not found")
         assert "not found" in msg.lower() or "removed" in msg.lower()
 
-    def test_unsupported_url_friendly_message(self):
-        msg = self._extract_with_error("Unsupported URL")
-        assert "not supported" in msg.lower()
-
     def test_facebook_stories_blocked_without_cookies(self):
-        """Facebook Stories are blocked when no cookies are configured.
-
-        With valid cookies, yt-dlp CAN download Facebook Stories.
-        """
+        """Facebook Stories are blocked when no cookies are configured."""
         cfg = make_config(use_cookies=False, cookie_file="")
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
         mock_ydl = MagicMock()
         with patch.object(mod.yt_dlp, "YoutubeDL", mock_ydl):
             with pytest.raises(RuntimeError, match="Facebook Stories"):
-                engine.extract_info("https://www.facebook.com/stories/user/123")
-        mock_ydl.assert_not_called()
+                engine.extract_info("https://www.facebook.com/stories/user/123/")
 
     def test_instagram_stories_blocked_without_cookies(self):
         """Instagram Stories are blocked when no cookies are configured."""

@@ -60,6 +60,11 @@ class StatusBar(ctk.CTkFrame):
         # winfo_exists() are not callable from background threads.
         self._ui_queue: queue.Queue = queue.Queue()
 
+        # after() job IDs — kept so cancel_loops() can stop both loops
+        # cleanly during the 200 ms window between _on_close() and destroy().
+        self._poll_id:  str | None = None
+        self._drain_id: str | None = None
+
         self._build()
         self._poll()
         self._check_net()
@@ -85,7 +90,7 @@ class StatusBar(ctk.CTkFrame):
                         "status_bar _ui_queue raised: %s", exc)
         except queue.Empty:
             pass
-        self.after(100, self._drain_ui_queue)
+        self._drain_id = self.after(100, self._drain_ui_queue)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
@@ -193,19 +198,38 @@ class StatusBar(ctk.CTkFrame):
                 self._speed_lbl.configure(text="")
         except Exception:
             pass
-        self.after(800, self._poll)
+        self._poll_id = self.after(800, self._poll)
 
     def _check_net(self) -> None:
-        """Check network in a background thread so it never blocks UI."""
+        """Check network in a background thread so it never blocks UI.
+
+        Reschedules itself only AFTER the check thread completes — not
+        immediately. This prevents thread pile-up when the network check
+        takes longer than _net_check_interval (e.g. DNS timeout on a slow
+        connection). With the old approach, a 30 s DNS timeout would spawn
+        a new thread every 15 s, accumulating blocked threads over time.
+        """
         if not self.winfo_exists():
             return
         import threading
-        threading.Thread(target=self._do_net_check, daemon=True).start()
-        self.after(self._net_check_interval, self._check_net)
+
+        def _run() -> None:
+            ok = _check_network()
+            # Post both the result update AND the next reschedule to the
+            # UI thread via _ui_queue — keeps all Tkinter calls off the
+            # worker thread (Python 3.14 safe).
+            def _on_ui_thread(result=ok) -> None:
+                self._update_net(result)
+                if self.winfo_exists():
+                    self.after(self._net_check_interval, self._check_net)
+
+            self._ui_queue.put(_on_ui_thread)
+
+        threading.Thread(target=_run, daemon=True, name="omnidl-net-check").start()
 
     def _do_net_check(self) -> None:
-        # _check_network() is a pure network call — no Tkinter access.
-        # Post result to UI thread via _ui_queue (Python 3.14 safe).
+        # Kept for backward compatibility — no longer called internally.
+        # _check_net() now inlines the thread body via _run().
         ok = _check_network()
         self._ui_queue.put(lambda result=ok: self._update_net(result))
 
@@ -217,6 +241,23 @@ class StatusBar(ctk.CTkFrame):
         else:
             self._net_dot.configure(text_color=T.error)
             self._net_lbl.configure(text="No connection", text_color=T.error_text)
+
+    def cancel_loops(self) -> None:
+        """Cancel all pending after() callbacks.
+
+        Called by MainWindow._on_close() before the 200 ms destroy delay so
+        neither _poll nor _drain_ui_queue fires into a half-destroyed widget.
+        Safe to call multiple times (after_cancel with a stale/None ID is a
+        no-op in Tkinter).
+        """
+        for attr in ("_poll_id", "_drain_id"):
+            job_id = getattr(self, attr, None)
+            if job_id is not None:
+                try:
+                    self.after_cancel(job_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
 
     # ── Theme ──────────────────────────────────────────────────────────────
 

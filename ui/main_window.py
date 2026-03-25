@@ -17,6 +17,7 @@ Layout (top to bottom):
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
 import tkinter as tk
@@ -30,6 +31,7 @@ from app.services.download_service import DownloadService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
 from ui.themes.tokens import T
+from utils.__version__ import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ NAV_ITEMS = [
     ("convert",      "🍎", "Convert",       "TOOLS"),
     ("history",      "⏱",  "History",       "LIBRARY"),
     ("settings",     "⚙",  "Settings",      "SYSTEM"),
+    ("special_dl",   "⚡", "Special",       "SYSTEM"),
 ]
 
 _TOAST_BG = {
@@ -66,6 +69,69 @@ class MainWindow(ctk.CTk):
         self._setup_window()           # (withdraw() breaks overrideredirect on Windows)
         self._build_ui()
         self.attributes("-alpha", 1)   # reveal once all widgets are built and themed
+        # Register real Win32 HWND so open_file() can monitor the media player.
+        # Also start _poll_focus() which drains _focus_queue on the UI thread —
+        # the only thread that can reliably raise our overrideredirect window.
+        if sys.platform == "win32":
+            try:
+                from utils.helpers import register_app_hwnd
+                self.update_idletasks()
+                _hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                register_app_hwnd(_hwnd if _hwnd else self.winfo_id())
+            except Exception:
+                pass  # non-fatal: focus reclaim is cosmetic only
+        self._poll_focus_id: Optional[str] = None
+        self._poll_focus()
+
+    def _poll_focus(self) -> None:
+        """Raise OmniDL above other windows after the media player closes.
+
+        Drains _focus_queue every 200 ms on the UI (main) thread.
+
+        When _wait (daemon thread in open_file) signals via the queue:
+          1. attributes("-topmost", True)  — OmniDL above ALL non-topmost
+          2. lift()                        — Tkinter Z-order raise
+          3. BringWindowToTop(hwnd)        — Win32 Z-order raise (no perms needed)
+          4. after(600 ms): topmost=False  — restore normal Z-order
+
+        Why this finally works:
+          The user complaint is VISUAL ("bị che" = visually covered).
+          That is a Z-order problem, not a keyboard-focus problem.
+          BringWindowToTop + topmost require NO foreground permission.
+          WaitForSingleObject provides EXACT timing (player process exit),
+          so topmost is set at precisely the right moment — after the player
+          closes — not before (which was the bug in all previous attempts).
+        """
+        try:
+            from utils.helpers import _focus_queue
+            while not _focus_queue.empty():
+                try:
+                    _focus_queue.get_nowait()
+                except Exception:
+                    break
+                if not self.winfo_exists():
+                    break
+                # Set topmost AFTER player exits — correct timing.
+                # OmniDL rises above Brave/Explorer/any other window.
+                self.attributes("-topmost", True)
+                self.lift()
+                if sys.platform == "win32":
+                    try:
+                        import ctypes as _ct
+                        _hwnd = _ct.windll.user32.GetParent(self.winfo_id())
+                        if _hwnd:
+                            _ct.windll.user32.BringWindowToTop(_hwnd)
+                    except Exception:
+                        pass
+                # Restore normal Z-order after 600 ms.
+                self.after(600, lambda: (
+                    self.attributes("-topmost", False)
+                    if self.winfo_exists() else None
+                ))
+        except Exception:
+            pass
+        if self.winfo_exists():
+            self._poll_focus_id = self.after(200, self._poll_focus)
 
     # ── Exposed API ───────────────────────────────────────────────────────
 
@@ -267,7 +333,7 @@ class MainWindow(ctk.CTk):
         bottom.pack(side="bottom", fill="x", padx=12, pady=12)
 
         self._powered_lbl = ctk.CTkLabel(
-            bottom, text="v16.0.0",
+            bottom, text=f"v{__version__}",
             font=ctk.CTkFont(size=10), text_color=T.text3,
         )
         self._powered_lbl.pack(side="left")
@@ -290,6 +356,7 @@ class MainWindow(ctk.CTk):
         from ui.tabs.live_monitor_tab import LiveMonitorTab
         from ui.tabs.queue_tab import QueueTab
         from ui.tabs.settings_tab import SettingsTab
+        from ui.tabs.special_dl_tab import SpecialDlTab
         self._tabs: dict[str, ctk.CTkFrame] = {
             "home":         HomeTab(self._content, self),
             "queue":        QueueTab(self._content, self),
@@ -297,7 +364,8 @@ class MainWindow(ctk.CTk):
             "live_monitor": LiveMonitorTab(self._content, self),
             "convert":      ConvertTab(self._content, self),
             "history":  HistoryTab(self._content, self),
-            "settings": SettingsTab(self._content, self),
+            "settings":    SettingsTab(self._content, self),
+            "special_dl":  SpecialDlTab(self._content, self),
         }
 
     # ── Navigation ────────────────────────────────────────────────────────
@@ -429,6 +497,19 @@ class MainWindow(ctk.CTk):
         for t in active_dl:
             self._service.cancel_download(t.id)
         self._config.save()
+        # Cancel the _poll_focus timer so it does not fire after destroy()
+        # begins — winfo_exists() guard catches it anyway, but explicit cancel
+        # avoids the redundant callback cycle during the 200 ms destroy window.
+        if self._poll_focus_id:
+            try:
+                self.after_cancel(self._poll_focus_id)
+            except Exception:
+                pass
+            self._poll_focus_id = None
+        # Cancel status_bar loops — prevents _poll and _drain_ui_queue from
+        # firing into a half-destroyed widget during the 200 ms destroy window.
+        if hasattr(self, "_status_bar"):
+            self._status_bar.cancel_loops()
         self.after(200, self.destroy)
 
 

@@ -32,6 +32,7 @@ All functions are pure (no shared state) and safe to call from any thread.
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import sys
 import tempfile
@@ -176,6 +177,15 @@ def encrypt_cookie_file(txt_path: Path) -> Path:
     plat = _platform()
     if plat == "other":
         logger.debug("Cookie encryption skipped (Linux — not yet supported)")
+        # Restrict permissions so only the owning user can read the plaintext
+        # cookie file (mode 0o600 = rw-------).  On Linux we have no DPAPI/
+        # Keychain equivalent, so tight filesystem permissions are the only
+        # protection available.
+        try:
+            import os
+            os.chmod(txt_path, 0o600)
+        except OSError as exc:
+            logger.warning("encrypt_cookie_file: chmod 0o600 failed for %s — %s", txt_path, exc)
         return txt_path
 
     try:
@@ -261,6 +271,12 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
     finally:
         import os
         os.close(tmp_fd)
+        # Restrict temp file permissions immediately after close so the
+        # plaintext window is as narrow as possible (mode 0o600 = rw-------).
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError as exc:
+            logger.warning("decrypt_to_tempfile: chmod 0o600 failed for %s — %s", tmp_path.name, exc)
 
     logger.debug("Decrypted %s → temp %s", enc_path.name, tmp_path.name)
     return tmp_path
@@ -294,9 +310,26 @@ def cleanup_stale_cookies(safe_dir: Path, max_age_days: int = 30) -> int:
 
 
 def cleanup_leftover_temp_files(safe_dir: Path) -> None:
-    """Delete omnidl_dec_*.txt files left over from a previous crashed session."""
+    """Delete omnidl_dec_*.txt files left over from a previous crashed session.
+
+    Also registers an atexit handler so any temp files created in the *current*
+    session are cleaned up on normal exit (KeyboardInterrupt, sys.exit, etc.).
+    Hard kills (SIGKILL / Task Manager) are not catchable — startup cleanup
+    handles those on next launch.
+    """
     if not safe_dir.is_dir():
         return
+
+    def _atexit_cleanup(d: Path = safe_dir) -> None:
+        for f in d.glob(f"{_TEMP_PREFIX}*.txt"):
+            try:
+                f.unlink()
+                logger.debug("atexit: removed temp cookie file %s", f.name)
+            except OSError:
+                pass
+
+    atexit.register(_atexit_cleanup)
+
     for f in safe_dir.glob(f"{_TEMP_PREFIX}*.txt"):
         try:
             f.unlink()

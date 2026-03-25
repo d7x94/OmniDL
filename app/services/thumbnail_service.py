@@ -84,8 +84,24 @@ def _is_safe_thumbnail_url(url: str) -> bool:
 
     # Layer 3: DNS resolution — check every address returned.
     # Fail-closed on any resolution error (NXDOMAIN, timeout, etc.).
+    # getaddrinfo() has no built-in timeout parameter. Without bounding it,
+    # a stale DNS server or captive portal can block the worker thread
+    # indefinitely, eventually exhausting the thumbnail worker pool.
+    # We cap at 5 s via a one-shot ThreadPoolExecutor future — long enough
+    # for any real CDN, short enough to keep the pool healthy.
     try:
-        results = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=1) as _dns_ex:
+            _dns_fut = _dns_ex.submit(
+                socket.getaddrinfo, host, None, 0, 0, socket.IPPROTO_TCP
+            )
+            try:
+                results = _dns_fut.result(timeout=5)
+            except _cf.TimeoutError:
+                logger.warning(
+                    "Thumbnail URL %r — DNS resolution timed out (5 s) — blocked", url
+                )
+                return False
     except (socket.gaierror, OSError) as exc:
         logger.warning(
             "Thumbnail URL %r — DNS resolution failed (%s) — blocked", url, exc

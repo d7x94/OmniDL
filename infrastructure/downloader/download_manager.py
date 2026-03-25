@@ -47,6 +47,7 @@ class DownloadManager:
         # Optional gallery-dl engine — injected from main.py when available.
         # Typed as object to avoid circular imports; duck-typed at call site.
         self._gallery_engine = gallery_engine
+        # Optional Facebook Story engine — CDP-based, injected from main.py.
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
@@ -151,6 +152,10 @@ class DownloadManager:
         "cancelled by user",
         "age",              # age-restricted without login
         "unavailable",      # "this video is unavailable"
+        # TikTok / platform-specific deleted/unavailable video errors
+        "currently not available",  # TikTok deleted video
+        "video does not exist",     # TikTok removed video
+        "this video is not available",  # TikTok region/deleted
         # Instagram-specific — account/auth issues that retrying cannot fix
         "checkpoint",       # account checkpoint verification required
         "challenge_required",  # two-factor / bot challenge
@@ -233,6 +238,7 @@ class DownloadManager:
                     == "gallery_dl"
                 )
                 active_engine = self._gallery_engine if use_gallery else self._engine
+
                 active_engine.download(
                     task,
                     on_progress=self._on_progress,

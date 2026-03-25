@@ -70,3 +70,6 @@ resources/ffmpeg/
 
 # Others
 tests.zip
+
+# Deno binary -- downloaded at CI build time, never stored in the repo.
+resources/deno/

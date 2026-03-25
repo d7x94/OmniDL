@@ -6,6 +6,7 @@ Sits below the title bar, above the sidebar+content split.
 from __future__ import annotations
 
 import logging
+import queue
 from typing import TYPE_CHECKING, Optional
 
 try:
@@ -47,9 +48,25 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         self._spinner_idx = 0
         self._spinner_job: Optional[str] = None
         self._analyse_token = 0
+        self._ui_queue: queue.Queue = queue.Queue()
 
         self._build()
         T.register(self._on_theme)
+        self._drain_ui_queue()
+
+    def _drain_ui_queue(self) -> None:
+        """Drain UI queue on the main thread every 50 ms (Python 3.14 safe)."""
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception as exc:
+                    logger.debug("Toolbar drain error: %s", exc)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(50, self._drain_ui_queue)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
@@ -170,17 +187,17 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
                 if not self.winfo_exists():
                     return
                 if my_token != self._analyse_token:
-                    self.after(0, self._reset_btn)
+                    self._ui_queue.put(self._reset_btn)
                     return
-                self.after(0, lambda: self._on_done(info))
+                self._ui_queue.put(lambda: self._on_done(info))
 
             def _safe_error(err: str) -> None:
                 if not self.winfo_exists():
                     return
                 if my_token != self._analyse_token:
-                    self.after(0, self._reset_btn)
+                    self._ui_queue.put(self._reset_btn)
                     return
-                self.after(0, lambda: self._on_error(err))
+                self._ui_queue.put(lambda: self._on_error(err))
 
             self._app.service.analyse_url(
                 url=url, on_done=_safe_done, on_error=_safe_error)

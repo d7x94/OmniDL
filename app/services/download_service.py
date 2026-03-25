@@ -126,7 +126,6 @@ class DownloadService:
                         on_done(info)
                         return
                     except Exception as gdl_exc:
-                        # gallery-dl also failed — report its error (more specific)
                         err = str(gdl_exc)
                 self._bus.publish(EventBus.ANALYSIS_FAILED, error=err)
                 on_error(err)

@@ -1,6 +1,6 @@
 # OmniDL — Project Map
-Version: Fixed13-BugBH (current)
-Last updated: 2026-03-19 (BUG BD/BE/BF/BG/BH — BatchUX delay+retry; .enc fallback; YouTube; temp-leak fix; GlobalDemote UI)
+Version: v16.3.0 (current)
+Last updated: 2026-03-21 (v16.3.0: toolbar _ui_queue migration; Editor + Threads removed; coverage omit fix; Quick Stats corrected; deno_locator.py added; line counts corrected for yt_dlp_engine/helpers/convert_tab/special_dl_tab)
 Purpose: Reference document for AI-assisted development sessions.
          Read this file FIRST before modifying any code.
 
@@ -10,10 +10,10 @@ Purpose: Reference document for AI-assisted development sessions.
 
 | Metric | Value |
 |---|---|
-| Python files (source) | 50 |
-| Source lines (excl. tests) | ~15,680 |
-| Test files | 24 |
-| Test functions | 760+ |
+| Python files (source) | 53 |
+| Source lines (excl. tests) | ~15,791 |
+| Test files | 27 |
+| Test functions | 915+ |
 | Python target | 3.11–3.13 (CI + build EXE); 3.14.3 (local dev) |
 | UI framework | CustomTkinter |
 | Download engines | yt-dlp + gallery-dl |
@@ -110,7 +110,7 @@ Engine versions are in Settings → YT-DLP ENGINE / GALLERY-DL ENGINE.
 
 ## File-by-file reference
 
-### `main.py` (211 lines)
+### `main.py` (227 lines)
 Entry point. Constructs full object graph.
 Key functions: `_get_data_dir()`, `_check_deps()`, `_migrate_legacy_data()`,
 `_clear_history_on_version_change()`, `main()`.
@@ -151,7 +151,7 @@ Typed convenience publishers (Fixed7) are additive — original `publish()` unch
 
 ---
 
-### `app/services/download_service.py` (309 lines)
+### `app/services/download_service.py` (312 lines)
 **The only object the UI talks to for downloads.**
 
 Public API:
@@ -243,7 +243,7 @@ At-rest encryption for cookie files — Windows DPAPI + macOS Keychain/Fernet (B
 
 ---
 
-### `infrastructure/downloader/cookie_extractor.py` (670 lines)
+### `infrastructure/downloader/cookie_extractor.py` (696 lines)
 Two-method cookie extraction module — no third-party extension required.
 
 **Method 1 — yt-dlp: `extract_browser_cookies(browser, output_path, platform_key=None)`**
@@ -291,7 +291,7 @@ Twitch/Vimeo/Dailymotion intentionally NOT included.
 
 ---
 
-### `infrastructure/downloader/yt_dlp_engine.py` (1095 lines)
+### `infrastructure/downloader/yt_dlp_engine.py` (1221 lines)
 **`extract_info(url) → MediaInfo`**
 - Cookie path validation (CWE-22)
 - Intercepts IG photo errors → synthetic `MediaInfo(source_engine="gallery_dl")`
@@ -352,7 +352,7 @@ Supported platforms: instagram.com, twitter.com, x.com, pinterest.*, pixiv.net, 
 
 ---
 
-### `infrastructure/downloader/download_manager.py` (294 lines)
+### `infrastructure/downloader/download_manager.py` (299 lines)
 `ThreadPoolExecutor(max_workers=config.max_concurrent)`.
 
 **Engine routing in `_run_task()`:**
@@ -373,7 +373,7 @@ JSONL-backed history. Thread-safe. `clear()` is safe during active downloads.
 
 ---
 
-### `utils/logger.py` (84 lines)
+### `utils/logger.py` (97 lines)
 `RotatingFileHandler` (5 MB, 3 backups), `encoding="utf-8"`.
 Console handler wraps `sys.stdout` with `io.TextIOWrapper(errors="replace")` ONLY when
 `hasattr(sys.stdout.buffer, "raw")` — skipped in pytest to prevent capture teardown crash.
@@ -385,9 +385,9 @@ Finds FFmpeg: bundled → macOS bundle → PATH.
 
 ---
 
-### `utils/helpers.py` (185 lines)
+### `utils/helpers.py` (206 lines)
 `fmt_bytes`, `fmt_duration`, `is_valid_url`, `sanitise_filename`, `safe_path`,
-`reveal_in_explorer`, `open_folder`.
+`reveal_in_explorer`, `open_folder`, `open_file`.
 
 ---
 
@@ -426,7 +426,35 @@ transient (→ `WAITING` state) by keyword substring check on the message.
 
 ---
 
-### `app/services/ffmpeg_convert_service.py` (1096 lines)
+### `utils/deno_locator.py` (107 lines) — NEW
+Locates the bundled Deno binary at runtime. Deno is required by yt-dlp to solve
+YouTube's JavaScript n-challenge (anti-throttle); without it, YouTube speeds are throttled.
+
+**Resolution order:**
+1. `sys._MEIPASS/deno/` — PyInstaller frozen bundle
+2. `<project_root>/resources/deno/` — source mode / CI staging area
+3. `shutil.which("deno")` — system PATH fallback
+
+**Public API:**
+```python
+locate_deno() -> Optional[Path]
+    # Returns absolute path to deno binary, or None if not found.
+
+get_deno_path() -> Optional[str]
+    # Returns deno binary path as string, or None.
+
+get_deno_env() -> dict[str, str]
+    # Returns modified os.environ with deno directory prepended to PATH.
+    # Pass to subprocess env= so yt-dlp finds deno without a system install.
+```
+
+**Usage in `yt_dlp_engine.py`:** `get_deno_env()` is called inside both
+`extract_info()` and `download()` to inject the deno directory into the
+subprocess environment before spawning yt-dlp.
+
+---
+
+### `app/services/ffmpeg_convert_service.py` (1106 lines)
 `FfmpegConvertService`, `ConvertQueue`, `FfmpegMediaInfo` (renamed, BUG AD).
 `_resume_encode` permanently deleted (BUG AE).
 `_parse_seconds(m)` — pure function converting `HH:MM:SS.cs` regex match to float seconds; importable by tests.
@@ -449,18 +477,19 @@ pump instead of `self.after(0,...)` from background threads:
 - `_poll_ui_queue()` — drains queue every 50 ms on UI thread; in `ConvertTab` (not `FileCard`)
 - 7 background functions use `self._ui_queue.put(fn)`: `_detect_encoders_async`,
   `_scan_folder_async`, `_probe_info_async`, `on_start`, `on_progress`, `on_done`, `on_error`
-- Same `_ui_queue` pattern applied to all 6 affected classes:
+- Same `_ui_queue` pattern applied to all 7 affected classes:
   `live_monitor_tab` (6 puts, `_poll()` drain), `batch_tab` (4 puts, 100 ms),
   `download_item_widget` (3 puts, 50 ms), `status_bar` (1 put, 100 ms),
-  `settings_tab` (10 puts across 2 update workers, 150 ms)
+  `settings_tab` (10 puts across 2 update workers, 150 ms),
+  `toolbar` (2 puts: `_safe_done`/`_safe_error`, 50 ms — v16.3.0)
 - Pattern required for any future background thread in any UI class
 - `_apply_available_encoders()`: `winfo_exists()` guard added — prevents TclError on early app close
 - `_refresh_status()`: `winfo_exists()` guard added — prevents TclError during close-while-encoding
 
 ---
 
-### `ui/main_window.py` (480 lines)
-7 tabs. Custom title bar. `_ytdlp_badge` and old "Powered by yt-dlp" badge permanently removed (BUG AR).
+### `ui/main_window.py` (484 lines)
+9 tabs. Custom title bar. `_ytdlp_badge` and old "Powered by yt-dlp" badge permanently removed (BUG AR).
 `self._powered_lbl` = version label `v16.0.0` in sidebar bottom strip — stored for theme refresh, NOT the removed badge.
 
 **NAV_ITEMS:**
@@ -472,6 +501,7 @@ pump instead of `self.after(0,...)` from background threads:
 ("convert",      "🍎", "Convert",      "TOOLS"),
 ("history",      "⏱",  "History",      "LIBRARY"),
 ("settings",     "⚙",  "Settings",     "SYSTEM"),
+("special_dl",   "⚡", "Special",       "SYSTEM"),
 ```
 
 **ServiceFacade new method:**
@@ -500,7 +530,7 @@ Polls `service.get_all_tasks()` every 500ms.
 
 ---
 
-### `ui/tabs/batch_tab.py` (791 lines)
+### `ui/tabs/batch_tab.py` (899 lines)
 MAX_BATCH_URLS=50. Sequential `_analyse_next()`. `_batch_token` guards. ServiceFacade only.
 
 **`load_playlist(urls, playlist_title="")`** (public method, BUG AT):
@@ -508,7 +538,7 @@ Called by HomeTab when profile/channel URL is analysed. Clears existing batch,
 populates textarea with `urls[:MAX_BATCH_URLS]`, shows truncation toast if capped,
 auto-starts analysis. Must be called on UI thread (HomeTab uses `after(50, ...)`).
 
-**Per-platform analysis delay (BUG BD):**
+**Per-platform analysis delay (BUG BI):**
 - `_PLATFORM_ANALYSIS_DELAY`: hostname → seconds dict (instagram=2.5, tiktok=2.0, facebook/twitter=1.5, youtube=0.8)
 - `_get_analysis_delay(url)`: `urlparse().hostname` lookup — NOT regex substring
 - `_delayed_analyse()`: daemon thread sleeping delay before `analyse_url()` — first item has no delay; UI stays responsive
@@ -596,7 +626,7 @@ Banner + per-row warning shown when age > 7 days. Updated every poll cycle.
 
 ---
 
-### `ui/tabs/convert_tab.py` (1152 lines)
+### `ui/tabs/convert_tab.py` (1170 lines)
 Quality cards use grid layout (BUG AK). `_custom_quality: tk.StringVar`.
 
 ---
@@ -606,7 +636,7 @@ Quality cards use grid layout (BUG AK). `_custom_quality: tk.StringVar`.
 
 ---
 
-### `ui/tabs/settings_tab.py` (~1578 lines)
+### `ui/tabs/settings_tab.py` (1661 lines)
 **8 sections:**
 ```
 📁 DOWNLOAD LOCATION
@@ -665,6 +695,110 @@ Quality cards use grid layout (BUG AK). `_custom_quality: tk.StringVar`.
 
 ---
 
+### `ui/tabs/special_dl_tab.py` (470 lines)
+Special Downloads tab — handles platforms the main yt-dlp/gallery-dl pipeline
+cannot process. Placed in SYSTEM section of sidebar.
+
+**Isolation contract:**
+- Zero imports from `YtDlpEngine`, `DownloadManager`, `DownloadService`, `EventBus`.
+- Only shared state: `config` object (read-only: `config.download_dir`).
+- Errors here CANNOT affect normal downloads.
+- Files downloaded here do NOT appear in `HistoryRepository` / History tab.
+
+**Supported platforms:** `facebook_story` (CDP/Playwright) only. Threads engine removed in v16.3.0 due to high API maintenance cost (see CHANGELOG).
+
+**UI flow:**
+```
+Platform dropdown → URL entry → browser selector (brave/chrome) → ⬇ Tải về
+    → _worker thread → _run_facebook_story() → download_story()
+    → success: _btn_row shown (📂 Mở thư mục | 🗑 Xoá lịch sử)
+    → error:   _retry_row shown (🔄 Thử lại | 🗑 Xoá lịch sử)
+```
+
+**Key widgets:**
+- `_dl_btn` — disabled while `_running=True` (prevents double-submit)
+- `_btn_row` — shown only on success; `📂 Mở thư mục` uses `explorer /select,<path>`
+- `_retry_row` — shown only on error
+- `_progress` — CTkProgressBar (0–1 float)
+- `_last_dest: Path | None` — holds path of last successfully downloaded file
+
+**Dead code removed (v16.1.0):**
+- `self._worker_q` and `import queue` — declared but never used (re-added correctly with `_ui_queue`).
+- `_delete_file()` method — removed; button replaced with `🗑 Xoá lịch sử`.
+
+**Bug fixed (v16.1.0):**
+- `_on_download()` no longer calls `self._open_btn.pack_forget()` before the
+  worker thread starts — this was hiding the button inside `_btn_row` permanently.
+
+**Python 3.14 thread-safety (v16.1.0):**
+- `self._ui_queue: queue.Queue` — drained every 50 ms via `_drain_ui_queue()`
+- All 7 `self.after(0, ...)` calls in `_worker` and `_on_progress` migrated to `self._ui_queue.put()`
+- `winfo_exists()` guard in `_drain_ui_queue()` prevents `TclError` on app close
+- Consistent with `_ui_queue` pattern used by all other tabs (BUG AY fix)
+
+---
+
+### `infrastructure/downloader/facebook_story_engine.py` (681 lines)
+Facebook Story downloader. Called exclusively by `SpecialDlTab`. Zero coupling
+to `DownloadManager` or `DownloadService`.
+
+**Architecture (8 steps):**
+1. Browser launch — `subprocess.Popen` (user's Brave/Chrome, `--remote-debugging-port`)
+2. CDP connection — `playwright.sync_api.connect_over_cdp()` (no `playwright install`)
+3. Pre-page inject — `page.add_init_script(_PRE_PAGE_JS)` patches fetch/XHR
+4. Navigate — `page.goto(story_url, wait_until="domcontentloaded")`
+5. Intercept — 3 layers (see below), deadline-based
+6. URL cleaning — strip `bytestart`/`byteend`/`range` params → full video URL
+7. Download — requests stream (300s deadline) → ffmpeg fallback
+8. Validate — MP4 magic bytes + min 100 KB
+
+**Three interception layers:**
+```
+Layer A  page.on("request")   — outgoing request URL matches _FB_VIDEO_RE
+Layer B  page.on("response")  — response Content-Type starts with "video/"
+Layer C  page.evaluate(_POLL_JS) every 2s — checks window.__omni_urls,
+         performance.getEntriesByType, video.currentSrc
+```
+
+**Why `connect_over_cdp` (not `playwright launch`):**
+- Uses user's existing browser → preserves Facebook login session (cookies)
+- No `playwright install` → no extra ~150 MB browser binary
+- Playwright handles WS stability (replaces ~230 lines of raw WS code)
+
+**Key constants:**
+```python
+_FB_VIDEO_RE   # regex matching fbcdn.net video paths
+_FB_THUMB_RE   # regex for thumbnail paths (excluded)
+_PRE_PAGE_JS   # fetch/XHR patch injected before Facebook JS loads
+_POLL_JS       # JS evaluating 3 detection strategies
+_PLAY_JS       # JS calling video.play() to dismiss tap-to-play overlays
+```
+
+**Public API:**
+```python
+download_story(url, config, browser="brave", on_progress=None, timeout=60.0) -> Path
+is_facebook_story_url(url) -> bool
+```
+
+**`on_progress` callback signature:** `(pct: int, speed: str, status: str) -> None`
+
+**Filename collision (v16.1.0):** if `fb_story_<slug>.mp4` exists →
+saves as `fb_story_<slug>_<timestamp>.mp4`.
+
+**Stream deadline (v16.1.0):** `_download_cdn_url()` chunk loop aborts after
+300 seconds; partial file deleted; falls through to `_ffmpeg_download`.
+
+**Cookie note:** `platform_cookies["facebook"]` from Settings tab is NOT used.
+Authentication is provided by the user's browser profile (via `contexts[0]`).
+`_get_cookie_path()` / `_cleanup_cookie()` were removed (dead code, v16.1.0).
+
+**Security:**
+- CDP port bound to `127.0.0.1` only; open ~45s during download
+- CDN URL logged at 80 chars max (no user-identifiable data in fbcdn.net URLs)
+- Browser crash flag cleared after `proc.terminate()` (prevents Brave restore dialog)
+
+---
+
 ### `ui/components/status_bar.py` (264 lines)
 Bottom status bar. Polls download tasks every 800 ms (active) / adaptive. Network
 connectivity check via `_do_net_check()` background thread every 15 s.
@@ -673,13 +807,20 @@ connectivity check via `_do_net_check()` background thread every 15 s.
 `self.after(0,...)` — crash on Python 3.14. Fixed with `_drain_ui_queue()` (100 ms).
 `_do_net_check()` now uses `self._ui_queue.put(lambda result=ok: self._update_net(result))`.
 
-### `ui/components/download_item_widget.py` (420 lines)
+### `ui/components/download_item_widget.py` (445 lines)
 `refresh()` called every 500ms. Pause button disabled for `source_engine="gallery_dl"` tasks.
 
 ---
 
-### `ui/components/toolbar.py` (285 lines)
+### `ui/components/toolbar.py` (302 lines)
 `_start_analyse()` has `try/except Exception: self._reset_btn()` guard (BUG R).
+
+**Python 3.14 thread-safety (v16.3.0):**
+- `self._ui_queue: queue.Queue` — initialized in `__init__`
+- `_drain_ui_queue()` polls every 50 ms; `winfo_exists()` guard prevents `TclError` on app close
+- `_safe_done` and `_safe_error` callbacks (invoked from background thread via `analyse_url`)
+  migrated from `self.after(0, ...)` → `self._ui_queue.put(...)` (BUG AY pattern)
+- `after(50/100/4000)` calls remain — these run on the UI thread and are safe
 
 ---
 
@@ -752,6 +893,29 @@ LiveMonitorTab._trigger_check → service.check_profile_live(profile_url)
     NO:  back to WAITING
 ```
 
+### Facebook Story (Special tab)
+```
+SpecialDlTab._on_download
+→ threading.Thread → _worker → _run_facebook_story()
+→ facebook_story_engine.download_story(url, config, browser)
+    → _cdp_intercept(url, browser, timeout, on_progress)
+        → subprocess.Popen(brave/chrome, --remote-debugging-port=N)
+        → playwright.connect_over_cdp("http://127.0.0.1:N")
+        → page.add_init_script(_PRE_PAGE_JS)   # patch fetch/XHR
+        → page.goto(story_url)
+        → Layer A: page.on("request")  → video URL?
+        → Layer B: page.on("response") → video MIME?
+        → Layer C: page.evaluate(_POLL_JS) every 2s
+        → proc.terminate() in finally
+    → _download_cdn_url(cdn_url, dest)   # requests stream, 300s deadline
+    → _ffmpeg_download(cdn_url, dest)    # fallback if requests fails
+    → _validate_mp4(dest)
+→ SpecialDlTab._btn_row shown (📂 Mở thư mục | 🗑 Xoá lịch sử)
+```
+Note: result NOT written to HistoryRepository.
+
+---
+
 ### Convert
 ```
 ConvertTab → ConvertQueue.submit → cancel_fn
@@ -774,6 +938,8 @@ ConvertTab → ConvertQueue.submit → cancel_fn
 | Profile check threads | `check_instagram_live()` HTTP call | touch UI directly |
 | ffprobe threads | `FfmpegMediaInfo` | touch UI directly |
 | Encoder detection | `detect_available_encoders()` | touch UI directly |
+| **Special tab worker** | **`download_story()` — CDP + requests/ffmpeg** | **touch UI directly via `_ui_queue.put()` — migrated (v16.1.0)** |
+| **Toolbar analyse callbacks** | **`_safe_done` / `_safe_error` via `analyse_url`** | **`_ui_queue.put()` — migrated (v16.3.0)** |
 
 Cross-thread UI: background threads MUST use `_ui_queue.put(fn)` — never `widget.after()` from a worker thread (BUG AY). `after(0, ...)` is only safe when called from the UI thread itself.
 
@@ -835,18 +1001,22 @@ Cross-thread UI: background threads MUST use `_ui_queue.put(fn)` — never `widg
 | `test_history_repository_extra.py` | History edge cases |
 | `test_event_bus.py` | EventBus pub/sub |
 | `test_helpers.py` | fmt_bytes, is_valid_url, sanitise_filename |
+| `test_cookie_extractor.py` | Platform domains, CDP helpers, extract flows |
+| `test_cookie_storage.py` | DPAPI/Fernet encrypt/decrypt, stale cleanup |
+| `test_facebook_story_engine.py` | Pure functions: `is_facebook_story_url`, `_normalize_url`, `_is_fb_video_url`, `_full_video_url`, `_validate_mp4`, `_clear_crashed_flag` |
+| `test_logger_and_manager_extra.py` | Logger + download manager extras |
+| `test_queue_open_folder_fix.py` | Open folder path fix |
+| `test_queue_open_path.py` | Queue open path |
+| `test_session10_fixes.py` | Session-10 regression |
 | `test_e2e.py` | Full stack integration |
+| `test_facebook_story_engine.py` | `is_facebook_story_url`, `_normalize_url`, `_is_fb_video_url`, `_full_video_url`, `_validate_mp4`, `_clear_crashed_flag` |
 | `test_audit_fixes.py` | Regression: known bugs |
 | `test_elite_audit_fixes.py` | Additional regression |
 | `test_generator_elite.py` | Generative/property-based |
 | `test_patch_fixes.py` | Patch regression |
 | `test_repair_fixes.py` | Repair regression |
-| `test_session10_fixes.py` | Session-10 regression |
-| `test_logger_and_manager_extra.py` | Logger + manager extras |
-| `test_queue_open_folder_fix.py` | Open folder path |
-| `test_queue_open_path.py` | Queue open path |
 
-**Total: 26 test files, 865+ test functions (843 passed, 1 skipped as of Fixed13-BugBH)**
+**Total: 27 test files, 915+ test functions (843 passed, 1 skipped as of Fixed13-BugBH)**
 `test_cookie_extractor.py` — 34 tests: `TestPlatformDomains` (4), `TestFriendlyExtractError` (10), `TestExtractBrowserCookies` (8), `TestCdpHelpers` (5), `TestExtractViaCdp` (7)
 `test_cookie_storage.py` — 32 tests: `TestIsEncrypted` (3), `TestEncryptCookieFile` (5), `TestDecryptToTempfile` (5), `TestCleanupStaleCookies` (5), `TestCleanupLeftoverTempFiles` (3), `TestMacosKeychain` (4), `TestMacosEncryptDecrypt` (6), `TestRoundTrip` (1)
 
@@ -859,14 +1029,18 @@ Cross-thread UI: background threads MUST use `_ui_queue.put(fn)` — never `widg
 
 **`requirements.txt`:**
 ```
-customtkinter>=5.2.2
-yt-dlp>=2025.1.1
-gallery-dl>=1.27.0
-Pillow>=10.3.0
+customtkinter>=5.2.2      # unpinned from ==5.2.2; older exact pin had Canvas bugs on Python 3.13
+yt-dlp>=2025.1.1          # lower-bound raised; 2024.1.1 is 14+ months stale
+gallery-dl>=1.27.0        # image/gallery downloader — fallback for IG photos, Twitter images
+Pillow>=10.3.0            # >=10.3.0 patches CVE-2024-28219 (ImageMath buffer overflow)
 requests>=2.31.0
 packaging>=23.0
-platformdirs>=4.0.0
-PySocks>=1.7.1
+platformdirs>=4.0.0       # SEC-3: platform-appropriate user-data directories
+PySocks>=1.7.1            # required by yt-dlp for SOCKS4/5 proxy support
+keyring>=24.0.0           # yt-dlp: decrypt Brave/Chrome 127+ App-Bound cookies;
+                          # OmniDL: store macOS Keychain encryption key (BUG BC)
+cryptography>=41.0.0      # Fernet (AES-128-CBC + HMAC-SHA256) for macOS cookie at-rest encryption
+playwright>=1.40          # Facebook Story CDP via connect_over_cdp() — no playwright install needed
 ```
 
 **`requirements-dev.txt`:**
@@ -881,7 +1055,9 @@ types-requests>=2.31.0
 
 ## CI Pipeline (`.github/workflows/ci.yml`)
 
-Matrix: Python `["3.11", "3.12", "3.13"]`. Gate order: **ruff → mypy → pytest**.
+Two parallel jobs. Gate order within `test`: **ruff → mypy → pytest**.
+
+**Job 1 — `test`** (matrix: Python `["3.11", "3.12", "3.13"]`):
 
 ```
 pip install ruff mypy types-requests
@@ -890,6 +1066,16 @@ mypy domain/ app/ infrastructure/ utils/ --ignore-missing-imports --no-strict-op
 pytest --ignore=tests/test_e2e.py --ignore=tests/test_logger_and_manager_extra.py
        --cov=. --cov-report=term-missing --cov-report=xml:coverage.xml
 ```
+
+**Job 2 — `security`** (Python 3.13, runs in parallel with `test`):
+
+```
+pip install bandit pip-audit
+bandit -r . -x tests/,build/,venv_build/ -ll   # MEDIUM+ severity fails build
+pip-audit --requirement requirements.txt        # HIGH/CRITICAL CVE fails build
+```
+
+Both jobs upload artifact reports (7-day retention). `concurrency` group cancels redundant runs on the same branch.
 
 **Python version policy:**
 
@@ -908,9 +1094,19 @@ may not be caught by CI until 3.14 is added to the matrix (planned when 3.14 rea
 `infrastructure/downloader/gallery_dl_engine.py`, `utils/instagram_live_checker.py`
 — these require external resources (UI/subprocess/network) and cannot be tested headlessly.
 
+✅ **`infrastructure/downloader/facebook_story_engine.py`** — now covered by
+`tests/test_facebook_story_engine.py` (76 tests across 7 functions:
+`is_facebook_story_url`, `_normalize_url`, `_is_fb_video_url`, `_full_video_url`,
+`_validate_mp4`, `_clear_crashed_flag`, `_find_browser_exe`).
+`_find_browser_exe` covers Windows, macOS (/Applications + ~/Applications), not-found, Linux rejection.
+`fail_under = 80` is no longer at risk from this module.
+
+Note: `ui/tabs/special_dl_tab.py` is covered by `ui/*` omit — no impact on coverage threshold.
+
 **`fail_under = 80`** — must NOT be lowered.
 
 ---
+
 
 ## Known limitations (not bugs, by design)
 
@@ -929,8 +1125,12 @@ may not be caught by CI until 3.14 is added to the matrix (planned when 3.14 rea
 | Playlist capped at 50 | `MAX_BATCH_URLS = 50` — prevents rate limit hammering; user sees truncation toast |
 | Profile `_extract_playlist_flat` slow for large channels | 500+ video channels still take 20-60s; no progress feedback during analysis |
 | Per-platform cookie not used by `use_cookies` browser mode | Browser cookie extraction is global only — per-platform only applies to `.txt` files |
-| Python 3.14 `self.after()` | Fixed in all 6 files (BUG AY/AZ/BA): `convert_tab` (`_poll_ui_queue` 50ms), `live_monitor_tab` (in `_poll()`), `batch_tab` (100ms), `download_item_widget` (50ms), `status_bar` (100ms, BUG BA), `settings_tab` (150ms, BUG AZ). Bug confirmed on Python 3.14.3 local — 3.14 enforces strict main-thread-only Tkinter access; `_ui_queue` pattern is the permanent fix. CI matrix covers 3.11–3.13; 3.14 not yet added. |
+| Python 3.14 `self.after()` | Fixed in all **7** files (BUG AY/AZ/BA + v16.3.0): `convert_tab` (`_poll_ui_queue` 50ms), `live_monitor_tab` (in `_poll()`), `batch_tab` (100ms), `download_item_widget` (50ms), `status_bar` (100ms, BUG BA), `settings_tab` (150ms, BUG AZ), `toolbar` (50ms, v16.3.0). Bug confirmed on Python 3.14.3 local — 3.14 enforces strict main-thread-only Tkinter access; `_ui_queue` pattern is the permanent fix. CI matrix covers 3.11–3.13; 3.14 not yet added. |
+| Special tab downloads not in History | Intentional isolation; HistoryRepository not touched by Special tab |
+| Facebook Story: CDP port open ~45s | Trade-off for CDP method; bound to 127.0.0.1 only |
+| Facebook Story: requires user login in Brave/Chrome | Session lives in browser profile; no cookie file used |
+| Facebook Story: macOS + Windows | Brave/Chrome paths resolved per-platform; Linux not supported |
 
 ---
 
-*End of PROJECT_MAP.md — Fixed13-BugBH*
+*End of PROJECT_MAP.md — v16.3.0*

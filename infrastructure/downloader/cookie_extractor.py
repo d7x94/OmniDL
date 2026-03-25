@@ -49,7 +49,7 @@ _PLATFORM_DOMAINS: dict[str, tuple[str, ...]] = {
     "instagram": ("instagram.com",),
     "facebook":  ("facebook.com", "fb.com"),
     "twitter":   ("twitter.com", "x.com"),
-    "threads":   ("threads.net", "instagram.com"),
+    "threads":   ("threads.net", "threads.com", "instagram.com"),   # threads.com = new domain
 }
 
 
@@ -469,8 +469,23 @@ def _cdp_get_all_cookies(sock) -> "list[dict]":
 
     Must call Network.enable first — without it Chrome returns an empty list
     because the Network domain is not initialised for the page target.
+
+    sock.settimeout(10) is set here explicitly: _cdp_ws_connect() sets
+    timeout=10 on create_connection() which applies to the initial recv()
+    calls, but CPython may reset the timeout internally after handshake on
+    some platforms. Explicitly re-setting it ensures each recv() in the
+    30-frame loop is bounded at 10 s, giving a worst-case of ~5 minutes
+    instead of indefinite blocking when a browser hangs after receiving the
+    command.
     """
-    import json
+    import json, socket as _socket
+
+    # Explicit per-recv timeout — guards against a browser that accepts the
+    # WebSocket connection but never responds to Network.getAllCookies.
+    try:
+        sock.settimeout(10)
+    except _socket.error:
+        pass  # non-fatal — existing timeout from create_connection still applies
 
     # Step 1: enable the Network domain for this target
     _cdp_ws_send(sock, json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
@@ -603,12 +618,17 @@ def extract_via_cdp(
                 "Launching %s with real profile for CDP extraction on port %d",
                 browser, port,
             )
-            cflags = 0x00000008 if hasattr(subprocess, "CREATE_NEW_CONSOLE") else 0
+            # CREATE_NO_WINDOW (0x08000000) suppresses the console window that
+            # Brave/Chrome would briefly create and show to the user.
+            # DETACHED_PROCESS (0x00000008) was previously used but is wrong:
+            # it detaches from the console without preventing a new one from
+            # appearing, causing a CMD flash during each CDP extraction.
+            _CREATE_NO_WINDOW = 0x08000000
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=cflags,
+                creationflags=_CREATE_NO_WINDOW,
             )
 
         if not _cdp_wait_ready(port, timeout=20.0):
@@ -673,6 +693,7 @@ def extract_via_cdp(
             except Exception:
                 try: proc.kill()
                 except Exception: pass
+
 
 
 def _friendly_cdp_error(msg: str) -> str:

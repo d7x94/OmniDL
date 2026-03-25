@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import os
 import yt_dlp
 
 from domain.enums.download_status import DownloadStatus
@@ -104,6 +105,7 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("twitter.com",   "twitter"),
     ("x.com",         "twitter"),
     ("threads.net",   "threads"),
+    ("threads.com",   "threads"),   # new domain (2024+)
 ]
 
 
@@ -202,7 +204,7 @@ _PLATFORM_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"twitter\.com|x\.com", re.I), "Twitter/X"),
     (re.compile(r"facebook\.com|fb\.watch", re.I), "Facebook"),
     (re.compile(r"twitch\.tv", re.I), "Twitch"),
-    (re.compile(r"threads\.net", re.I), "Threads"),
+    (re.compile(r"threads\.(net|com)", re.I), "Threads"),
     (re.compile(r"vimeo\.com", re.I), "Vimeo"),
     (re.compile(r"dailymotion\.com", re.I), "Dailymotion"),
 ]
@@ -270,15 +272,40 @@ def _friendly_error(msg: str) -> str:
             "This content is geo-restricted and not available in your region.\n"
             "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
         )
-    if "copyright" in msg_l or "blocked" in msg_l and "copyright" in msg_l:
+    if "your ip" in msg_l and "blocked" in msg_l:
+        return (
+            "IP của bạn bị TikTok/nền tảng chặn truy cập bài đăng này.\n"
+            "Nguyên nhân thường gặp:\n"
+            "  • IP bị đưa vào danh sách đen do quá nhiều request (rate-limit tạm thời)\n"
+            "  • ISP/VPS/datacenter IP bị chặn theo chính sách địa lý\n"
+            "Giải pháp:\n"
+            "  1. Bật proxy/VPN trong Settings → Network → Proxy URL\n"
+            "     (ví dụ: socks5://127.0.0.1:1080 nếu dùng local proxy)\n"
+            "  2. Chờ 5–15 phút rồi thử lại (nếu là rate-limit tạm thời)\n"
+            "  3. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
+        )
+    if "copyright" in msg_l:
         return "This content has been blocked due to a copyright claim."
+    if "blocked" in msg_l:
+        return (
+            "This content is blocked or access was denied.\n"
+            "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
+        )
     # Account issues
-    if "suspended" in msg_l or "account" in msg_l and "disabled" in msg_l:
+    if "suspended" in msg_l or ("account" in msg_l and "disabled" in msg_l):
         return "The account that posted this content has been suspended."
     if "members only" in msg_l or "subscriber" in msg_l:
         return (
             "This content is for members/subscribers only.\n"
             "Make sure you are logged in via cookies in Settings."
+        )
+    # TikTok / platform deleted or unavailable video
+    if "currently not available" in msg_l or "video does not exist" in msg_l \
+            or "this video is not available" in msg_l:
+        return (
+            "Video này không còn tồn tại hoặc đã bị xóa.\n"
+            "Kiểm tra lại URL — nếu link rút gọn (vt.tiktok.com), "
+            "thử mở trong trình duyệt để lấy link đầy đủ."
         )
     return msg[:200]
 
@@ -299,7 +326,7 @@ _PROFILE_URL_RE = re.compile(
     r'|twitter\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$'              # Twitter @user (not tweets)
     r'|x\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$'                    # X @user (not tweets)
     r'|instagram\.com/(?!p/|reel/|tv/|live/|stories/|explore/|accounts/)[^/?#]+/?(?:[?#].*)?$'  # IG profile
-    r'|threads\.net/@[^/?#]+/?(?:[?#].*)?$'                            # Threads @user
+    r'|threads\.(net|com)/@[^/?#]+/?(?:[?#].*)?$'                      # Threads @user
     r')',
     re.I,
 )
@@ -309,8 +336,15 @@ _PROFILE_URL_RE = re.compile(
 # Checked before calling yt-dlp to give a better UX than a generic error.
 # Patterns that are ALWAYS blocked (no cookie can help)
 _ALWAYS_BLOCKED: list[tuple[re.Pattern, str]] = [
-    # NOTE: Facebook Stories were previously here but have been moved to
-    # _NEEDS_COOKIES — yt-dlp CAN download them when valid cookies are supplied.
+    (
+        # threads.com — Meta's new domain (2024+). Neither yt-dlp nor gallery-dl
+        # has an extractor for this domain yet. threads.net posts also unsupported.
+        re.compile(r"threads\.(com|net)/.*/(post|p)/", re.I),
+        "Threads posts chưa được yt-dlp hỗ trợ.\n\n"
+        "Cách tải video Threads:\n"
+        "• Mở post trong trình duyệt → nhấn ... → Lưu\n"
+        "• Hoặc dùng tiện ích 'Video Downloader' trên trình duyệt.",
+    ),
 ]
 
 # Patterns that require cookies — only blocked if no cookie is configured
@@ -334,24 +368,24 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
         "Set up a cookie file in Settings → Network → Cookie file.",
     ),
     (
-        # Facebook Stories — covers:
-        # /stories/XYZ, /stories/viewer/?..., ?view_single=1 viewer URLs,
-        # m.facebook.com/stories/..., permalink.php?story_fbid=...,
-        # share/r/ story shares, and the generic /story.php path.
+        # Facebook Stories — covers /stories/, story.php, permalink story, share/r/
         re.compile(
             r"facebook\.com/(?:"
-            r"stories/"                          # /stories/XYZ
-            r"|story\.php"                       # story.php?...
-            r"|permalink\.php[^#]*story_fbid"    # permalink.php?story_fbid=...
-            r"|share/[rs]/"                      # share/r/ or share/s/ story links
-            r"|.*[?&]view_single"                # ?view_single=1 story viewer
+            r"stories/"
+            r"|story\.php"
+            r"|permalink\.php[^#]*story_fbid"
+            r"|share/[rs]/"
+            r"|.*[?&]view_single"
             r")",
             re.I,
         ),
-        "Facebook Stories require login cookies.\n"
-        "Set up a cookie file in Settings → Network → Cookie file.",
+        "Facebook Stories không thể tải tự động.\n\n"
+        "Cách tải Story Facebook:\n"
+        "• Mở Story trong trình duyệt → nhấn ... → Lưu video\n"
+        "• Hoặc dùng tiện ích 'Video Downloader' trên trình duyệt.",
     ),
 ]
+
 
 
 def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
@@ -433,7 +467,11 @@ class YtDlpEngine:
             "skip_download": True,
             "noplaylist": True,
             "socket_timeout": 20,   # DEF-007: prevent hang on stalled server
+            # FIX-FINAL: JS challenge solver for YouTube n-challenge
+            "remote_components": "ejs:github",
         }
+        # Deno PATH is injected once at startup (main.py) — not per-call.
+        # os.environ.update() from worker threads is not thread-safe on CPython.
         _ffmpeg_dir = get_ffmpeg_path()
         if _ffmpeg_dir:
             opts["ffmpeg_location"] = _ffmpeg_dir
@@ -537,9 +575,15 @@ class YtDlpEngine:
                     "no video in this post",              # FIX-B: photo (no cookies)
                     "no video formats found",             # FIX-B: photo (with cookies)
                     "extractor error",                    # FIX-B: yt-dlp internal bug
+                    "currently not available",            # TikTok deleted video
+                    "video does not exist",               # TikTok removed video
+                    "this video is not available",        # TikTok region/deleted
+                    "unavailable",                        # generic platform unavailable
                 )
                 if any(k in msg_l for k in _hard):
                     raise RuntimeError(_friendly_error(msg)) from exc
+                # NOTE: With remote_components=ejs:github, most YouTube errors
+                # are resolved automatically. Retries here handle transient issues.
                 last_exc = exc
                 if attempt < 2:
                     time.sleep(2 ** attempt)   # 1s, 2s back-off
@@ -810,6 +854,14 @@ class YtDlpEngine:
             # them into separate video+audio tracks.  'best' picks the highest-
             # quality combined stream and skips the ffmpeg merge step entirely.
             "format": "best" if is_live else task.format_id,
+            # FIX-FINAL: Enable remote JS challenge solver (ejs:github).
+            # YouTube uses n-challenge (encrypted nonce) to validate stream URLs.
+            # Without solving it, all formats appear unavailable or return garbage.
+            # yt-dlp downloads the solver script from GitHub on first use (~1s),
+            # then caches it. This is the same as --remote-components ejs:github.
+            "allow_unplayable_formats": False,
+            "remote_components": "ejs:github",
+            # Use bundled Deno if available (injected via PATH env override below)
             "outtmpl": outtmpl,
             "quiet": True,
             "no_warnings": True,
@@ -953,6 +1005,9 @@ class YtDlpEngine:
                 _original_pp_hook(d)
 
         opts["postprocessor_hooks"] = [_capturing_pp_hook]
+
+        # Deno PATH is injected once at startup (main.py) — not per-call.
+        # os.environ.update() from worker threads is not thread-safe on CPython.
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1109,7 +1164,8 @@ class YtDlpEngine:
             "max_sleep_interval",
             "geo_bypass",
             "geo_bypass_country",
-            "no_check_certificates",
+            # NOTE: "no_check_certificates" intentionally excluded —
+            # disabling TLS verification exposes all downloads to MITM attacks.
             "write_all_thumbnails",
             "write_description",
             "write_info_json",

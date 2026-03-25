@@ -636,6 +636,15 @@ class LiveMonitorTab(ctk.CTkFrame):
         if not self.winfo_exists():
             return
 
+        try:
+            self._poll_body()
+        except tk.TclError:
+            # Widget was destroyed mid-poll (e.g. theme switch or tab reinit).
+            # Stop scheduling further callbacks — next tab init will restart.
+            return
+
+    def _poll_body(self) -> None:
+        """Inner implementation of the poll loop, separated for TclError isolation."""
         # Drain thread-safe callback queue first (Python 3.14 thread-safety).
         try:
             while True:

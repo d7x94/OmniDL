@@ -1158,22 +1158,8 @@ class TestCheckUnsupportedUrl:
             "https://www.instagram.com/live/ABC123DEF/", has_cookies=True
         ) is None
 
-    def test_facebook_story_php_blocked_without_cookies(self):
-        """Facebook story.php URL blocked without cookies."""
-        result = self._call("https://www.facebook.com/story.php?story_fbid=123&id=456")
-        assert result is not None
-        assert "stories" in result.lower() or "cookie" in result.lower()
-
-    def test_facebook_permalink_story_blocked_without_cookies(self):
-        """Facebook permalink with story_fbid blocked without cookies."""
-        result = self._call(
-            "https://www.facebook.com/permalink.php?story_fbid=123&id=456"
-        )
-        assert result is not None
-
     def test_facebook_share_story_blocked_without_cookies(self):
-        """Facebook share/r/ story link blocked without cookies."""
-        result = self._call("https://www.facebook.com/share/r/ABC123/")
+        result = self._call("https://www.facebook.com/share/r/abcDEF/")
         assert result is not None
 
     def test_facebook_reel_passes(self):

@@ -44,7 +44,7 @@ from app.services.ffmpeg_convert_service import (
 )
 from ui.components.progress_bar import OmniProgressBar
 from ui.themes.tokens import T
-from utils.helpers import fmt_bytes, fmt_duration, open_folder, reveal_in_explorer
+from utils.helpers import fmt_bytes, fmt_duration, open_file, open_folder, reveal_in_explorer
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -199,6 +199,14 @@ class FileCard(ctk.CTkFrame):
             command=lambda: self._on_open_folder(self.job.id),
         )
 
+        self._preview_btn = ctk.CTkButton(
+            self._btn_box, text="▶  Xem", width=62, height=26, corner_radius=6,
+            fg_color=T.primary_dim, hover_color=T.primary,
+            text_color=T.primary_text,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=self._open_preview,
+        )
+
         # ── Row 2: media info ─────────────────────────────────────────────
         info_row = ctk.CTkFrame(self, fg_color="transparent")
         info_row.pack(fill="x", padx=16, pady=(0, 4))
@@ -270,6 +278,7 @@ class FileCard(ctk.CTkFrame):
             if not self._open_btn.winfo_ismapped():
                 self._remove_btn.pack_forget()
                 self._open_btn.pack(side="left")
+                self._preview_btn.pack(side="left", padx=(4, 0))
                 self._remove_btn.pack(side="left", padx=(4, 0))
         elif job.state == FileState.FAILED and job.error_msg:
             self._err_lbl.configure(text=f"  {job.error_msg[:160]}")
@@ -277,6 +286,7 @@ class FileCard(ctk.CTkFrame):
         else:
             if self._open_btn.winfo_ismapped():
                 self._open_btn.pack_forget()
+                self._preview_btn.pack_forget()
 
         self._remove_btn.configure(
             state="disabled" if job.state in (
@@ -329,6 +339,14 @@ class FileCard(ctk.CTkFrame):
             text_color=T.warning,
         )
         self._open_btn.configure(fg_color=T.success_bg)
+        self._preview_btn.configure(fg_color=T.primary_dim, hover_color=T.primary)
+
+    def _open_preview(self) -> None:
+        """Open the converted output file with the OS default application."""
+        if self.job.output and self.job.output.exists():
+            open_file(self.job.output)
+        elif self.job.output:
+            open_folder(self.job.output.parent)
 
     # ── Helpers ───────────────────────────────────────────────────────────
 

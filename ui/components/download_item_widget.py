@@ -15,7 +15,7 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from ui.components.progress_bar import OmniProgressBar
 from ui.themes.tokens import T
-from utils.helpers import fmt_bytes, open_folder, reveal_in_explorer
+from utils.helpers import fmt_bytes, open_file, open_folder, reveal_in_explorer
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,13 @@ class DownloadItemWidget(ctk.CTkFrame):
             text_color=T.success_text,
             font=ctk.CTkFont(size=10, weight="bold"),
             command=self._open_folder)
+
+        self._preview_btn = ctk.CTkButton(
+            self._btn_box, text="▶  Xem", width=62, height=26, corner_radius=6,
+            fg_color=T.primary_dim, hover_color=T.primary,
+            text_color=T.primary_text,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=self._open_preview)
 
         self._convert_btn = ctk.CTkButton(
             self._btn_box, text="→ MP4", width=64, height=26, corner_radius=6,
@@ -265,6 +272,7 @@ class DownloadItemWidget(ctk.CTkFrame):
                 # engine-resolved final path at this point.
                 self._completed_path = task.filename
                 self._folder_btn.pack(side="left", padx=(4, 0))
+                self._preview_btn.pack(side="left", padx=(4, 0))
                 self._cancel_btn.pack_forget()
                 self._pause_btn.pack_forget()
                 # Show → MP4 button for non-MP4 completed files.
@@ -275,6 +283,7 @@ class DownloadItemWidget(ctk.CTkFrame):
         else:
             if self._folder_btn.winfo_ismapped():
                 self._folder_btn.pack_forget()
+                self._preview_btn.pack_forget()
                 self._convert_btn.pack_forget()
                 if not self._pause_btn.winfo_ismapped():
                     self._pause_btn.pack(side="left", padx=(0, 4))
@@ -292,6 +301,7 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._pause_btn.configure(fg_color=T.surface2, hover_color=T.surface3)
         self._cancel_btn.configure(fg_color=T.error_bg)
         self._folder_btn.configure(fg_color=T.success_bg)
+        self._preview_btn.configure(fg_color=T.primary_dim, hover_color=T.primary)
         self._convert_btn.configure(fg_color=T.primary_dim)
 
     def _start_convert(self) -> None:
@@ -338,6 +348,20 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._convert_btn.configure(text="→ MP4", state="normal")
         self._err_lbl.configure(text=f"  Convert failed: {msg[:120]}")
         self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
+
+    def _open_preview(self) -> None:
+        """Open the completed file with the OS default application."""
+        p_str = self._completed_path or getattr(self.task, "filename", "")
+        if not p_str:
+            return
+        p = Path(p_str)
+        if not p.is_absolute() and getattr(self.task, "output_dir", ""):
+            p = Path(self.task.output_dir) / p
+        if p.exists():
+            open_file(p)
+        else:
+            # File moved/deleted — fall back to opening parent folder
+            open_folder(p.parent)
 
     def _open_folder(self) -> None:
         """Open the folder that contains the completed download.
