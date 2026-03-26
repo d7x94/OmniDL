@@ -210,7 +210,8 @@ def _clear_crashed_flag(profile_dir: Path) -> None:
             # Patch exit_type under the "profile" or "browser" key (Chromium layout)
             # Also patch at the top level to handle flat Preferences files.
             modified = False
-            for section in [data] + [data.get(k) for k in ("profile", "browser") if isinstance(data.get(k), dict)]:
+            nested = [data.get(k) for k in ("profile", "browser") if isinstance(data.get(k), dict)]
+            for section in [data] + nested:
                 if not isinstance(section, dict):
                     continue
                 if section.get("exit_type") not in (None, "Normal"):
