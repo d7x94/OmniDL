@@ -187,7 +187,7 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
                 if not self.winfo_exists():
                     return
                 if my_token != self._analyse_token:
-                    self._ui_queue.put(self._reset_btn)
+                    self.after(0, self._reset_btn)
                     return
                 self._ui_queue.put(lambda: self._on_done(info))
 
@@ -195,7 +195,7 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
                 if not self.winfo_exists():
                     return
                 if my_token != self._analyse_token:
-                    self._ui_queue.put(self._reset_btn)
+                    self.after(0, self._reset_btn)
                     return
                 self._ui_queue.put(lambda: self._on_error(err))
 

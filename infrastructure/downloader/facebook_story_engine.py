@@ -208,19 +208,20 @@ def _clear_crashed_flag(profile_dir: Path) -> None:
             data = json.loads(raw)
 
             # Patch exit_type under the "profile" or "browser" key (Chromium layout)
+            # Also patch at the top level to handle flat Preferences files.
             modified = False
-            for section_key in ("profile", "browser"):
-                section = data.get(section_key)
-                if isinstance(section, dict):
-                    if section.get("exit_type") != "Normal":
-                        section["exit_type"] = "Normal"
-                        modified = True
-                    if section.get("crashed") is True:
-                        section["crashed"] = False
-                        modified = True
-                    if section.get("session_crash_detected") is True:
-                        section["session_crash_detected"] = False
-                        modified = True
+            for section in [data] + [data.get(k) for k in ("profile", "browser") if isinstance(data.get(k), dict)]:
+                if not isinstance(section, dict):
+                    continue
+                if section.get("exit_type") not in (None, "Normal"):
+                    section["exit_type"] = "Normal"
+                    modified = True
+                if section.get("crashed") is True:
+                    section["crashed"] = False
+                    modified = True
+                if section.get("session_crash_detected") is True:
+                    section["session_crash_detected"] = False
+                    modified = True
 
             if not modified:
                 continue  # nothing to change — skip write
@@ -231,7 +232,7 @@ def _clear_crashed_flag(profile_dir: Path) -> None:
             )
             try:
                 import os as _os
-                _os.write(tmp_fd, json.dumps(data, separators=(",", ":")).encode("utf-8"))
+                _os.write(tmp_fd, json.dumps(data, separators=(",", ": ")).encode("utf-8"))
             finally:
                 _os.close(tmp_fd)
             Path(tmp_str).replace(prefs)

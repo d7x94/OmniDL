@@ -578,7 +578,7 @@ class TestOpenFile:
                         fake_kernel32 = MagicMock()
                         fake_kernel32.WaitForSingleObject.return_value = 0
 
-                        with patch("ctypes.windll") as fake_windll:
+                        with patch("ctypes.windll", create=True) as fake_windll:
                             fake_windll.shell32 = fake_shell32
                             fake_windll.kernel32 = fake_kernel32
 
@@ -666,7 +666,7 @@ class TestOpenFile:
                 fake_shell32 = MagicMock()
                 fake_shell32.ShellExecuteExW.return_value = True  # _ok=True
 
-                with patch("ctypes.windll") as fake_windll, \
+                with patch("ctypes.windll", create=True) as fake_windll, \
                      patch("os.startfile", side_effect=lambda p: startfile_calls.append(p)):
                     fake_windll.shell32 = fake_shell32
 
@@ -704,7 +704,7 @@ class TestOpenFile:
             fake_shell32 = MagicMock()
             fake_shell32.ShellExecuteExW.return_value = False   # _ok=False
 
-            with patch("ctypes.windll") as fake_windll, \
+            with patch("ctypes.windll", create=True) as fake_windll, \
                  patch("os.startfile", side_effect=lambda p: startfile_calls.append(p)):
                 fake_windll.shell32 = fake_shell32
 

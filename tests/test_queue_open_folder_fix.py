@@ -90,11 +90,14 @@ def test_completed_path_snapshotted_on_first_completed(tmp_path):
     # Mock the CTk children so refresh() doesn't crash
     for attr in ("_title_lbl", "_status_badge", "_type_dot", "_prog",
                  "_speed_lbl", "_eta_lbl", "_size_lbl", "_err_lbl",
-                 "_pause_btn", "_cancel_btn", "_folder_btn"):
+                 "_pause_btn", "_cancel_btn", "_folder_btn",
+                 "_preview_btn", "_convert_btn"):
         m = MagicMock()
         m.winfo_ismapped.return_value = False
         m.winfo_exists.return_value = True
         setattr(widget, attr, m)
+    widget._on_convert = None
+    widget._converting = False
 
     widget.refresh(task)
 
@@ -120,11 +123,14 @@ def test_completed_path_not_overwritten_by_later_refresh(tmp_path):
     widget._completed_path = ""
     for attr in ("_title_lbl", "_status_badge", "_type_dot", "_prog",
                  "_speed_lbl", "_eta_lbl", "_size_lbl", "_err_lbl",
-                 "_pause_btn", "_cancel_btn", "_folder_btn"):
+                 "_pause_btn", "_cancel_btn", "_folder_btn",
+                 "_preview_btn", "_convert_btn"):
         m = MagicMock()
         m.winfo_ismapped.return_value = False
         m.winfo_exists.return_value = True
         setattr(widget, attr, m)
+    widget._on_convert = None
+    widget._converting = False
 
     widget.refresh(task)
     assert widget._completed_path == str(original_file)

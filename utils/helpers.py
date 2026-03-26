@@ -320,9 +320,11 @@ def open_file(path: Path) -> None:
             # sent to the running player; no focus reclaim needed.
 
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path.resolve())], close_fds=True)
+            _p = str(path.resolve())
+            subprocess.Popen(["open", _p], close_fds=True)
         else:
-            subprocess.Popen(["xdg-open", str(path.resolve())], close_fds=True)
+            _p = str(path.resolve())
+            subprocess.Popen(["xdg-open", _p], close_fds=True)
     except Exception as exc:
         logger.debug("open_file failed for %s: %s", path, exc)
 
