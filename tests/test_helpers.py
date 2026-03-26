@@ -667,7 +667,7 @@ class TestOpenFile:
                 fake_shell32.ShellExecuteExW.return_value = True  # _ok=True
 
                 with patch("ctypes.windll", create=True) as fake_windll, \
-                     patch("os.startfile", side_effect=lambda p: startfile_calls.append(p)):
+                     patch("os.startfile", create=True, side_effect=lambda p: startfile_calls.append(p)):
                     fake_windll.shell32 = fake_shell32
 
                     # _hproc = sei.hProcess if (_ok and sei.hProcess) else None
@@ -705,7 +705,7 @@ class TestOpenFile:
             fake_shell32.ShellExecuteExW.return_value = False   # _ok=False
 
             with patch("ctypes.windll", create=True) as fake_windll, \
-                 patch("os.startfile", side_effect=lambda p: startfile_calls.append(p)):
+                 patch("os.startfile", create=True, side_effect=lambda p: startfile_calls.append(p)):
                 fake_windll.shell32 = fake_shell32
 
                 # Verify branching logic directly
