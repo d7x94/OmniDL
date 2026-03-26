@@ -165,7 +165,8 @@ def main() -> None:
     import logging
     logger = logging.getLogger("omnidl.main")
     logger.info(
-        "OmniDL v16 starting | binary=%s | data=%s | frozen=%s",
+        "OmniDL v%s starting | binary=%s | data=%s | frozen=%s",
+        _APP_VERSION,
         APP_BINARY_DIR, DATA_DIR, getattr(sys, "frozen", False),
     )
 

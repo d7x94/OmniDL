@@ -374,14 +374,21 @@ class TestVersionString:
         assert "v15" not in (main.__doc__ or ""), \
             "main.py module docstring must not say 'v15'"
 
-    def test_main_py_source_has_v16_log(self):
-        """The startup logger.info call must reference v16."""
+    def test_main_py_source_has_version_log(self):
+        """Startup log must use _APP_VERSION placeholder, not a hardcoded version."""
         main_path = Path(__file__).parent.parent / "main.py"
         src = main_path.read_text(encoding="utf-8")
-        assert "OmniDL v16 starting" in src, \
-            "Startup log must say 'OmniDL v16 starting'"
-        assert "OmniDL v15 starting" not in src, \
-            "Startup log must not say 'OmniDL v15 starting'"
+        # Correct pattern: format string with %s, filled by _APP_VERSION at runtime
+        assert "OmniDL v%s starting" in src, (
+            "Startup log must use 'OmniDL v%s starting' with _APP_VERSION arg"
+        )
+        # Must NOT hardcode any specific version literal in the format string
+        assert "OmniDL v16 starting" not in src, (
+            "Startup log must not hardcode version — use _APP_VERSION instead"
+        )
+        assert "OmniDL v15 starting" not in src, (
+            "Startup log must not hardcode version — use _APP_VERSION instead"
+        )
 
 
 # ===========================================================================
