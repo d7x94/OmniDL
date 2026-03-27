@@ -87,6 +87,16 @@ class EventBus:
     def publish_analysis_failed(self, error: str) -> None:
         self.publish(self.ANALYSIS_FAILED, error=error)
 
+    def publish_taildrop_completed(
+        self, task: "DownloadTask", dest_node: str
+    ) -> None:
+        self.publish(self.TAILDROP_COMPLETED, task=task, dest_node=dest_node)
+
+    def publish_taildrop_failed(
+        self, task: "DownloadTask", dest_node: str, error: str
+    ) -> None:
+        self.publish(self.TAILDROP_FAILED, task=task, dest_node=dest_node, error=error)
+
     # ── Well-known event name constants ──────────────────────────────────
 
     DOWNLOAD_STARTED   = "download.started"
@@ -96,6 +106,8 @@ class EventBus:
     DOWNLOAD_CANCELLED = "download.cancelled"
     ANALYSIS_DONE      = "analysis.done"
     ANALYSIS_FAILED    = "analysis.failed"
+    TAILDROP_COMPLETED = "taildrop.completed"   # kwargs: task, dest_node
+    TAILDROP_FAILED    = "taildrop.failed"       # kwargs: task, dest_node, error
 
 
 # ── Module-level singleton ────────────────────────────────────────────────

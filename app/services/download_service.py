@@ -15,6 +15,7 @@ from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
 from app.services.ffmpeg_convert_service import FfmpegConvertService
 from app.services.thumbnail_service import ThumbnailService
+from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
@@ -85,6 +86,14 @@ class DownloadService:
         self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._save_to_history)
         self._bus.subscribe(EventBus.DOWNLOAD_FAILED, self._save_to_history)
         self._bus.subscribe(EventBus.DOWNLOAD_CANCELLED, self._save_to_history)
+
+        # ── Taildrop (optional, lazy-initialised) ────────────────────────
+        # TaildropService subscribes to DOWNLOAD_COMPLETED and sends the
+        # finished file to the iPhone when taildrop_enabled=True in config.
+        # Constructed here so it shares the same EventBus instance and is
+        # torn down together with DownloadService.close().
+        self._taildrop = TaildropService(config=self._config, event_bus=self._bus)
+        self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._taildrop.on_download_completed)
 
     # ── Analysis (async) ──────────────────────────────────────────────────
 
@@ -298,6 +307,9 @@ class DownloadService:
         completion events have already been published before the
         executor is shut down.
         """
+        # Taildrop must close first: its executor may still be sending a
+        # file triggered by the last DOWNLOAD_COMPLETED event.
+        self._taildrop.close()
         self._history_executor.shutdown(wait=True)
 
     # ── Internal ──────────────────────────────────────────────────────────

@@ -715,7 +715,487 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         )
         self._clear_data_status.pack(side="left", padx=(12, 0))
 
+    # ── Taildrop section ─────────────────────────────────────────────────
+        self._section(p, "📲   TAILDROP  (Gửi file → iPhone qua Tailscale)")
+        self._card_taildrop = td_card = self._card(p)
+
+        # Description
+        ctk.CTkLabel(
+            td_card,
+            text=(
+                "Sau khi tải xong, tự động gửi file sang iPhone qua Taildrop (Tailscale).\n"
+                "Yêu cầu: Tailscale CLI trên PC và Taildrop bật trên iPhone.\n"
+                "File xuất hiện trong ứng dụng Files của iOS."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(12, 4))
+
+        # ── Enable toggle ────────────────────────────────────────────────
+        td_toggle_row = ctk.CTkFrame(td_card, fg_color="transparent")
+        td_toggle_row.pack(fill="x", padx=16, pady=(4, 0))
+
+        ctk.CTkLabel(
+            td_toggle_row, text="Bật Taildrop",
+            font=ctk.CTkFont(size=12), text_color=T.text2,
+        ).pack(side="left")
+
+        self._td_switch_var = ctk.BooleanVar(
+            value=bool(getattr(self._app.config, "taildrop_enabled", False))
+        )
+        self._td_switch = ctk.CTkSwitch(
+            td_toggle_row,
+            variable=self._td_switch_var,
+            text="",
+            command=self._on_taildrop_toggle,
+            onvalue=True, offvalue=False,
+            progress_color=T.primary,
+            button_color=T.primary_text,
+        )
+        self._td_switch.pack(side="right")
+        self._switches.append(self._td_switch)
+
+        # Tailscale availability hint
+        self._td_avail_lbl = ctk.CTkLabel(
+            td_card, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text3, anchor="w",
+        )
+        self._td_avail_lbl.pack(fill="x", padx=16, pady=(2, 6))
+        self._refresh_taildrop_avail_label()
+
+        # Divider
+        ctk.CTkFrame(td_card, fg_color=T.border, height=1).pack(
+            fill="x", padx=16, pady=(0, 10)
+        )
+
+        # ── Target node row ──────────────────────────────────────────────
+        td_node_header = ctk.CTkLabel(
+            td_card,
+            text="📱  Thiết bị đích (Tailscale node name hoặc IP)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T.text2,
+            anchor="w",
+        )
+        td_node_header.pack(fill="x", padx=16, pady=(0, 4))
+
+        td_node_row = ctk.CTkFrame(td_card, fg_color="transparent")
+        td_node_row.pack(fill="x", padx=16, pady=(0, 4))
+
+        self._td_node_entry = ctk.CTkEntry(
+            td_node_row,
+            placeholder_text="vd: iphone  hoặc  100.64.x.x",
+            font=ctk.CTkFont(size=12),
+            height=32,
+        )
+        self._td_node_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        saved_node = str(getattr(self._app.config, "taildrop_target_node", "") or "")
+        if saved_node:
+            self._td_node_entry.insert(0, saved_node)
+
+        self._td_node_save_btn = ctk.CTkButton(
+            td_node_row,
+            text="💾 Lưu",
+            width=70, height=32, corner_radius=6,
+            fg_color=T.surface3, hover_color=T.border2, text_color=T.text2,
+            font=ctk.CTkFont(size=11),
+            command=self._on_taildrop_save_node,
+        )
+        self._td_node_save_btn.pack(side="right")
+
+        # ── Scan peers button + status ────────────────────────────────────
+        td_action_row = ctk.CTkFrame(td_card, fg_color="transparent")
+        td_action_row.pack(fill="x", padx=16, pady=(0, 14))
+
+        self._td_scan_btn = ctk.CTkButton(
+            td_action_row,
+            text="🔍  Tìm thiết bị Tailscale",
+            height=32, corner_radius=8,
+            fg_color=T.surface3, hover_color=T.border2, text_color=T.text2,
+            font=ctk.CTkFont(size=12),
+            command=self._on_taildrop_scan,
+        )
+        self._td_scan_btn.pack(side="left")
+
+        self._td_status_lbl = ctk.CTkLabel(
+            td_action_row, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text2,
+        )
+        self._td_status_lbl.pack(side="left", padx=(10, 0))
+
+    # ── Remote API section ────────────────────────────────────────────────
+        self._section(p, "🔌   REMOTE API  (iOS / Mobile)")
+        self._card_api = api_card = self._card(p)
+
+        # Description
+        ctk.CTkLabel(
+            api_card,
+            text=(
+                "Bật để điều khiển OmniDL từ xa qua mạng LAN (iPhone, Android).\n"
+                "Server chạy trong luồng riêng, không ảnh hưởng download hiện tại.\n"
+                "Chỉ bật khi cần — tắt khi không dùng để bảo mật thiết bị."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(12, 4))
+
+        # ── Toggle row ──────────────────────────────────────────────────
+        toggle_row = ctk.CTkFrame(api_card, fg_color="transparent")
+        toggle_row.pack(fill="x", padx=16, pady=(4, 0))
+
+        ctk.CTkLabel(
+            toggle_row, text="Bật Remote API",
+            font=ctk.CTkFont(size=12), text_color=T.text2,
+        ).pack(side="left")
+
+        self._api_switch_var = ctk.BooleanVar(
+            value=bool(getattr(self._app.config, "api_enabled", False))
+        )
+        self._api_switch = ctk.CTkSwitch(
+            toggle_row,
+            variable=self._api_switch_var,
+            text="",
+            command=self._on_api_toggle,
+            onvalue=True, offvalue=False,
+            progress_color=T.primary,
+            button_color=T.primary_text,
+        )
+        self._api_switch.pack(side="right")
+        self._switches.append(self._api_switch)
+
+        # Status label
+        self._api_status_lbl = ctk.CTkLabel(
+            api_card, text="",
+            font=ctk.CTkFont(size=11),
+            text_color=T.text2,
+            anchor="w",
+        )
+        self._api_status_lbl.pack(fill="x", padx=16, pady=(2, 8))
+        self._refresh_api_status_label()
+
+        # Divider
+        ctk.CTkFrame(api_card, fg_color=T.border, height=1).pack(
+            fill="x", padx=16, pady=(0, 10)
+        )
+
+        # ── Token row ───────────────────────────────────────────────────
+        token_header = ctk.CTkLabel(
+            api_card,
+            text="🔑  Bearer Token",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T.text2,
+            anchor="w",
+        )
+        token_header.pack(fill="x", padx=16, pady=(0, 4))
+
+        token_row = ctk.CTkFrame(api_card, fg_color="transparent")
+        token_row.pack(fill="x", padx=16, pady=(0, 4))
+
+        self._api_token_lbl = ctk.CTkLabel(
+            token_row,
+            text=self._masked_token(),
+            font=ctk.CTkFont(size=11, family="Courier"),
+            text_color=T.primary_text,
+            anchor="w",
+        )
+        self._api_token_lbl.pack(side="left", fill="x", expand=True)
+
+        self._api_copy_btn = ctk.CTkButton(
+            token_row,
+            text="📋 Copy",
+            width=70, height=28, corner_radius=6,
+            fg_color=T.surface3, hover_color=T.border2, text_color=T.text2,
+            font=ctk.CTkFont(size=11),
+            command=self._on_api_copy_token,
+        )
+        self._api_copy_btn.pack(side="right", padx=(6, 0))
+
+        token_action_row = ctk.CTkFrame(api_card, fg_color="transparent")
+        token_action_row.pack(fill="x", padx=16, pady=(0, 14))
+
+        self._api_rotate_btn = ctk.CTkButton(
+            token_action_row,
+            text="🔄  Tạo token mới",
+            height=32, corner_radius=8,
+            fg_color=T.surface3, hover_color=T.border2, text_color=T.text2,
+            font=ctk.CTkFont(size=12),
+            command=self._on_api_rotate_token,
+        )
+        self._api_rotate_btn.pack(side="left")
+
+        self._api_token_status = ctk.CTkLabel(
+            token_action_row, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text2,
+        )
+        self._api_token_status.pack(side="left", padx=(10, 0))
+
     # -- Helpers -----------------------------------------------------------
+
+    # ── Remote API handlers ───────────────────────────────────────────────
+
+    # ── Taildrop handlers ────────────────────────────────────────────────
+
+    def _refresh_taildrop_avail_label(self) -> None:
+        """Show whether tailscale CLI is available on this PC."""
+        lbl = getattr(self, "_td_avail_lbl", None)
+        if lbl is None or not lbl.winfo_exists():
+            return
+        try:
+            import shutil
+            ok = shutil.which("tailscale") is not None
+            if ok:
+                lbl.configure(text="✅  tailscale CLI phát hiện trên PATH", text_color="#22c55e")
+            else:
+                lbl.configure(
+                    text="⚠️  Không tìm thấy tailscale CLI — cài Tailscale trên PC này",
+                    text_color=T.warning_text if hasattr(T, "warning_text") else T.text2,
+                )
+        except Exception:
+            pass
+
+    def _on_taildrop_toggle(self) -> None:
+        """Save taildrop_enabled to config when user flips the switch."""
+        enabled = self._td_switch_var.get()
+        self._app.config.set("taildrop_enabled", enabled)
+        self._app.config.save()
+        state = "bật" if enabled else "tắt"
+        self._app.toast(f"📲  Taildrop {state}.", "success" if enabled else "info")
+
+    def _on_taildrop_save_node(self) -> None:
+        """Validate and save the target node name entered by the user."""
+        import re
+        node = self._td_node_entry.get().strip()
+        _NODE_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-\.]{0,252}[A-Za-z0-9])?$')
+        if node and not _NODE_RE.match(node):
+            self._app.toast(
+                "❌  Tên node không hợp lệ — chỉ chứa chữ, số, dấu gạch ngang, dấu chấm.",
+                "error",
+            )
+            return
+        self._app.config.set("taildrop_target_node", node)
+        self._app.config.save()
+        if node:
+            self._app.toast(f"💾  Đã lưu node: {node}", "success")
+        else:
+            self._app.toast("🗑  Đã xoá node đích.", "info")
+
+    def _on_taildrop_scan(self) -> None:
+        """Scan for online Tailscale peers and fill the node entry."""
+        lbl = self._td_status_lbl
+        if not lbl.winfo_exists():
+            return
+        lbl.configure(text="⏳  Đang quét...", text_color=T.text2)
+        self._td_scan_btn.configure(state="disabled")
+
+        def _worker():
+            try:
+                from app.services.taildrop_service import TaildropService
+                from app.event_bus import bus as _global_bus
+                svc = TaildropService(
+                    config=self._app.config,
+                    event_bus=_global_bus,
+                )
+                nodes = svc.list_nodes()
+                svc.close()
+            except Exception as exc:
+                nodes = []
+                import logging
+                logging.getLogger(__name__).warning("Taildrop scan error: %s", exc)
+
+            def _update():
+                try:
+                    if not lbl.winfo_exists():
+                        return
+                    self._td_scan_btn.configure(state="normal")
+                    if not nodes:
+                        lbl.configure(
+                            text=(
+                                "⚠️  Không tìm thấy thiết bị nào khác online.\n"
+                                "→ Mở app Tailscale trên iPhone và đảm bảo đang kết nối."
+                            ),
+                            text_color=T.warning_text if hasattr(T, "warning_text") else T.text2,
+                        )
+                        return
+                    # Show found peers; if only one, auto-fill
+                    if len(nodes) == 1:
+                        self._td_node_entry.delete(0, "end")
+                        self._td_node_entry.insert(0, nodes[0])
+                        lbl.configure(
+                            text=f"✅  1 peer: {nodes[0]} — đã điền tự động.",
+                            text_color="#22c55e",
+                        )
+                    else:
+                        names = ", ".join(nodes[:5])
+                        lbl.configure(
+                            text=f"✅  {len(nodes)} peers: {names} — nhập tên vào ô trên.",
+                            text_color="#22c55e",
+                        )
+                except Exception:
+                    pass
+
+            self.after(0, _update)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True, name="omnidl-td-scan").start()
+
+    def _masked_token(self) -> str:
+        """Return a display-safe version of the current token."""
+        tok = str(getattr(self._app.config, "api_token", "") or "")
+        if not tok:
+            return "(chưa có token — bật API để tạo tự động)"
+        if len(tok) <= 8:
+            return "*" * len(tok)
+        return tok[:8] + "••••••••••••••••"
+
+    def _refresh_api_status_label(self) -> None:
+        """Update the status label to reflect the current server state."""
+        lbl = getattr(self, "_api_status_lbl", None)
+        if lbl is None or not lbl.winfo_exists():
+            return
+        try:
+            running = False
+            try:
+                from api.server import is_api_running
+                running = is_api_running()
+            except ImportError:
+                pass
+            cfg = self._app.config
+            if running:
+                port = getattr(cfg, "api_port", 7799)
+                lbl.configure(
+                    text=f"🟢  Đang chạy  —  http://<IP LAN>:{port}",
+                    text_color=T.success if hasattr(T, "success") else "#22c55e",
+                )
+            else:
+                if getattr(cfg, "api_enabled", False):
+                    lbl.configure(
+                        text="⚠️  Đã bật nhưng chưa khởi động (thiếu fastapi/uvicorn?)",
+                        text_color=T.warning_text if hasattr(T, "warning_text") else T.text2,
+                    )
+                else:
+                    lbl.configure(text="⚫  Đã tắt", text_color=T.text3)
+        except Exception:
+            pass
+
+    def _on_api_toggle(self) -> None:
+        """Handle the Remote API enable/disable switch."""
+        enabled = self._api_switch_var.get()
+        cfg = self._app.config
+        cfg.set("api_enabled", enabled)
+        cfg.save()
+
+        if enabled:
+            # Try to start the server (lazy — fastapi/uvicorn may not be installed)
+            try:
+                from api.server import is_api_running, start_api_server
+                from app.event_bus import bus as _bus
+
+                # Retrieve the DownloadService reference held by MainWindow
+                svc = getattr(self._app, "service", None) or getattr(
+                    self._app, "_service", None
+                )
+                if svc is None:
+                    raise RuntimeError("DownloadService reference not found on MainWindow")
+
+                if not is_api_running():
+                    start_api_server(service=svc, config=cfg, bus=_bus)
+
+                self.after(400, self._refresh_api_status_label)
+                self._app.toast("✅  Remote API đã bật.", "success")
+            except ImportError:
+                self._api_switch_var.set(False)
+                cfg.set("api_enabled", False)
+                cfg.save()
+                self._app.toast(
+                    "⚠️  Cần cài fastapi & uvicorn trước: pip install -r requirements-api.txt",
+                    "error",
+                )
+            except Exception as exc:
+                logger.exception("Failed to start API server from Settings: %s", exc)
+                self._app.toast(f"Lỗi khởi động API: {exc!s:.60}", "error")
+        else:
+            # Stop the server
+            try:
+                from api.server import stop_api_server
+                threading.Thread(
+                    target=stop_api_server, daemon=True, name="omnidl-api-stop"
+                ).start()
+            except ImportError:
+                pass  # fastapi not installed, nothing to stop
+            self.after(600, self._refresh_api_status_label)
+            self._app.toast("⚫  Remote API đã tắt.", "info")
+
+    def _on_api_copy_token(self) -> None:
+        """Copy the current token to clipboard."""
+        tok = str(getattr(self._app.config, "api_token", "") or "")
+        if not tok:
+            self._app.toast("Chưa có token. Hãy bật Remote API trước.", "error")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(tok)
+            self._app.toast("✅  Token đã sao chép vào clipboard.", "success")
+        except Exception as exc:
+            logger.warning("Clipboard copy failed: %s", exc)
+            self._app.toast(f"Không thể copy: {exc!s:.50}", "error")
+
+    def _on_api_rotate_token(self) -> None:
+        """Generate a new bearer token, save it, and restart the server if running."""
+        import secrets as _sec
+
+        new_token = _sec.token_urlsafe(24)
+        cfg = self._app.config
+        cfg.set_api_token(new_token)  # stores in OS credential store if available
+
+        # Update the masked display immediately
+        lbl = getattr(self, "_api_token_lbl", None)
+        if lbl and lbl.winfo_exists():
+            lbl.configure(text=self._masked_token())
+
+        # Show status feedback
+        st = getattr(self, "_api_token_status", None)
+        if st and st.winfo_exists():
+            st.configure(text="✅  Token mới đã lưu", text_color=T.text2)
+            self.after(3000, lambda: st.configure(text="") if st.winfo_exists() else None)
+
+        # If server is running: restart so it picks up the new token
+        was_running = False
+        try:
+            from api.server import is_api_running
+            was_running = is_api_running()
+        except ImportError:
+            pass
+
+        if was_running:
+            self._app.toast(
+                "🔄  Token mới đã tạo — đang khởi động lại server…", "info"
+            )
+
+            def _do_restart() -> None:
+                try:
+                    from api.server import restart_api_server
+                    from app.event_bus import bus as _bus
+                    svc = getattr(self._app, "service", None) or getattr(
+                        self._app, "_service", None
+                    )
+                    if svc:
+                        restart_api_server(service=svc, config=cfg, bus=_bus)
+                    self.after(500, self._refresh_api_status_label)
+                    self.after(100, lambda: self._app.toast(
+                        "✅  Server đã khởi động lại với token mới.", "success"
+                    ))
+                except Exception as exc:
+                    logger.exception("Failed to restart API after token rotation: %s", exc)
+                    self.after(0, lambda: self._app.toast(
+                        f"Lỗi restart API: {exc!s:.60}", "error"
+                    ))
+
+            threading.Thread(target=_do_restart, daemon=True, name="omnidl-api-restart").start()
+        else:
+            self._app.toast("✅  Token mới đã tạo. Copy và cập nhật trên thiết bị.", "success")
 
     def _section(self, parent, text: str) -> None:
         lbl = ctk.CTkLabel(
@@ -1557,7 +2037,7 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         )
         # Card frames
         for attr in ("_card_loc", "_card_beh", "_card_net", "_card_cookies",
-                     "_card_app", "_card_ytdlp", "_card_gallery_dl", "_card_data"):
+                     "_card_app", "_card_ytdlp", "_card_gallery_dl", "_card_data", "_card_api"):
             card = getattr(self, attr, None)
             if card and card.winfo_exists():
                 card.configure(fg_color=T.surface, border_color=T.border)
@@ -1635,6 +2115,27 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         w = getattr(self, "_clear_data_status", None)
         if w and w.winfo_exists():
             w.configure(text_color=T.text2)
+        # Remote API card
+        w = getattr(self, "_card_api", None)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.surface, border_color=T.border)
+        # Remote API token label
+        w = getattr(self, "_api_token_lbl", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.primary_text)
+        # Remote API status label
+        w = getattr(self, "_api_status_lbl", None)
+        if w and w.winfo_exists():
+            self._refresh_api_status_label()
+        # Remote API token status label
+        w = getattr(self, "_api_token_status", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)
+        # Remote API action buttons
+        for attr in ("_api_copy_btn", "_api_rotate_btn"):
+            w = getattr(self, attr, None)
+            if w and w.winfo_exists():
+                w.configure(fg_color=T.surface3, hover_color=T.border2, text_color=T.text2)
         # Concurrent downloads restart hint
         w = getattr(self, "_concurrent_hint", None)
         if w and w.winfo_exists():

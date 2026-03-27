@@ -10,4 +10,10 @@ keyring>=24.0.0               # required by yt-dlp to decrypt Brave/Chrome 127+ 
                               # also used by OmniDL to store macOS Keychain encryption key (BUG BC)
 cryptography>=41.0.0          # Fernet (AES-128-CBC + HMAC-SHA256) for macOS cookie at-rest encryption (BUG BC)
 playwright>=1.40              # Facebook Story CDP via connect_over_cdp() — no playwright install needed
+# ── Remote API (iOS / mobile remote control — Hướng 1) ──────────────────
+# OPTIONAL: only required when api_enabled=True in config.json.
+# The main app starts safely without these packages (import is lazy + guarded).
+# To enable Remote API: pip install fastapi uvicorn
+#   fastapi>=0.111.0
+#   uvicorn>=0.29.0
 # pyinstaller moved to requirements-dev.txt

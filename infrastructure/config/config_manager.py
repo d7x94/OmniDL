@@ -49,6 +49,19 @@ _DEFAULTS: dict[str, Any] = {
     "show_notifications": True,
     "history_limit": 500,
     "extra_args": "",
+    # ── Remote API (iOS / mobile remote control) ──────────────────────
+    # Enable via Settings → Remote API to start the FastAPI server.
+    # api_token is auto-generated on first enable; paste it into the PWA.
+    "api_enabled": False,
+    "api_host":    "0.0.0.0",   # listens on all LAN interfaces
+    "api_port":    7799,
+    "api_token":   "",           # auto-populated by api/server.py
+    # ── Taildrop — send completed files to iPhone via Tailscale ──────────
+    # Requires: Tailscale installed on PC + Taildrop enabled on iPhone.
+    # target_node: Tailscale node name or IP of the iPhone (e.g. "iphone").
+    "taildrop_enabled":     False,
+    "taildrop_target_node": "",
+    "taildrop_send_mode":   "always",  # "always" | "ask"  (reserved for future UI)
 }
 
 
@@ -326,3 +339,105 @@ class ConfigManager:
         else:
             d.pop(platform_key, None)
         self.set("platform_cookies", d)
+
+    # ── Remote API properties ─────────────────────────────────────────────
+
+    @property
+    def api_enabled(self) -> bool:
+        """True when the FastAPI remote-control server should run."""
+        return bool(self.get("api_enabled", False))
+
+    @property
+    def api_host(self) -> str:
+        """Interface to bind the API server to.
+        Defaults to "0.0.0.0" (all LAN interfaces).
+        Set to "127.0.0.1" to restrict to localhost only.
+        """
+        val = str(self.get("api_host", "0.0.0.0")).strip()
+        return val if val else "0.0.0.0"
+
+    @property
+    def api_port(self) -> int:
+        """TCP port for the API server.  Clamped to [1024, 65535]."""
+        return max(1024, min(65535, int(self.get("api_port", 7799))))
+
+    @property
+    def api_token(self) -> str:
+        """Bearer token that protects all API endpoints.
+
+        Storage strategy (defence-in-depth):
+          1. Prefer the OS credential store (Windows Credential Manager /
+             macOS Keychain) via the `keyring` package — token never written
+             to disk in plaintext.
+          2. Fall back to config.json (plaintext) when keyring is unavailable
+             (headless CI, Linux without secret-service, keyring install error).
+          3. One-time migration: if a plaintext token exists in config.json and
+             keyring is now available, migrate it silently and scrub config.json.
+
+        Empty string means auth is disabled (open/LAN-only mode).
+        """
+        _KEYRING_SERVICE = "OmniDL"
+        _KEYRING_ACCOUNT = "api_token_v1"
+
+        # 1. Try keyring first
+        try:
+            import keyring as _kr
+            stored = _kr.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
+            if stored:
+                # One-time cleanup: scrub plaintext copy from config.json
+                if self.get("api_token", ""):
+                    self.set("api_token", "")
+                    self.save()
+                return stored.strip()
+        except Exception:
+            pass  # keyring unavailable — fall through to config.json
+
+        # 2. Fallback: plaintext in config.json
+        return str(self.get("api_token", "")).strip()
+
+    def set_api_token(self, token: str) -> None:
+        """Persist the bearer token to the OS credential store if available,
+        otherwise fall back to config.json.  Always scrubs the plaintext
+        value from config.json after a successful keyring write.
+
+        Call this instead of config.set("api_token", ...) everywhere.
+        """
+        _KEYRING_SERVICE = "OmniDL"
+        _KEYRING_ACCOUNT = "api_token_v1"
+
+        try:
+            import keyring as _kr
+            _kr.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, token)
+            # Scrub plaintext from config.json (set to empty sentinel)
+            if self.get("api_token", ""):
+                self.set("api_token", "")
+                self.save()
+            logger.info(
+                "OmniDL API token stored in OS credential store (keyring)."
+            )
+            return
+        except Exception as exc:
+            logger.warning(
+                "keyring unavailable — API token stored in config.json "
+                "(plaintext fallback): %s", exc
+            )
+
+        # Fallback: store in config.json
+        self.set("api_token", token)
+        self.save()
+
+
+    # ── Taildrop typed accessors ──────────────────────────────────────────
+
+    @property
+    def taildrop_enabled(self) -> bool:
+        return bool(self.get("taildrop_enabled", False))
+
+    @property
+    def taildrop_target_node(self) -> str:
+        return str(self.get("taildrop_target_node", "")).strip()
+
+    @property
+    def taildrop_send_mode(self) -> str:
+        val = str(self.get("taildrop_send_mode", "always")).strip()
+        return val if val in ("always", "ask") else "always"

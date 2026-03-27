@@ -230,6 +230,29 @@ def main() -> None:
         gallery_engine=gallery_engine,
     )
 
+    # ── Remote API server (Hướng 1: iOS / mobile remote control) ─────────
+    # Starts a FastAPI/uvicorn server in a daemon thread when api_enabled=True.
+    # Enable via Settings → Remote API tab (or set "api_enabled": true in
+    # config.json).  The server is a no-op (returns None) when disabled,
+    # so it adds zero overhead to normal desktop operation.
+    # SAFETY: api/server.py imports fastapi at module level, so we guard the
+    # import behind api_enabled to avoid a ModuleNotFoundError crash when
+    # fastapi/uvicorn are not installed (standard desktop-only installs).
+    # This preserves zero import cost on normal desktop startups.
+    _api_thread = None
+    if getattr(config, "api_enabled", False):
+        try:
+            from api.server import start_api_server as _start_api
+            from app.event_bus import bus as _event_bus
+            _api_thread = _start_api(service=service, config=config, bus=_event_bus)
+        except ImportError as _api_err:
+            import logging as _log_api
+            _log_api.getLogger(__name__).warning(
+                "Remote API disabled — fastapi/uvicorn not installed: %s. "
+                "Run: pip install fastapi uvicorn",
+                _api_err,
+            )
+
     import customtkinter as ctk
     ctk.set_default_color_theme("blue")
 

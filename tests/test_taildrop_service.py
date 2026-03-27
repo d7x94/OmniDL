@@ -1,0 +1,442 @@
+"""
+tests/test_taildrop_service.py
+Unit tests for TaildropService.
+
+Coverage:
+• _NODE_RE security validation (allowlist)
+• TransferResult dataclass
+• send_file: missing tailscale CLI → graceful error
+• send_file: tailscale exits non-zero → error captured
+• send_file: success path
+• send_file: file not found
+• send_file: subprocess timeout
+• list_nodes: CLI not available → empty list
+• list_nodes: parses tailscale status JSON correctly
+• on_download_completed: disabled → no subprocess call
+• on_download_completed: enabled, valid file → executor submit called
+• on_download_completed: missing output_path → skip silently
+• close(): executor shuts down cleanly
+• Config typed properties: taildrop_enabled / taildrop_target_node / taildrop_send_mode
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import threading
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from app.services.taildrop_service import TaildropService, TransferResult, _NODE_RE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_config(enabled=False, node="iphone", mode="always"):
+    cfg = MagicMock()
+    type(cfg).taildrop_enabled = property(lambda self: enabled)
+    type(cfg).taildrop_target_node = property(lambda self: node)
+    type(cfg).taildrop_send_mode = property(lambda self: mode)
+    return cfg
+
+
+def _make_bus():
+    bus = MagicMock()
+    return bus
+
+
+def _make_task(output_path: str | None = None, filename: str | None = None):
+    """Build a minimal mock DownloadTask for TaildropService tests.
+
+    ``filename`` is the canonical DownloadTask field written by yt_dlp_engine's
+    pp_hook.  ``output_path`` and ``file_path`` are legacy aliases kept for
+    backward-compatibility tests; in production they are always None on a real
+    DownloadTask (the field does not exist and getattr returns None).
+
+    When both ``filename`` and ``output_path`` are supplied, ``filename`` wins
+    because it is checked first in on_download_completed().
+    """
+    task = MagicMock()
+    task.id = "task-001"
+    # canonical field — matches DownloadTask.filename set by yt_dlp_engine
+    task.filename = filename
+    # legacy aliases — not present on real DownloadTask (getattr → None)
+    task.output_path = output_path
+    task.file_path = None
+    return task
+
+
+def _make_svc(enabled=False, node="iphone") -> TaildropService:
+    return TaildropService(config=_make_config(enabled, node), event_bus=_make_bus())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _NODE_RE security tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNodeRegex:
+    """Validate allowlist regex blocks injection, accepts valid names."""
+
+    VALID = [
+        "iphone",
+        "my-iphone",
+        "pixel-7",
+        "100.64.0.5",
+        "iphone.tail1abc2.ts.net",
+        "AB",                      # two-char minimum
+    ]
+    INVALID = [
+        "",                        # empty
+        " iphone",                 # leading space
+        "iphone ",                 # trailing space
+        "iphone; rm -rf /",        # shell injection
+        "iphone && malware",       # shell injection
+        "../../etc/passwd",        # path traversal
+        "iphone|cat /etc/shadow",  # pipe injection
+        "a" * 300,                 # too long
+        "-leading-dash",           # must start with alnum
+    ]
+
+    @pytest.mark.parametrize("name", VALID)
+    def test_valid_node_names(self, name):
+        assert _NODE_RE.match(name), f"Expected VALID: {name!r}"
+
+    @pytest.mark.parametrize("name", INVALID)
+    def test_invalid_node_names(self, name):
+        assert not _NODE_RE.match(name), f"Expected INVALID: {name!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TransferResult
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTransferResult:
+    def test_success_result(self):
+        r = TransferResult(success=True, dest_node="iphone")
+        assert r.success is True
+        assert r.error == ""
+
+    def test_failure_result(self):
+        r = TransferResult(success=False, dest_node="iphone", error="oops")
+        assert r.success is False
+        assert r.error == "oops"
+
+    def test_frozen(self):
+        r = TransferResult(success=True, dest_node="iphone")
+        with pytest.raises((AttributeError, TypeError)):
+            r.success = False  # type: ignore[misc]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# send_file
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSendFile:
+    def test_invalid_node_rejected(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        r = svc.send_file(f, "bad node!")
+        assert not r.success
+        assert "security policy" in r.error
+        svc.close()
+
+    def test_file_not_found(self, tmp_path):
+        svc = _make_svc()
+        r = svc.send_file(tmp_path / "ghost.mp4", "iphone")
+        assert not r.success
+        assert "not found" in r.error
+        svc.close()
+
+    def test_tailscale_cli_missing(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        with patch("shutil.which", return_value=None):
+            r = svc.send_file(f, "iphone")
+        assert not r.success
+        assert "not found on PATH" in r.error
+        svc.close()
+
+    def test_tailscale_nonzero_exit(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "node not found"
+        mock_result.stdout = ""
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=mock_result):
+            r = svc.send_file(f, "iphone")
+        assert not r.success
+        assert "exit 1" in r.error
+        svc.close()
+
+    def test_tailscale_success(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=mock_result) as mock_run:
+            r = svc.send_file(f, "iphone")
+        assert r.success
+        assert r.dest_node == "iphone"
+        # Verify CLI args: list form, no shell=True, trailing colon on node
+        args = mock_run.call_args[0][0]
+        assert args[1:] == ["file", "cp", str(f), "iphone:"]
+        svc.close()
+
+    def test_tailscale_timeout(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ts", timeout=120)):
+            r = svc.send_file(f, "iphone")
+        assert not r.success
+        assert "timed out" in r.error
+        svc.close()
+
+    def test_subprocess_exception(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", side_effect=OSError("permission denied")):
+            r = svc.send_file(f, "iphone")
+        assert not r.success
+        assert "permission denied" in r.error
+        svc.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# list_nodes
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestListNodes:
+    def test_no_tailscale_cli(self):
+        svc = _make_svc()
+        with patch("shutil.which", return_value=None):
+            nodes = svc.list_nodes()
+        assert nodes == []
+        svc.close()
+
+    def test_cli_nonzero(self):
+        svc = _make_svc()
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=mock_result):
+            nodes = svc.list_nodes()
+        assert nodes == []
+        svc.close()
+
+    def test_parses_online_peers(self):
+        svc = _make_svc()
+        status_json = json.dumps({
+            "Peer": {
+                "aaa": {"Online": True,  "HostName": "iphone", "TailscaleIPs": ["100.64.0.2"]},
+                "bbb": {"Online": False, "HostName": "macbook", "TailscaleIPs": ["100.64.0.3"]},
+                "ccc": {"Online": True,  "HostName": "ipad",   "TailscaleIPs": ["100.64.0.4"]},
+            }
+        })
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = status_json
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=mock_result):
+            nodes = svc.list_nodes()
+        # offline macbook excluded; sorted alphabetically
+        assert nodes == ["ipad", "iphone"]
+        svc.close()
+
+    def test_fallback_to_ip_when_no_hostname(self):
+        svc = _make_svc()
+        status_json = json.dumps({
+            "Peer": {
+                "aaa": {"Online": True, "HostName": "", "TailscaleIPs": ["100.64.0.5"]},
+            }
+        })
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = status_json
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=mock_result):
+            nodes = svc.list_nodes()
+        assert nodes == ["100.64.0.5"]
+        svc.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# on_download_completed
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOnDownloadCompleted:
+    def test_disabled_does_nothing(self, tmp_path):
+        svc = _make_svc(enabled=False)
+        task = _make_task(str(tmp_path / "file.mp4"))
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
+    def test_no_target_node_skips(self, tmp_path):
+        cfg = _make_config(enabled=True, node="")
+        svc = TaildropService(config=cfg, event_bus=_make_bus())
+        task = _make_task(str(tmp_path / "file.mp4"))
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
+    def test_missing_output_path_skips(self):
+        svc = _make_svc(enabled=True, node="iphone")
+        task = _make_task(output_path=None)
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
+    def test_filename_field_triggers_transfer(self, tmp_path):
+        """Regression: DownloadTask uses .filename (not .output_path).
+
+        yt_dlp_engine sets task.filename via the pp_hook after the merge
+        step completes.  TaildropService must read that field; relying only
+        on the non-existent .output_path/.file_path aliases caused every
+        real download to log 'output_path missing or file not found (None)'
+        and silently skip the Taildrop transfer.
+        """
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+        # Simulate a real DownloadTask: filename is set, output_path is absent/None
+        task = _make_task(filename=str(f), output_path=None)
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_called_once()
+        svc.close()
+
+    def test_nonexistent_file_skips(self, tmp_path):
+        svc = _make_svc(enabled=True, node="iphone")
+        task = _make_task(str(tmp_path / "ghost.mp4"))  # doesn't exist
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
+    def test_valid_file_submits_to_executor(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+        task = _make_task(str(f))
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_called_once()
+        svc.close()
+
+    def test_closed_service_does_not_submit(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+        svc.close()  # close BEFORE calling
+        # After close, executor is shut down — submit must not be called
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(_make_task(str(f)))
+        mock_submit.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Event publishing via _transfer
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTransferEvents:
+    def test_success_publishes_completed_event(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        bus = _make_bus()
+        svc = TaildropService(config=_make_config(True, "iphone"), event_bus=bus)
+
+        ok_result = MagicMock()
+        ok_result.returncode = 0
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok_result):
+            svc._transfer(_make_task(str(f)), f, "iphone")
+
+        bus.publish_taildrop_completed.assert_called_once()
+        bus.publish_taildrop_failed.assert_not_called()
+        svc.close()
+
+    def test_failure_publishes_failed_event(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        bus = _make_bus()
+        svc = TaildropService(config=_make_config(True, "iphone"), event_bus=bus)
+
+        fail_result = MagicMock()
+        fail_result.returncode = 1
+        fail_result.stderr = "peer offline"
+        fail_result.stdout = ""
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=fail_result):
+            svc._transfer(_make_task(str(f)), f, "iphone")
+
+        bus.publish_taildrop_failed.assert_called_once()
+        bus.publish_taildrop_completed.assert_not_called()
+        svc.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigManager typed properties
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestConfigManagerTaildropProperties:
+    """Test the 3 new typed properties added to ConfigManager."""
+
+    def _make_real_config(self, tmp_path, overrides=None):
+        from infrastructure.config.config_manager import ConfigManager
+        p = tmp_path / "config.json"
+        cfg = ConfigManager(p)
+        if overrides:
+            for k, v in overrides.items():
+                cfg.set(k, v)
+        return cfg
+
+    def test_defaults(self, tmp_path):
+        cfg = self._make_real_config(tmp_path)
+        assert cfg.taildrop_enabled is False
+        assert cfg.taildrop_target_node == ""
+        assert cfg.taildrop_send_mode == "always"
+
+    def test_set_enabled(self, tmp_path):
+        cfg = self._make_real_config(tmp_path, {"taildrop_enabled": True})
+        assert cfg.taildrop_enabled is True
+
+    def test_set_node(self, tmp_path):
+        cfg = self._make_real_config(tmp_path, {"taildrop_target_node": "iphone"})
+        assert cfg.taildrop_target_node == "iphone"
+
+    def test_node_strips_whitespace(self, tmp_path):
+        cfg = self._make_real_config(tmp_path, {"taildrop_target_node": "  iphone  "})
+        assert cfg.taildrop_target_node == "iphone"
+
+    def test_invalid_send_mode_falls_back(self, tmp_path):
+        cfg = self._make_real_config(tmp_path, {"taildrop_send_mode": "invalid_value"})
+        assert cfg.taildrop_send_mode == "always"
+
+    def test_is_tailscale_available_true(self, tmp_path):
+        svc = _make_svc()
+        with patch("shutil.which", return_value="/usr/bin/tailscale"):
+            assert svc.is_tailscale_available() is True
+        svc.close()
+
+    def test_is_tailscale_available_false(self, tmp_path):
+        svc = _make_svc()
+        with patch("shutil.which", return_value=None):
+            assert svc.is_tailscale_available() is False
+        svc.close()
