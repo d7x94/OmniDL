@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import queue
 import secrets
 import threading
@@ -32,12 +33,14 @@ from typing import TYPE_CHECKING, Generator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from api.models import (
     AnalyseRequest,
     AnalyseResponse,
     DownloadRequest,
+    FileActionResponse,
+    FileInfoResponse,
     QueueActionResponse,
     TaskResponse,
 )
@@ -45,6 +48,7 @@ from app.event_bus import EventBus
 from domain.models.download_task import DownloadTask, MediaInfo
 
 if TYPE_CHECKING:
+    import uvicorn
     from app.services.download_service import DownloadService
     from infrastructure.config.config_manager import ConfigManager
 
@@ -240,7 +244,7 @@ def create_app(service: "DownloadService", config: "ConfigManager") -> FastAPI:
                 output_ext=body.output_ext or config.default_format,
             )
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return TaskResponse(**_task_to_dict(task))
 
     # ── Queue ─────────────────────────────────────────────────────────────
@@ -281,7 +285,182 @@ def create_app(service: "DownloadService", config: "ConfigManager") -> FastAPI:
         service.clear_finished()
         return {"status": "ok"}
 
-    # ── History ───────────────────────────────────────────────────────────
+    # ── File actions (completed tasks only) ───────────────────────────────
+
+    def _resolve_task_file(task: DownloadTask) -> Path:
+        """
+        Resolve and validate the output file path for a completed task.
+
+        Security: ensures the path sits inside the configured download_dir.
+        Raises HTTPException(404/403) on any problem so callers stay clean.
+        """
+        raw = getattr(task, "filename", None)
+        if not raw:
+            raise HTTPException(status_code=404, detail="File path not recorded for this task")
+        resolved = Path(raw).resolve()
+        allowed  = config.download_dir.resolve()
+        # Path.is_relative_to() — Python 3.9+; project targets 3.11+ so safe.
+        if not resolved.is_relative_to(allowed):
+            raise HTTPException(
+                status_code=403,
+                detail="File is outside the configured download directory",
+            )
+        return resolved
+
+    @app.post(
+        "/api/queue/{task_id}/transfer",
+        response_model=FileActionResponse,
+        summary="Send completed file to iPhone via Taildrop",
+    )
+    async def transfer_to_device(
+        task_id: str, _: None = Depends(_require_auth)
+    ) -> FileActionResponse:
+        """
+        Trigger an on-demand Taildrop transfer for a completed task.
+
+        Requirements:
+        • task must be COMPLETED
+        • taildrop_enabled=True and taildrop_target_node set in config
+        • tailscale CLI must be reachable on the server
+
+        The transfer runs in TaildropService's background executor; this
+        endpoint returns immediately with status "queued" or raises 4xx on
+        pre-flight failures.
+        """
+        task = _get_task_or_404(service, task_id)
+        if task.status.name != "COMPLETED":
+            raise HTTPException(status_code=400, detail="Task is not COMPLETED")
+
+        td = service.taildrop
+        if not config.taildrop_enabled:
+            raise HTTPException(status_code=503, detail="Taildrop is disabled in settings")
+        node = config.taildrop_target_node
+        if not node:
+            raise HTTPException(status_code=503, detail="Taildrop target node not configured")
+        if not td.is_tailscale_available():
+            raise HTTPException(status_code=503, detail="tailscale CLI not found on server")
+
+        file_path = _resolve_task_file(task)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Output file not found on disk")
+
+        # Dispatch to the background executor — non-blocking.
+        # TaildropService publishes TAILDROP_COMPLETED / TAILDROP_FAILED events
+        # on the EventBus which SSE clients will receive automatically.
+        td.on_download_completed(task)
+        return FileActionResponse(
+            task_id=task_id,
+            action="transfer_queued",
+            detail=f"Sending to {node} via Taildrop…",
+        )
+
+    @app.delete(
+        "/api/queue/{task_id}/file",
+        response_model=FileActionResponse,
+        summary="Delete the output file of a completed task from the server",
+    )
+    async def delete_task_file(
+        task_id: str, _: None = Depends(_require_auth)
+    ) -> FileActionResponse:
+        """
+        Permanently delete the output file from the server's disk.
+
+        The task entry remains in the queue (so the user still sees it),
+        but filename is cleared so file-action buttons are disabled.
+        Only works for COMPLETED tasks that still have an output file.
+
+        Security: path is validated against download_dir before deletion.
+        """
+        task = _get_task_or_404(service, task_id)
+        if task.status.name != "COMPLETED":
+            raise HTTPException(status_code=400, detail="Task is not COMPLETED")
+
+        file_path = _resolve_task_file(task)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File already deleted or not found")
+
+        file_path.unlink()
+        # Clear filename on the task so the UI knows the file is gone.
+        task.filename = ""
+        logger.info("Remote API: deleted file '%s' for task %s", file_path.name, task_id)
+
+        return FileActionResponse(
+            task_id=task_id,
+            action="deleted",
+            detail=f"Deleted: {file_path.name}",
+        )
+
+    @app.get(
+        "/api/queue/{task_id}/file",
+        summary="Stream / preview the output file of a completed task",
+    )
+    async def preview_task_file(
+        task_id: str, _: None = Depends(_require_auth)
+    ):
+        """
+        Serve the output file inline so iOS Safari can preview it.
+
+        • Uses FastAPI FileResponse which handles Range requests automatically
+          — required for iOS video seeking.
+        • Content-Disposition: inline so Safari renders in-browser instead
+          of forcing a download.
+        • Only COMPLETED tasks with an existing file are served.
+        • Same path-traversal guard as the delete endpoint.
+        """
+        task = _get_task_or_404(service, task_id)
+        if task.status.name != "COMPLETED":
+            raise HTTPException(status_code=400, detail="Task is not COMPLETED")
+
+        file_path = _resolve_task_file(task)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        media_type = (
+            mimetypes.guess_type(file_path.name)[0]
+            or "application/octet-stream"
+        )
+        return FileResponse(
+            path=str(file_path),
+            media_type=media_type,
+            filename=file_path.name,
+            content_disposition_type="inline",
+            headers={"Accept-Ranges": "bytes"},
+        )
+
+    @app.get(
+        "/api/queue/{task_id}/fileinfo",
+        response_model=FileInfoResponse,
+        summary="Get file metadata for a completed task",
+    )
+    async def get_task_fileinfo(
+        task_id: str, _: None = Depends(_require_auth)
+    ) -> FileInfoResponse:
+        """
+        Return file metadata (name, size, existence) without streaming the file.
+        Used by the UI to decide which action buttons to show.
+        """
+        task = _get_task_or_404(service, task_id)
+        raw = getattr(task, "filename", None) or ""
+        exists = False
+        size   = 0
+        name   = ""
+        if raw:
+            p = Path(raw).resolve()
+            allowed = config.download_dir.resolve()
+            if p.is_relative_to(allowed) and p.exists():
+                exists = True
+                size   = p.stat().st_size
+                name   = p.name
+
+        return FileInfoResponse(
+            task_id=task_id,
+            filename=name,
+            size_bytes=size,
+            exists=exists,
+            preview_url=f"/api/queue/{task_id}/file",
+        )
+
+
 
     @app.get("/api/history")
     async def get_history(_: None = Depends(_require_auth)):

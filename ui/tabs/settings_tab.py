@@ -992,8 +992,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
 
         def _worker():
             try:
-                from app.services.taildrop_service import TaildropService
                 from app.event_bus import bus as _global_bus
+                from app.services.taildrop_service import TaildropService
                 svc = TaildropService(
                     config=self._app.config,
                     event_bus=_global_bus,
@@ -1189,8 +1189,8 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
                     ))
                 except Exception as exc:
                     logger.exception("Failed to restart API after token rotation: %s", exc)
-                    self.after(0, lambda: self._app.toast(
-                        f"Lỗi restart API: {exc!s:.60}", "error"
+                    self.after(0, lambda e=exc: self._app.toast(
+                        f"Lỗi restart API: {e!s:.60}", "error"
                     ))
 
             threading.Thread(target=_do_restart, daemon=True, name="omnidl-api-restart").start()

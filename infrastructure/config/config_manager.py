@@ -61,7 +61,7 @@ _DEFAULTS: dict[str, Any] = {
     # target_node: Tailscale node name or IP of the iPhone (e.g. "iphone").
     "taildrop_enabled":     False,
     "taildrop_target_node": "",
-    "taildrop_send_mode":   "always",  # "always" | "ask"  (reserved for future UI)
+    "taildrop_send_mode":   "ask",     # "always" | "ask"  — "ask" shows action buttons in Remote UI
 }
 
 

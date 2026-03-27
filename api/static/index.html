@@ -334,6 +334,56 @@
       gap: 6px;
       margin-top: 10px;
     }
+    .qi-file-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .btn-transfer { background: #7c3aed; color: #fff; }
+    .btn-preview  { background: var(--surface2); color: var(--text); }
+    .btn-delete   { background: transparent; color: var(--danger);
+                    border: 1px solid var(--danger); }
+    /* Preview modal */
+    #preview-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.92);
+      z-index: 200;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #preview-overlay.open { display: flex; }
+    #preview-title {
+      color: var(--text2);
+      font-size: 13px;
+      text-align: center;
+      margin-bottom: 12px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #preview-content {
+      max-width: 100%;
+      max-height: 72vh;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    #preview-content video,
+    #preview-content img {
+      max-width: 100%;
+      max-height: 72vh;
+      display: block;
+      border-radius: var(--radius);
+    }
+    #preview-close {
+      margin-top: 16px;
+      color: var(--text2);
+      background: var(--surface2);
+    }
     .qi-err {
       font-size: 12px;
       color: var(--danger);
@@ -559,6 +609,13 @@
     </div>
 
   </main>
+</div>
+
+<!-- Preview modal -->
+<div id="preview-overlay">
+  <div id="preview-title"></div>
+  <div id="preview-content"></div>
+  <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()">✕ Close</button>
 </div>
 
 <!-- Settings bottom sheet -->
@@ -872,6 +929,23 @@ function queueItemHtml(t) {
                 <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
   }
 
+  // File-action buttons for completed tasks that still have a file on disk
+  let fileActions = '';
+  if (t.status === 'COMPLETED' && t.filename) {
+    const hasTransfer = true; // shown always; endpoint returns 503 if taildrop not configured
+    fileActions = `<div class="qi-file-actions">
+      <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
+        ☁ Send to iPhone
+      </button>
+      <button class="btn btn-sm btn-preview" onclick="previewFile('${t.id}', '${escHtml(t.title)}')">
+        ▶ Preview
+      </button>
+      <button class="btn btn-sm btn-delete" onclick="deleteFile('${t.id}', this)">
+        🗑 Delete file
+      </button>
+    </div>`;
+  }
+
   return `<div class="queue-item" id="qi-${t.id}">
     <div class="qi-header">
       <div class="qi-title">${escHtml(t.title)}</div>
@@ -886,6 +960,7 @@ function queueItemHtml(t) {
     </div>
     ${errHtml}
     ${controls ? `<div class="qi-controls">${controls}</div>` : ''}
+    ${fileActions}
   </div>`;
 }
 
@@ -945,6 +1020,86 @@ async function clearFinished() {
     updateQueueBadge();
     toast('Cleared finished tasks');
   } catch(e) { toast(e.message); }
+}
+
+/* ── File actions ───────────────────────────────────────────────────── */
+async function transferFile(id, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Sending…';
+  try {
+    const r = await api('POST', `/api/queue/${id}/transfer`);
+    toast(r.detail || 'Transfer queued');
+  } catch(e) {
+    toast('Transfer failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function deleteFile(id, btn) {
+  if (!confirm('Delete the file from the laptop? This cannot be undone.')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('DELETE', `/api/queue/${id}/file`);
+    toast(r.detail || 'File deleted');
+    // Clear filename in local state so file-action buttons disappear
+    if (tasks[id]) { tasks[id].filename = ''; renderQueue(); }
+  } catch(e) {
+    toast('Delete failed: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+function previewFile(id, title) {
+  const base    = cfg.host.replace(/\/+$/, '');
+  const token   = cfg.token ? '?token=' + encodeURIComponent(cfg.token) : '';
+  const fileUrl = `${base}/api/queue/${id}/file${token}`;
+
+  // Detect media type from filename stored in task
+  const t = tasks[id];
+  const fname = (t && t.filename) ? t.filename.toLowerCase() : '';
+  const isVideo = /\.(mp4|mkv|webm|mov|m4v|avi)$/.test(fname);
+  const isAudio = /\.(mp3|m4a|aac|ogg|flac|wav)$/.test(fname);
+  const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(fname);
+
+  const overlay = document.getElementById('preview-overlay');
+  const content = document.getElementById('preview-content');
+  const titleEl = document.getElementById('preview-title');
+
+  titleEl.textContent = title || fname || 'Preview';
+  content.innerHTML   = '';
+
+  if (isVideo) {
+    content.innerHTML = `<video controls autoplay playsinline preload="metadata"
+      style="max-width:100%;max-height:72vh;border-radius:12px">
+      <source src="${fileUrl}">
+      Your browser does not support video playback.
+    </video>`;
+  } else if (isAudio) {
+    content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
+      <source src="${fileUrl}">
+      Your browser does not support audio playback.
+    </audio>`;
+  } else if (isImage) {
+    content.innerHTML = `<img src="${fileUrl}"
+      style="max-width:100%;max-height:72vh;border-radius:12px;object-fit:contain"
+      alt="${escHtml(title)}">`;
+  } else {
+    // Fallback: open in new tab (PDF, etc.)
+    window.open(fileUrl, '_blank');
+    return;
+  }
+
+  overlay.classList.add('open');
+}
+
+function closePreview() {
+  const overlay = document.getElementById('preview-overlay');
+  overlay.classList.remove('open');
+  // Stop media playback when closing
+  overlay.querySelectorAll('video,audio').forEach(m => { m.pause(); m.src = ''; });
+  document.getElementById('preview-content').innerHTML = '';
 }
 
 /* ── History ────────────────────────────────────────────────────────── */
@@ -1033,6 +1188,10 @@ if (cfg.host) {
 // Close settings overlay on background tap
 document.getElementById('settings-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeSettings();
+});
+
+document.getElementById('preview-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closePreview();
 });
 
 // Allow Enter key in URL input to trigger analyse

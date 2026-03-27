@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
 from app.services.ffmpeg_convert_service import FfmpegConvertService
-from app.services.thumbnail_service import ThumbnailService
 from app.services.taildrop_service import TaildropService
+from app.services.thumbnail_service import ThumbnailService
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
@@ -209,6 +209,11 @@ class DownloadService:
 
     def clear_history(self) -> None:
         self._history.clear()
+
+    @property
+    def taildrop(self) -> "TaildropService":
+        """Expose TaildropService for on-demand transfers via Remote API."""
+        return self._taildrop
 
     def convert_to_mp4(
         self,

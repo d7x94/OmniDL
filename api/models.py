@@ -6,9 +6,9 @@ iOS web client can build requests with a simple JSON.stringify().
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, field_validator
 
 
 # ── Requests ──────────────────────────────────────────────────────────────────
@@ -98,3 +98,19 @@ class QueueActionResponse(BaseModel):
     """Confirmation of a queue control action (pause / resume / cancel)."""
     task_id: str
     action: str             # "paused" | "resumed" | "cancelled"
+
+
+class FileActionResponse(BaseModel):
+    """Result of a file-level action on a completed task."""
+    task_id: str
+    action: str             # "transferred" | "deleted"
+    detail: str = ""        # human-readable result or error message
+
+
+class FileInfoResponse(BaseModel):
+    """Metadata about the output file of a completed task."""
+    task_id: str
+    filename: str           # basename only
+    size_bytes: int         # 0 if file no longer exists
+    exists: bool
+    preview_url: str        # relative URL to stream/preview the file

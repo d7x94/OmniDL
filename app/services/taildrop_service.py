@@ -97,6 +97,11 @@ class TaildropService:
         """
         if not self._config.taildrop_enabled:
             return
+        # "ask" mode: skip auto-send — user triggers transfer manually via
+        # the Remote API POST /api/queue/{task_id}/transfer endpoint.
+        if self._config.taildrop_send_mode == "ask":
+            logger.debug("Taildrop: skip auto-send — send_mode is 'ask'")
+            return
         node = self._config.taildrop_target_node
         if not node:
             logger.debug("Taildrop: skip — target_node not configured")
