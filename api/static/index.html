@@ -344,6 +344,70 @@
     .btn-preview  { background: var(--surface2); color: var(--text); }
     .btn-delete   { background: transparent; color: var(--danger);
                     border: 1px solid var(--danger); }
+    .btn-convert  { background: #0891b2; color: #fff; }
+
+    /* ── Convert bottom sheet ─────────────────────────────────────────── */
+    #convert-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.7);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #convert-overlay.open { display: flex; }
+    #convert-sheet {
+      background: var(--surface);
+      border-radius: var(--radius) var(--radius) 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 88vh;
+      overflow-y: auto;
+    }
+    #convert-sheet h2 { font-size:17px; font-weight:700; margin-bottom:4px; }
+    #convert-sheet .convert-sub {
+      font-size:12px; color:var(--text2); margin-bottom:16px;
+    }
+    .convert-section { margin-bottom:14px; }
+    .convert-section label {
+      display:block; font-size:13px; font-weight:600;
+      color:var(--text2); margin-bottom:8px;
+    }
+    .radio-grid {
+      display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+    }
+    .radio-grid.two-col { grid-template-columns:repeat(2,1fr); }
+    .radio-btn {
+      display:flex; align-items:center; justify-content:center;
+      padding:8px 4px; border-radius:8px; font-size:12px; font-weight:600;
+      background:var(--surface2); color:var(--text2); cursor:pointer;
+      border:2px solid transparent; transition:all .15s; text-align:center;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .radio-btn.active { border-color:var(--accent); color:var(--accent); }
+    .crf-row {
+      display:flex; align-items:center; gap:10px; margin-top:8px;
+    }
+    .crf-row input[type=range] { flex:1; accent-color:var(--accent); }
+    .crf-val { font-size:13px; font-weight:700; color:var(--accent);
+               min-width:28px; text-align:center; }
+    /* Convert progress in queue card */
+    .qi-convert-progress {
+      margin-top:10px;
+      padding:10px;
+      background:var(--surface2);
+      border-radius:8px;
+    }
+    .qi-convert-label {
+      font-size:12px; color:var(--text2); margin-bottom:6px;
+      display:flex; justify-content:space-between;
+    }
+    .qi-convert-track {
+      height:4px; background:var(--border); border-radius:2px; overflow:hidden;
+    }
+    .qi-convert-fill {
+      height:100%; background:#0891b2; border-radius:2px;
+      transition:width .4s linear;
+    }
     /* Preview modal */
     #preview-overlay {
       position: fixed; inset: 0;
@@ -618,6 +682,55 @@
   <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()">✕ Close</button>
 </div>
 
+<!-- Convert bottom sheet -->
+<div id="convert-overlay">
+  <div id="convert-sheet">
+    <h2>🎬 Convert to MP4</h2>
+    <div class="convert-sub" id="convert-sheet-sub"></div>
+
+    <div class="convert-section">
+      <label>Chất lượng</label>
+      <div class="radio-grid" id="cvq-grid">
+        <div class="radio-btn active" data-cvq="standard" onclick="setCvq(this)">Chuẩn</div>
+        <div class="radio-btn"       data-cvq="high"     onclick="setCvq(this)">Cao</div>
+        <div class="radio-btn"       data-cvq="small"    onclick="setCvq(this)">Nhỏ (720p)</div>
+        <div class="radio-btn"       data-cvq="custom"   onclick="setCvq(this)"
+             style="grid-column:1/-1">Tuỳ chỉnh (CRF)</div>
+      </div>
+      <div class="crf-row" id="crf-row" style="display:none">
+        <input type="range" min="0" max="51" value="23" id="crf-slider"
+               oninput="document.getElementById('crf-val').textContent=this.value">
+        <span class="crf-val" id="crf-val">23</span>
+        <span style="font-size:11px;color:var(--text3)">0=lossless · 51=worst</span>
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label>Encoder</label>
+      <div class="radio-grid two-col" id="cvenc-grid">
+        <!-- populated dynamically from GET /api/convert/encoders -->
+        <div class="radio-btn active" data-cvenc="cpu" onclick="setCvenc(this)">CPU (libx264)</div>
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label>Tốc độ encode</label>
+      <div class="radio-grid" id="cvspd-grid">
+        <div class="radio-btn"       data-cvspd="quality"  onclick="setCvspd(this)">Chậm<br><span style="font-size:10px;font-weight:400">Nén tốt</span></div>
+        <div class="radio-btn active" data-cvspd="balanced" onclick="setCvspd(this)">Cân bằng</div>
+        <div class="radio-btn"       data-cvspd="fast"     onclick="setCvspd(this)">Nhanh<br><span style="font-size:10px;font-weight:400">File lớn hơn</span></div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="submitConvert()" style="margin-top:4px">
+      🎬 Bắt đầu Convert
+    </button>
+    <button class="btn btn-secondary" onclick="closeConvertSheet()" style="margin-top:8px">
+      Huỷ
+    </button>
+  </div>
+</div>
+
 <!-- Settings bottom sheet -->
 <div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
   <div id="settings-sheet">
@@ -649,6 +762,8 @@ let analysedInfo = null;       // last analyse result
 let evtSrc = null;             // EventSource instance
 let connected = false;
 let _analyseAbortCtrl = null;  // AbortController for the in-flight analyse fetch
+let convertJobs = {};          // job_id → ConversionJob snapshot
+let _pendingConvertTaskId = null; // task_id being configured in the convert sheet
 
 /* ── Persistence ────────────────────────────────────────────────────── */
 function loadCfg() {
@@ -720,6 +835,40 @@ function connectSSE() {
     const d = JSON.parse(e.data);
     toast(`❌ Taildrop failed: ${d.error || 'unknown error'}`, 'error');
     _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+  });
+
+  // ── Convert events ────────────────────────────────────────────────────
+  evtSrc.addEventListener('convert_started', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    renderQueue();   // re-render so progress bar appears
+  });
+  evtSrc.addEventListener('convert_progress', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    // Update progress bar inline without full re-render (performance)
+    const fill = document.getElementById(`cvfill-${j.job_id}`);
+    const pct  = document.getElementById(`cvpct-${j.job_id}`);
+    if (fill) fill.style.width = j.progress + '%';
+    if (pct)  pct.textContent  = j.progress.toFixed(0) + '%';
+  });
+  evtSrc.addEventListener('convert_completed', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    toast(`✅ Convert xong: ${j.output_filename || 'file'}`);
+    renderQueue();
+  });
+  evtSrc.addEventListener('convert_failed', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    toast(`❌ Convert thất bại: ${j.error_msg || 'lỗi không xác định'}`);
+    renderQueue();
+  });
+  evtSrc.addEventListener('convert_cancelled', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    toast('⊘ Đã huỷ convert');
+    renderQueue();
   });
 
   evtSrc.onerror = () => setConnected(false);
@@ -947,7 +1096,31 @@ function queueItemHtml(t) {
   // File-action buttons for completed tasks that still have a file on disk
   let fileActions = '';
   if (t.status === 'COMPLETED' && t.filename) {
-    const hasTransfer = true; // shown always; endpoint returns 503 if taildrop not configured
+    // Check if there is an active convert job for this task
+    const activeJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           ['PENDING','CONVERTING'].includes(j.status)
+    );
+    const convertBtn = activeJob
+      ? `<div class="qi-convert-progress" id="cvprog-${activeJob.job_id}">
+           <div class="qi-convert-label">
+             <span>🎬 Converting…</span>
+             <span id="cvpct-${activeJob.job_id}">${activeJob.progress.toFixed(0)}%</span>
+           </div>
+           <div class="qi-convert-track">
+             <div class="qi-convert-fill" id="cvfill-${activeJob.job_id}"
+                  style="width:${activeJob.progress}%"></div>
+           </div>
+           <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
+                   onclick="cancelConvert('${activeJob.job_id}', this)">
+             ✕ Cancel convert
+           </button>
+         </div>`
+      : `<button class="btn btn-sm btn-convert"
+                 onclick="openConvertSheet('${t.id}', '${escHtml(t.title)}')">
+           🎬 Convert
+         </button>`;
+
     fileActions = `<div class="qi-file-actions">
       <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
         ☁ Send to iPhone
@@ -958,6 +1131,7 @@ function queueItemHtml(t) {
       <button class="btn btn-sm btn-delete" onclick="deleteFile('${t.id}', this)">
         🗑 Delete file
       </button>
+      ${convertBtn}
     </div>`;
   }
 
@@ -1142,6 +1316,89 @@ function closePreview() {
   document.getElementById('preview-content').innerHTML = '';
 }
 
+/* ── Convert sheet ──────────────────────────────────────────────────── */
+async function openConvertSheet(taskId, title) {
+  _pendingConvertTaskId = taskId;
+  document.getElementById('convert-sheet-sub').textContent = title || taskId;
+
+  // Reset selections to defaults
+  _setActive('cvq-grid',   'data-cvq',   'standard');
+  _setActive('cvenc-grid', 'data-cvenc', 'cpu');
+  _setActive('cvspd-grid', 'data-cvspd', 'balanced');
+  document.getElementById('crf-row').style.display = 'none';
+  document.getElementById('crf-slider').value = '23';
+  document.getElementById('crf-val').textContent = '23';
+
+  // Fetch available encoders from server and populate grid
+  try {
+    const encs = await api('GET', '/api/convert/encoders');
+    const grid = document.getElementById('cvenc-grid');
+    grid.innerHTML = encs.map((e, i) =>
+      `<div class="radio-btn ${i===0?'active':''}"
+            data-cvenc="${escHtml(e.key)}"
+            onclick="setCvenc(this)">${escHtml(e.label)}</div>`
+    ).join('');
+  } catch(_) {
+    // Keep default CPU option on error
+  }
+
+  document.getElementById('convert-overlay').classList.add('open');
+}
+
+function closeConvertSheet() {
+  document.getElementById('convert-overlay').classList.remove('open');
+  _pendingConvertTaskId = null;
+}
+
+function setCvq(el) {
+  _setActive('cvq-grid', 'data-cvq', el.dataset.cvq);
+  document.getElementById('crf-row').style.display =
+    el.dataset.cvq === 'custom' ? 'flex' : 'none';
+}
+function setCvenc(el) { _setActive('cvenc-grid', 'data-cvenc', el.dataset.cvenc); }
+function setCvspd(el)  { _setActive('cvspd-grid', 'data-cvspd', el.dataset.cvspd); }
+
+function _setActive(gridId, attr, value) {
+  document.querySelectorAll(`#${gridId} .radio-btn`).forEach(b => {
+    b.classList.toggle('active', b.dataset[attr.replace('data-','')] === value);
+  });
+}
+
+async function submitConvert() {
+  if (!_pendingConvertTaskId) return;
+  const quality     = document.querySelector('#cvq-grid   .radio-btn.active')?.dataset.cvq   || 'standard';
+  const encoderKey  = document.querySelector('#cvenc-grid .radio-btn.active')?.dataset.cvenc || 'cpu';
+  const speedPreset = document.querySelector('#cvspd-grid .radio-btn.active')?.dataset.cvspd || 'balanced';
+  const customCrf   = parseInt(document.getElementById('crf-slider').value, 10) || 23;
+
+  closeConvertSheet();
+
+  try {
+    const job = await api('POST', `/api/queue/${_pendingConvertTaskId}/convert`, {
+      encoder_key:  encoderKey,
+      quality,
+      speed_preset: speedPreset,
+      custom_crf:   customCrf,
+    });
+    convertJobs[job.job_id] = job;
+    toast('🎬 Đang convert…');
+    renderQueue();
+  } catch(e) {
+    toast('❌ ' + e.message);
+  }
+}
+
+async function cancelConvert(jobId, btn) {
+  btn.disabled = true;
+  try {
+    await api('POST', `/api/convert/${jobId}/cancel`);
+    toast('⊘ Đang huỷ convert…');
+  } catch(e) {
+    toast('❌ ' + e.message);
+    btn.disabled = false;
+  }
+}
+
 /* ── History ────────────────────────────────────────────────────────── */
 async function loadHistory() {
   const list = document.getElementById('history-list');
@@ -1226,6 +1483,10 @@ if (cfg.host) {
 }
 
 // Close settings overlay on background tap
+document.getElementById('convert-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeConvertSheet();
+});
+
 document.getElementById('settings-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeSettings();
 });

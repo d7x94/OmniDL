@@ -38,18 +38,23 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from api.models import (
     AnalyseRequest,
     AnalyseResponse,
+    ConvertJobResponse,
+    ConvertRequest,
     DownloadRequest,
+    EncoderOption,
     FileActionResponse,
     FileInfoResponse,
     QueueActionResponse,
     TaskResponse,
 )
 from app.event_bus import EventBus
+from domain.models.conversion_job import ConversionJob
 from domain.models.download_task import DownloadTask, MediaInfo
 
 if TYPE_CHECKING:
     import uvicorn
     from app.services.download_service import DownloadService
+    from app.services.remote_convert_service import RemoteConvertService
     from infrastructure.config.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -139,11 +144,52 @@ def _wire_event_bus(bus: EventBus) -> None:
     bus.subscribe(EventBus.TAILDROP_COMPLETED, _on_taildrop_completed)
     bus.subscribe(EventBus.TAILDROP_FAILED,    _on_taildrop_failed)
 
+    # ── Convert events → SSE ─────────────────────────────────────────────
+    # Serialise ConversionJob snapshots the same way as tasks, so the iOS
+    # client can update convert progress with the same SSE infrastructure.
+
+    def _job_to_sse(job: ConversionJob) -> dict:
+        snap = job.snapshot()
+        # Expose only the basename so the client doesn't see server paths.
+        out = snap.get("output_filename", "") or ""
+        snap["output_filename"] = Path(out).name if out else ""
+        return snap
+
+    def _on_convert_started(job: ConversionJob, **_kw) -> None:
+        _broadcast("convert_started", _job_to_sse(job))
+
+    def _on_convert_progress(job: ConversionJob, **_kw) -> None:
+        _broadcast("convert_progress", _job_to_sse(job))
+
+    def _on_convert_completed(job: ConversionJob, **_kw) -> None:
+        _broadcast("convert_completed", _job_to_sse(job))
+
+    def _on_convert_failed(job: ConversionJob, **_kw) -> None:
+        _broadcast("convert_failed", _job_to_sse(job))
+
+    def _on_convert_cancelled(job: ConversionJob, **_kw) -> None:
+        _broadcast("convert_cancelled", _job_to_sse(job))
+
+    bus.subscribe(EventBus.CONVERT_STARTED,   _on_convert_started)
+    bus.subscribe(EventBus.CONVERT_PROGRESS,  _on_convert_progress)
+    bus.subscribe(EventBus.CONVERT_COMPLETED, _on_convert_completed)
+    bus.subscribe(EventBus.CONVERT_FAILED,    _on_convert_failed)
+    bus.subscribe(EventBus.CONVERT_CANCELLED, _on_convert_cancelled)
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
-def create_app(service: "DownloadService", config: "ConfigManager") -> FastAPI:
-    """Build and return the FastAPI application."""
+def create_app(
+    service: "DownloadService",
+    config: "ConfigManager",
+    remote_convert: "Optional[RemoteConvertService]" = None,
+) -> FastAPI:
+    """Build and return the FastAPI application.
+
+    ``remote_convert`` is optional so existing callers (tests, older startup
+    code) continue to work unchanged — convert endpoints simply return 503
+    when the service is not provided.
+    """
 
     app = FastAPI(
         title="OmniDL Remote API",
@@ -480,9 +526,172 @@ def create_app(service: "DownloadService", config: "ConfigManager") -> FastAPI:
             preview_url=f"/api/queue/{task_id}/file",
         )
 
+    # ── Remote Convert ─────────────────────────────────────────────────────
+
+    def _job_to_response(job: ConversionJob) -> ConvertJobResponse:
+        """Serialise a ConversionJob to the API response model."""
+        snap = job.snapshot()
+        out  = snap.get("output_filename", "") or ""
+        return ConvertJobResponse(
+            job_id          = snap["job_id"],
+            source_task_id  = snap["source_task_id"],
+            encoder_key     = snap["encoder_key"],
+            quality         = snap["quality"],
+            speed_preset    = snap["speed_preset"],
+            custom_crf      = snap["custom_crf"],
+            status          = snap["status"],
+            progress        = snap["progress"],
+            output_filename = Path(out).name if out else "",
+            error_msg       = snap["error_msg"],
+            created_at      = snap["created_at"],
+            finished_at     = snap["finished_at"],
+            preview_url     = f"/api/convert/{snap['job_id']}/file",
+        )
+
+    @app.get(
+        "/api/convert/encoders",
+        response_model=list[EncoderOption],
+        summary="List GPU/CPU encoders available on the server",
+    )
+    async def list_encoders(_: None = Depends(_require_auth)) -> list[EncoderOption]:
+        """
+        Return available encoder options detected on the server machine.
+        CPU (libx264) is always present; GPU encoders appear only when
+        the corresponding hardware and drivers are installed.
+
+        Result is cached for 5 minutes inside detect_available_encoders().
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        opts = remote_convert.get_available_encoders()
+        return [EncoderOption(key=k, label=lbl) for k, lbl in opts]
+
+    @app.post(
+        "/api/queue/{task_id}/convert",
+        response_model=ConvertJobResponse,
+        summary="Start a remote conversion job for a completed download task",
+    )
+    async def start_convert(
+        task_id: str,
+        body: ConvertRequest,
+        _: None = Depends(_require_auth),
+    ) -> ConvertJobResponse:
+        """
+        Trigger FFmpeg conversion on a COMPLETED download task.
+
+        • task must be COMPLETED and have an output file on disk
+        • source file must reside inside download_dir (path traversal guard)
+        • encoder_key / quality / speed_preset are validated server-side
+        • returns immediately; progress arrives via SSE convert_progress events
+        • at most 2 remote conversions run simultaneously (ConvertQueue)
+
+        Security: encoder_key is validated against an explicit allowlist
+        before being passed to FFmpeg — no arbitrary codec injection possible.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+
+        task = _get_task_or_404(service, task_id)
+        if task.status.name != "COMPLETED":
+            raise HTTPException(status_code=400, detail="Task is not COMPLETED")
+
+        file_path = _resolve_task_file(task)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Output file not found on disk")
+
+        try:
+            job = remote_convert.start_convert(
+                source_task_id = task_id,
+                file_path      = file_path,
+                encoder_key    = body.encoder_key or "cpu",
+                quality        = body.quality or "standard",
+                speed_preset   = body.speed_preset or "balanced",
+                custom_crf     = body.custom_crf if body.custom_crf is not None else 23,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return _job_to_response(job)
+
+    @app.get(
+        "/api/convert/{job_id}",
+        response_model=ConvertJobResponse,
+        summary="Get status and progress of a conversion job",
+    )
+    async def get_convert_job(
+        job_id: str, _: None = Depends(_require_auth)
+    ) -> ConvertJobResponse:
+        """Poll a conversion job. Prefer SSE convert_progress events instead."""
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        job = remote_convert.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Convert job not found")
+        return _job_to_response(job)
+
+    @app.post(
+        "/api/convert/{job_id}/cancel",
+        response_model=FileActionResponse,
+        summary="Cancel an in-progress conversion job",
+    )
+    async def cancel_convert_job(
+        job_id: str, _: None = Depends(_require_auth)
+    ) -> FileActionResponse:
+        """
+        Signal the FFmpeg worker to stop.
+
+        The cancel is asynchronous: the job transitions to CANCELLED once
+        FFmpeg exits and the SSE convert_cancelled event fires.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        ok = remote_convert.cancel_convert(job_id)
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail="Job not found or already in terminal state",
+            )
+        return FileActionResponse(task_id=job_id, action="cancel_requested",
+                                  detail="Cancellation signal sent")
+
+    @app.get(
+        "/api/convert/{job_id}/file",
+        summary="Stream / preview the converted MP4 output",
+    )
+    async def preview_convert_file(
+        job_id: str, _: None = Depends(_require_auth)
+    ):
+        """
+        Serve the converted MP4 inline for iOS Safari preview.
+
+        Only available once the job status is COMPLETED.
+        Same Range-request support as the download preview endpoint.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        job = remote_convert.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Convert job not found")
+        if job.status != "COMPLETED":
+            raise HTTPException(status_code=400, detail="Conversion not completed yet")
+
+        out_path = Path(job.output_filename).resolve()
+        allowed  = config.download_dir.resolve()
+        if not out_path.is_relative_to(allowed):
+            raise HTTPException(status_code=403,
+                                detail="Output file is outside download directory")
+        if not out_path.exists():
+            raise HTTPException(status_code=404, detail="Converted file not found on disk")
+
+        return FileResponse(
+            path=str(out_path),
+            media_type="video/mp4",
+            filename=out_path.name,
+            content_disposition_type="inline",
+            headers={"Accept-Ranges": "bytes"},
+        )
 
 
-    @app.get("/api/history")
     async def get_history(_: None = Depends(_require_auth)):
         """Return the full download history (newest first)."""
         return list(reversed(service.get_history()))
@@ -647,7 +856,12 @@ def start_api_server(
     # connections, so no events are missed.
     _wire_event_bus(bus)
 
-    app = create_app(service, config)
+    # Instantiate RemoteConvertService — shares the same EventBus so convert
+    # progress events flow through the existing SSE broadcaster automatically.
+    from app.services.remote_convert_service import RemoteConvertService
+    remote_convert = RemoteConvertService(config=config, event_bus=bus)
+
+    app = create_app(service, config, remote_convert=remote_convert)
 
     try:
         import uvicorn

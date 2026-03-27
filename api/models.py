@@ -114,3 +114,39 @@ class FileInfoResponse(BaseModel):
     size_bytes: int         # 0 if file no longer exists
     exists: bool
     preview_url: str        # relative URL to stream/preview the file
+
+
+# ── Remote Convert ────────────────────────────────────────────────────────────
+
+class ConvertRequest(BaseModel):
+    """Start a remote conversion job for a completed download task."""
+    encoder_key:  Optional[str] = "cpu"
+    # "high" | "standard" | "small" | "custom"
+    quality:      Optional[str] = "standard"
+    # "quality" | "balanced" | "fast"
+    speed_preset: Optional[str] = "balanced"
+    # CRF value used when quality=="custom" (0–51)
+    custom_crf:   Optional[int] = 23
+
+
+class ConvertJobResponse(BaseModel):
+    """Snapshot of a single ConversionJob."""
+    job_id:          str
+    source_task_id:  str
+    encoder_key:     str
+    quality:         str
+    speed_preset:    str
+    custom_crf:      int
+    status:          str    # ConversionStatus string
+    progress:        float  # 0.0 – 100.0
+    output_filename: str    # basename of converted file, empty until COMPLETED
+    error_msg:       str
+    created_at:      float
+    finished_at:     float
+    preview_url:     str    # relative URL to stream the converted file
+
+
+class EncoderOption(BaseModel):
+    """One available encoder entry returned by GET /api/convert/encoders."""
+    key:   str   # e.g. "nvenc"
+    label: str   # e.g. "NVIDIA NVENC"

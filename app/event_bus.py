@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from domain.models.download_task import DownloadTask, MediaInfo
+    from domain.models.conversion_job import ConversionJob
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,23 @@ class EventBus:
     ) -> None:
         self.publish(self.TAILDROP_FAILED, task=task, dest_node=dest_node, error=error)
 
+    # ── Convert event publishers ──────────────────────────────────────────
+
+    def publish_convert_started(self, job: "ConversionJob") -> None:
+        self.publish(self.CONVERT_STARTED, job=job)
+
+    def publish_convert_progress(self, job: "ConversionJob") -> None:
+        self.publish(self.CONVERT_PROGRESS, job=job)
+
+    def publish_convert_completed(self, job: "ConversionJob") -> None:
+        self.publish(self.CONVERT_COMPLETED, job=job)
+
+    def publish_convert_failed(self, job: "ConversionJob") -> None:
+        self.publish(self.CONVERT_FAILED, job=job)
+
+    def publish_convert_cancelled(self, job: "ConversionJob") -> None:
+        self.publish(self.CONVERT_CANCELLED, job=job)
+
     # ── Well-known event name constants ──────────────────────────────────
 
     DOWNLOAD_STARTED   = "download.started"
@@ -108,6 +126,11 @@ class EventBus:
     ANALYSIS_FAILED    = "analysis.failed"
     TAILDROP_COMPLETED = "taildrop.completed"   # kwargs: task, dest_node
     TAILDROP_FAILED    = "taildrop.failed"       # kwargs: task, dest_node, error
+    CONVERT_STARTED    = "convert.started"       # kwargs: job (ConversionJob)
+    CONVERT_PROGRESS   = "convert.progress"      # kwargs: job
+    CONVERT_COMPLETED  = "convert.completed"     # kwargs: job
+    CONVERT_FAILED     = "convert.failed"        # kwargs: job
+    CONVERT_CANCELLED  = "convert.cancelled"     # kwargs: job
 
 
 # ── Module-level singleton ────────────────────────────────────────────────
