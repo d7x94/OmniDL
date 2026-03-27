@@ -1365,7 +1365,10 @@ function _setActive(gridId, attr, value) {
 }
 
 async function submitConvert() {
-  if (!_pendingConvertTaskId) return;
+  // Capture BEFORE closeConvertSheet() nullifies _pendingConvertTaskId
+  const taskId = _pendingConvertTaskId;
+  if (!taskId) return;
+
   const quality     = document.querySelector('#cvq-grid   .radio-btn.active')?.dataset.cvq   || 'standard';
   const encoderKey  = document.querySelector('#cvenc-grid .radio-btn.active')?.dataset.cvenc || 'cpu';
   const speedPreset = document.querySelector('#cvspd-grid .radio-btn.active')?.dataset.cvspd || 'balanced';
@@ -1374,7 +1377,7 @@ async function submitConvert() {
   closeConvertSheet();
 
   try {
-    const job = await api('POST', `/api/queue/${_pendingConvertTaskId}/convert`, {
+    const job = await api('POST', `/api/queue/${taskId}/convert`, {
       encoder_key:  encoderKey,
       quality,
       speed_preset: speedPreset,
