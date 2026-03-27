@@ -115,11 +115,29 @@ def _wire_event_bus(bus: EventBus) -> None:
     def _on_failed(task: DownloadTask)    -> None: _broadcast("failed",    _task_to_dict(task))
     def _on_cancelled(task: DownloadTask) -> None: _broadcast("cancelled", _task_to_dict(task))
 
+    # Taildrop transfer results — broadcast so the Remote UI can restore
+    # the transfer button and show a completion / failure toast.
+    # kwargs: task, dest_node  (and error for FAILED)
+    def _on_taildrop_completed(task: DownloadTask, dest_node: str, **_kw) -> None:
+        _broadcast("taildrop_completed", {
+            "task_id":   task.id,
+            "dest_node": dest_node,
+        })
+
+    def _on_taildrop_failed(task: DownloadTask, dest_node: str, error: str = "", **_kw) -> None:
+        _broadcast("taildrop_failed", {
+            "task_id":   task.id,
+            "dest_node": dest_node,
+            "error":     error,
+        })
+
     bus.subscribe(EventBus.DOWNLOAD_STARTED,   _on_started)
     bus.subscribe(EventBus.DOWNLOAD_PROGRESS,  _on_progress)
     bus.subscribe(EventBus.DOWNLOAD_COMPLETED, _on_completed)
     bus.subscribe(EventBus.DOWNLOAD_FAILED,    _on_failed)
     bus.subscribe(EventBus.DOWNLOAD_CANCELLED, _on_cancelled)
+    bus.subscribe(EventBus.TAILDROP_COMPLETED, _on_taildrop_completed)
+    bus.subscribe(EventBus.TAILDROP_FAILED,    _on_taildrop_failed)
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -345,9 +363,11 @@ def create_app(service: "DownloadService", config: "ConfigManager") -> FastAPI:
             raise HTTPException(status_code=404, detail="Output file not found on disk")
 
         # Dispatch to the background executor — non-blocking.
+        # send_now() bypasses the send_mode guard so the transfer fires
+        # regardless of whether the mode is "always" or "ask".
         # TaildropService publishes TAILDROP_COMPLETED / TAILDROP_FAILED events
         # on the EventBus which SSE clients will receive automatically.
-        td.on_download_completed(task)
+        td.send_now(task)
         return FileActionResponse(
             task_id=task_id,
             action="transfer_queued",

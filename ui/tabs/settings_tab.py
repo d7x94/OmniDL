@@ -770,6 +770,49 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
             fill="x", padx=16, pady=(0, 10)
         )
 
+        # ── Send mode ────────────────────────────────────────────────────
+        ctk.CTkLabel(
+            td_card,
+            text="📤  Chế độ gửi file",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T.text2,
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(0, 4))
+
+        td_mode_row = ctk.CTkFrame(td_card, fg_color="transparent")
+        td_mode_row.pack(fill="x", padx=16, pady=(0, 4))
+
+        self._td_mode_auto_btn = ctk.CTkButton(
+            td_mode_row,
+            text="🔄  Tự động",
+            height=30, corner_radius=8,
+            font=ctk.CTkFont(size=11),
+            command=lambda: self._on_taildrop_mode_change("always"),
+        )
+        self._td_mode_auto_btn.pack(side="left", padx=(0, 6))
+
+        self._td_mode_manual_btn = ctk.CTkButton(
+            td_mode_row,
+            text="🖱️  Thủ công",
+            height=30, corner_radius=8,
+            font=ctk.CTkFont(size=11),
+            command=lambda: self._on_taildrop_mode_change("ask"),
+        )
+        self._td_mode_manual_btn.pack(side="left")
+
+        self._td_mode_desc_lbl = ctk.CTkLabel(
+            td_card, text="",
+            font=ctk.CTkFont(size=10), text_color=T.text3, anchor="w",
+        )
+        self._td_mode_desc_lbl.pack(fill="x", padx=16, pady=(0, 10))
+
+        self._refresh_taildrop_mode_buttons()
+
+        # Divider 2
+        ctk.CTkFrame(td_card, fg_color=T.border, height=1).pack(
+            fill="x", padx=16, pady=(0, 10)
+        )
+
         # ── Target node row ──────────────────────────────────────────────
         td_node_header = ctk.CTkLabel(
             td_card,
@@ -963,6 +1006,53 @@ class SettingsTab(_BaseFrame):  # type: ignore[misc]
         self._app.config.save()
         state = "bật" if enabled else "tắt"
         self._app.toast(f"📲  Taildrop {state}.", "success" if enabled else "info")
+
+    def _on_taildrop_mode_change(self, mode: str) -> None:
+        """Lưu chế độ gửi Taildrop khi user chọn Tự động / Thủ công."""
+        self._app.config.set("taildrop_send_mode", mode)
+        self._app.config.save()
+        self._refresh_taildrop_mode_buttons()
+        if mode == "always":
+            label = "Tự động — gửi ngay sau mỗi lần tải xong"
+        else:
+            label = "Thủ công — chỉ gửi khi bạn yêu cầu"
+        self._app.toast(f"📤  Chế độ Taildrop: {label}.", "success")
+
+    def _refresh_taildrop_mode_buttons(self) -> None:
+        """Cập nhật visual active/inactive của 2 nút Send Mode.
+
+        Gọi khi:
+          • Build UI lần đầu (đọc giá trị lưu từ config)
+          • Sau mỗi lần _on_taildrop_mode_change() thay đổi chế độ
+        Luôn guard winfo_exists() trước khi configure() — đúng rule
+        OMNIDL_STABILITY_RULES § UI-thread safety.
+        """
+        auto_btn = getattr(self, "_td_mode_auto_btn",   None)
+        man_btn  = getattr(self, "_td_mode_manual_btn", None)
+        desc_lbl = getattr(self, "_td_mode_desc_lbl",   None)
+        if auto_btn is None or not auto_btn.winfo_exists():
+            return
+
+        mode = str(
+            getattr(self._app.config, "taildrop_send_mode", "ask") or "ask"
+        )
+        active_fg,   active_txt   = T.primary,  T.primary_text
+        inactive_fg, inactive_txt = T.surface3, T.text2
+
+        if mode == "always":
+            auto_btn.configure(fg_color=active_fg,   text_color=active_txt)
+            man_btn.configure( fg_color=inactive_fg, text_color=inactive_txt)
+            if desc_lbl and desc_lbl.winfo_exists():
+                desc_lbl.configure(
+                    text="⚡ File sẽ tự động gửi sang iPhone ngay sau mỗi lần tải xong."
+                )
+        else:
+            auto_btn.configure(fg_color=inactive_fg, text_color=inactive_txt)
+            man_btn.configure( fg_color=active_fg,   text_color=active_txt)
+            if desc_lbl and desc_lbl.winfo_exists():
+                desc_lbl.configure(
+                    text="🖱️ File chỉ được gửi khi bạn nhấn Transfer thủ công trong Remote UI."
+                )
 
     def _on_taildrop_save_node(self) -> None:
         """Validate and save the target node name entered by the user."""

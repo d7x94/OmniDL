@@ -707,6 +707,21 @@ function connectSSE() {
     });
   });
 
+  // ── Taildrop transfer results ────────────────────────────────────────
+  // Restore the transfer button and show a toast when the async transfer
+  // completes or fails on the server side.
+  evtSrc.addEventListener('taildrop_completed', e => {
+    const d = JSON.parse(e.data);
+    toast(`✅ Sent to ${d.dest_node} via Taildrop!`);
+    _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+  });
+
+  evtSrc.addEventListener('taildrop_failed', e => {
+    const d = JSON.parse(e.data);
+    toast(`❌ Taildrop failed: ${d.error || 'unknown error'}`, 'error');
+    _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+  });
+
   evtSrc.onerror = () => setConnected(false);
 }
 
@@ -1030,11 +1045,36 @@ async function transferFile(id, btn) {
   try {
     const r = await api('POST', `/api/queue/${id}/transfer`);
     toast(r.detail || 'Transfer queued');
+    // Transfer is async on the server — show "Queued" briefly while we wait
+    // for the taildrop_completed / taildrop_failed SSE event to arrive.
+    btn.textContent = '📡 Queued…';
+    // Store task id on the element so the SSE handler can find it.
+    btn.dataset.transferId = id;
+    // Safety fallback: restore after 3 min in case SSE is lost.
+    btn._transferTimer = setTimeout(() => {
+      if (btn.dataset.transferId) {
+        delete btn.dataset.transferId;
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }, 180_000);
   } catch(e) {
     toast('Transfer failed: ' + e.message);
     btn.disabled = false;
     btn.textContent = orig;
   }
+}
+
+/* Restore a pending transfer button when a taildrop SSE event arrives.
+   Finds the button by its data-transfer-id attribute, clears the safety
+   timer, then re-enables it with the original label. */
+function _restoreTransferBtn(taskId, label) {
+  const btn = document.querySelector(`[data-transfer-id="${taskId}"]`);
+  if (!btn) return;
+  if (btn._transferTimer) { clearTimeout(btn._transferTimer); delete btn._transferTimer; }
+  delete btn.dataset.transferId;
+  btn.disabled = false;
+  btn.textContent = label;
 }
 
 async function deleteFile(id, btn) {

@@ -136,6 +136,49 @@ class TaildropService:
                 return
             self._executor.submit(self._transfer, task, file_path, node)
 
+    def send_now(self, task: "DownloadTask") -> None:
+        """
+        On-demand transfer triggered explicitly by the user (e.g. Remote API
+        POST /api/queue/{task_id}/transfer).
+
+        Unlike on_download_completed(), this method intentionally bypasses the
+        send_mode guard — it must fire regardless of whether the mode is
+        "always" or "ask", because the user has explicitly requested the send.
+
+        Pre-flight checks (enabled, node, CLI) are the caller's responsibility
+        (the API endpoint already validates them before calling this method).
+        Dispatches to the background executor and returns immediately.
+        """
+        node = self._config.taildrop_target_node
+        if not node:
+            logger.warning("Taildrop send_now: target_node not configured — skipping")
+            return
+
+        # Resolve output path using the same field-lookup order as
+        # on_download_completed() for consistency.
+        file_path: Optional[Path] = None
+        raw = (
+            getattr(task, "filename", None)
+            or getattr(task, "output_path", None)
+            or getattr(task, "file_path", None)
+        )
+        if raw:
+            file_path = Path(raw).resolve()
+
+        if file_path is None or not file_path.exists():
+            logger.warning(
+                "Taildrop send_now: task %s — output_path missing or file not found (%s)",
+                task.id, file_path,
+            )
+            return
+
+        with self._lock:
+            if self._closed:
+                logger.warning("Taildrop send_now: service is closed — cannot send")
+                return
+            self._executor.submit(self._transfer, task, file_path, node)
+        logger.debug("Taildrop send_now: queued '%s' → %s", file_path.name, node)
+
     def send_file(
         self, file_path: Path, node: str
     ) -> TransferResult:
