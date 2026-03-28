@@ -11,6 +11,8 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from domain.models.download_task import DownloadTask, MediaInfo
     from domain.models.conversion_job import ConversionJob
 
@@ -98,6 +100,18 @@ class EventBus:
     ) -> None:
         self.publish(self.TAILDROP_FAILED, task=task, dest_node=dest_node, error=error)
 
+    def publish_convert_taildrop_completed(
+        self, out_path: "Path", dest_node: str
+    ) -> None:
+        """Fired when a converted file is successfully sent to a Tailscale peer."""
+        self.publish(self.CONVERT_TAILDROP_COMPLETED, out_path=out_path, dest_node=dest_node)
+
+    def publish_convert_taildrop_failed(
+        self, out_path: "Path", dest_node: str, error: str
+    ) -> None:
+        """Fired when Taildrop transfer of a converted file fails."""
+        self.publish(self.CONVERT_TAILDROP_FAILED, out_path=out_path, dest_node=dest_node, error=error)
+
     # ── Convert event publishers ──────────────────────────────────────────
 
     def publish_convert_started(self, job: "ConversionJob") -> None:
@@ -126,6 +140,8 @@ class EventBus:
     ANALYSIS_FAILED    = "analysis.failed"
     TAILDROP_COMPLETED = "taildrop.completed"   # kwargs: task, dest_node
     TAILDROP_FAILED    = "taildrop.failed"       # kwargs: task, dest_node, error
+    CONVERT_TAILDROP_COMPLETED = "convert.taildrop.completed"  # kwargs: out_path, dest_node
+    CONVERT_TAILDROP_FAILED    = "convert.taildrop.failed"     # kwargs: out_path, dest_node, error
     CONVERT_STARTED    = "convert.started"       # kwargs: job (ConversionJob)
     CONVERT_PROGRESS   = "convert.progress"      # kwargs: job
     CONVERT_COMPLETED  = "convert.completed"     # kwargs: job

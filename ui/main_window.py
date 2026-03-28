@@ -28,6 +28,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from app.services.download_service import DownloadService
+from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
 from ui.themes.tokens import T
@@ -142,6 +143,11 @@ class MainWindow(ctk.CTk):
     @property
     def config(self) -> ConfigManager:
         return self._config
+
+    @property
+    def taildrop(self) -> "TaildropService":
+        """Expose TaildropService for ConvertTab and other UI consumers."""
+        return self._service.taildrop
 
     def get_tab(self, key: str):
         return self._tabs.get(key)

@@ -136,6 +136,48 @@ class TaildropService:
                 return
             self._executor.submit(self._transfer, task, file_path, node)
 
+    def send_converted_file(self, out_path: Path) -> None:
+        """
+        Hook for the convert pipeline.
+
+        Called from ConvertTab.on_done() after FFmpeg finishes successfully.
+        Returns immediately — the actual transfer runs in the background executor.
+
+        Design notes
+        ────────────
+        • Reuses the same executor, _do_send(), and security validation as the
+          download pipeline so there is a single code path for all Taildrop sends.
+        • Does NOT require a DownloadTask — the convert pipeline has no task object.
+        • A disabled Taildrop or missing node silently no-ops; callers never need
+          to guard against exceptions from this method.
+        • Transfer result is broadcast on the event bus as
+          CONVERT_TAILDROP_COMPLETED / CONVERT_TAILDROP_FAILED so the UI can
+          react (e.g. show a toast) without coupling to this service directly.
+        """
+        if not self._config.taildrop_enabled:
+            return
+        node = self._config.taildrop_target_node
+        if not node:
+            logger.debug("Taildrop convert: skip — target_node not configured")
+            return
+        if not out_path.exists():
+            logger.warning(
+                "Taildrop convert: skip — file not found: %s", out_path
+            )
+            return
+
+        with self._lock:
+            if self._closed:
+                logger.warning(
+                    "Taildrop convert: service is closed — cannot send '%s'",
+                    out_path.name,
+                )
+                return
+            self._executor.submit(self._transfer_converted, out_path, node)
+        logger.debug(
+            "Taildrop convert: queued '%s' → %s", out_path.name, node
+        )
+
     def send_now(self, task: "DownloadTask") -> None:
         """
         On-demand transfer triggered explicitly by the user (e.g. Remote API
@@ -330,6 +372,30 @@ class TaildropService:
             )
             self._bus.publish_taildrop_failed(
                 task=task, dest_node=node, error=result.error
+            )
+
+    def _transfer_converted(self, out_path: Path, node: str) -> None:
+        """
+        Worker for send_converted_file() — submitted to the background executor.
+
+        Analogous to _transfer() but operates on a bare Path instead of a
+        DownloadTask, and emits CONVERT_TAILDROP_* events on the bus.
+        """
+        result = self._do_send(out_path, node)
+        if result.success:
+            logger.info(
+                "Taildrop convert: ✅ sent '%s' → %s", out_path.name, node
+            )
+            self._bus.publish_convert_taildrop_completed(
+                out_path=out_path, dest_node=node
+            )
+        else:
+            logger.warning(
+                "Taildrop convert: ❌ failed '%s' → %s : %s",
+                out_path.name, node, result.error,
+            )
+            self._bus.publish_convert_taildrop_failed(
+                out_path=out_path, dest_node=node, error=result.error
             )
 
     def _do_send(self, file_path: Path, node: str) -> TransferResult:

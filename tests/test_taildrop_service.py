@@ -440,3 +440,188 @@ class TestConfigManagerTaildropProperties:
         with patch("shutil.which", return_value=None):
             assert svc.is_tailscale_available() is False
         svc.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# send_converted_file() — convert pipeline hook
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSendConvertedFile:
+    """
+    TaildropService.send_converted_file() submits a background transfer for a
+    converted MP4, using the same executor and _do_send() as the download path.
+
+    All tests drive the executor synchronously by letting the submitted thread
+    finish before the assertions run (join via svc.close()).
+    """
+
+    # ── Guards — early returns that must NOT call subprocess ─────────────
+
+    def test_disabled_does_nothing(self, tmp_path):
+        """taildrop_enabled=False → no subprocess, no bus event."""
+        svc = _make_svc(enabled=False, node="iphone")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"x")
+
+        with patch("subprocess.run") as mock_run:
+            svc.send_converted_file(f)
+            svc.close()
+
+        mock_run.assert_not_called()
+        svc._bus.publish_convert_taildrop_completed.assert_not_called()
+        svc._bus.publish_convert_taildrop_failed.assert_not_called()
+
+    def test_no_node_does_nothing(self, tmp_path):
+        """taildrop_target_node='' → no subprocess, no bus event."""
+        svc = _make_svc(enabled=True, node="")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"x")
+
+        with patch("subprocess.run") as mock_run:
+            svc.send_converted_file(f)
+            svc.close()
+
+        mock_run.assert_not_called()
+        svc._bus.publish_convert_taildrop_completed.assert_not_called()
+
+    def test_missing_file_does_nothing(self, tmp_path):
+        """File does not exist → skip silently, no subprocess call."""
+        svc = _make_svc(enabled=True, node="iphone")
+        ghost = tmp_path / "ghost.mp4"  # not created on disk
+
+        with patch("subprocess.run") as mock_run:
+            svc.send_converted_file(ghost)
+            svc.close()
+
+        mock_run.assert_not_called()
+        svc._bus.publish_convert_taildrop_completed.assert_not_called()
+
+    def test_closed_service_does_nothing(self, tmp_path):
+        """Service already closed → skip, no subprocess call."""
+        svc = _make_svc(enabled=True, node="iphone")
+        svc.close()  # close before calling
+
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"x")
+
+        with patch("subprocess.run") as mock_run:
+            svc.send_converted_file(f)
+
+        mock_run.assert_not_called()
+        svc._bus.publish_convert_taildrop_completed.assert_not_called()
+
+    # ── Success path ─────────────────────────────────────────────────────
+
+    def test_success_publishes_completed_event(self, tmp_path):
+        """Successful tailscale send → CONVERT_TAILDROP_COMPLETED on bus."""
+        svc = _make_svc(enabled=True, node="iphone")
+        f = tmp_path / "video_iPhone.mp4"
+        f.write_bytes(b"fake-mp4-data")
+
+        ok = MagicMock()
+        ok.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok):
+            svc.send_converted_file(f)
+            svc.close()  # blocks until worker finishes
+
+        svc._bus.publish_convert_taildrop_completed.assert_called_once_with(
+            out_path=f, dest_node="iphone"
+        )
+        svc._bus.publish_convert_taildrop_failed.assert_not_called()
+
+    def test_success_calls_correct_tailscale_command(self, tmp_path):
+        """Verifies the subprocess args: tailscale file cp <path> <node>:"""
+        svc = _make_svc(enabled=True, node="my-iphone")
+        f = tmp_path / "video_iPhone.mp4"
+        f.write_bytes(b"data")
+
+        ok = MagicMock()
+        ok.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale") as mock_which, \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            svc.send_converted_file(f)
+            svc.close()
+
+        mock_run.assert_called_once_with(
+            ["/usr/bin/tailscale", "file", "cp", str(f), "my-iphone:"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    # ── Failure paths ────────────────────────────────────────────────────
+
+    def test_tailscale_not_found_publishes_failed_event(self, tmp_path):
+        """tailscale CLI not on PATH → CONVERT_TAILDROP_FAILED on bus."""
+        svc = _make_svc(enabled=True, node="iphone")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"data")
+
+        with patch("shutil.which", return_value=None):
+            svc.send_converted_file(f)
+            svc.close()
+
+        call_kwargs = svc._bus.publish_convert_taildrop_failed.call_args
+        assert call_kwargs is not None
+        assert "not found" in call_kwargs.kwargs["error"].lower()
+        svc._bus.publish_convert_taildrop_completed.assert_not_called()
+
+    def test_tailscale_nonzero_exit_publishes_failed_event(self, tmp_path):
+        """tailscale exits non-zero → CONVERT_TAILDROP_FAILED with stderr."""
+        svc = _make_svc(enabled=True, node="iphone")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"data")
+
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = "peer unreachable"
+        fail.stdout = ""
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=fail):
+            svc.send_converted_file(f)
+            svc.close()
+
+        call_kwargs = svc._bus.publish_convert_taildrop_failed.call_args
+        assert call_kwargs is not None
+        assert "peer unreachable" in call_kwargs.kwargs["error"]
+        svc._bus.publish_convert_taildrop_completed.assert_not_called()
+
+    def test_transfer_timeout_publishes_failed_event(self, tmp_path):
+        """subprocess.TimeoutExpired → CONVERT_TAILDROP_FAILED."""
+        svc = _make_svc(enabled=True, node="iphone")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"data")
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=120)):
+            svc.send_converted_file(f)
+            svc.close()
+
+        call_kwargs = svc._bus.publish_convert_taildrop_failed.call_args
+        assert call_kwargs is not None
+        assert "timed out" in call_kwargs.kwargs["error"].lower()
+
+    # ── Isolation from download pipeline ─────────────────────────────────
+
+    def test_does_not_call_download_taildrop_events(self, tmp_path):
+        """send_converted_file must NEVER emit TAILDROP_COMPLETED/FAILED
+        (download-pipeline events) — only the convert-taildrop variants."""
+        svc = _make_svc(enabled=True, node="iphone")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"data")
+
+        ok = MagicMock()
+        ok.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok):
+            svc.send_converted_file(f)
+            svc.close()
+
+        # Download-pipeline methods must remain untouched
+        svc._bus.publish_taildrop_completed.assert_not_called()
+        svc._bus.publish_taildrop_failed.assert_not_called()

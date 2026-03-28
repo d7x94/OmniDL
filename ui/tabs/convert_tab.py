@@ -995,6 +995,17 @@ class ConvertTab(ctk.CTkFrame):
             job.progress = 100.0
             job.output = out_path
             self._ui_queue.put(lambda j=job: self._finish_job(j))
+            # ── Auto-send to iPhone via Taildrop ─────────────────────────
+            # Fires only when taildrop_enabled=True and target_node is set.
+            # Non-blocking: returns immediately, transfer runs in background.
+            # Any failure is logged + broadcast on the event bus; it does NOT
+            # change job.state or affect the UI flow in any way.
+            try:
+                self._app.taildrop.send_converted_file(out_path)
+            except Exception:
+                logger.debug(
+                    "Taildrop convert hook raised unexpectedly", exc_info=True
+                )
 
         def on_error(msg: str) -> None:
             job.state = FileState.FAILED
