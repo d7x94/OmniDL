@@ -52,6 +52,8 @@ MIN_CHECK_INTERVAL_S   = 15     # minimum seconds between checks per URL
 DEFAULT_CHECK_INTERVAL = 30     # default polling interval (seconds)
 _POLL_MS               = 5_000  # UI poll cadence (ms)
 _COOKIE_WARN_DAYS      = 7      # warn if cookie file older than this
+MAX_CONSECUTIVE_FAILURES = 8    # escalate to ERROR after N consecutive check failures
+_CHECKING_TIMEOUT_S    = 90     # max seconds a single check can be in-flight
 
 
 # ── State machine ──────────────────────────────────────────────────────────────
@@ -99,6 +101,10 @@ class _MonitorItem:
 
     # Captured filename when recording completes — used by open_folder_btn
     filename: str = ""
+
+    # Consecutive check failures — escalates to ERROR after MAX_CONSECUTIVE_FAILURES
+    # to break the infinite WAITING loop caused by persistent transient errors.
+    consecutive_failures: int = 0
 
     # UI widgets — assigned after row is built
     row_frame:        Optional[ctk.CTkFrame]  = field(default=None, repr=False)
@@ -568,7 +574,11 @@ class LiveMonitorTab(ctk.CTkFrame):
             if item.last_check > 0:
                 elapsed = int(time.time() - item.last_check)
                 remaining = max(0, interval - elapsed)
-                return f"Kiểm tra lại sau {remaining}s"
+                fail_hint = (
+                    f"  (lỗi {item.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})"
+                    if item.consecutive_failures > 0 else ""
+                )
+                return f"Kiểm tra lại sau {remaining}s{fail_hint}"
             return f"Kiểm tra mỗi {interval}s"
         if state == _MonitorState.CHECKING:
             return "Đang kiểm tra stream…"
@@ -662,10 +672,43 @@ class LiveMonitorTab(ctk.CTkFrame):
             return
 
         self._refresh_recording_items()
+        self._recover_stuck_checks()   # unblock _checking if thread died silently
         self._enqueue_next_check()
         self._update_cookie_banner()   # refresh if user changed cookie in Settings
         self._update_status()
         self.after(_POLL_MS, self._poll)
+
+    def _recover_stuck_checks(self) -> None:
+        """Detect and recover from checks stuck in CHECKING state.
+
+        If a background thread crashes without calling on_done/on_error
+        (rare but possible), _checking stays True and no more checks run.
+        Guard: if any item has been in CHECKING for > _CHECKING_TIMEOUT_S,
+        release _checking and push the item back to WAITING.
+        """
+        now = time.time()
+        for item in self._items:
+            if item.state != _MonitorState.CHECKING:
+                continue
+            elapsed = now - item.last_check
+            if elapsed > _CHECKING_TIMEOUT_S:
+                logger.warning(
+                    "LiveMonitor: check for %s stuck in CHECKING for %.0fs — "
+                    "releasing lock and resetting to WAITING",
+                    item.url, elapsed,
+                )
+                self._checking = False
+                item.consecutive_failures += 1
+                if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    item.state = _MonitorState.ERROR
+                    item.error_msg = (
+                        f"Kiểm tra bị treo {int(elapsed)}s. "
+                        "Thử lại hoặc kiểm tra kết nối mạng."
+                    )
+                else:
+                    item.state = _MonitorState.WAITING
+                self._refresh_item_ui(item)
+                break  # only fix one at a time per poll cycle
 
     def _refresh_recording_items(self) -> None:
         """Update progress display and detect stream end for RECORDING items."""
@@ -775,6 +818,7 @@ class LiveMonitorTab(ctk.CTkFrame):
             return  # stale — item was removed/cleared
 
         item.media_info = info
+        item.consecutive_failures = 0  # reset on any successful API response
 
         if info.is_live:
             logger.info("LiveMonitor: LIVE detected — %s", item.url)
@@ -810,6 +854,7 @@ class LiveMonitorTab(ctk.CTkFrame):
                 "LiveMonitor: profile @%s is LIVE → %s",
                 item.username, live_url,
             )
+            item.consecutive_failures = 0
             item.state = _MonitorState.LIVE
             self._refresh_item_ui(item)
             # Get MediaInfo for the live URL so start_download() has full metadata
@@ -904,10 +949,30 @@ class LiveMonitorTab(ctk.CTkFrame):
             item.error_msg = err[:120]
             logger.warning("LiveMonitor: hard error for %s: %s", item.url, err[:80])
         else:
-            # Transient — stay WAITING, will retry on next poll cycle
-            item.state = _MonitorState.WAITING
-            item.error_msg = ""
-            logger.debug("LiveMonitor: transient error for %s: %s", item.url, err[:60])
+            # Transient error — increment failure counter.
+            # After MAX_CONSECUTIVE_FAILURES, escalate to ERROR so the user
+            # sees a clear message instead of an infinite WAITING loop.
+            item.consecutive_failures += 1
+            if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                item.state = _MonitorState.ERROR
+                item.error_msg = (
+                    f"Đã thử {item.consecutive_failures} lần thất bại. "
+                    f"Lỗi cuối: {err[:80]}\n"
+                    "Kiểm tra cookie Instagram hoặc kết nối mạng, rồi nhấn ✕ và thêm lại URL."
+                )
+                logger.warning(
+                    "LiveMonitor: escalating to ERROR after %d failures for %s: %s",
+                    item.consecutive_failures, item.url, err[:60],
+                )
+            else:
+                # Still within retry budget — stay WAITING
+                item.state = _MonitorState.WAITING
+                item.error_msg = ""
+                logger.debug(
+                    "LiveMonitor: transient error %d/%d for %s: %s",
+                    item.consecutive_failures, MAX_CONSECUTIVE_FAILURES,
+                    item.url, err[:60],
+                )
 
         self._refresh_item_ui(item)
 

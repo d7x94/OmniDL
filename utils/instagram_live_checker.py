@@ -107,17 +107,27 @@ def check_instagram_live(
             "Export lại cookie file sau khi đăng nhập Instagram."
         )
 
+    # Extract CSRF token from cookies — required by Instagram's internal API
+    # since late 2023. Without it the API returns empty user data or 403.
+    csrftoken = session_cookies.get("csrftoken", "")
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
+            "Chrome/124.0.0.0 Safari/537.36"
         ),
         "X-IG-App-ID": _IG_APP_ID,
+        "X-CSRFToken": csrftoken,
+        "X-IG-WWW-Claim": "0",
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"https://www.instagram.com/{username}/",
         "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://www.instagram.com",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
     }
 
     proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -193,19 +203,32 @@ def check_instagram_live(
         # Not an error — could mean private account or non-existent user
         return None
 
+    # Instagram changes live-status field names periodically.
+    # Check all known variants to maximise compatibility.
     is_live = bool(
         user.get("is_live")
         or user.get("has_active_broadcast")
         or user.get("live_broadcast_id")
+        # Newer API variants (2024+)
+        or user.get("live_broadcast_status") == "active"
+        or (user.get("broadcast_count") or 0) > 0
+        or bool(user.get("active_live_info"))
     )
 
     logger.debug(
-        "instagram_live_checker: @%s is_live=%s (fields: is_live=%r, "
-        "live_broadcast_id=%r)",
+        "instagram_live_checker: @%s is_live=%s "
+        "(is_live=%r, has_active_broadcast=%r, live_broadcast_id=%r, "
+        "broadcast_count=%r, active_live_info=%r, live_broadcast_status=%r, "
+        "response_keys=%s)",
         username,
         is_live,
         user.get("is_live"),
+        user.get("has_active_broadcast"),
         user.get("live_broadcast_id"),
+        user.get("broadcast_count"),
+        bool(user.get("active_live_info")),
+        user.get("live_broadcast_status"),
+        list(user.keys())[:15],  # log first 15 keys — helps diagnose future API changes
     )
 
     if is_live:
