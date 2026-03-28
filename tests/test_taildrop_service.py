@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from app.services.taildrop_service import TaildropService, TransferResult, _NODE_RE
+from app.services.taildrop_service import TaildropService, TransferResult, _NODE_RE, _sanitize_filename
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,6 +107,194 @@ class TestNodeRegex:
     @pytest.mark.parametrize("name", INVALID)
     def test_invalid_node_names(self, name):
         assert not _NODE_RE.match(name), f"Expected INVALID: {name!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _sanitize_filename
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSanitizeFilename:
+    """
+    Unit tests for the _sanitize_filename() helper.
+
+    Every case maps a raw yt-dlp filename to the expected Tailscale-safe
+    alias.  ASCII-clean names must be returned unchanged so that the
+    common path never triggers the ``--name`` flag unnecessarily.
+    """
+
+    def test_ascii_clean_name_unchanged(self):
+        """Pure ASCII filename → returned as-is (no --name overhead)."""
+        assert _sanitize_filename("video.mp4") == "video.mp4"
+
+    def test_ascii_with_hyphens_unchanged(self):
+        assert _sanitize_filename("my-video_2024.mp4") == "my-video_2024.mp4"
+
+    def test_emoji_stripped(self):
+        """Emoji must be removed entirely (they have no ASCII counterpart)."""
+        result = _sanitize_filename("clip ❤️‍🔥 fun.mp4")
+        assert "❤" not in result
+        assert result.endswith(".mp4")
+
+    def test_vietnamese_diacritics_transliterated(self):
+        """Diacritics decompose to base ASCII letter via NFKD."""
+        result = _sanitize_filename("Ba dím.mp4")
+        assert "í" not in result
+        assert "dim" in result or "d" in result  # "í" → "i" via NFKD
+        assert result.endswith(".mp4")
+
+    def test_hashtags_replaced(self):
+        """# chars must not appear in the sanitized name."""
+        result = _sanitize_filename("#dodonhatminh #vinschool.mp4")
+        assert "#" not in result
+        assert result.endswith(".mp4")
+
+    def test_at_symbol_replaced(self):
+        assert "@" not in _sanitize_filename("@username clip.mp4")
+
+    def test_extension_preserved_exactly(self):
+        """The file extension (.mp4, .mov, …) must survive sanitization."""
+        assert _sanitize_filename("❤️video.mp4").endswith(".mp4")
+        assert _sanitize_filename("❤️video.mov").endswith(".mov")
+
+    def test_no_leading_or_trailing_underscores_in_stem(self):
+        """Outer underscores from collapsed special chars should be stripped."""
+        result = _sanitize_filename("###video###.mp4")
+        stem = result[: result.rfind(".")]
+        assert not stem.startswith("_")
+        assert not stem.endswith("_")
+
+    def test_multiple_spaces_collapsed(self):
+        """Runs of spaces/underscores → single underscore."""
+        result = _sanitize_filename("a   b    c.mp4")
+        assert "  " not in result
+        assert "__" not in result
+
+    def test_empty_stem_fallback(self):
+        """Filename composed entirely of emoji → stem becomes 'file'."""
+        result = _sanitize_filename("❤️🔥.mp4")
+        assert result == "file.mp4"
+
+    def test_no_extension(self):
+        """Filename with no dot is handled without IndexError."""
+        result = _sanitize_filename("❤️video")
+        assert "❤" not in result
+        assert "." not in result
+
+    def test_real_failing_filename_from_log(self):
+        """
+        Regression: the exact filename that caused 'invalid filename' in
+        production (task 5b467261 / 66c3fd2f from omnidl_run.log).
+
+        dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 ❤️‍🔥@Ba dím
+          #dodonhatminh  #vinschool  #edurun  #... [762213827654].mp4
+        """
+        raw = (
+            "dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 "
+            "\u2764\ufe0f\u200d\U0001f525"   # ❤️‍🔥
+            "@Ba d\xedm  "                    # @Ba dím
+            "#dodonhatminh  #vinschool  #edurun  #... "
+            "[762213827654].mp4"
+        )
+        result = _sanitize_filename(raw)
+
+        # Must be pure ASCII.
+        result.encode("ascii")  # raises UnicodeEncodeError if not
+
+        # Must keep the extension.
+        assert result.endswith(".mp4")
+
+        # Must contain key readable parts from the original.
+        assert "dodonhatminh109" in result
+        assert "2026-03-28" in result
+        assert "edurun" in result
+
+        # Must not contain any of the problematic characters.
+        for bad in ("#", "@", "❤", "🔥", "í"):
+            assert bad not in result, f"Bad char {bad!r} still present in {result!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# send_file — --name flag injection
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSendFileNameFlag:
+    """
+    Verify that _do_send() passes ``--name <safe>`` when the filename
+    contains characters that Tailscale would reject, and omits ``--name``
+    for clean ASCII filenames (to avoid unnecessary CLI flag noise).
+    """
+
+    def test_ascii_filename_no_name_flag(self, tmp_path):
+        """Clean ASCII filename → tailscale call has NO --name flag."""
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        ok = MagicMock()
+        ok.returncode = 0
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            r = svc.send_file(f, "iphone")
+
+        assert r.success
+        cmd = mock_run.call_args[0][0]
+        assert "--name" not in cmd
+        assert cmd == ["/usr/bin/tailscale", "file", "cp", str(f), "iphone:"]
+        svc.close()
+
+    def test_emoji_filename_uses_name_flag(self, tmp_path):
+        """Filename with emoji → --name <safe_name> injected before the path."""
+        raw_name = "clip ❤️🔥 fun.mp4"
+        f = tmp_path / raw_name
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        ok = MagicMock()
+        ok.returncode = 0
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            r = svc.send_file(f, "iphone")
+
+        assert r.success
+        cmd = mock_run.call_args[0][0]
+        assert "--name" in cmd
+        name_idx = cmd.index("--name")
+        safe_name = cmd[name_idx + 1]
+        # Safe name must be pure ASCII and keep the extension.
+        safe_name.encode("ascii")
+        assert safe_name.endswith(".mp4")
+        assert "❤" not in safe_name
+        svc.close()
+
+    def test_real_tiktok_filename_uses_name_flag(self, tmp_path):
+        """
+        Regression: the exact filename from omnidl_run.log triggers --name.
+        """
+        raw_name = (
+            "dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 "
+            "\u2764\ufe0f\u200d\U0001f525@Ba d\xedm  "
+            "#dodonhatminh  #vinschool  #edurun  #... [762213827654].mp4"
+        )
+        f = tmp_path / raw_name
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone-12-pro-max")
+
+        ok = MagicMock()
+        ok.returncode = 0
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            r = svc.send_file(f, "iphone-12-pro-max")
+
+        assert r.success, f"Expected success; got error: {r.error}"
+        cmd = mock_run.call_args[0][0]
+        assert "--name" in cmd, "Expected --name flag for non-ASCII filename"
+        name_idx = cmd.index("--name")
+        safe_name = cmd[name_idx + 1]
+        safe_name.encode("ascii")   # must be pure ASCII — no UnicodeEncodeError
+        assert safe_name.endswith(".mp4")
+        # Original (unsafe) file path is still passed as the actual source
+        assert str(f) in cmd
+        svc.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

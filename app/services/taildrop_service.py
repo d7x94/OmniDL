@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,72 @@ _NODE_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-\.]{0,252}[A-Za-z0-9])?$')
 # Destination suffix required by Tailscale CLI file send.
 # The trailing colon tells tailscale "this is a node name, not a local path".
 _NODE_SUFFIX = ":"
+
+
+def _sanitize_filename(name: str) -> str:
+    """
+    Return a Tailscale-safe filename.
+
+    Tailscale's peer-side (iOS / macOS) rejects filenames that contain emoji,
+    non-ASCII characters, or certain filesystem-special characters, responding
+    with "400 Bad Request: invalid filename".  This function produces an
+    ASCII-only substitute that is safe to pass via ``tailscale file cp --name``.
+
+    Strategy
+    ────────
+    1. Split the extension from the stem; only the *stem* is cleaned so the
+       file type (e.g. ``.mp4``) is always preserved intact on the device.
+    2. NFKD-normalise the stem — decomposes accented characters, e.g.
+       ``í`` → ``i`` + combining acute accent.
+    3. Encode to ASCII (``errors="ignore"``) — drops combining marks, emoji,
+       CJK, and any remaining non-ASCII code-points.
+    4. Replace characters that are problematic for Tailscale / iOS/macOS
+       filesystems (``#``, ``@``, ``!``, ``?``, ``*``, ``|``, ``<``, ``>``,
+       ``"``, ``\\``, ``/``, ``:``, ``%``) with ``_``.
+    5. Collapse runs of whitespace or underscores to a single ``_``.
+    6. Strip leading/trailing underscores.  Guard against an empty result.
+
+    Examples
+    ────────
+    ``"video.mp4"``                                → ``"video.mp4"``   (unchanged)
+    ``"clip ❤️‍🔥@Ba dím.mp4"``                  → ``"clip__Ba_dim.mp4"``
+    ``"dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 ❤️‍🔥@Ba dím  #dodonhatminh [762213827654].mp4"``
+                                                   → ``"dodonhatminh109_-_2026-03-28_-_Top_15_edurun_2026__Ba_dim__dodonhatminh_762213827654_.mp4"``
+
+    Security note
+    ─────────────
+    This function is **pure** (no I/O, no subprocess calls).  It does not
+    rename or copy the actual file on disk — it only produces a safe alias
+    to be passed to the CLI via ``--name``.  The original file is never
+    modified.
+    """
+    # 1. Preserve the extension exactly — only sanitise the stem.
+    dot_idx = name.rfind(".")
+    if dot_idx > 0:
+        stem   = name[:dot_idx]
+        suffix = name[dot_idx:]   # includes the leading "."
+    else:
+        stem   = name
+        suffix = ""
+
+    # 2–3. NFKD decomposition → ASCII encode/ignore.
+    # NFKD converts e.g. "í" → "i" + U+0301 COMBINING ACUTE ACCENT.
+    # encode("ascii", "ignore") then silently drops the combining accent
+    # and anything else outside ASCII — including emoji, CJK, etc.
+    normalized = unicodedata.normalize("NFKD", stem)
+    ascii_stem = normalized.encode("ascii", errors="ignore").decode("ascii")
+
+    # 4. Replace characters that are problematic for Tailscale / iOS/macOS.
+    safe = re.sub(r'[#@!?*|<>"\\/:%]+', "_", ascii_stem)
+
+    # 5. Collapse runs of whitespace and underscores; strip outer underscores.
+    safe = re.sub(r"[\s_]+", "_", safe).strip("_")
+
+    # 6. Fallback for degenerate case (e.g. filename was pure emoji).
+    if not safe:
+        safe = "file"
+
+    return safe + suffix
 
 
 @dataclass(frozen=True)
@@ -447,10 +514,26 @@ class TaildropService:
                 error="tailscale CLI not found on PATH — install Tailscale on this PC",
             )
 
-        # 4. Execute: tailscale file cp <file> <node>:
+        # 4. Execute: tailscale file cp [--name <safe_name>] <file> <node>:
+        #
+        # Tailscale's peer-side (iOS / macOS) returns "400 Bad Request:
+        # invalid filename" when the filename contains emoji, non-ASCII
+        # characters, or certain special characters (#, @, diacritics, …).
+        # The ``--name`` flag lets us pass an ASCII-safe alias that will be
+        # displayed on the device without altering the file on disk.
+        safe_name = _sanitize_filename(file_path.name)
+        cmd = [tailscale, "file", "cp"]
+        if safe_name != file_path.name:
+            logger.debug(
+                "Taildrop: sanitised filename %r → %r (using --name flag)",
+                file_path.name, safe_name,
+            )
+            cmd += ["--name", safe_name]
+        cmd += [str(file_path), node + _NODE_SUFFIX]
+
         try:
             result = subprocess.run(
-                [tailscale, "file", "cp", str(file_path), node + _NODE_SUFFIX],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,  # 2-min timeout for large files
