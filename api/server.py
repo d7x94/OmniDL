@@ -546,6 +546,7 @@ def create_app(
             created_at      = snap["created_at"],
             finished_at     = snap["finished_at"],
             preview_url     = f"/api/convert/{snap['job_id']}/file",
+            output_deleted  = snap.get("output_deleted", False),
         )
 
     @app.get(
@@ -689,6 +690,61 @@ def create_app(
             filename=out_path.name,
             content_disposition_type="inline",
             headers={"Accept-Ranges": "bytes"},
+        )
+
+    @app.delete(
+        "/api/convert/{job_id}/file",
+        response_model=FileActionResponse,
+        summary="Delete the converted output file from the server's disk",
+    )
+    async def delete_convert_file(
+        job_id: str, _: None = Depends(_require_auth)
+    ) -> FileActionResponse:
+        """
+        Permanently delete the converted MP4 output file from the laptop.
+
+        The ConversionJob entry is retained in memory (job history stays
+        visible) but output_deleted is set to True so the client can
+        immediately hide the Delete / Preview buttons without polling.
+
+        Only works for COMPLETED jobs that still have an output file on disk.
+
+        Security:
+        • output_filename is resolved against config.download_dir before
+          deletion — prevents path-traversal (CWE-22).
+        • Uses Path.unlink() — no subprocess, no shell=True (CWE-78).
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+
+        ok, reason = remote_convert.delete_convert_file(
+            job_id=job_id,
+            allowed_dir=config.download_dir,
+        )
+
+        if not ok:
+            # Map well-known reasons to appropriate HTTP status codes.
+            if "not found" in reason.lower():
+                raise HTTPException(status_code=404, detail=reason)
+            if "not COMPLETED" in reason or "No output" in reason:
+                raise HTTPException(status_code=400, detail=reason)
+            if "outside the allowed" in reason:
+                raise HTTPException(status_code=403, detail=reason)
+            raise HTTPException(status_code=500, detail=reason)
+
+        job = remote_convert.get_job(job_id)
+        filename = ""
+        if job and job.output_filename:
+            filename = Path(job.output_filename).name
+
+        logger.info(
+            "Remote API: deleted converted file '%s' for convert job %s",
+            filename, job_id,
+        )
+        return FileActionResponse(
+            task_id=job_id,
+            action="deleted",
+            detail=f"Deleted: {filename}",
         )
 
 

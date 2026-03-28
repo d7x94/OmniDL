@@ -66,6 +66,11 @@ class ConversionJob:
     progress:        float = 0.0
     output_filename: str   = ""
     error_msg:       str   = ""
+    # Set to True after the converted output file is deleted from disk.
+    # Exposed in snapshot() so SSE clients and the API response can update
+    # UI state (hide "delete" button, show "file removed" label) without
+    # polling the filesystem.
+    output_deleted:  bool  = False
 
     # ── Timing ────────────────────────────────────────────────────────────
     created_at:  float = field(default_factory=time.time)
@@ -110,4 +115,5 @@ class ConversionJob:
                 "error_msg":       self.error_msg,
                 "created_at":      self.created_at,
                 "finished_at":     self.finished_at,
+                "output_deleted":  self.output_deleted,
             }

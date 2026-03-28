@@ -234,6 +234,80 @@ class RemoteConvertService:
 
         return job
 
+    def delete_convert_file(
+        self, job_id: str, allowed_dir: Path
+    ) -> tuple[bool, str]:
+        """
+        Delete the converted output file from disk for a COMPLETED job.
+
+        Returns (True, "") on success, or (False, reason) on any failure.
+
+        Security constraints
+        ────────────────────
+        • Path is resolved against *allowed_dir* (the configured download_dir)
+          before deletion — prevents path-traversal (CWE-22).
+        • Deletion uses Path.unlink() — no subprocess, no shell=True,
+          no string interpolation (CWE-78).
+        • Only COMPLETED jobs with a non-empty output_filename are accepted;
+          all other states are rejected with an explicit reason string so the
+          API layer can return a meaningful HTTP error.
+        • is_file() is checked immediately before unlinking to handle the
+          race condition where the file was already removed externally.
+
+        State update
+        ────────────
+        Sets job.output_deleted = True after successful deletion so the SSE
+        snapshot and the ConvertJobResponse immediately reflect the new state
+        without requiring the client to poll the filesystem.
+        """
+        job = self.get_job(job_id)
+        if job is None:
+            return False, "Convert job not found"
+        if job.status != ConversionStatus.COMPLETED:
+            return False, f"Job is not COMPLETED (current status: {job.status})"
+        if not job.output_filename:
+            return False, "No output file recorded for this job"
+
+        # ── Path-traversal guard ──────────────────────────────────────────
+        try:
+            out_path = Path(job.output_filename).resolve()
+            allowed  = allowed_dir.resolve()
+        except Exception as exc:
+            return False, f"Path resolution error: {exc}"
+
+        if not out_path.is_relative_to(allowed):
+            # Should never happen under normal operation — logged at WARNING
+            # because it indicates a misconfiguration or tampering attempt.
+            logger.warning(
+                "delete_convert_file: SECURITY — '%s' is outside allowed_dir '%s'",
+                out_path, allowed,
+            )
+            return False, "Output file is outside the allowed download directory"
+
+        if not out_path.is_file():
+            # File already gone — still mark as deleted so UI is consistent.
+            with job._lock:
+                job.output_deleted = True
+            return False, "File already deleted or not found"
+
+        # ── Delete ────────────────────────────────────────────────────────
+        try:
+            out_path.unlink()
+        except OSError as exc:
+            logger.error(
+                "delete_convert_file: failed to delete '%s': %s", out_path, exc
+            )
+            return False, str(exc)
+
+        with job._lock:
+            job.output_deleted = True
+
+        logger.info(
+            "RemoteConvert: deleted output file '%s' for job %s",
+            out_path.name, job_id,
+        )
+        return True, ""
+
     def cancel_convert(self, job_id: str) -> bool:
         """
         Cancel an in-progress or pending conversion job.

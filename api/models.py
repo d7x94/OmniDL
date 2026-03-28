@@ -144,6 +144,9 @@ class ConvertJobResponse(BaseModel):
     created_at:      float
     finished_at:     float
     preview_url:     str    # relative URL to stream the converted file
+    # True once the converted output file has been deleted from disk.
+    # Clients use this to hide the Delete/Preview buttons without re-polling.
+    output_deleted:  bool = False
 
 
 class EncoderOption(BaseModel):

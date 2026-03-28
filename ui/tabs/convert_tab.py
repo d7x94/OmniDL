@@ -221,6 +221,13 @@ class FileCard(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             command=lambda: self._on_delete_output(self.job.id),
         )
+        # Explicit visibility flag — replaces winfo_ismapped() which can return
+        # a stale value in CustomTkinter because CTkButton is a composite widget
+        # (CTkFrame wrapping a tk.Button) and Tkinter's geometry manager updates
+        # mapped state asynchronously after the next event-loop iteration.
+        # Using a plain bool keeps the source of truth entirely in Python,
+        # independent of Tkinter internal state.
+        self._delete_btn_visible: bool = False
         # Starts hidden; refresh() shows it when DONE + output.is_file()
 
         # ── Row 2: media info ─────────────────────────────────────────────
@@ -300,11 +307,21 @@ class FileCard(ctk.CTkFrame):
             # Show delete-output button whenever the output file still exists.
             # The user decides when to delete after verifying the file arrived
             # on their iPhone — no Taildrop event gate needed.
+            #
+            # NOTE: winfo_ismapped() is intentionally NOT used here.
+            # CTkButton is a composite widget (CTkFrame + tk.Button); Tkinter
+            # updates the mapped state asynchronously after the next event-loop
+            # iteration, so winfo_ismapped() may return a stale value and cause
+            # the button to be packed twice (stacking invisible duplicates) or
+            # never shown at all.  self._delete_btn_visible is the authoritative
+            # source of truth and is always in sync with pack/pack_forget calls.
             output_still_exists = job.output.is_file()
-            if output_still_exists and not self._delete_output_btn.winfo_ismapped():
+            if output_still_exists and not self._delete_btn_visible:
                 self._delete_output_btn.pack(side="left", padx=(4, 0))
-            elif not output_still_exists and self._delete_output_btn.winfo_ismapped():
+                self._delete_btn_visible = True
+            elif not output_still_exists and self._delete_btn_visible:
                 self._delete_output_btn.pack_forget()
+                self._delete_btn_visible = False
         elif job.state == FileState.FAILED and job.error_msg:
             self._err_lbl.configure(text=f"  {job.error_msg[:160]}")
             self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
