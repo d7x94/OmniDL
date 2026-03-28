@@ -48,6 +48,7 @@ from domain.models.conversion_job import ConversionJob, ConversionStatus
 
 if TYPE_CHECKING:
     from app.event_bus import EventBus
+    from app.services.taildrop_service import TaildropService
     from infrastructure.config.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -78,9 +79,16 @@ class RemoteConvertService:
         self,
         config: "ConfigManager",
         event_bus: "EventBus",
+        taildrop: "Optional[TaildropService]" = None,
     ) -> None:
         self._config   = config
         self._bus      = event_bus
+        # Optional TaildropService — when provided, send_converted_file() is
+        # called after each successful conversion so the iPhone receives the
+        # output automatically (subject to send_mode / taildrop_enabled guards
+        # already inside TaildropService).  Defaults to None so existing
+        # callers (tests, older startup paths) are not broken.
+        self._taildrop = taildrop
         # Dedicated queue — completely separate from desktop ConvertQueue.
         # max_workers=2: allows two simultaneous remote conversions without
         # overwhelming CPU on a typical laptop.
@@ -177,6 +185,19 @@ class RemoteConvertService:
                 "RemoteConvert: completed job %s → %s",
                 job.job_id, output_path.name,
             )
+            # ── Auto-send converted file to iPhone via Taildrop ─────────────────
+            # send_converted_file() is a no-op when taildrop_enabled=False,
+            # send_mode="ask", or target_node is empty — all guards already
+            # live inside TaildropService; safe to call unconditionally.
+            # Never raises — any failure is logged by TaildropService.
+            if self._taildrop is not None:
+                try:
+                    self._taildrop.send_converted_file(output_path)
+                except Exception:
+                    logger.debug(
+                        "RemoteConvert: Taildrop hook raised unexpectedly",
+                        exc_info=True,
+                    )
 
         def _on_error(err: str) -> None:
             cancelled = job.is_cancel_requested

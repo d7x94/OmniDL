@@ -411,7 +411,7 @@ class TestConfigManagerTaildropProperties:
         cfg = self._make_real_config(tmp_path)
         assert cfg.taildrop_enabled is False
         assert cfg.taildrop_target_node == ""
-        assert cfg.taildrop_send_mode == "always"
+        assert cfg.taildrop_send_mode == "ask"  # _DEFAULTS["taildrop_send_mode"] = "ask"
 
     def test_set_enabled(self, tmp_path):
         cfg = self._make_real_config(tmp_path, {"taildrop_enabled": True})

@@ -859,7 +859,11 @@ def start_api_server(
     # Instantiate RemoteConvertService — shares the same EventBus so convert
     # progress events flow through the existing SSE broadcaster automatically.
     from app.services.remote_convert_service import RemoteConvertService
-    remote_convert = RemoteConvertService(config=config, event_bus=bus)
+    remote_convert = RemoteConvertService(
+        config=config,
+        event_bus=bus,
+        taildrop=service.taildrop,   # wire so converted files auto-send to iPhone
+    )
 
     app = create_app(service, config, remote_convert=remote_convert)
 

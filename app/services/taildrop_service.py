@@ -150,11 +150,26 @@ class TaildropService:
         • Does NOT require a DownloadTask — the convert pipeline has no task object.
         • A disabled Taildrop or missing node silently no-ops; callers never need
           to guard against exceptions from this method.
+        • Respects send_mode — consistent with on_download_completed().
+          When send_mode == "ask", the auto-send is skipped.  A future
+          manual-trigger UI for the convert pipeline (e.g. a "Send to iPhone"
+          button on the finished card) should call send_file() directly and
+          bypass this guard, exactly as send_now() does for the download pipeline.
         • Transfer result is broadcast on the event bus as
           CONVERT_TAILDROP_COMPLETED / CONVERT_TAILDROP_FAILED so the UI can
           react (e.g. show a toast) without coupling to this service directly.
         """
         if not self._config.taildrop_enabled:
+            return
+        # ── FIX: Respect send_mode, consistent with on_download_completed ──
+        # Default config has send_mode="ask" which means the user must trigger
+        # transfers manually.  Without this guard, send_converted_file() would
+        # silently attempt (and fail) a Taildrop send on every conversion even
+        # when the user has not opted in to automatic sending.
+        if self._config.taildrop_send_mode == "ask":
+            logger.debug(
+                "Taildrop convert: skip auto-send — send_mode is 'ask'"
+            )
             return
         node = self._config.taildrop_target_node
         if not node:

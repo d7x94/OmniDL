@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Optional
 
 import customtkinter as ctk
 
+from app.event_bus import EventBus
 from app.services.ffmpeg_convert_service import (
     ENCODER_OPTIONS,
     SPEED_OPTIONS,
@@ -409,6 +410,19 @@ class ConvertTab(ctk.CTkFrame):
         self._build()
         self._poll_ui_queue()   # start draining _ui_queue on UI thread
         T.register(self._on_theme)
+        # ── Subscribe to Taildrop convert events ──────────────────────────
+        # _build() has already created self._status_lbl by this point.
+        # Handlers post to _ui_queue so they are thread-safe when
+        # TaildropService calls back from its background executor.
+        _bus = self._app.taildrop._bus
+        _bus.subscribe(
+            EventBus.CONVERT_TAILDROP_COMPLETED,
+            self._on_convert_taildrop_completed,
+        )
+        _bus.subscribe(
+            EventBus.CONVERT_TAILDROP_FAILED,
+            self._on_convert_taildrop_failed,
+        )
 
     # ── Thread-safe UI callback pump ─────────────────────────────────────
 
@@ -1156,6 +1170,30 @@ class ConvertTab(ctk.CTkFrame):
             open_folder(job.output.parent)
 
     # ── Theme ──────────────────────────────────────────────────────────────
+
+    # ── Taildrop convert event handlers ──────────────────────────────────
+
+    def _on_convert_taildrop_completed(
+        self, *, out_path: "Path", dest_node: str, **_kw
+    ) -> None:
+        """Display a success toast in the status bar (thread-safe via _ui_queue)."""
+        msg = f"✅ Đã gửi '{out_path.name}' đến {dest_node}"
+        self._ui_queue.put(
+            lambda m=msg: self._status_lbl.configure(
+                text=m, text_color=T.success if hasattr(T, 'success') else T.text
+            )
+        )
+
+    def _on_convert_taildrop_failed(
+        self, *, out_path: "Path", dest_node: str, error: str = "", **_kw
+    ) -> None:
+        """Display an error in the status bar so the user knows the transfer failed."""
+        msg = f"❌ Taildrop thất bại '{out_path.name}': {error}"
+        self._ui_queue.put(
+            lambda m=msg: self._status_lbl.configure(
+                text=m, text_color=T.error if hasattr(T, 'error') else T.text
+            )
+        )
 
     def _on_theme(self) -> None:
         if not self.winfo_exists():
