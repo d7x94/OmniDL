@@ -120,6 +120,7 @@ class FileCard(ctk.CTkFrame):
                  on_remove,          # callable(job_id)
                  on_open_folder,     # callable(job_id)
                  on_cancel,          # callable(job_id)
+                 on_delete_output,   # callable(job_id)
                  **kwargs) -> None:
         super().__init__(
             master,
@@ -131,6 +132,7 @@ class FileCard(ctk.CTkFrame):
         self._on_remove = on_remove
         self._on_open_folder = on_open_folder
         self._on_cancel = on_cancel
+        self._on_delete_output = on_delete_output
         self._build()
         T.register(self._on_theme)
 
@@ -208,6 +210,19 @@ class FileCard(ctk.CTkFrame):
             command=self._open_preview,
         )
 
+        # Delete-output button: only shown after conversion completes and
+        # the output file still exists on disk. Red-toned style distinguishes
+        # it clearly from the ✕ remove-from-list button.
+        self._delete_output_btn = ctk.CTkButton(
+            self._btn_box, text="🗑  Xoá file", width=84, height=26,
+            corner_radius=6,
+            fg_color=T.error_bg, hover_color=T.error,
+            text_color=T.error_text,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=lambda: self._on_delete_output(self.job.id),
+        )
+        # Starts hidden; refresh() shows it when DONE + output.is_file()
+
         # ── Row 2: media info ─────────────────────────────────────────────
         info_row = ctk.CTkFrame(self, fg_color="transparent")
         info_row.pack(fill="x", padx=16, pady=(0, 4))
@@ -281,6 +296,15 @@ class FileCard(ctk.CTkFrame):
                 self._open_btn.pack(side="left")
                 self._preview_btn.pack(side="left", padx=(4, 0))
                 self._remove_btn.pack(side="left", padx=(4, 0))
+
+            # Show delete-output button whenever the output file still exists.
+            # The user decides when to delete after verifying the file arrived
+            # on their iPhone — no Taildrop event gate needed.
+            output_still_exists = job.output.is_file()
+            if output_still_exists and not self._delete_output_btn.winfo_ismapped():
+                self._delete_output_btn.pack(side="left", padx=(4, 0))
+            elif not output_still_exists and self._delete_output_btn.winfo_ismapped():
+                self._delete_output_btn.pack_forget()
         elif job.state == FileState.FAILED and job.error_msg:
             self._err_lbl.configure(text=f"  {job.error_msg[:160]}")
             self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
@@ -341,6 +365,10 @@ class FileCard(ctk.CTkFrame):
         )
         self._open_btn.configure(fg_color=T.success_bg)
         self._preview_btn.configure(fg_color=T.primary_dim, hover_color=T.primary)
+        self._delete_output_btn.configure(
+            fg_color=T.error_bg, hover_color=T.error,
+            text_color=T.error_text,
+        )
 
     def _open_preview(self) -> None:
         """Open the converted output file with the OS default application."""
@@ -1048,6 +1076,7 @@ class ConvertTab(ctk.CTkFrame):
             on_remove=self._remove_job,
             on_open_folder=self._open_output,
             on_cancel=self._cancel_job,
+            on_delete_output=self._delete_output,
         )
         card.pack(fill="x", pady=(0, 8))
         self._cards[job.id] = card
@@ -1086,6 +1115,7 @@ class ConvertTab(ctk.CTkFrame):
                     on_remove=self._remove_job,
                     on_open_folder=self._open_output,
                     on_cancel=self._cancel_job,
+                    on_delete_output=self._delete_output,
                 )
                 card.pack(fill="x", pady=(0, 8))
                 self._cards[job.id] = card
@@ -1169,6 +1199,79 @@ class ConvertTab(ctk.CTkFrame):
         elif job.output.parent.is_dir():
             open_folder(job.output.parent)
 
+    def _delete_output(self, job_id: str) -> None:
+        """Delete the converted output file from the laptop.
+
+        Security constraints
+        ────────────────────
+        • The path to delete is taken exclusively from ``job.output``, which is
+          set only by the FFmpeg ``on_done`` callback — never from user input.
+          This prevents path-traversal attacks (CWE-22).
+        • Deletion uses ``Path.unlink()`` — no subprocess, no shell=True,
+          no string interpolation — so there is no command-injection surface
+          (CWE-78).
+        • ``job.output.is_file()`` is checked immediately before unlinking to
+          handle race conditions where the file was already removed externally.
+        • The button is shown for all DONE jobs where output file still exists,
+          so the user is responsible for verifying the file is on iPhone first.
+
+        UX flow
+        ───────
+        A confirmation dialog is shown first.  On confirm the file is deleted,
+        the delete button is hidden, and the output label is updated to show
+        that the file has been removed.  The job card remains visible so the
+        user can still see conversion history.
+        """
+        import tkinter.messagebox as mb
+
+        job = self._jobs.get(job_id)
+        if not job or not job.output:
+            return
+
+        # Guard: only delete files that genuinely exist
+        if not job.output.is_file():
+            logger.warning(
+                "_delete_output: file not found or already deleted — %s",
+                job.output,
+            )
+            # Refresh card so the delete button disappears
+            card = self._cards.get(job_id)
+            if card and card.winfo_exists():
+                card.refresh()
+            return
+
+        # Confirmation dialog — blocking on the UI thread (acceptable; it is
+        # a brief modal and Tkinter requires dialogs on the main thread).
+        confirmed = mb.askyesno(
+            title="Xoá file đã convert",
+            message=(
+                f"Bạn có chắc muốn xoá file đã convert trên laptop không?\n\n"
+                f"{job.output.name}\n\n"
+                f"Hãy chắc chắn file đã được lưu trên iPhone trước khi xoá.\n"
+                f"Thao tác này không thể hoàn tác."
+            ),
+            icon=mb.WARNING,
+        )
+        if not confirmed:
+            return
+
+        try:
+            job.output.unlink()
+            logger.info("_delete_output: deleted '%s'", job.output)
+        except OSError as exc:
+            logger.error("_delete_output: failed to delete '%s': %s", job.output, exc)
+            mb.showerror(
+                title="Lỗi xoá file",
+                message=f"Không thể xoá file:\n{exc}",
+            )
+            return
+
+        # Refresh the card — output no longer exists so the delete button
+        # will be hidden automatically by FileCard.refresh().
+        card = self._cards.get(job_id)
+        if card and card.winfo_exists():
+            card.refresh()
+
     # ── Theme ──────────────────────────────────────────────────────────────
 
     # ── Taildrop convert event handlers ──────────────────────────────────
@@ -1180,7 +1283,7 @@ class ConvertTab(ctk.CTkFrame):
         msg = f"✅ Đã gửi '{out_path.name}' đến {dest_node}"
         self._ui_queue.put(
             lambda m=msg: self._status_lbl.configure(
-                text=m, text_color=T.success if hasattr(T, 'success') else T.text
+                text=m, text_color=T.success if hasattr(T, "success") else T.text
             )
         )
 
