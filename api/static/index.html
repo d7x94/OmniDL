@@ -1093,47 +1093,89 @@ function queueItemHtml(t) {
                 <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
   }
 
-  // File-action buttons for completed tasks that still have a file on disk
-  let fileActions = '';
+  // ── File-action buttons (only when original file still exists on disk) ──
+  let fileActionBtns = '';
   if (t.status === 'COMPLETED' && t.filename) {
-    // Check if there is an active convert job for this task
-    const activeJob = Object.values(convertJobs).find(
-      j => j.source_task_id === t.id &&
-           ['PENDING','CONVERTING'].includes(j.status)
-    );
-    const convertBtn = activeJob
-      ? `<div class="qi-convert-progress" id="cvprog-${activeJob.job_id}">
-           <div class="qi-convert-label">
-             <span>🎬 Converting…</span>
-             <span id="cvpct-${activeJob.job_id}">${activeJob.progress.toFixed(0)}%</span>
-           </div>
-           <div class="qi-convert-track">
-             <div class="qi-convert-fill" id="cvfill-${activeJob.job_id}"
-                  style="width:${activeJob.progress}%"></div>
-           </div>
-           <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
-                   onclick="cancelConvert('${activeJob.job_id}', this)">
-             ✕ Cancel convert
-           </button>
-         </div>`
-      : `<button class="btn btn-sm btn-convert"
-                 onclick="openConvertSheet('${t.id}', '${escHtml(t.title)}')">
-           🎬 Convert
-         </button>`;
-
-    fileActions = `<div class="qi-file-actions">
+    fileActionBtns = `<div class="qi-file-actions">
       <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
         ☁ Send to iPhone
       </button>
       <button class="btn btn-sm btn-preview" onclick="previewFile('${t.id}', '${escHtml(t.title)}')">
         ▶ Preview
       </button>
-      <button class="btn btn-sm btn-delete" onclick="deleteFile('${t.id}', this)">
+      <button class="btn btn-sm btn-delete" style="grid-column:1/-1"
+              onclick="deleteFile('${t.id}', this)">
         🗑 Delete file
       </button>
-      ${convertBtn}
     </div>`;
   }
+
+  // ── Convert block — rendered INDEPENDENTLY of t.filename ──────────────
+  // Stays visible even after the original file is deleted, so the user can
+  // still delete / preview the converted output.
+  let convertBlock = '';
+  if (t.status === 'COMPLETED') {
+    const activeJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           ['PENDING','CONVERTING'].includes(j.status)
+    );
+    const completedJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           j.status === 'COMPLETED' &&
+           !j.output_deleted
+    );
+
+    if (activeJob) {
+      // Case A: conversion in progress → progress bar + Cancel
+      convertBlock = `<div class="qi-convert-progress" id="cvprog-${activeJob.job_id}">
+        <div class="qi-convert-label">
+          <span>🎬 Converting…</span>
+          <span id="cvpct-${activeJob.job_id}">${activeJob.progress.toFixed(0)}%</span>
+        </div>
+        <div class="qi-convert-track">
+          <div class="qi-convert-fill" id="cvfill-${activeJob.job_id}"
+               style="width:${activeJob.progress}%"></div>
+        </div>
+        <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
+                onclick="cancelConvert('${activeJob.job_id}', this)">
+          ✕ Cancel convert
+        </button>
+      </div>`;
+    } else if (completedJob) {
+      // Case B: conversion done, converted file still on laptop
+      convertBlock = `<div style="margin-top:8px;padding:10px 12px;background:var(--surface2);
+                                  border-radius:8px;border:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--success);margin-bottom:8px;
+                    display:flex;align-items:flex-start;gap:6px;">
+          ✅ <span style="color:var(--text2);word-break:break-all;line-height:1.4;">
+            ${escHtml(completedJob.output_filename || 'Đã convert xong')}
+          </span>
+        </div>
+        <div class="qi-file-actions">
+          <button class="btn btn-sm btn-preview"
+                  onclick="previewConvertFile('${completedJob.job_id}',
+                    '${escHtml(completedJob.output_filename || t.title)}')">
+            ▶ Xem trước
+          </button>
+          <button class="btn btn-sm btn-delete"
+                  onclick="deleteConvertFile('${completedJob.job_id}', this)">
+            🗑 Xoá file convert
+          </button>
+        </div>
+      </div>`;
+    } else if (t.filename) {
+      // Case C: no convert job yet (or all deleted) → show Convert button
+      // Only shown when original file still exists (nothing to convert otherwise)
+      convertBlock = `<div style="margin-top:8px;">
+        <button class="btn btn-sm btn-convert" style="width:100%"
+                onclick="openConvertSheet('${t.id}', '${escHtml(t.title)}')">
+          🎬 Convert
+        </button>
+      </div>`;
+    }
+  }
+
+  const fileActions = fileActionBtns + convertBlock;
 
   return `<div class="queue-item" id="qi-${t.id}">
     <div class="qi-header">
@@ -1402,7 +1444,47 @@ async function cancelConvert(jobId, btn) {
   }
 }
 
-/* ── History ────────────────────────────────────────────────────────── */
+async function deleteConvertFile(jobId, btn) {
+  if (!confirm('Xoá file đã convert trên laptop? Thao tác này không thể hoàn tác.')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('DELETE', `/api/convert/${jobId}/file`);
+    toast(r.detail || '🗑 File convert đã xoá');
+    // Mark output_deleted locally so renderQueue() hides the delete/preview buttons
+    // and switches back to the "🎬 Convert" button immediately — no polling needed.
+    if (convertJobs[jobId]) {
+      convertJobs[jobId].output_deleted = true;
+      renderQueue();
+    }
+  } catch(e) {
+    toast('❌ Xoá thất bại: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+function previewConvertFile(jobId, title) {
+  const base    = cfg.host.replace(/\/+$/, '');
+  const token   = cfg.token ? '?token=' + encodeURIComponent(cfg.token) : '';
+  const fileUrl = `${base}/api/convert/${jobId}/file${token}`;
+
+  const overlay = document.getElementById('preview-overlay');
+  const content = document.getElementById('preview-content');
+  const titleEl = document.getElementById('preview-title');
+
+  titleEl.textContent = title || 'Preview';
+  content.innerHTML   = '';
+
+  // Converted output is always MP4 — use video player directly.
+  content.innerHTML = `<video controls autoplay playsinline preload="metadata"
+    style="max-width:100%;max-height:72vh;border-radius:12px">
+    <source src="${fileUrl}" type="video/mp4">
+    Trình duyệt không hỗ trợ phát video.
+  </video>`;
+
+  overlay.classList.add('open');
+}
+
+
 async function loadHistory() {
   const list = document.getElementById('history-list');
   list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
