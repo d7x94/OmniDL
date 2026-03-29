@@ -312,6 +312,86 @@ class TaildropService:
         """
         return self._do_send(file_path, node)
 
+    def send_file_to_nodes(
+        self,
+        file_path: Path,
+        nodes: list,
+        on_node_done: Optional[callable] = None,
+        on_node_error: Optional[callable] = None,
+    ) -> None:
+        """Send *file_path* to every node in *nodes* concurrently.
+
+        Each node gets its own executor slot so a slow or unreachable peer
+        does not block the others.  Callbacks fire on the worker thread —
+        callers must marshal to the UI thread via ``widget.after()`` or a
+        ``_ui_queue``.
+
+        Parameters
+        ----------
+        file_path:
+            Absolute path to the file to send.  Must exist at call time.
+        nodes:
+            List of validated Tailscale node names / IPs.  Any entry that
+            fails the ``_NODE_RE`` allowlist check is silently skipped with a
+            warning log (defence-in-depth — callers should pre-validate too).
+        on_node_done:
+            Optional ``Callable[[str], None]`` called with the node name after
+            each successful transfer.
+        on_node_error:
+            Optional ``Callable[[str, str], None]`` called with
+            ``(node_name, error_message)`` after each failed transfer.
+        """
+        if not file_path.exists():
+            logger.warning(
+                "send_file_to_nodes: file not found: %s", file_path
+            )
+            return
+
+        safe_nodes = [n for n in nodes if _NODE_RE.match(n)]
+        skipped    = set(nodes) - set(safe_nodes)
+        if skipped:
+            logger.warning(
+                "send_file_to_nodes: skipped invalid node names: %s", skipped
+            )
+
+        if not safe_nodes:
+            logger.warning("send_file_to_nodes: no valid nodes — nothing to send")
+            return
+
+        def _send_one(node: str) -> None:
+            result = self._do_send(file_path, node)
+            if result.success:
+                logger.info(
+                    "send_file_to_nodes: ✓ '%s' → %s", file_path.name, node
+                )
+                if on_node_done:
+                    try:
+                        on_node_done(node)
+                    except Exception as exc:
+                        logger.warning("on_node_done raised: %s", exc)
+            else:
+                logger.warning(
+                    "send_file_to_nodes: ✗ '%s' → %s: %s",
+                    file_path.name, node, result.error,
+                )
+                if on_node_error:
+                    try:
+                        on_node_error(node, result.error or "unknown error")
+                    except Exception as exc:
+                        logger.warning("on_node_error raised: %s", exc)
+
+        with self._lock:
+            if self._closed:
+                logger.warning("send_file_to_nodes: service is closed — skipping")
+                return
+            for node in safe_nodes:
+                self._executor.submit(_send_one, node)
+
+        logger.debug(
+            "send_file_to_nodes: queued '%s' → %s node(s): %s",
+            file_path.name, len(safe_nodes), safe_nodes,
+        )
+
     def list_nodes(self) -> list[str]:
         """
         Return names of reachable Tailscale peers for the Settings node picker.

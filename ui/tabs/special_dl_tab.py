@@ -24,6 +24,7 @@ except ImportError:        # pragma: no cover
     ctk = None             # type: ignore[assignment]
 
 from ui.themes.tokens import T
+from ui.components.post_download_actions import PostDownloadActions
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -274,7 +275,7 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
         self._progress.set(0)
 
         # Open folder button (hidden until done)
-        # Button row: open folder + delete
+        # Button row: open folder + preview + post-download actions (convert/send/delete)
         self._btn_row = ctk.CTkFrame(prog_card, fg_color="transparent")
         self._btn_row.pack(anchor="e", padx=20, pady=(0, 14))
         self._btn_row.pack_forget()   # hidden until done
@@ -301,16 +302,15 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
         )
         self._preview_btn.pack(side="left", padx=(0, 8))
 
-        self._clear_history_btn = ctk.CTkButton(
-            self._btn_row, text="🗑  Xoá lịch sử",
-            command=self._clear_status,
-            fg_color=T.surface3,
-            hover_color=T.border2,
-            text_color=T.text3,
-            font=ctk.CTkFont(size=12),
-            height=32, corner_radius=6,
+        # ── Unified post-download action bar: Convert · Send · Delete ─────
+        self._post_actions = PostDownloadActions(
+            self._btn_row,
+            on_convert=self._on_post_convert,
+            on_send=self._on_post_send,
+            on_delete=self._on_post_delete,
+            compact=False,
         )
-        self._clear_history_btn.pack(side="left")
+        self._post_actions.pack(side="left")
 
         self._last_dest: Path | None       = None
 
@@ -375,6 +375,9 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
                 label = f"✅ Đã tải: {name}"
                 self._ui_queue.put(lambda lb=label: self._set_status("success", lb, 100))
                 self._ui_queue.put(lambda: self._btn_row.pack(anchor="e", padx=20, pady=(0, 14)))
+                # Show PostDownloadActions bound to the downloaded file.
+                dest = results[0]
+                self._ui_queue.put(lambda d=dest: self._post_actions.show(d))
             else:
                 self._ui_queue.put(lambda: self._set_status("error", "Không có kết quả."))
 
@@ -439,6 +442,7 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
         """Reset status to idle."""
         self._retry_row.pack_forget()
         self._btn_row.pack_forget()
+        self._post_actions.hide()
         self._progress.set(0)
         self._status_dot.configure(text_color=T.text3)
         self._status_lbl.configure(text="Đang chờ...", text_color=T.text2)
@@ -461,6 +465,94 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
             open_file(dest)
         elif dest and dest.parent.exists():
             open_folder(dest.parent)
+
+    # ── Post-download action handlers ─────────────────────────────────────────
+
+    def _on_post_convert(self, file_path: Path, target_ext: str) -> None:
+        """Bridge PostDownloadActions → FFmpeg convert service."""
+        try:
+            convert_svc = self._win.service.convert_to_mp4
+        except AttributeError:
+            self._post_actions.notify_convert_error("Convert service không khả dụng.")
+            return
+
+        def _on_progress(pct: float) -> None:
+            self._ui_queue.put(lambda p=pct: self._progress.set(p / 100))
+
+        def _on_done(output_path: Path) -> None:
+            self._last_dest = output_path
+            self._ui_queue.put(
+                lambda op=output_path: self._post_actions.notify_convert_done(op)
+            )
+            self._ui_queue.put(lambda: self._set_status(
+                "success", f"✅ Convert xong: {output_path.name}", 100
+            ))
+
+        def _on_error(msg: str) -> None:
+            self._ui_queue.put(
+                lambda m=msg: self._post_actions.notify_convert_error(m)
+            )
+
+        self._set_status("info", f"Đang convert → .{target_ext}…", 0)
+        try:
+            convert_svc(
+                file_path,
+                on_progress=_on_progress,
+                on_done=_on_done,
+                on_error=_on_error,
+            )
+        except Exception as exc:
+            logger.warning("SpecialDlTab _on_post_convert error: %s", exc)
+            self._post_actions.notify_convert_error(str(exc))
+
+    def _on_post_send(self, file_path: Path, restore_btn) -> None:
+        """Bridge PostDownloadActions → TaildropService.send_file_to_nodes()."""
+        cfg = self._config
+        nodes = cfg.taildrop_target_nodes
+        if not nodes:
+            self._set_status("warning", "⚠  Chưa cấu hình thiết bị đích trong Settings → Taildrop")
+            restore_btn()
+            return
+        if not cfg.taildrop_enabled:
+            self._set_status("warning", "⚠  Taildrop chưa được bật trong Settings")
+            restore_btn()
+            return
+
+        node_list_str = ", ".join(nodes)
+
+        def _on_node_done(node: str) -> None:
+            self._ui_queue.put(lambda n=node: self._set_status(
+                "success", f"📲 Đã gửi → {n}"
+            ))
+
+        def _on_node_error(node: str, err: str) -> None:
+            self._ui_queue.put(lambda n=node, e=err: self._set_status(
+                "error", f"❌ Gửi thất bại → {n}: {e[:60]}"
+            ))
+
+        try:
+            self._win.taildrop.send_file_to_nodes(
+                file_path,
+                nodes,
+                on_node_done=_on_node_done,
+                on_node_error=_on_node_error,
+            )
+            self._set_status("info", f"📲 Đang gửi đến: {node_list_str}")
+        except Exception as exc:
+            logger.warning("SpecialDlTab _on_post_send error: %s", exc)
+            self._set_status("error", f"Lỗi gửi: {exc}")
+        finally:
+            # Re-enable Send button after short delay.
+            if self.winfo_exists():
+                self.after(800, restore_btn)
+
+    def _on_post_delete(self, file_path: Path) -> None:
+        """Called after file has been deleted — reset the tab status."""
+        self._last_dest = None
+        self._set_status("info", "🗑  File đã được xoá.")
+        # Hide the button row since there's nothing left to act on.
+        if self._btn_row.winfo_ismapped():
+            self._btn_row.pack_forget()
 
     def _apply_theme(self) -> None:
         """Re-apply theme tokens when user switches theme."""

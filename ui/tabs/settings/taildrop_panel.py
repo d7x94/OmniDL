@@ -121,28 +121,50 @@ class TaildropPanel(_BasePanel):
             fill="x", padx=16, pady=(0, 10)
         )
 
-        # ── Target node row ──────────────────────────────────────────────
+        # ── Target nodes — multi-device picker ───────────────────────────
         ctk.CTkLabel(
-            td_card, text="📱  Thiết bị đích (Tailscale node name hoặc IP)",
+            td_card, text="📱  Thiết bị đích (chọn một hoặc nhiều máy)",
             font=ctk.CTkFont(size=11, weight="bold"), text_color=T.text2, anchor="w",
         ).pack(fill="x", padx=16, pady=(0, 4))
 
-        td_node_row = ctk.CTkFrame(td_card, fg_color="transparent")
-        td_node_row.pack(fill="x", padx=16, pady=(0, 4))
+        ctk.CTkLabel(
+            td_card,
+            text="Nhấn 🔍 Tìm thiết bị để quét. Tích chọn máy muốn gửi file.",
+            font=ctk.CTkFont(size=10), text_color=T.text3, anchor="w",
+        ).pack(fill="x", padx=16, pady=(0, 6))
+
+        # Scrollable frame for checkboxes (shown after scan).
+        self._td_nodes_frame = ctk.CTkScrollableFrame(
+            td_card, fg_color=T.surface3, corner_radius=6, height=100,
+        )
+        self._td_nodes_frame.pack(fill="x", padx=16, pady=(0, 4))
+        self._td_node_vars: dict[str, ctk.BooleanVar] = {}
+
+        # Persist currently-selected nodes from config.
+        self._saved_nodes: list = list(
+            getattr(cfg, "taildrop_target_nodes", []) or []
+        )
+        # Render saved nodes immediately so Settings shows current state.
+        if self._saved_nodes:
+            self._render_node_checkboxes(self._saved_nodes, self._saved_nodes)
+
+        # Manual entry row (power-user fallback for typing a node name).
+        td_manual_row = ctk.CTkFrame(td_card, fg_color="transparent")
+        td_manual_row.pack(fill="x", padx=16, pady=(0, 4))
+        ctk.CTkLabel(
+            td_manual_row, text="Hoặc nhập tên node thủ công:",
+            font=ctk.CTkFont(size=10), text_color=T.text3,
+        ).pack(side="left", padx=(0, 6))
         self._td_node_entry = ctk.CTkEntry(
-            td_node_row, placeholder_text="vd: iphone  hoặc  100.64.x.x",
-            font=ctk.CTkFont(size=12), height=32,
+            td_manual_row, placeholder_text="vd: iphone  hoặc  100.64.x.x",
+            font=ctk.CTkFont(size=12), height=30, width=200,
         )
-        self._td_node_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        saved_node = str(getattr(cfg, "taildrop_target_node", "") or "")
-        if saved_node:
-            self._td_node_entry.insert(0, saved_node)
-        self._td_node_save_btn = ctk.CTkButton(
-            td_node_row, text="💾 Lưu", width=70, height=32, corner_radius=6,
+        self._td_node_entry.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            td_manual_row, text="➕ Thêm", width=70, height=30, corner_radius=6,
             fg_color=T.surface3, hover_color=T.border2, text_color=T.text2,
-            font=ctk.CTkFont(size=11), command=self._on_taildrop_save_node,
-        )
-        self._td_node_save_btn.pack(side="right")
+            font=ctk.CTkFont(size=11), command=self._on_taildrop_add_manual,
+        ).pack(side="left")
 
         # ── Scan peers ────────────────────────────────────────────────────
         td_action_row = ctk.CTkFrame(td_card, fg_color="transparent")
@@ -219,22 +241,72 @@ class TaildropPanel(_BasePanel):
                 desc_lbl.configure(text="🖱️ File chỉ được gửi khi bạn nhấn Transfer thủ công trong Remote UI.")
 
     def _on_taildrop_save_node(self) -> None:
+        """Legacy method — delegates to _on_taildrop_add_manual."""
+        self._on_taildrop_add_manual()
+
+    def _on_taildrop_add_manual(self) -> None:
+        """Add the manually-typed node name to the multi-node selection."""
         node = self._td_node_entry.get().strip()
-        if node and not _NODE_RE.match(node):
+        if not node:
+            return
+        if not _NODE_RE.match(node):
             self._app.toast(
                 "❌  Tên node không hợp lệ — chỉ chứa chữ, số, dấu gạch ngang, dấu chấm.",
                 "error",
             )
             return
-        self._app.config.set("taildrop_target_node", node)
+        current = list(self._td_node_vars.keys())
+        if node not in current:
+            current.append(node)
+            selected = [n for n, v in self._td_node_vars.items() if v.get()]
+            self._render_node_checkboxes(current, selected + [node])
+        if node in self._td_node_vars:
+            self._td_node_vars[node].set(True)
+        self._td_node_entry.delete(0, "end")
+        self._save_selected_nodes()
+        self._app.toast(f"➕  Đã thêm node: {node}", "success")
+
+    def _render_node_checkboxes(
+        self, all_nodes: list, selected_nodes: list
+    ) -> None:
+        """Rebuild the checkbox list from *all_nodes*, ticking *selected_nodes*."""
+        for w in self._td_nodes_frame.winfo_children():
+            w.destroy()
+        self._td_node_vars.clear()
+
+        if not all_nodes:
+            ctk.CTkLabel(
+                self._td_nodes_frame,
+                text="Chưa có thiết bị nào. Nhấn 🔍 để quét.",
+                font=ctk.CTkFont(size=11), text_color=T.text3,
+            ).pack(anchor="w", padx=8, pady=6)
+            return
+
+        for node in all_nodes:
+            var = ctk.BooleanVar(value=(node in selected_nodes))
+            self._td_node_vars[node] = var
+            row = ctk.CTkFrame(self._td_nodes_frame, fg_color="transparent")
+            row.pack(fill="x", padx=4, pady=2)
+            ctk.CTkCheckBox(
+                row,
+                text=node,
+                variable=var,
+                font=ctk.CTkFont(size=12),
+                text_color=T.text,
+                fg_color=T.primary,
+                hover_color=T.primary_hover,
+                command=self._save_selected_nodes,
+            ).pack(side="left", padx=(4, 0))
+
+    def _save_selected_nodes(self) -> None:
+        """Persist currently-checked nodes to config (auto-save on every tick)."""
+        selected = [n for n, v in self._td_node_vars.items() if v.get()]
+        self._app.config.set_taildrop_target_nodes(selected)
         self._app.config.save()
-        if node:
-            self._app.toast(f"💾  Đã lưu node: {node}", "success")
-        else:
-            self._app.toast("🗑  Đã xoá node đích.", "info")
+        self._saved_nodes = selected
 
     def _on_taildrop_scan(self) -> None:
-        """Scan for online Tailscale peers and auto-fill the node entry."""
+        """Scan for online Tailscale peers and render checkboxes."""
         lbl = self._td_status_lbl
         if not lbl.winfo_exists():
             return
@@ -266,16 +338,18 @@ class TaildropPanel(_BasePanel):
                             text_color=T.warning_text if hasattr(T, "warning_text") else T.text2,
                         )
                         return
-                    if len(nodes) == 1:
-                        self._td_node_entry.delete(0, "end")
-                        self._td_node_entry.insert(0, nodes[0])
-                        lbl.configure(text=f"✅  1 peer: {nodes[0]} — đã điền tự động.", text_color="#22c55e")
-                    else:
-                        names = ", ".join(nodes[:5])
-                        lbl.configure(
-                            text=f"✅  {len(nodes)} peers: {names} — nhập tên vào ô trên.",
-                            text_color="#22c55e",
-                        )
+                    # Merge scanned nodes with any manually-added ones.
+                    existing_manual = [n for n in self._td_node_vars if n not in nodes]
+                    all_nodes = nodes + existing_manual
+                    currently_selected = (
+                        [n for n, v in self._td_node_vars.items() if v.get()]
+                        or list(self._saved_nodes)
+                    )
+                    self._render_node_checkboxes(all_nodes, currently_selected)
+                    lbl.configure(
+                        text=f"✅  Tìm thấy {len(nodes)} thiết bị. Tích chọn máy muốn gửi.",
+                        text_color="#22c55e",
+                    )
                 except Exception:
                     pass
 

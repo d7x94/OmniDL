@@ -93,7 +93,9 @@ class QueueTab(ctk.CTkFrame):
                     self._scroll, task,
                     on_pause=self._on_pause,
                     on_cancel=self._on_cancel,
-                    on_convert=lambda p, **kw: self._app.convert_to_mp4(p, **kw))
+                    on_convert=lambda p, **kw: self._app.convert_to_mp4(p, **kw),
+                    on_send=self._on_send,
+                    on_delete=self._on_delete_file)
                 w.pack(fill="x", pady=(0, 8))
                 self._widgets[task.id] = w
             else:
@@ -127,6 +129,63 @@ class QueueTab(ctk.CTkFrame):
 
     def _clear_finished(self) -> None:
         self._app.service.clear_finished()
+
+    def _on_send(self, file_path, restore_btn) -> None:
+        """Send completed file to all configured Taildrop nodes.
+
+        Reads node list from config (multi-node list, falls back to legacy
+        single-node scalar).  Runs in the background via TaildropService so
+        the UI never blocks.  restore_btn() is always called — on success,
+        on error, and when Taildrop is not configured — so the Send button
+        is never left in a disabled state.
+        """
+        nodes = self._app.config.taildrop_target_nodes
+        if not nodes:
+            self._app.toast("⚠  Chưa cấu hình thiết bị đích trong Settings → Taildrop", "warning")
+            restore_btn()
+            return
+        if not self._app.config.taildrop_enabled:
+            self._app.toast("⚠  Taildrop chưa được bật trong Settings", "warning")
+            restore_btn()
+            return
+
+        node_list_str = ", ".join(nodes)
+
+        def _on_node_done(node: str) -> None:
+            self.after(0, lambda: self._app.toast(
+                f"📲  Đã gửi → {node}", "success"
+            ))
+
+        def _on_node_error(node: str, err: str) -> None:
+            self.after(0, lambda: self._app.toast(
+                f"❌  Gửi thất bại → {node}: {err[:60]}", "error"
+            ))
+
+        try:
+            self._app.taildrop.send_file_to_nodes(
+                file_path,
+                nodes,
+                on_node_done=_on_node_done,
+                on_node_error=_on_node_error,
+            )
+            self._app.toast(f"📲  Đang gửi đến {len(nodes)} thiết bị: {node_list_str}", "info")
+        except Exception as exc:
+            logger.warning("QueueTab _on_send error: %s", exc)
+            self._app.toast(f"❌  Lỗi gửi file: {exc}", "error")
+        finally:
+            # Restore button on UI thread after a short delay so feedback toast
+            # appears before the button is re-enabled.
+            self.after(800, restore_btn)
+
+    def _on_delete_file(self, file_path, task_id: str) -> None:
+        """Remove task from the queue display after file deletion."""
+        # File is already removed from disk by PostDownloadActions.
+        # We just remove it from the in-memory task list so the widget
+        # disappears cleanly on the next poll cycle.
+        try:
+            self._app.service.cancel_download(task_id)
+        except Exception as exc:
+            logger.debug("QueueTab _on_delete_file cancel error (non-fatal): %s", exc)
 
     def _on_theme(self) -> None:
         if not self.winfo_exists():

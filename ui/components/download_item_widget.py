@@ -13,6 +13,7 @@ import customtkinter as ctk
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
+from ui.components.post_download_actions import PostDownloadActions
 from ui.components.progress_bar import OmniProgressBar
 from ui.themes.tokens import T
 from utils.helpers import fmt_bytes, open_file, open_folder, reveal_in_explorer
@@ -44,13 +45,18 @@ class DownloadItemWidget(ctk.CTkFrame):
 
     def __init__(self, master, task: DownloadTask,
                  on_pause: Callable, on_cancel: Callable,
-                 on_convert: Optional[Callable] = None, **kwargs) -> None:
+                 on_convert: Optional[Callable] = None,
+                 on_send: Optional[Callable] = None,
+                 on_delete: Optional[Callable] = None,
+                 **kwargs) -> None:
         super().__init__(master, fg_color=T.surface, corner_radius=10,
                          border_width=1, border_color=T.border, **kwargs)
         self.task = task
         self._on_pause   = on_pause
         self._on_cancel  = on_cancel
         self._on_convert = on_convert
+        self._on_send    = on_send
+        self._on_delete  = on_delete
         # Snapshot of task.filename taken the first time status reaches
         # COMPLETED.  Mirrors what History does (persists task.filename at
         # DOWNLOAD_COMPLETED event time) so the Open button always opens the
@@ -148,6 +154,18 @@ class DownloadItemWidget(ctk.CTkFrame):
             text_color=T.primary_text,
             font=ctk.CTkFont(size=10, weight="bold"),
             command=self._start_convert)
+
+        # ── Post-download action bar (hidden until COMPLETED) ──────────────
+        # Replaces the old standalone → MP4 button with the unified
+        # Convert / Send / Delete trio from PostDownloadActions.
+        self._post_actions = PostDownloadActions(
+            self._btn_box,
+            on_convert=self._on_post_convert,
+            on_send=self._on_post_send,
+            on_delete=self._on_post_delete,
+            compact=True,
+        )
+        # Not packed yet — shown by refresh() on first COMPLETED tick.
 
         # Row 2: progress
         self._prog = OmniProgressBar(self)
@@ -275,16 +293,25 @@ class DownloadItemWidget(ctk.CTkFrame):
                 self._preview_btn.pack(side="left", padx=(4, 0))
                 self._cancel_btn.pack_forget()
                 self._pause_btn.pack_forget()
-                # Show → MP4 button for non-MP4 completed files.
-                if (hasattr(self, "_on_convert") and self._on_convert
-                        and Path(task.filename).suffix.lower() != ".mp4"
-                        and not self._converting):
-                    self._convert_btn.pack(side="left", padx=(4, 0))
+                # Show the unified Convert/Send/Delete action bar.
+                # The old standalone → MP4 button is intentionally skipped —
+                # PostDownloadActions covers Convert and adds Send + Delete.
+                _pa = getattr(self, "_post_actions", None)
+                if _pa is not None and not _pa.winfo_ismapped():
+                    _pa.pack(side="left", padx=(4, 0))
+                    _pa.show(Path(task.filename))
+                # Hide the legacy → MP4 button (kept in code for safety;
+                # PostDownloadActions supersedes it).
+                if hasattr(self, "_convert_btn") and self._convert_btn.winfo_ismapped():
+                    self._convert_btn.pack_forget()
         else:
             if self._folder_btn.winfo_ismapped():
                 self._folder_btn.pack_forget()
                 self._preview_btn.pack_forget()
                 self._convert_btn.pack_forget()
+                _pa = getattr(self, "_post_actions", None)
+                if _pa is not None:
+                    _pa.hide()
                 if not self._pause_btn.winfo_ismapped():
                     self._pause_btn.pack(side="left", padx=(0, 4))
                     self._cancel_btn.pack(side="left")
@@ -463,6 +490,73 @@ class DownloadItemWidget(ctk.CTkFrame):
             fb = Path(output_dir).resolve()
             if fb.is_dir():
                 open_folder(fb)
+
+    # ── Post-download action handlers ─────────────────────────────────────────
+
+    def _on_post_convert(self, file_path: Path, target_ext: str) -> None:
+        """Bridge PostDownloadActions → existing convert pipeline.
+
+        For MP4 target we reuse the proven convert_to_mp4() path.
+        For other formats we still call the same service but pass a
+        target_format hint (future-proofing; service currently outputs MP4).
+        Callbacks post back to _ui_queue so they are always on the UI thread.
+        """
+        if not self._on_convert:
+            self._post_actions.notify_convert_error("Convert chưa được cấu hình.")
+            return
+
+        def _on_progress(pct: float) -> None:
+            self._ui_queue.put(lambda p=pct: self._prog.set_progress(p))
+
+        def _on_done(output_path: Path) -> None:
+            self._converting = False
+            self._ui_queue.put(
+                lambda op=output_path: self._post_actions.notify_convert_done(op)
+            )
+
+        def _on_error(msg: str) -> None:
+            self._converting = False
+            self._ui_queue.put(
+                lambda m=msg: self._post_actions.notify_convert_error(m)
+            )
+
+        self._converting = True
+        self._prog.set_progress(0.0)
+        self._prog.set_state("active")
+        self._on_convert(
+            file_path,
+            on_progress=_on_progress,
+            on_done=_on_done,
+            on_error=_on_error,
+        )
+
+    def _on_post_send(self, file_path: Path, restore_btn: callable) -> None:
+        """Bridge PostDownloadActions → TaildropService.send_file_to_nodes().
+
+        Reads the target node list from config via the on_send callback
+        provided at widget construction.  If no on_send callback was given,
+        restores the button immediately.
+        """
+        if not self._on_send:
+            restore_btn()
+            return
+        try:
+            self._on_send(file_path, restore_btn)
+        except Exception as exc:
+            logger.warning("DownloadItemWidget on_send raised: %s", exc)
+            restore_btn()
+
+    def _on_post_delete(self, file_path: Path) -> None:
+        """Called by PostDownloadActions after the file has been deleted.
+
+        Hides the widget from the queue list by cancelling the task entry
+        (the task is already COMPLETED so cancel is a visual-only removal).
+        """
+        if self._on_delete:
+            try:
+                self._on_delete(file_path, self.task.id)
+            except Exception as exc:
+                logger.warning("DownloadItemWidget on_delete raised: %s", exc)
 
     @staticmethod
     def _trunc(s: str, n: int) -> str:

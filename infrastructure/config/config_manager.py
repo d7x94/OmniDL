@@ -62,6 +62,10 @@ _DEFAULTS: dict[str, Any] = {
     "taildrop_enabled":     False,
     "taildrop_target_node": "",
     "taildrop_send_mode":   "ask",     # "always" | "ask"  — "ask" shows action buttons in Remote UI
+    # List of node names / IPs selected in Settings → Taildrop → multi-device picker.
+    # When non-empty, takes priority over the legacy taildrop_target_node scalar.
+    # Each entry must match _NODE_RE in taildrop_service.py (letters, digits, hyphens, dots).
+    "taildrop_target_nodes": [],
 }
 
 
@@ -441,3 +445,26 @@ class ConfigManager:
     def taildrop_send_mode(self) -> str:
         val = str(self.get("taildrop_send_mode", "always")).strip()
         return val if val in ("always", "ask") else "always"
+
+    @property
+    def taildrop_target_nodes(self) -> list:
+        """Return the multi-device node list.
+
+        Falls back to [taildrop_target_node] when the list has not been
+        configured yet, so existing single-node setups continue to work
+        without any migration step.
+        """
+        raw = self.get("taildrop_target_nodes", [])
+        if isinstance(raw, list) and raw:
+            return [str(n).strip() for n in raw if str(n).strip()]
+        # Legacy fallback: promote the scalar to a one-element list.
+        single = self.taildrop_target_node
+        return [single] if single else []
+
+    def set_taildrop_target_nodes(self, nodes: list) -> None:
+        """Persist the multi-device node list and keep the legacy scalar in sync."""
+        clean = [str(n).strip() for n in nodes if str(n).strip()]
+        self.set("taildrop_target_nodes", clean)
+        # Keep the legacy key in sync so older code reading taildrop_target_node
+        # still gets a valid (first) node.
+        self.set("taildrop_target_node", clean[0] if clean else "")
