@@ -40,6 +40,7 @@ class DownloadManager:
         engine: YtDlpEngine,
         event_bus: Optional[EventBus] = None,
         gallery_engine: Optional[GalleryDlEngine] = None,
+        story_engine_enabled: bool = False,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
@@ -47,7 +48,11 @@ class DownloadManager:
         # Optional gallery-dl engine — injected from main.py when available.
         # Typed as object to avoid circular imports; duck-typed at call site.
         self._gallery_engine = gallery_engine
-        # Optional Facebook Story engine — CDP-based, injected from main.py.
+        # Facebook Story engine flag — when True, facebook_story_engine is
+        # imported lazily on first use (avoids loading Playwright at startup).
+        # Injected from main.py; defaults to False so tests and non-CDP builds
+        # are unaffected.
+        self._story_engine_enabled: bool = story_engine_enabled
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
@@ -229,6 +234,36 @@ class DownloadManager:
                     break
 
             try:
+                # ── Route: Facebook Story → CDP engine (Playwright) ───────
+                # Must be checked BEFORE gallery/yt-dlp routing because Story
+                # URLs also match the generic facebook.com domain used below.
+                # The import is deferred so Playwright is never loaded on
+                # desktop-only startups where story_engine_enabled=False.
+                if self._story_engine_enabled:
+                    from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+                        download_story,
+                        is_facebook_story_url,
+                    )
+                    if is_facebook_story_url(task.url):
+                        def _story_progress(pct: int, speed: str, msg: str) -> None:
+                            with task._lock:
+                                task.progress = float(pct)
+                                task.speed    = speed
+                                task.eta      = msg
+                            self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+
+                        result_path = download_story(
+                            url=task.url,
+                            config=self._config,
+                            browser=getattr(self._config, "cookies_browser", "brave"),
+                            on_progress=_story_progress,
+                            timeout=60.0,
+                        )
+                        with task._lock:
+                            task.filename = str(result_path)
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
                 # Route to gallery-dl engine when MediaInfo carries the hint.
                 # Falls back to yt-dlp if gallery engine is not wired (e.g. tests).
                 use_gallery = (

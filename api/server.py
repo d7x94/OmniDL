@@ -772,6 +772,39 @@ def create_app(
             # GET /api/queue call on first connect.
             snapshot = [_task_to_dict(t) for t in service.get_all_tasks()]
             yield f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
+
+            # ── Convert-job snapshot ──────────────────────────────────────
+            # Sent immediately after the download snapshot so that if the
+            # client reconnects AFTER a convert_completed event was already
+            # broadcast (e.g. SSE drop mid-conversion), it can restore the
+            # correct COMPLETED / FAILED / CANCELLED state without polling.
+            # Only non-terminal or recently-finished jobs are included so the
+            # payload stays small (RemoteConvertService already caps at
+            # MAX_JOBS = 100 and purges oldest terminal jobs automatically).
+            if remote_convert is not None:
+                convert_snap = []
+                for job in remote_convert.get_all_jobs():
+                    s = job.snapshot()
+                    out = s.get("output_filename", "") or ""
+                    convert_snap.append({
+                        "job_id":          s["job_id"],
+                        "source_task_id":  s["source_task_id"],
+                        "encoder_key":     s["encoder_key"],
+                        "quality":         s["quality"],
+                        "speed_preset":    s["speed_preset"],
+                        "custom_crf":      s["custom_crf"],
+                        "status":          s["status"],
+                        "progress":        s["progress"],
+                        "output_filename": Path(out).name if out else "",
+                        "error_msg":       s["error_msg"],
+                        "created_at":      s["created_at"],
+                        "finished_at":     s["finished_at"],
+                        "preview_url":     f"/api/convert/{s['job_id']}/file",
+                        "output_deleted":  s.get("output_deleted", False),
+                    })
+                if convert_snap:
+                    yield f"event: convert_snapshot\ndata: {json.dumps(convert_snap)}\n\n"
+
             last_ping = time.monotonic()
             try:
                 while True:

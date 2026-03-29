@@ -218,7 +218,7 @@ def main() -> None:
     except Exception as _deno_exc:
         logger.warning("Deno PATH injection failed (non-fatal): %s", _deno_exc)
 
-    manager        = DownloadManager(config, engine=engine, gallery_engine=gallery_engine)
+    manager        = DownloadManager(config, engine=engine, gallery_engine=gallery_engine, story_engine_enabled=True)
     manager.start()
 
     from app.services.download_service import DownloadService

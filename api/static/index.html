@@ -838,6 +838,23 @@ function connectSSE() {
   });
 
   // ── Convert events ────────────────────────────────────────────────────
+  // convert_snapshot: fired once on (re)connect to restore job state that
+  // may have been missed if the SSE connection dropped mid-conversion.
+  evtSrc.addEventListener('convert_snapshot', e => {
+    const jobs = JSON.parse(e.data);
+    jobs.forEach(j => {
+      // Merge into convertJobs: only overwrite if incoming status is
+      // "more advanced" than what we already have, so a stale snapshot
+      // never rolls back a live in-progress job's UI state.
+      const order = { PENDING: 0, CONVERTING: 1, COMPLETED: 2, FAILED: 2, CANCELLED: 2 };
+      const existing = convertJobs[j.job_id];
+      if (!existing || (order[j.status] ?? 0) >= (order[existing.status] ?? 0)) {
+        convertJobs[j.job_id] = j;
+      }
+    });
+    renderQueue();
+  });
+
   evtSrc.addEventListener('convert_started', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;

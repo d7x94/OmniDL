@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import re
 import shlex
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -920,10 +921,38 @@ class YtDlpEngine:
         # live_from_start=False records from now (not stream start).
         # socket_timeout is tightened for live so the cancel check fires within
         # 10 s rather than 30 s.
+        #
+        # FIX-HLS-TEMPDIR (P2c):
+        # Root cause of ffmpeg exit code 3419392776 (0xCBAE0008, Windows
+        # STATUS_PIPE_NOT_AVAILABLE): yt-dlp writes HLS temp segments into the
+        # output directory by default.  If that path contains Unicode characters
+        # (e.g. Vietnamese folder names) ffmpeg fails immediately when trying
+        # to open the temp file handle.
+        #
+        # Fix: redirect yt-dlp's "temp" path bucket to the system temp
+        # directory (C:\Users\...\AppData\Local\Temp on Windows) which is
+        # always ASCII and writeable.  The final .ts file is still written to
+        # output_dir once the download completes.
+        #
+        # Additional live-only guards:
+        # • concurrent_fragment_downloads=1  — serialise HLS segment writes to
+        #   eliminate read/write races between parallel ffmpeg workers on
+        #   Windows NTFS (another common source of the 0xCBAE0008 code).
+        # • keep_fragments=False             — clean up every .part/.ytdl
+        #   segment file after a completed or cancelled live recording so the
+        #   output directory is not littered with partial segments.
         if is_live:
-            opts["hls_use_mpegts"] = True
-            opts["live_from_start"] = False
-            opts["socket_timeout"] = 10   # faster cancel response for live
+            opts["hls_use_mpegts"]              = True
+            opts["live_from_start"]             = False
+            opts["socket_timeout"]              = 10   # faster cancel response
+            opts["concurrent_fragment_downloads"] = 1  # no parallel HLS writes
+            opts["keep_fragments"]              = False
+            # Route temp segment files away from the (potentially Unicode)
+            # download directory.  tempfile.gettempdir() always returns an
+            # ASCII-safe path on all supported platforms.
+            _live_tmp = Path(tempfile.gettempdir()) / "omnidl_live"
+            _live_tmp.mkdir(parents=True, exist_ok=True)
+            opts["paths"] = {"temp": str(_live_tmp)}
 
         # merge_output_format tells yt-dlp to invoke ffmpeg to remux/merge the
         # downloaded streams.  For livestreams the HLS segments are already a
