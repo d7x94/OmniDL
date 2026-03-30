@@ -615,7 +615,17 @@ class YtDlpEngine:
         _ig_live_re = re.compile(
             r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
         )
-        is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
+        # FIX-TK: TikTok VOD URLs (/video/<id>) must never be treated as live,
+        # even when yt-dlp returns is_live=True from TikTok's API metadata.
+        # TikTok's API occasionally returns a stale/incorrect live_status for
+        # normal VODs, especially share-link URLs with query params like
+        # ?is_from_webapp=1&sender_device=pc.  Only /live/ path URLs are real
+        # TikTok livestreams.
+        _tiktok_vod_re = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
+        if _tiktok_vod_re.search(url):
+            is_live_resolved = False
+        else:
+            is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
 
         # Clean up decrypted temp cookie file now that extraction is complete
         if _cookie_temp_ei:
@@ -960,6 +970,32 @@ class YtDlpEngine:
         # (Windows exit code 3419392776).  Only set it for non-live downloads.
         if not is_live:
             opts["merge_output_format"] = task.output_ext
+
+        # FIX-TK-AUDIO: TikTok DASH audio streams are sometimes encoded as
+        # EC-3 (Dolby Digital Plus) or a non-standard AAC variant that ffmpeg
+        # silently drops when remuxing into mp4 without re-encoding.
+        # The symptom: downloaded mp4 plays fine visually but has no audio.
+        #
+        # Fix: when the URL is a TikTok VOD and the output container is mp4,
+        # force ffmpeg to re-encode the audio track to AAC-LC during the merge
+        # step.  This guarantees a compatible audio track regardless of what
+        # codec TikTok's CDN serves.  Video is copied (-c:v copy) to avoid
+        # quality loss and keep processing fast.
+        #
+        # postprocessor_args["merger"] targets only the FFmpegMergerPP step so
+        # thumbnail/metadata postprocessors are not affected.
+        _tiktok_vod_url_re = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
+        if (
+            not is_live
+            and _tiktok_vod_url_re.search(task.url)
+            and task.output_ext in ("mp4", "mkv", "avi")
+        ):
+            opts.setdefault("postprocessor_args", {})
+            opts["postprocessor_args"]["merger"] = [
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-b:a", "192k",
+            ]
 
         # Proper thumbnail embedding via postprocessors.
         # Skip for livestreams — there is no single output file to embed into

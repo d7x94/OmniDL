@@ -266,3 +266,204 @@ class TestCookiePathEncFallback:
         cfg.set("cookie_file", str(txt))
         result = _validate_cookie_path(cfg)
         assert result == str(enc)
+
+
+# ---------------------------------------------------------------------------
+# FIX-TK: TikTok VOD falsely detected as livestream
+# ---------------------------------------------------------------------------
+
+class TestTikTokVodLiveDetection:
+    """FIX-TK — TikTok /video/<id> URLs must never resolve is_live=True,
+    even when yt-dlp metadata returns is_live=True (TikTok API stale data).
+    Only /live/ path URLs are real TikTok livestreams."""
+
+    def _make_engine(self):
+        cfg = make_config()
+        cfg.use_cookies = False
+        cfg.cookie_file = ""
+        cfg.platform_cookies = {}
+        cfg.remote_components = None
+        return YtDlpEngine(cfg)
+
+    def _fake_info(self, is_live: bool, duration: int = 60) -> dict:
+        return {
+            "title": "Test TikTok video",
+            "uploader": "testuser",
+            "duration": duration,
+            "thumbnail": "https://example.com/thumb.jpg",
+            "formats": [{"format_id": "0", "ext": "mp4", "url": "https://cdn.tiktok.com/v.mp4"}],
+            "is_live": is_live,
+            "was_live": False,
+            "id": "7620980082118675732",
+        }
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_tiktok_vod_url_is_never_live(self, mock_ydl_cls):
+        """VOD URL with is_live=True from API must be corrected to is_live=False."""
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = lambda s: s
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.return_value = self._fake_info(is_live=True)
+        mock_ydl_cls.return_value = mock_ydl
+
+        engine = self._make_engine()
+        url = "https://www.tiktok.com/@gracilenemonteir78900/video/7620980082118675732?is_from_webapp=1&sender_device=pc"
+        info = engine.extract_info(url)
+
+        assert info.is_live is False, (
+            "TikTok /video/<id> URL must never be flagged as livestream"
+        )
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_tiktok_vod_clean_url_is_never_live(self, mock_ydl_cls):
+        """VOD URL without query params must also not be flagged as livestream."""
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = lambda s: s
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.return_value = self._fake_info(is_live=True)
+        mock_ydl_cls.return_value = mock_ydl
+
+        engine = self._make_engine()
+        url = "https://www.tiktok.com/@testuser/video/1234567890"
+        info = engine.extract_info(url)
+
+        assert info.is_live is False
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_tiktok_live_url_remains_live(self, mock_ydl_cls):
+        """Real TikTok /live/ URL where yt-dlp returns is_live=True must stay live."""
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = lambda s: s
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.return_value = self._fake_info(is_live=True, duration=0)
+        mock_ydl_cls.return_value = mock_ydl
+
+        engine = self._make_engine()
+        url = "https://www.tiktok.com/@testuser/live"
+        info = engine.extract_info(url)
+
+        assert info.is_live is True, (
+            "TikTok /live/ URL with is_live=True from yt-dlp must stay live"
+        )
+
+    @patch("yt_dlp.YoutubeDL")
+    def test_tiktok_vod_false_from_api_stays_false(self, mock_ydl_cls):
+        """VOD where API correctly returns is_live=False must also stay False."""
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = lambda s: s
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.return_value = self._fake_info(is_live=False)
+        mock_ydl_cls.return_value = mock_ydl
+
+        engine = self._make_engine()
+        url = "https://www.tiktok.com/@testuser/video/9999999999"
+        info = engine.extract_info(url)
+
+        assert info.is_live is False
+
+
+# ---------------------------------------------------------------------------
+# FIX-TK-AUDIO: TikTok DASH audio re-encode fix
+# ---------------------------------------------------------------------------
+
+class TestTikTokAudioMerge:
+    """FIX-TK-AUDIO — TikTok VOD downloads must inject postprocessor_args
+    so ffmpeg re-encodes audio to AAC during the DASH merge step, preventing
+    silent videos caused by incompatible EC-3/non-standard audio codecs."""
+
+    def _capture_opts(self, task, cfg=None):
+        """Run engine.download() with yt-dlp mocked; return the opts dict used."""
+        if cfg is None:
+            cfg = make_config()
+            cfg.cookie_file = ""
+            cfg.platform_cookies = {}
+            cfg.remote_components = None
+        engine = YtDlpEngine(cfg)
+        captured = {}
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured.update(opts)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def download(self, urls):
+                pass
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.download(task)
+        return captured
+
+    def _make_tiktok_task(self, ext="mp4"):
+        url = "https://www.tiktok.com/@testuser/video/7620980082118675732"
+        task = DownloadTask(url=url, format_id="bestvideo+bestaudio/best", output_ext=ext)
+        task.media_info = MediaInfo(url=url, title="Test TikTok", is_live=False)
+        return task
+
+    def test_tiktok_mp4_has_audio_postprocessor_args(self):
+        """TikTok VOD + mp4 output must have merger postprocessor args with aac."""
+        task = self._make_tiktok_task(ext="mp4")
+        opts = self._capture_opts(task)
+
+        pp_args = opts.get("postprocessor_args", {})
+        assert "merger" in pp_args, "postprocessor_args['merger'] must be set for TikTok VOD"
+        merger = pp_args["merger"]
+        assert "-c:a" in merger
+        aac_idx = merger.index("-c:a") + 1
+        assert merger[aac_idx] == "aac", "Audio codec must be aac"
+        assert "-c:v" in merger
+        cv_idx = merger.index("-c:v") + 1
+        assert merger[cv_idx] == "copy", "Video must be stream-copied (no re-encode)"
+
+    def test_tiktok_mkv_has_audio_postprocessor_args(self):
+        """TikTok VOD + mkv output also gets audio re-encode args."""
+        task = self._make_tiktok_task(ext="mkv")
+        opts = self._capture_opts(task)
+        pp_args = opts.get("postprocessor_args", {})
+        assert "merger" in pp_args
+
+    def test_non_tiktok_url_has_no_audio_postprocessor_args(self):
+        """Non-TikTok URLs (YouTube, Instagram) must NOT get the audio re-encode args."""
+        task = make_task(url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        task.output_ext = "mp4"
+        task.media_info = MediaInfo(url=task.url, title="YouTube video", is_live=False)
+
+        cfg = make_config()
+        cfg.cookie_file = ""
+        cfg.platform_cookies = {}
+        cfg.remote_components = None
+        opts = self._capture_opts(task, cfg=cfg)
+
+        pp_args = opts.get("postprocessor_args", {})
+        assert "merger" not in pp_args, (
+            "Non-TikTok URLs must not inject audio re-encode postprocessor args"
+        )
+
+    def test_tiktok_live_has_no_audio_postprocessor_args(self):
+        """TikTok livestreams (is_live=True) must NOT get the audio re-encode args
+        since live streams use a single muxed HLS container, not DASH."""
+        url = "https://www.tiktok.com/@testuser/live"
+        task = DownloadTask(url=url, format_id="best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="TikTok Live", is_live=True)
+
+        cfg = make_config()
+        cfg.cookie_file = ""
+        cfg.platform_cookies = {}
+        cfg.remote_components = None
+        opts = self._capture_opts(task, cfg=cfg)
+
+        pp_args = opts.get("postprocessor_args", {})
+        assert "merger" not in pp_args, (
+            "Live streams must not inject merger postprocessor args"
+        )
+
+    def test_tiktok_mp3_has_no_merger_args(self):
+        """Audio-only output (mp3) skips the video merge step entirely — no merger args."""
+        task = self._make_tiktok_task(ext="mp3")
+        opts = self._capture_opts(task)
+        pp_args = opts.get("postprocessor_args", {})
+        assert "merger" not in pp_args, (
+            "mp3 (audio-only) output must not get merger postprocessor args"
+        )
