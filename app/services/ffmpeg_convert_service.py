@@ -299,6 +299,7 @@ def _validate_encoder_codec(ffmpeg_bin: Path, codec: str) -> bool:
         str(ffmpeg_bin),
         "-f", "lavfi",
         "-i", "testsrc=duration=1:size=64x64:rate=1",
+        "-vf", "format=yuv420p",
         "-c:v", codec,
         "-frames:v", "1",
         "-f", "null", "-",

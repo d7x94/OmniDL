@@ -1077,7 +1077,7 @@ class LiveMonitorTab(ctk.CTkFrame):
                 i.mp4_btn.configure(state="normal", text="→ MP4")
             logger.warning("LiveMonitor: convert failed for %s: %s", src_path.name, msg[:80])
 
-        self._app.convert_to_mp4(
+        self._app.service.convert_to_mp4(
             src_path,
             on_progress=_on_progress,
             on_done=_on_done,

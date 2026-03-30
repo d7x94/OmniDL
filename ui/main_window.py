@@ -547,12 +547,16 @@ class ServiceFacade:
     def set_download_dir(self, p: Path): self._cfg.set("download_dir", str(p))
 
     def convert_to_mp4(self, source: Path, on_progress=None,
-                       on_done=None, on_error=None) -> None:
+                       on_done=None, on_error=None,
+                       target_ext: str = "mp4",
+                       encode_settings=None) -> None:
         self._svc.convert_to_mp4(
             source=source,
             on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,
+            target_ext=target_ext,
+            encode_settings=encode_settings,
         )
 
     def fetch_thumbnail(self, url: str, width: int, height: int,
