@@ -73,3 +73,70 @@ tests.zip
 
 # Deno binary -- downloaded at CI build time, never stored in the repo.
 resources/deno/
+
+# IDE / Local development
+*.code-workspace
+.DS_Store/
+
+# macOS specific
+.AppleDouble
+.LSOverride
+.DocumentRevisions-*
+.fseventsd
+.TemporaryItems
+.Trashes
+
+# Windows specific
+desktop.ini
+$RECYCLE.BIN/
+
+# Playwright / Browser automation (test results)
+test-results/
+.playwright/
+
+# OmniDL specific local artifacts
+data/
+config.json
+download_history.jsonl
+*.enc
+*.txt.backup
+omnidl_dec_*
+*_cookies.txt
+*_global_cookies.txt
+*_cdp_cookies.txt
+
+# Environment variables
+.env
+.env.local
+
+# SSH keys (if any credential files)
+*.pem
+*.key
+
+# Compiled Python bytecode (additional patterns)
+*.so
+*.o
+*.a
+
+# npm / node artifacts (nếu có JavaScript components)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Pre-commit / linting caches
+.pre-commit-framework/
+.pre-commit-cache/
+
+# Generated files from scripts
+*.generated.py
+*.auto.py
+
+# Misc artifacts
+*.orig
+*.rej
+*.DS_Store
+.idea/workspace.xml
+
+# PIDs and lock files
+*.pid
+*.lock

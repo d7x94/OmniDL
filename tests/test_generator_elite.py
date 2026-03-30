@@ -1393,10 +1393,77 @@ class TestDownloadServiceClose:
         mgr.shutdown(wait=False)
         svc.close()
 
+    def test_convert_to_mp4_forwards_target_ext_and_encode_settings(self, tmp_path):
+        """BUG BK regression: ServiceFacade.convert_to_mp4 must forward target_ext
+        and encode_settings to DownloadService — omitting them silently discards
+        the user's custom encoder/quality selection."""
+        from app.services.download_service import DownloadService
+        from app.services.ffmpeg_convert_service import EncodeSettings
+        svc, mgr = self._make_service(tmp_path)
+        captured = []
+        svc._converter = MagicMock(convert=lambda **kw: captured.append(kw))
+        fake_src = tmp_path / "video.webm"
+        fake_src.write_bytes(b"fake")
+        enc = EncodeSettings(encoder_key="cpu", quality="custom",
+                             speed_preset="balanced", custom_quality=20)
+        svc.convert_to_mp4(source=fake_src, target_ext="mkv", encode_settings=enc)
+        assert captured, "convert_to_mp4 must call _converter.convert()"
+        kw = captured[0]
+        assert kw.get("target_ext") == "mkv", (
+            "target_ext must be forwarded to converter (BUG BK)"
+        )
+        assert kw.get("encode_settings") is enc, (
+            "encode_settings must be forwarded to converter (BUG BK)"
+        )
+        mgr.shutdown(wait=False)
+        svc.close()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ⑨ HistoryRepository — extra edge cases
-# ═════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BUG BL regression — _validate_encoder_codec yuv420p injection
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestValidateEncoderCodecYuv420p:
+    """BUG BL regression: _validate_encoder_codec must inject -vf format=yuv420p
+    before -c:v so GPU encoders (NVENC, AMF, QSV) are not false-negatively
+    excluded when lavfi testsrc outputs rgb24 by default."""
+
+    def test_yuv420p_in_validate_command(self, tmp_path):
+        from app.services.ffmpeg_convert_service import _validate_encoder_codec
+        import subprocess
+
+        fake_ffmpeg = tmp_path / "ffmpeg"
+        fake_ffmpeg.write_bytes(b"")
+        fake_ffmpeg.chmod(0o755)
+
+        captured_cmd = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            class R:
+                returncode = 0
+            return R()
+
+        import app.services.ffmpeg_convert_service as svc_mod
+        original_run = svc_mod.subprocess.run
+        svc_mod.subprocess.run = fake_run
+        try:
+            _validate_encoder_codec(fake_ffmpeg, "h264_nvenc")
+        finally:
+            svc_mod.subprocess.run = original_run
+
+        assert "-vf" in captured_cmd, (
+            "_validate_encoder_codec must include -vf flag (BUG BL)"
+        )
+        vf_idx = captured_cmd.index("-vf")
+        assert captured_cmd[vf_idx + 1] == "format=yuv420p", (
+            "-vf must be followed by format=yuv420p (BUG BL)"
+        )
+        cv_idx = captured_cmd.index("-c:v")
+        assert vf_idx < cv_idx, (
+            "-vf format=yuv420p must appear before -c:v (BUG BL)"
+        )
+
 
 class TestHistoryRepositoryEdgeCases:
     def _make_task(self, task_id="t1", url="https://example.com/v"):
