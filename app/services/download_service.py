@@ -317,6 +317,46 @@ class DownloadService:
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def check_tiktok_profile_live(
+        self,
+        url: str,
+        on_done: "Callable[[Optional[str]], None]",
+        on_error: "Callable[[str], None]",
+    ) -> None:
+        """Check if a TikTok profile URL is currently live.
+
+        Spawns a daemon thread (same pattern as check_profile_live).
+        Calls on_done(live_url_or_None) or on_error(message).
+        Callers must use after() / _ui_queue to marshal UI updates.
+
+        Does NOT require cookies — TikTok's live-check API is public.
+        """
+        import threading
+
+        from utils.tiktok_live_checker import (
+            check_tiktok_live,
+            extract_tiktok_username,
+        )
+
+        username = extract_tiktok_username(url)
+        if not username:
+            on_error("Không thể lấy username từ URL TikTok.")
+            return
+
+        proxy = self._config.proxy
+
+        def _worker() -> None:
+            try:
+                live_url = check_tiktok_live(
+                    username=username,
+                    proxy=proxy,
+                )
+                on_done(live_url)
+            except Exception as exc:
+                on_error(str(exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def close(self) -> None:

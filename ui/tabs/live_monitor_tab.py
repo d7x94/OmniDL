@@ -40,6 +40,10 @@ from utils.instagram_live_checker import (
     extract_instagram_username,
     is_instagram_profile_url,
 )
+from utils.tiktok_live_checker import (
+    extract_tiktok_username,
+    is_tiktok_profile_url,
+)
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -95,8 +99,9 @@ class _MonitorItem:
     error_msg:         str  = ""
     last_check:        float = 0.0             # time.time() of last check
     added_at:          float = field(default_factory=time.time)
-    # Profile watch — set when url is an Instagram profile page
+    # Profile watch — set when url is an Instagram or TikTok profile page
     is_profile_watch:  bool  = False           # True for profile URLs
+    profile_platform:  str   = ""              # "instagram" | "tiktok" | ""
     username:          str   = ""              # e.g. "baki_babyboy"
 
     # Captured filename when recording completes — used by open_folder_btn
@@ -288,11 +293,23 @@ class LiveMonitorTab(ctk.CTkFrame):
             self._app.toast("URL này đang được theo dõi.", "info")
             return
 
-        # Detect Instagram profile URL → enable profile watcher mode
-        is_profile  = is_instagram_profile_url(url)
-        username    = extract_instagram_username(url) or ""
+        # Detect profile URL — supports Instagram and TikTok
+        is_ig_profile     = is_instagram_profile_url(url)
+        is_tiktok_profile = is_tiktok_profile_url(url)
+        is_profile        = is_ig_profile or is_tiktok_profile
 
-        if is_profile and not self._app.config.cookie_file:
+        if is_ig_profile:
+            username         = extract_instagram_username(url) or ""
+            profile_platform = "instagram"
+        elif is_tiktok_profile:
+            username         = extract_tiktok_username(url) or ""
+            profile_platform = "tiktok"
+        else:
+            username         = ""
+            profile_platform = ""
+
+        # Instagram profile watcher requires a cookie file
+        if is_ig_profile and not self._app.config.cookie_file:
             self._app.toast(
                 "Profile watcher cần cookie file Instagram.\n"
                 "Cấu hình trong Settings → Network → Cookie file.",
@@ -303,6 +320,7 @@ class LiveMonitorTab(ctk.CTkFrame):
         item = _MonitorItem(
             url=url,
             is_profile_watch=is_profile,
+            profile_platform=profile_platform,
             username=username,
         )
         self._items.append(item)
@@ -313,7 +331,8 @@ class LiveMonitorTab(ctk.CTkFrame):
 
         if is_profile:
             logger.info(
-                "LiveMonitor: added profile watch for @%s", username
+                "LiveMonitor: added %s profile watch for @%s",
+                profile_platform, username,
             )
             self._app.toast(
                 f"Đang theo dõi @{username} — sẽ tự ghi khi live bắt đầu.",
@@ -769,8 +788,9 @@ class LiveMonitorTab(ctk.CTkFrame):
     def _trigger_check(self, item: _MonitorItem) -> None:
         """Start one check for item.
 
-        - Profile watch:  calls service.check_profile_live() → Instagram API
-        - Live URL:       calls service.analyse_url()         → yt-dlp extract_info
+        - Instagram profile: calls service.check_profile_live()        → Instagram API
+        - TikTok profile:    calls service.check_tiktok_profile_live() → TikTok API
+        - Live URL:          calls service.analyse_url()               → yt-dlp
         Sets _checking=True (sequential lock).
         """
         token = self._monitor_token
@@ -780,7 +800,6 @@ class LiveMonitorTab(ctk.CTkFrame):
         self._refresh_item_ui(item)
 
         if item.is_profile_watch:
-            # Instagram profile watcher — use private API checker
             url = item.url
 
             def on_done(live_url: "Optional[str]") -> None:
@@ -791,10 +810,18 @@ class LiveMonitorTab(ctk.CTkFrame):
             def on_error(err: str) -> None:
                 self._ui_queue.put(lambda e=err: self._on_check_error(item, e, token))
 
-            self._app.service.check_profile_live(
-                url=url, on_done=on_done, on_error=on_error
-            )
-            logger.debug("LiveMonitor: profile check @%s", item.username)
+            if item.profile_platform == "tiktok":
+                # TikTok profile watcher — public API, no cookie needed
+                self._app.service.check_tiktok_profile_live(
+                    url=url, on_done=on_done, on_error=on_error
+                )
+                logger.debug("LiveMonitor: TikTok profile check @%s", item.username)
+            else:
+                # Instagram profile watcher — private API, cookie required
+                self._app.service.check_profile_live(
+                    url=url, on_done=on_done, on_error=on_error
+                )
+                logger.debug("LiveMonitor: Instagram profile check @%s", item.username)
         else:
             # Regular live URL — use existing yt-dlp analyse_url path
             url = item.url
@@ -924,7 +951,7 @@ class LiveMonitorTab(ctk.CTkFrame):
             title=f"@{item.username} Live",
             uploader=item.username,
             duration=0,
-            platform="instagram",
+            platform=item.profile_platform or "unknown",
             formats=[],
             is_live=True,
         )
