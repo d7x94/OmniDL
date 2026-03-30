@@ -524,17 +524,33 @@ class FfmpegConvertService:
         self,
         source: Path,
         quality: Quality = "standard",
+        target_ext: str = "mp4",
         output_dir: Optional[Path] = None,
         on_progress: Optional[Callable[[float], None]] = None,
         on_done: Optional[Callable[[Path], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         encode_settings: Optional[EncodeSettings] = None,
     ) -> None:
-        """Start a background conversion. All callbacks fire on worker thread."""
+        """Start a background conversion. All callbacks fire on worker thread.
+
+        target_ext: output container without the dot — ``"mp4"`` (default),
+        ``"mp3"``, ``"mkv"``, or ``"avi"``.  MP3 triggers audio-only extraction;
+        other formats use the configured H.264/AAC video codec.
+        encode_settings overrides quality/encoder when provided (Custom mode).
+        When encode_settings is provided, its quality field is used instead of
+        the *quality* parameter.
+        """
+        # When EncodeSettings carries a quality tier, use it as the quality arg
+        # so the preset lookup is consistent.
+        effective_quality: Quality = (
+            encode_settings.quality  # type: ignore[assignment]
+            if encode_settings is not None and encode_settings.quality in ("high", "standard", "small")
+            else quality
+        )
         thread = threading.Thread(
             target=self._run,
-            args=(source, quality, output_dir, on_progress, on_done, on_error),
-            kwargs={"encode_settings": encode_settings},
+            args=(source, effective_quality, output_dir, on_progress, on_done, on_error),
+            kwargs={"encode_settings": encode_settings, "target_ext": target_ext},
             daemon=True,
             name=f"omnidl-convert-{source.stem[:20]}",
         )
@@ -556,10 +572,12 @@ class FfmpegConvertService:
         on_error: Optional[Callable[[str], None]],
         encode_settings: Optional[EncodeSettings] = None,
         cancel_event: Optional[threading.Event] = None,
+        target_ext: str = "mp4",
     ) -> None:
         try:
             out = self._convert_sync(source, quality, output_dir, on_progress,
-                                     encode_settings, cancel_event=cancel_event)
+                                     encode_settings, cancel_event=cancel_event,
+                                     target_ext=target_ext)
             if on_done:
                 on_done(out)
         except ConversionCancelledError:
@@ -579,6 +597,7 @@ class FfmpegConvertService:
         on_progress: Optional[Callable[[float], None]],
         encode_settings: Optional[EncodeSettings] = None,
         cancel_event: Optional[threading.Event] = None,
+        target_ext: str = "mp4",
     ) -> Path:
         # Pre-flight cancel check: job may have been cancelled while queued
         if cancel_event is not None and cancel_event.is_set():
@@ -587,12 +606,23 @@ class FfmpegConvertService:
         if not source.is_file():
             raise ConversionError(f"File không tồn tại: {source}")
 
+        target_ext = target_ext.lstrip(".").lower() or "mp4"
+
+        # MP3: audio-only extraction — bypass the video encode pipeline entirely
+        if target_ext == "mp3":
+            return self._extract_audio_mp3(
+                source, output_dir, on_progress, cancel_event=cancel_event,
+            )
+
         ffmpeg_bin = self._locate_ffmpeg_bin()
-        preset = _PRESETS.get(quality, _PRESETS["standard"])
+        preset     = _PRESETS.get(quality, _PRESETS["standard"])
 
         dest_dir = output_dir or source.parent
         dest_dir.mkdir(parents=True, exist_ok=True)
 
+        # Use target_ext for the temp and final output filenames.
+        # .part.mp4 is the existing invariant for temp files; we keep it
+        # regardless of target_ext so the .part cleanup rules still apply.
         temp_output = dest_dir / f"{source.stem}_iPhone.part.mp4"
 
         duration_s = self._probe_duration(ffmpeg_bin, source)
@@ -605,11 +635,61 @@ class FfmpegConvertService:
             ffmpeg_bin, source, dest_dir, temp_output,
             duration_s, preset, on_progress, encode_settings,
             cancel_event=cancel_event,
+            target_ext=target_ext,
         )
 
         size_mb = output.stat().st_size / 1_048_576
         logger.info("Done: %s (%.1f MB)", output.name, size_mb)
         return output
+
+    def _extract_audio_mp3(
+        self,
+        source: Path,
+        output_dir: Optional[Path],
+        on_progress: Optional[Callable[[float], None]],
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Path:
+        """Extract audio from *source* to MP3 (libmp3lame, 192k)."""
+        if cancel_event is not None and cancel_event.is_set():
+            raise ConversionCancelledError("Đã huỷ")
+
+        ffmpeg_bin = self._locate_ffmpeg_bin()
+        dest_dir   = output_dir or source.parent
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Unique output path
+        candidate = dest_dir / f"{source.stem}.mp3"
+        i = 1
+        while candidate.exists():
+            candidate = dest_dir / f"{source.stem}_{i}.mp3"
+            i += 1
+
+        temp_mp3 = dest_dir / f"{source.stem}.part.mp3"
+        if temp_mp3.exists():
+            temp_mp3.unlink(missing_ok=True)
+
+        duration_s = self._probe_duration(ffmpeg_bin, source)
+
+        cmd = [
+            str(ffmpeg_bin), "-y",
+            "-i", str(source),
+            "-vn",                       # no video
+            "-c:a", "libmp3lame",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-progress", "pipe:1",
+            "-nostats", "-loglevel", "error",
+            str(temp_mp3),
+        ]
+        try:
+            self._run_ffmpeg(cmd, duration_s, on_progress, cancel_event=cancel_event)
+        except Exception:
+            temp_mp3.unlink(missing_ok=True)
+            raise
+
+        temp_mp3.rename(candidate)
+        logger.info("MP3 done: %s (%.1f MB)", candidate.name, candidate.stat().st_size / 1_048_576)
+        return candidate
 
     def _try_encode_with_fallback(
         self,
@@ -622,6 +702,7 @@ class FfmpegConvertService:
         on_progress: Optional[Callable[[float], None]],
         encode_settings: Optional[EncodeSettings],
         cancel_event: Optional[threading.Event] = None,
+        target_ext: str = "mp4",
     ) -> Path:
         """Attempt encode; if GPU fails, retry with CPU (libx264).
 
@@ -639,6 +720,7 @@ class FfmpegConvertService:
                 duration_s, preset, on_progress,
                 encode_settings=encode_settings,
                 cancel_event=cancel_event,
+                target_ext=target_ext,
             )
         except ConversionCancelledError:
             raise   # cancelled — never retry
@@ -662,6 +744,7 @@ class FfmpegConvertService:
                 duration_s, preset, on_progress,
                 encode_settings=cpu_settings,
                 cancel_event=cancel_event,
+                target_ext=target_ext,
             )
 
     # ── Encode paths ──────────────────────────────────────────────────────
@@ -677,12 +760,17 @@ class FfmpegConvertService:
         on_progress: Optional[Callable[[float], None]],
         encode_settings: Optional[EncodeSettings] = None,
         cancel_event: Optional[threading.Event] = None,
+        target_ext: str = "mp4",
     ) -> Path:
         """Encode the full source to temp_output, then atomically rename.
 
         Guarantees that *temp_output* is deleted if the encode fails or is
         cancelled, preventing orphaned ``.part`` files (BUG 8).
+        target_ext controls the output container (mp4/mkv/avi).
         """
+        # For non-mp4 containers we pass a temporary .part.mp4 to FFmpeg for
+        # the encode, then remux losslessly into the target container.  This
+        # keeps the proven .part.mp4 temp workflow intact.
         cmd = self._build_cmd(
             ffmpeg_bin, source, temp_output, preset, seek=0.0,
             encode_settings=encode_settings,
@@ -693,6 +781,27 @@ class FfmpegConvertService:
         except Exception:
             temp_output.unlink(missing_ok=True)   # BUG 8: clean up on any failure
             raise
+
+        # Remux to target container when target_ext differs from mp4.
+        # mkv and avi accept the H.264+AAC stream without re-encode (-c copy).
+        target_ext = target_ext.lower()
+        if target_ext not in ("mp4", ""):
+            remux_output = self._find_output_path(dest_dir, source, ext=target_ext)
+            remux_cmd = [
+                str(ffmpeg_bin), "-y",
+                "-i", str(temp_output),
+                "-c", "copy",
+                str(remux_output),
+            ]
+            result = subprocess.run(remux_cmd, capture_output=True, timeout=120)
+            temp_output.unlink(missing_ok=True)
+            if result.returncode != 0:
+                tail = result.stderr[-200:].decode("utf-8", errors="replace")
+                raise ConversionError(f"Remux to .{target_ext} failed: {tail}")
+            self._validate_output(remux_output)
+            if on_progress:
+                on_progress(100.0)
+            return remux_output
 
         output = self._find_output_path(dest_dir, source)
         temp_output.rename(output)
@@ -1005,14 +1114,19 @@ class FfmpegConvertService:
     # ── Path / validation helpers ─────────────────────────────────────────
 
     @staticmethod
-    def _find_output_path(dest_dir: Path, source: Path) -> Path:
-        """Return the next available non-colliding output path."""
-        candidate = dest_dir / f"{source.stem}_iPhone.mp4"
+    def _find_output_path(dest_dir: Path, source: Path, ext: str = "mp4") -> Path:
+        """Return the next available non-colliding output path.
+
+        ext: file extension without the leading dot (default "mp4").
+        """
+        ext = ext.lower().lstrip(".")
+        suffix = f".{ext}"
+        candidate = dest_dir / f"{source.stem}_iPhone{suffix}"
         if not candidate.exists():
             return candidate
         i = 2
         while True:
-            c = dest_dir / f"{source.stem}_iPhone_{i}.mp4"
+            c = dest_dir / f"{source.stem}_iPhone_{i}{suffix}"
             if not c.exists():
                 return c
             i += 1

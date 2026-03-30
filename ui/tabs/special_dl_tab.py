@@ -468,8 +468,12 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
 
     # ── Post-download action handlers ─────────────────────────────────────────
 
-    def _on_post_convert(self, file_path: Path, target_ext: str) -> None:
-        """Bridge PostDownloadActions → FFmpeg convert service."""
+    def _on_post_convert(self, file_path: Path, target_ext: str, encode_settings=None) -> None:
+        """Bridge PostDownloadActions → FFmpeg convert service.
+
+        Forwards target_ext (mp4/mp3/mkv/avi) and optional encode_settings
+        (EncodeSettings for Custom mode) so the user's choices are honoured.
+        """
         try:
             convert_svc = self._win.service.convert_to_mp4
         except AttributeError:
@@ -497,6 +501,8 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
         try:
             convert_svc(
                 file_path,
+                target_ext=target_ext,
+                encode_settings=encode_settings,
                 on_progress=_on_progress,
                 on_done=_on_done,
                 on_error=_on_error,

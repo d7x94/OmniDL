@@ -218,18 +218,32 @@ class DownloadService:
     def convert_to_mp4(
         self,
         source: Path,
+        target_ext: str = "mp4",
+        encode_settings=None,
         on_progress: Optional[Callable[[float], None]] = None,
         on_done: Optional[Callable[[Path], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """
-        Convert *source* to MP4/H.264/AAC in a background thread.
+        """Convert *source* to the requested format in a background thread.
 
-        Callbacks fire on the worker thread — UI callers must marshal to
-        the main thread via ``widget.after(0, ...)``.
+        Parameters
+        ----------
+        source:
+            Path to the source media file.
+        target_ext:
+            Target container extension without the dot: ``"mp4"`` (default),
+            ``"mp3"``, ``"mkv"``, or ``"avi"``.
+        encode_settings:
+            Optional ``EncodeSettings`` for custom encoder/quality.
+            Forwarded verbatim to ``FfmpegConvertService.convert()``.
+        on_progress / on_done / on_error:
+            Callbacks fire on the worker thread — UI callers must marshal to
+            the main thread (e.g. via ``_ui_queue``).
         """
         self._converter.convert(
             source=source,
+            target_ext=target_ext,
+            encode_settings=encode_settings,
             on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,

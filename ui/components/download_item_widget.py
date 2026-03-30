@@ -493,13 +493,12 @@ class DownloadItemWidget(ctk.CTkFrame):
 
     # ── Post-download action handlers ─────────────────────────────────────────
 
-    def _on_post_convert(self, file_path: Path, target_ext: str) -> None:
+    def _on_post_convert(self, file_path: Path, target_ext: str, encode_settings=None) -> None:
         """Bridge PostDownloadActions → existing convert pipeline.
 
-        For MP4 target we reuse the proven convert_to_mp4() path.
-        For other formats we still call the same service but pass a
-        target_format hint (future-proofing; service currently outputs MP4).
-        Callbacks post back to _ui_queue so they are always on the UI thread.
+        Forwards target_ext and encode_settings so the user's format and
+        encoder choices are respected.  Both are passed as keyword arguments
+        to the on_convert callback provided by QueueTab.
         """
         if not self._on_convert:
             self._post_actions.notify_convert_error("Convert chưa được cấu hình.")
@@ -525,6 +524,8 @@ class DownloadItemWidget(ctk.CTkFrame):
         self._prog.set_state("active")
         self._on_convert(
             file_path,
+            target_ext=target_ext,
+            encode_settings=encode_settings,
             on_progress=_on_progress,
             on_done=_on_done,
             on_error=_on_error,

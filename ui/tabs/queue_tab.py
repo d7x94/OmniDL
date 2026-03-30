@@ -93,7 +93,12 @@ class QueueTab(ctk.CTkFrame):
                     self._scroll, task,
                     on_pause=self._on_pause,
                     on_cancel=self._on_cancel,
-                    on_convert=lambda p, **kw: self._app.convert_to_mp4(p, **kw),
+                    on_convert=lambda p, target_ext="mp4", encode_settings=None, **kw: self._app.convert_to_mp4(
+                        p,
+                        target_ext=target_ext,
+                        encode_settings=encode_settings,
+                        **kw,
+                    ),
                     on_send=self._on_send,
                     on_delete=self._on_delete_file)
                 w.pack(fill="x", pady=(0, 8))

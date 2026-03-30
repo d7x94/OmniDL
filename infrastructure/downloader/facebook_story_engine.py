@@ -69,7 +69,7 @@ _FB_VIDEO_RE = re.compile(
 
 _FB_THUMB_RE = re.compile(r"/v/t(?:15|39|51)\b", re.I)
 
-# Facebook audio DASH tracks use /o1/a/ in the CDN path (vs /o1/v/ for video).
+# Facebook audio-DASH CDN tracks use /o1/a/ in the path (vs /o1/v/ for video).
 _FB_AUDIO_RE = re.compile(r"/o1/a/", re.I)
 
 _UA = (
@@ -78,20 +78,33 @@ _UA = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Pre-page script — runs BEFORE Facebook JS loads (via add_init_script)
+# Pre-page script — runs BEFORE Facebook JS loads (via add_init_script).
+# Captures video CDN URLs into window.__omni_urls[0] and audio CDN URLs
+# into window.__omni_urls[1] so the Python poll can retrieve each stream.
 _PRE_PAGE_JS = (
     "(function(){"
     "if(window.__omni_installed)return;"
     "window.__omni_installed=true;"
+    "window.__omni_video_url=null;"
+    "window.__omni_audio_url=null;"
+    # Keep legacy array for backward compat with _POLL_JS
     "window.__omni_urls=[];"
+    "function _isVideo(l){"
+    " return l.indexOf('/m1/v/t')!==-1||l.indexOf('/o1/v/')!==-1"
+    "  ||l.indexOf('/v/t42')!==-1||l.indexOf('/v/t64')!==-1"
+    "  ||l.indexOf('/v/t66')!==-1||l.indexOf('bytestart=')!==-1;"
+    "}"
+    "function _isAudio(l){return l.indexOf('/o1/a/')!==-1;}"
     "function _cap(u){"
     "  if(!u||typeof u!=='string'||u.indexOf('fbcdn.net')===-1)return;"
     "  var l=u.toLowerCase();"
-    "  if(l.indexOf('/m1/v/t')!==-1||l.indexOf('/o1/v/')!==-1"
-    "   ||l.indexOf('/o1/a/')!==-1"
-    "   ||l.indexOf('/v/t42')!==-1||l.indexOf('/v/t64')!==-1"
-    "   ||l.indexOf('/v/t66')!==-1||l.indexOf('bytestart=')!==-1)"
-    "   window.__omni_urls.push(u);"
+    "  if(_isVideo(l)&&!window.__omni_video_url){"
+    "   window.__omni_video_url=u;"
+    "   window.__omni_urls[0]=u;"
+    "  }else if(_isAudio(l)&&!window.__omni_audio_url){"
+    "   window.__omni_audio_url=u;"
+    "   window.__omni_urls[1]=u;"
+    "  }"
     "}"
     "var _f=window.fetch;"
     "window.fetch=function(i,o){_cap(typeof i==='string'?i:(i&&i.url));return _f.apply(this,arguments);};"
@@ -128,27 +141,38 @@ _POLL_JS = (
     "})()"
 )
 
-# JS to poll window.__omni_urls[1] for a separately-captured audio CDN URL.
-# Returns empty string if not yet available.
+# JS to read the separately-captured audio CDN URL (from _PRE_PAGE_JS).
+# Returns empty string if not yet captured.
 _POLL_AUDIO_JS = (
     "(function(){"
-    "if(window.__omni_urls&&window.__omni_urls.length>1)return window.__omni_urls[1];"
+    "if(window.__omni_audio_url)return window.__omni_audio_url;"
+    # Scan Performance API for /o1/a/ audio tracks
+    "try{"
+    " var e=performance.getEntriesByType('resource');"
+    " for(var i=0;i<e.length;i++){"
+    "  var u=e[i].name;"
+    "  if(u&&u.indexOf('fbcdn.net')!==-1&&u.toLowerCase().indexOf('/o1/a/')!==-1)return u;"
+    " }"
+    "}catch(x){}"
     "return '';"
     "})()"
 )
 
-# JS to call play() on all video elements (dismiss tap-to-play overlays).
-# Strategy: mute first (satisfies browser autoplay policy), start play(), then
-# unmute after 500 ms via a closure-captured setTimeout.  Unmuting a playing
-# DASH video causes the browser to request the audio DASH segments, which are
-# then captured by the _on_request / _on_response handlers in Python.
+# JS to call play() on all video elements.
+# Strategy: mute first to satisfy autoplay policy, start play(), then
+# unmute after 100 ms.  Unmuting a playing DASH video triggers the browser
+# to request the separate audio DASH segments, which are caught by the
+# _on_request / _on_response CDP handlers.
 _PLAY_JS = (
     "(function(){"
     "var vs=document.querySelectorAll('video');"
     "for(var i=0;i<vs.length;i++){"
     " vs[i].muted=true;"
-    " if(vs[i].paused)try{vs[i].play().catch(function(){});}catch(e){}"
-    " (function(v){setTimeout(function(){v.muted=false;},500);})(vs[i]);"
+    " (function(v){"
+    "  var p=v.paused?v.play():Promise.resolve();"
+    "  if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},100);}).catch(function(){v.muted=false;});}"
+    "  else{setTimeout(function(){v.muted=false;},100);}"
+    " })(vs[i]);"
     "}"
     "})()"
 )
@@ -182,7 +206,7 @@ def _is_fb_video_url(url: str) -> bool:
 
 
 def _is_fb_audio_url(url: str) -> bool:
-    """Return True if url looks like a Facebook audio DASH CDN track."""
+    """Return True if *url* looks like a Facebook audio-DASH CDN track."""
     if "fbcdn.net" not in url:
         return False
     return bool(_FB_AUDIO_RE.search(url))
@@ -342,12 +366,14 @@ def _cdp_intercept(
     timeout: float,
     on_progress: Optional[Callable],
 ) -> tuple[Optional[str], Optional[str]]:
-    """Launch browser, navigate to story_url, return (video_cdn_url, audio_cdn_url).
+    """Launch browser, navigate to story_url; return (video_cdn_url, audio_cdn_url).
+
+    Facebook Stories use DASH streaming: video and audio are separate CDN streams.
+    Both URLs are captured so the caller can mux them with FFmpeg into a single
+    file with picture AND sound.
 
     audio_cdn_url may be None if the story has no separate audio track or the
-    audio URL was not captured within the timeout window.
-
-    Uses playwright.connect_over_cdp() — no Playwright browser download needed.
+    audio URL was not captured in time — callers must handle this gracefully.
     The browser process is always terminated in a finally block.
     """
     try:
@@ -367,8 +393,8 @@ def _cdp_intercept(
             except Exception:
                 pass
 
-    exe          = _find_browser_exe(browser)
-    port         = _free_port()
+    exe   = _find_browser_exe(browser)
+    port  = _free_port()
 
     if sys.platform == "win32":
         local_app    = Path(os.environ.get("LOCALAPPDATA", ""))
@@ -403,24 +429,27 @@ def _cdp_intercept(
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     logger.info("CDP: launching %s on port %d (pid=%d)", browser, port, proc.pid)
 
-    video_url: Optional[str] = None
-    audio_url: Optional[str] = None
-    video_found_at: float = 0.0
+    video_url:      Optional[str] = None
+    audio_url:      Optional[str] = None
+    video_found_at: float         = 0.0
+    # After video is found, wait up to this many seconds for the audio URL
+    # before giving up.  Calling _PLAY_JS immediately on video-found triggers
+    # the browser to request audio DASH segments; 6 s is ample for them to arrive.
+    _AUDIO_WAIT_S: float = 6.0
 
     try:
         with sync_playwright() as pw:
-            # ── Connect via Playwright (handles WS stability internally) ──────
-            # Retry up to 15s — Brave takes ~2–4s to start accepting connections
+            # ── Connect via Playwright ────────────────────────────────────────
             _prog(10, "Đang kết nối CDP...")
             cdp_browser = None
-            deadline = time.monotonic() + 15.0
-            last_exc  = None
+            deadline    = time.monotonic() + 15.0
+            last_exc    = None
 
             while time.monotonic() < deadline:
                 try:
                     cdp_browser = pw.chromium.connect_over_cdp(
                         f"http://127.0.0.1:{port}",
-                        timeout=3_000,  # ms — per-attempt, not total
+                        timeout=3_000,
                     )
                     break
                 except Exception as exc:
@@ -436,21 +465,20 @@ def _cdp_intercept(
 
             logger.info("CDP: Playwright connected on port %d", port)
 
-            # ── Create a new page in the existing browser context ─────────────
-            # Use the first (default) context so we inherit the user's cookies.
             ctx  = cdp_browser.contexts[0]
             page = ctx.new_page()
 
-            # ── Layer A: intercept outgoing requests ──────────────────────────
+            # ── Layer A: outgoing request intercept ───────────────────────────
             def _on_request(request) -> None:
                 nonlocal video_url, audio_url, video_found_at
-                if _is_fb_video_url(request.url) and not video_url:
-                    logger.info("CDP[A]: video URL caught (%d chars)", len(request.url))
-                    video_url = request.url
+                url = request.url
+                if not video_url and _is_fb_video_url(url):
+                    logger.info("CDP[A]: video URL caught (%d chars)", len(url))
+                    video_url      = url
                     video_found_at = time.monotonic()
-                elif _is_fb_audio_url(request.url) and not audio_url:
-                    logger.info("CDP[A]: audio URL caught (%d chars)", len(request.url))
-                    audio_url = request.url
+                elif not audio_url and _is_fb_audio_url(url):
+                    logger.info("CDP[A]: audio URL caught (%d chars)", len(url))
+                    audio_url = url
 
             page.on("request", _on_request)
 
@@ -460,17 +488,17 @@ def _cdp_intercept(
                 if "fbcdn.net" not in response.url:
                     return
                 ct = response.headers.get("content-type", "").lower()
-                if ct.startswith("video/") and "mjpeg" not in ct and not video_url:
+                if not video_url and ct.startswith("video/") and "mjpeg" not in ct:
                     logger.info("CDP[B]: video MIME=%s", ct)
-                    video_url = response.url
+                    video_url      = response.url
                     video_found_at = time.monotonic()
-                elif ct.startswith("audio/") and not audio_url:
+                elif not audio_url and ct.startswith("audio/"):
                     logger.info("CDP[B]: audio MIME=%s", ct)
                     audio_url = response.url
 
             page.on("response", _on_response)
 
-            # ── Pre-page JS (runs before Facebook JS on every navigation) ─────
+            # ── Pre-page JS ───────────────────────────────────────────────────
             page.add_init_script(_PRE_PAGE_JS)
 
             # ── Navigate ──────────────────────────────────────────────────────
@@ -482,70 +510,90 @@ def _cdp_intercept(
                 page.goto(story_url_norm, wait_until="domcontentloaded",
                           timeout=min(timeout, 20) * 1_000)
             except PWTimeout:
-                pass  # partial load is fine — video may already be intercepted
+                pass
             except Exception as exc:
                 logger.debug("page.goto warning (non-fatal): %s", exc)
 
             # ── Poll loop (Layer C) ────────────────────────────────────────────
-            # Wait up to `timeout` seconds for a video URL from any of the
-            # three layers.  Every 2s: call play() + poll injected interceptor.
-            # After video_url is found, wait up to 5 more seconds for audio_url
-            # before giving up on audio (some stories are video-only).
+            # Phase 1: Poll until video_url found (up to timeout).
+            # Phase 2: Once video found, call _PLAY_JS IMMEDIATELY so the browser
+            #          unmutes and requests audio DASH segments.  Wait up to
+            #          _AUDIO_WAIT_S for audio_url before proceeding video-only.
+            #
+            # Timing rationale: _PLAY_JS sets muted=true, starts play(), then
+            # unmutes after 100 ms via JS setTimeout.  We call it immediately on
+            # video-found so audio segment requests appear within ~200 ms, well
+            # within the _AUDIO_WAIT_S budget.
             _prog(15, "Đang chờ video load...")
-            loop_deadline = time.monotonic() + timeout
-            last_play     = 0.0
-            last_poll     = 0.0
-            elapsed_pct   = 0
+            loop_deadline       = time.monotonic() + timeout
+            last_play           = 0.0
+            last_poll           = 0.0
+            play_on_video_found = True   # fire _PLAY_JS immediately on first video-found tick
 
             while time.monotonic() < loop_deadline:
-                # Both found → done
-                if video_url and audio_url:
-                    break
-                # Video found, wait up to 5 s for audio then proceed
-                if video_url and video_found_at > 0:
-                    if time.monotonic() - video_found_at > 5.0:
-                        logger.debug("CDP: video found, audio not captured in 5 s — proceeding")
-                        break
-
                 now = time.monotonic()
 
-                # Dismiss tap-to-play + unmute (triggers audio DASH requests)
-                if now - last_play > 5.0:
+                if video_url and audio_url:
+                    break   # both streams captured — done
+
+                if video_url and video_found_at > 0:
+                    # Fire _PLAY_JS once immediately after video found
+                    if play_on_video_found:
+                        play_on_video_found = False
+                        try:
+                            page.evaluate(_PLAY_JS)
+                            last_play = now
+                        except Exception:
+                            pass
+                    if now - video_found_at > _AUDIO_WAIT_S:
+                        logger.debug(
+                            "CDP: video found, audio not captured in %.0fs — proceeding",
+                            _AUDIO_WAIT_S,
+                        )
+                        break
+
+                # Pre-video: periodic play() to dismiss tap-to-play overlays
+                if not video_url and now - last_play > 5.0:
                     try:
                         page.evaluate(_PLAY_JS)
                     except Exception:
                         pass
                     last_play = now
 
-                # Layer C: poll injected interceptor + Performance + currentSrc
+                # Layer C: poll injected interceptor + Performance API
                 if now - last_poll > 2.0:
                     try:
-                        val = page.evaluate(_POLL_JS)
-                        if val and val not in ("VIDEO_FOUND_NO_SRC", "NO_VIDEO", ""):
-                            if not video_url:
+                        if not video_url:
+                            val = page.evaluate(_POLL_JS)
+                            if val and val not in ("VIDEO_FOUND_NO_SRC", "NO_VIDEO", ""):
                                 logger.info("CDP[C]: video via poll (%d chars)", len(val))
-                                video_url = str(val)
+                                video_url      = str(val)
                                 video_found_at = time.monotonic()
-                        # Try audio poll if video already found
+                                # Fire play immediately so audio capture starts
+                                try:
+                                    page.evaluate(_PLAY_JS)
+                                    last_play = time.monotonic()
+                                except Exception:
+                                    pass
                         if video_url and not audio_url:
                             aval = page.evaluate(_POLL_AUDIO_JS)
-                            if aval and "fbcdn.net" in aval and _is_fb_audio_url(aval):
+                            if aval and "fbcdn.net" in aval:
                                 logger.info("CDP[C]: audio via poll (%d chars)", len(aval))
                                 audio_url = str(aval)
                     except Exception as exc:
                         logger.debug("poll error (non-fatal): %s", exc)
                     last_poll = now
 
-                elapsed_pct = min(45, 15 + int(
-                    (timeout - (loop_deadline - now)) / timeout * 30
-                ))
-                _prog(elapsed_pct, "Đang chờ video load...")
+                _prog(
+                    min(45, 15 + int((timeout - (loop_deadline - now)) / timeout * 30)),
+                    "Đang chờ video load...",
+                )
                 time.sleep(0.4)
 
         if not video_url:
             logger.warning("CDP: no video URL found within %.0fs", timeout)
         elif not audio_url:
-            logger.debug("CDP: no audio URL found — story may be video-only or audio not yet loaded")
+            logger.info("CDP: no audio URL captured — story may be video-only")
 
         return video_url, audio_url
 
@@ -564,7 +612,6 @@ def _cdp_intercept(
                 logger.debug("Cleared browser crash flag after CDP session")
         except Exception:
             pass
-
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
@@ -698,23 +745,28 @@ def _ffmpeg_download(
     return None
 
 
+# ── Public entry point ─────────────────────────────────────────────────────────
+
+
 def _ffmpeg_mux(
     video_url: str,
     audio_url: str,
     dest: Path,
     on_progress: Optional[Callable],
 ) -> Optional[Path]:
-    """Mux a separate video DASH stream and audio DASH stream into a single MP4.
+    """Mux separate video-DASH and audio-DASH streams into one MP4.
 
-    Uses FFmpeg with two -i inputs (video + audio).  The HTTP headers
-    (User-Agent, Referer) are specified per-input so that Facebook's CDN
-    accepts the requests for both streams.
+    Uses two -i inputs (video + audio) with stream-copy so there is no
+    re-encode overhead.  Both inputs receive the FB CDN User-Agent and
+    Referer headers so the server accepts the requests.
+
+    Returns dest on success, None on failure (file is unlinked on failure).
     """
     from utils.ffmpeg_locator import locate_ffmpeg
 
     loc = locate_ffmpeg()
     if not loc:
-        logger.warning("_ffmpeg_mux: ffmpeg not available — falling back to video-only download")
+        logger.warning("_ffmpeg_mux: ffmpeg not available")
         return None
 
     v_url = _full_video_url(video_url)
@@ -723,26 +775,21 @@ def _ffmpeg_mux(
 
     if on_progress:
         try:
-            on_progress(55, "", "ffmpeg đang ghép video + audio...")
+            on_progress(55, "", "FFmpeg đang ghép video + audio...")
         except Exception:
             pass
 
     cmd = [
         loc.ffmpeg_bin, "-y",
-        # Video input
-        "-user_agent", _UA,
-        "-referer", "https://www.facebook.com/",
+        "-user_agent", _UA, "-referer", "https://www.facebook.com/",
         "-i", v_url,
-        # Audio input
-        "-user_agent", _UA,
-        "-referer", "https://www.facebook.com/",
+        "-user_agent", _UA, "-referer", "https://www.facebook.com/",
         "-i", a_url,
-        # Output: stream-copy mux into MP4
         "-c", "copy",
         "-movflags", "+faststart",
         str(dest),
     ]
-    logger.debug("ffmpeg mux: video=%s... audio=%s...", v_url[:60], a_url[:60])
+    logger.debug("ffmpeg mux: video=%.60s… audio=%.60s…", v_url, a_url)
 
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=120)
@@ -765,8 +812,6 @@ def _ffmpeg_mux(
     dest.unlink(missing_ok=True)
     return None
 
-
-# ── Public entry point ─────────────────────────────────────────────────────────
 
 def download_story(
     url: str,
@@ -795,7 +840,9 @@ def download_story(
     if dest.exists():
         dest = output_dir / f"fb_story_{slug}_{int(time.time())}.mp4"
 
-    # CDP via Playwright: intercept video + audio CDN URLs
+    # CDP via Playwright: capture separate video + audio DASH CDN URLs.
+    # Facebook Stories stream video and audio as independent DASH tracks;
+    # we must mux them with FFmpeg to produce a file with sound.
     cdn_url, audio_url = _cdp_intercept(url, browser, timeout, on_progress)
 
     if not cdn_url:
@@ -811,26 +858,32 @@ def download_story(
     logger.info("Video URL: %s…", cdn_url[:80])
     if audio_url:
         logger.info("Audio URL: %s…", audio_url[:80])
+    else:
+        logger.info("Audio URL: not captured — will attempt video-only download")
+
     if on_progress:
         try:
             on_progress(48, "", "Đã bắt được URL — đang tải...")
         except Exception:
             pass
 
-    # If both video and audio CDN URLs were captured, mux them with FFmpeg so
-    # the output has sound.  Fall back to video-only download paths if mux fails.
+    # ── Download strategy ──────────────────────────────────────────────────
+    # When both video and audio CDN URLs were captured, use FFmpeg to mux
+    # them in a single pass (stream-copy, no re-encode).  This is the only
+    # path that produces a file with sound for DASH-streamed Stories.
+    #
+    # When no audio URL was captured (video-only story, or audio not loaded
+    # in time), fall back to the single-stream download paths.
+    result: Optional[Path] = None
     if audio_url:
         result = _ffmpeg_mux(cdn_url, audio_url, dest, on_progress)
         if not result:
             logger.warning("ffmpeg mux failed — falling back to video-only download")
-            result = _download_cdn_url(cdn_url, dest, on_progress)
-            if not result:
-                result = _ffmpeg_download(cdn_url, dest, on_progress)
-    else:
-        # No audio URL captured — single-stream download (video may be muxed already)
+
+    if not result:
         result = _download_cdn_url(cdn_url, dest, on_progress)
-        if not result:
-            result = _ffmpeg_download(cdn_url, dest, on_progress)
+    if not result:
+        result = _ffmpeg_download(cdn_url, dest, on_progress)
 
     if not result:
         raise RuntimeError(
