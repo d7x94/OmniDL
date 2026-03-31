@@ -471,3 +471,231 @@ class TestTikTokFormatIdPatch:
         opts = self._capture_opts(task)
         fmt = opts["format"]
         assert fmt.count("[acodec!=none]") == 1, f"Expected exactly 1 filter, got: {fmt}"
+
+# ---------------------------------------------------------------------------
+# BUG-BM: TikTok short-link URLs (vt.tiktok.com / vm.tiktok.com) must also
+# receive the [acodec!=none] format injection and must not be detected as live.
+# ---------------------------------------------------------------------------
+
+
+class TestTikTokShortUrlAudioFix:
+    """BUG-BM — short-link TikTok URLs (vt.tiktok.com/*, vm.tiktok.com/*)
+    must receive the same [acodec!=none] bestaudio filter as canonical
+    tiktok.com/@user/video/<id> URLs.
+
+    Root cause: task.url holds the ORIGINAL user-supplied URL at download
+    time.  The FIX-TK-AUDIO-2 regex only matched the canonical form, so
+    short links bypassed the fix → silent video for long-form VODs.
+    """
+
+    def _capture_opts(self, task, cfg=None):
+        if cfg is None:
+            cfg = make_config()
+            cfg.cookie_file = ""
+            cfg.platform_cookies = {}
+            cfg.remote_components = None
+        engine = YtDlpEngine(cfg)
+        captured = {}
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured.update(opts)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def download(self, urls):
+                pass
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.download(task)
+        return captured
+
+    def _make_short_task(self, short_url: str, format_id: str, ext: str = "mp4"):
+        task = DownloadTask(url=short_url, format_id=format_id, output_ext=ext)
+        task.media_info = MediaInfo(url=short_url, title="TikTok short", is_live=False)
+        return task
+
+    # ── vt.tiktok.com ────────────────────────────────────────────────────
+
+    def test_vt_short_url_gets_acodec_filter(self):
+        """vt.tiktok.com short link must inject [acodec!=none] into bestaudio."""
+        task = self._make_short_task(
+            "https://vt.tiktok.com/ZSHNx3n8Y/",
+            "bestvideo+bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/best", (
+            f"Short URL 'vt.tiktok.com' must receive acodec filter, got: {opts['format']}"
+        )
+
+    def test_vt_short_url_1080p_gets_acodec_filter(self):
+        """vt.tiktok.com with 1080p selector also gets the filter."""
+        task = self._make_short_task(
+            "https://vt.tiktok.com/ZSHNQHFCu/",
+            "bestvideo[height<=1080]+bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/best"
+
+    def test_vt_short_url_720p_gets_acodec_filter(self):
+        task = self._make_short_task(
+            "https://vt.tiktok.com/ZSHNQMpEK/",
+            "bestvideo[height<=720]+bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo[height<=720]+bestaudio[acodec!=none]/best"
+
+    # ── vm.tiktok.com ────────────────────────────────────────────────────
+
+    def test_vm_short_url_gets_acodec_filter(self):
+        """vm.tiktok.com short link (global) must also inject [acodec!=none]."""
+        task = self._make_short_task(
+            "https://vm.tiktok.com/ZMJxABCDE/",
+            "bestvideo+bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/best", (
+            f"Short URL 'vm.tiktok.com' must receive acodec filter, got: {opts['format']}"
+        )
+
+    def test_vm_short_url_1080p_gets_acodec_filter(self):
+        task = self._make_short_task(
+            "https://vm.tiktok.com/ZMJxABCDE/",
+            "bestvideo[height<=1080]+bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/best"
+
+    # ── Short URL edge cases ──────────────────────────────────────────────
+
+    def test_vt_short_url_audio_only_not_modified(self):
+        """Audio-only format must NOT be modified for short URLs either."""
+        task = self._make_short_task(
+            "https://vt.tiktok.com/ZSHNx3n8Y/",
+            "bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestaudio/best"
+
+    def test_vt_short_url_best_not_modified(self):
+        """'best' format (single mux) must not be patched for short URLs."""
+        task = self._make_short_task(
+            "https://vt.tiktok.com/ZSHNx3n8Y/",
+            "best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"] == "best"
+
+    def test_vt_short_url_acodec_filter_not_duplicated(self):
+        """[acodec!=none] must appear exactly once even for short URLs."""
+        task = self._make_short_task(
+            "https://vt.tiktok.com/ZSHNx3n8Y/",
+            "bestvideo+bestaudio/best",
+        )
+        opts = self._capture_opts(task)
+        assert opts["format"].count("[acodec!=none]") == 1
+
+
+class TestTikTokShortUrlLiveDetection:
+    """BUG-BM — short-link TikTok URLs must not be falsely detected as live
+    in extract_info() even when yt-dlp returns is_live=True from TikTok API.
+    """
+
+    def _make_engine(self):
+        cfg = make_config()
+        cfg.cookie_file = ""
+        cfg.platform_cookies = {}
+        return YtDlpEngine(cfg)
+
+    def _fake_ydl_cls(self, is_live_from_api: bool):
+        """Return a fake YoutubeDL class that returns is_live from API."""
+        class FakeYDL:
+            def __init__(self, opts):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def extract_info(self, url, download=False):
+                return {
+                    "id": "ABCDE12345",
+                    "title": "TikTok short VOD",
+                    "uploader": "testuser",
+                    "duration": 170,
+                    "thumbnail": "",
+                    "formats": [],
+                    "is_live": is_live_from_api,
+                    "was_live": False,
+                }
+        return FakeYDL
+
+    def test_vt_short_url_never_live_when_api_returns_true(self):
+        """vt.tiktok.com must be resolved as is_live=False even if API says True."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+        engine = self._make_engine()
+        with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=True)):
+            info = engine.extract_info("https://vt.tiktok.com/ZSHNx3n8Y/")
+        assert not info.is_live, (
+            "vt.tiktok.com short URL must never be flagged as livestream"
+        )
+
+    def test_vm_short_url_never_live_when_api_returns_true(self):
+        """vm.tiktok.com must be resolved as is_live=False even if API says True."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+        engine = self._make_engine()
+        with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=True)):
+            info = engine.extract_info("https://vm.tiktok.com/ZMJxABCDE/")
+        assert not info.is_live, (
+            "vm.tiktok.com short URL must never be flagged as livestream"
+        )
+
+    def test_vt_short_url_is_live_false_stays_false(self):
+        """vt.tiktok.com with is_live=False from API remains False."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+        engine = self._make_engine()
+        with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=False)):
+            info = engine.extract_info("https://vt.tiktok.com/ZSHNQMpEK/")
+        assert not info.is_live
+
+
+class TestTikTokShortUrlRegex:
+    """Unit tests for _TIKTOK_SHORT_RE / _TIKTOK_VOD_RE module constants."""
+
+    def test_vt_tiktok_matches_short_re(self):
+        from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+        assert _TIKTOK_SHORT_RE.search("https://vt.tiktok.com/ZSHNx3n8Y/")
+
+    def test_vm_tiktok_matches_short_re(self):
+        from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+        assert _TIKTOK_SHORT_RE.search("https://vm.tiktok.com/ZMJxABCDE/")
+
+    def test_canonical_url_does_not_match_short_re(self):
+        from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+        assert not _TIKTOK_SHORT_RE.search(
+            "https://www.tiktok.com/@testuser/video/7620980082118675732"
+        )
+
+    def test_canonical_url_matches_vod_re(self):
+        from infrastructure.downloader.yt_dlp_engine import _TIKTOK_VOD_RE
+        assert _TIKTOK_VOD_RE.search(
+            "https://www.tiktok.com/@testuser/video/7620980082118675732"
+        )
+
+    def test_live_url_matches_live_re(self):
+        from infrastructure.downloader.yt_dlp_engine import _TIKTOK_LIVE_RE
+        assert _TIKTOK_LIVE_RE.search("https://www.tiktok.com/@testuser/live")
+
+    def test_live_url_does_not_match_short_re(self):
+        from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+        assert not _TIKTOK_SHORT_RE.search("https://www.tiktok.com/@testuser/live")
+
+    def test_youtube_does_not_match_any_tiktok_re(self):
+        from infrastructure.downloader.yt_dlp_engine import (
+            _TIKTOK_SHORT_RE, _TIKTOK_VOD_RE, _TIKTOK_LIVE_RE,
+        )
+        yt_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        assert not _TIKTOK_SHORT_RE.search(yt_url)
+        assert not _TIKTOK_VOD_RE.search(yt_url)
+        assert not _TIKTOK_LIVE_RE.search(yt_url)

@@ -196,6 +196,28 @@ def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str 
     return None
 
 
+# BUG-BM FIX: TikTok short-link URL patterns.
+#
+# vt.tiktok.com/* and vm.tiktok.com/* are share-link redirectors — the
+# user pastes them, yt-dlp resolves them internally to the canonical
+# tiktok.com/@user/video/<id> URL.  However, task.url is set from the
+# ORIGINAL user-supplied URL, so it still holds the short form at download
+# time.  Any per-URL logic that uses task.url (format patching, live
+# detection) must also recognise the short-link domains.
+#
+# Pattern intent:
+#   _TIKTOK_VOD_RE   — canonical VOD URL: tiktok.com/@user/video/<numeric-id>
+#   _TIKTOK_SHORT_RE — short-link domains: vt.tiktok.com/* or vm.tiktok.com/*
+#   _TIKTOK_LIVE_RE  — canonical live URL: tiktok.com/@user/live
+#
+# Combined guard (_TIKTOK_VOD_RE OR _TIKTOK_SHORT_RE) is used wherever
+# logic must apply to all TikTok VOD downloads regardless of URL form.
+# _TIKTOK_LIVE_RE is unchanged — short live links are extremely rare and
+# TikTok does not publish vt.tiktok.com/… for livestreams.
+_TIKTOK_VOD_RE   = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
+_TIKTOK_SHORT_RE = re.compile(r"(?:vt|vm)\.tiktok\.com/", re.I)
+_TIKTOK_LIVE_RE  = re.compile(r"tiktok\.com/@[^/]+/live", re.I)
+
 # Map URL patterns to friendly platform names
 _PLATFORM_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"youtu\.?be", re.I), "YouTube"),
@@ -615,14 +637,12 @@ class YtDlpEngine:
         _ig_live_re = re.compile(
             r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
         )
-        # FIX-TK: TikTok VOD URLs (/video/<id>) must never be treated as live,
-        # even when yt-dlp returns is_live=True from TikTok's API metadata.
-        # TikTok's API occasionally returns a stale/incorrect live_status for
-        # normal VODs, especially share-link URLs with query params like
-        # ?is_from_webapp=1&sender_device=pc.  Only /live/ path URLs are real
+        # FIX-TK / BUG-BM: TikTok VOD URLs must never be treated as live.
+        # Uses module-level _TIKTOK_VOD_RE (canonical) and _TIKTOK_SHORT_RE
+        # (vt.tiktok.com/*, vm.tiktok.com/*) so short share-links are also
+        # correctly resolved to is_live=False.  Only /live/ path URLs are real
         # TikTok livestreams.
-        _tiktok_vod_re = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
-        if _tiktok_vod_re.search(url):
+        if _TIKTOK_VOD_RE.search(url) or _TIKTOK_SHORT_RE.search(url):
             is_live_resolved = False
         else:
             is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
@@ -798,7 +818,7 @@ class YtDlpEngine:
         # NOTE: Instagram photo posts (source_engine="gallery_dl") are routed
         # to GalleryDlEngine by DownloadManager before reaching this method —
         # this code never runs for photos.
-        _tiktok_live_re = re.compile(r"tiktok\.com/@[^/]+/live", re.I)
+        _tiktok_live_re = _TIKTOK_LIVE_RE
         _instagram_live_re = re.compile(
             r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
         )
@@ -859,27 +879,35 @@ class YtDlpEngine:
                 )
             )
 
-        # FIX-TK-AUDIO-2: TikTok long-form VODs (5+ min) often have DASH audio
-        # streams where yt-dlp reports acodec='none' due to how TikTok's CDN
-        # delivers separate audio tracks.  When bestvideo+bestaudio picks such
-        # a stream, FFmpegMergerPP skips the audio-map step entirely (guarded by
-        # fmt.get('acodec') != 'none'), producing a silent mp4.
+        # FIX-TK-AUDIO-2 / BUG-BM: TikTok long-form VODs (5+ min) often have
+        # DASH audio streams where yt-dlp reports acodec='none' due to how
+        # TikTok's CDN delivers separate audio tracks.  When bestvideo+bestaudio
+        # picks such a stream, FFmpegMergerPP skips the audio-map step entirely
+        # (guarded by fmt.get('acodec') != 'none'), producing a silent mp4.
         #
         # Fix: for TikTok VOD URLs, append [acodec!=none] to the bestaudio
         # selector so yt-dlp only considers streams that actually carry audio.
         # The /best fallback ensures a muxed stream is used if no separate audio
         # track with a valid codec is found — guaranteeing audio in all cases.
         #
+        # BUG-BM: task.url is the ORIGINAL user-supplied URL.  Short-link URLs
+        # (vt.tiktok.com/*, vm.tiktok.com/*) also resolve to TikTok VODs but
+        # were NOT matched by the canonical @user/video/<id> pattern.  The fix
+        # uses _TIKTOK_SHORT_RE as a second guard so short links also get the
+        # [acodec!=none] injection.
+        #
         # Transformation examples:
         #   bestvideo+bestaudio/best               -> bestvideo+bestaudio[acodec!=none]/best
         #   bestvideo[height<=1080]+bestaudio/best -> bestvideo[height<=1080]+bestaudio[acodec!=none]/best
         #   bestaudio/best  (audio-only)           -> unchanged (no bestvideo present)
         #   best            (live/photo)           -> unchanged
-        _tiktok_vod_fmt_re = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
         _format_id = task.format_id
+        _is_tiktok_vod = (
+            _TIKTOK_VOD_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
+        )
         if (
             not is_live
-            and _tiktok_vod_fmt_re.search(task.url)
+            and _is_tiktok_vod
             and "bestvideo" in _format_id
         ):
             _format_id = _format_id.replace(
