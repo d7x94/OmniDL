@@ -66,6 +66,13 @@ _DEFAULTS: dict[str, Any] = {
     # When non-empty, takes priority over the legacy taildrop_target_node scalar.
     # Each entry must match _NODE_RE in taildrop_service.py (letters, digits, hyphens, dots).
     "taildrop_target_nodes": [],
+    # ── Debug logging ──────────────────────────────────────────────────────
+    # When True, the root logger level is lowered to DEBUG so that detailed
+    # trace output (CDP poll steps, ffmpeg args, cookie resolution paths, …)
+    # is written to omnidl_debug.log in the log directory.
+    # The main omnidl.log stays at INFO to keep it readable.
+    # Toggle via Settings → General → "Debug Logging".
+    "debug_logging": False,
 }
 
 
@@ -468,3 +475,10 @@ class ConfigManager:
         # Keep the legacy key in sync so older code reading taildrop_target_node
         # still gets a valid (first) node.
         self.set("taildrop_target_node", clean[0] if clean else "")
+
+    # ── Debug logging accessor ────────────────────────────────────────────
+
+    @property
+    def debug_logging(self) -> bool:
+        """True when detailed DEBUG-level logging to omnidl_debug.log is active."""
+        return bool(self.get("debug_logging", False))

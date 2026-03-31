@@ -2,6 +2,7 @@
 utils/logger.py
 Centralised logging setup.
 Call setup_logging() once at process startup.
+Call apply_debug_logging() after config is loaded to enable/disable debug mode.
 """
 from __future__ import annotations
 
@@ -9,6 +10,11 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# Module-level reference to the debug file handler so it can be added/removed
+# at runtime without re-reading the log directory path.
+_debug_handler: logging.Handler | None = None
+_log_dir_ref: Path | None = None
 
 
 def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
@@ -22,6 +28,9 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
     test fixtures calling setup_logging() multiple times get a predictable
     root-logger state each time.
     """
+    global _log_dir_ref
+    _log_dir_ref = log_dir
+
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "omnidl.log"
 
@@ -95,3 +104,63 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
             logging.getLogger(__name__).warning(
                 "Could not open log file %s - file logging disabled.", log_file
             )
+
+
+def apply_debug_logging(enabled: bool) -> None:
+    """Enable or disable DEBUG-level logging to a separate omnidl_debug.log file.
+
+    Designed to be called at startup (after config is loaded) and also live
+    when the user toggles the setting in the UI.
+
+    When enabled:
+      • Root logger level is lowered to DEBUG so all logger.debug() calls fire.
+      • A separate RotatingFileHandler writes to omnidl_debug.log (5 MB × 3).
+      • The existing omnidl.log stays at INFO (its handler keeps its own level).
+      • Noisy third-party loggers (yt_dlp, urllib3, etc.) are NOT lowered —
+        they remain at WARNING to keep the debug log focused on OmniDL internals.
+
+    When disabled:
+      • Root logger level is raised back to INFO.
+      • The debug file handler is closed and removed.
+
+    Thread-safe: addHandler / removeHandler on the root logger is protected by
+    the logging module's own internal lock.
+    """
+    global _debug_handler
+
+    root = logging.getLogger()
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)-8s] %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    if enabled:
+        root.setLevel(logging.DEBUG)
+        # Only add the debug handler once.
+        if _debug_handler is None and _log_dir_ref is not None:
+            debug_log = _log_dir_ref / "omnidl_debug.log"
+            try:
+                dh = RotatingFileHandler(
+                    debug_log,
+                    maxBytes=5 * 1024 * 1024,
+                    backupCount=3,
+                    encoding="utf-8",
+                )
+                dh.setFormatter(fmt)
+                dh.setLevel(logging.DEBUG)
+                root.addHandler(dh)
+                _debug_handler = dh
+                logging.getLogger(__name__).info(
+                    "Debug logging enabled → %s", debug_log
+                )
+            except OSError as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not open debug log file: %s", exc
+                )
+    else:
+        root.setLevel(logging.INFO)
+        if _debug_handler is not None:
+            _debug_handler.close()
+            root.removeHandler(_debug_handler)
+            _debug_handler = None
+            logging.getLogger(__name__).info("Debug logging disabled")

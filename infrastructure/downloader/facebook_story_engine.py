@@ -69,8 +69,12 @@ _FB_VIDEO_RE = re.compile(
 
 _FB_THUMB_RE = re.compile(r"/v/t(?:15|39|51)\b", re.I)
 
-# Facebook audio-DASH CDN tracks use /o1/a/ in the path (vs /o1/v/ for video).
-_FB_AUDIO_RE = re.compile(r"/o1/a/", re.I)
+# Facebook audio-DASH CDN tracks use /o1/a/ or /m1/a/ in the path
+# (vs /o1/v/ and /m1/v/ for video).  Both prefixes are matched here so that
+# newer DASH delivery paths (introduced alongside /m1/v/ in 2024+) are also
+# captured.  The pattern is intentionally narrow (anchored to known FB CDN
+# prefixes) to avoid false-positives from other fbcdn.net asset URLs.
+_FB_AUDIO_RE = re.compile(r"/(?:o1|m1)/a/", re.I)
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -434,8 +438,10 @@ def _cdp_intercept(
     video_found_at: float         = 0.0
     # After video is found, wait up to this many seconds for the audio URL
     # before giving up.  Calling _PLAY_JS immediately on video-found triggers
-    # the browser to request audio DASH segments; 6 s is ample for them to arrive.
-    _AUDIO_WAIT_S: float = 6.0
+    # the browser to request audio DASH segments.
+    # 12 s provides enough headroom for higher-latency connections (e.g. VN CDN
+    # round-trips) while still completing in well under the overall timeout.
+    _AUDIO_WAIT_S: float = 12.0
 
     try:
         with sync_playwright() as pw:
@@ -561,7 +567,7 @@ def _cdp_intercept(
                     last_play = now
 
                 # Layer C: poll injected interceptor + Performance API
-                if now - last_poll > 2.0:
+                if now - last_poll > 1.0:
                     try:
                         if not video_url:
                             val = page.evaluate(_POLL_JS)

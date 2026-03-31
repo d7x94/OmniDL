@@ -186,6 +186,14 @@ def main() -> None:
     )
     _clear_history_on_version_change(config, history)
 
+    # Apply debug logging mode from config (must run after ConfigManager is ready
+    # and before any worker threads start so all subsequent logger.debug() calls
+    # are captured from the beginning of the session).
+    if config.debug_logging:
+        from utils.logger import apply_debug_logging as _apply_debug
+        _apply_debug(True)
+        logger.info("Debug logging active — writing to omnidl_debug.log")
+
     # ── Cookie security maintenance ───────────────────────────────────────
     # 1. Clean up leftover decrypted temp files from any previous crash
     # 2. Auto-delete cookie files older than 30 days

@@ -109,6 +109,23 @@ class GeneralPanel(_BasePanel):
             self._theme_om.set(current_theme)
         self._theme_om.pack(side="right")
 
+        # -- Debug logging -------------------------------------------------
+        self._section(p, "🐛   DEVELOPER")
+        self._card_dev = dev = self._card(p)
+
+        self._debug_var = ctk.BooleanVar(value=cfg.debug_logging)
+        self._switch_row(dev, "Debug Logging", self._debug_var,
+                         self._on_debug_toggle)
+
+        self._debug_hint = ctk.CTkLabel(
+            dev,
+            text="Writes detailed trace to omnidl_debug.log  •  Restart not required",
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+            anchor="e",
+        )
+        self._debug_hint.pack(anchor="e", padx=16, pady=(0, 10))
+
     # ── Handlers ──────────────────────────────────────────────────────────
 
     def _browse_dir(self) -> None:
@@ -125,12 +142,22 @@ class GeneralPanel(_BasePanel):
         T.set_mode(theme)                        # update palette + fire all _on_theme callbacks
         ctk.set_appearance_mode(T.ctk_base)     # map custom theme → "dark"/"light" for CTk
 
+    def _on_debug_toggle(self, enabled: bool) -> None:
+        """Enable or disable debug logging live — no restart required."""
+        self._app.config.set("debug_logging", enabled)
+        from utils.logger import apply_debug_logging
+        apply_debug_logging(enabled)
+        msg = "Debug logging ON — writing to omnidl_debug.log" if enabled else "Debug logging OFF"
+        logger.info(msg)
+        if hasattr(self._app, "toast"):
+            self._app.toast(msg)
+
     # ── Theme refresh ─────────────────────────────────────────────────────
 
     def _on_theme(self) -> None:
         if not self.winfo_exists():
             return
-        for attr in ("_card_loc", "_card_beh", "_card_app"):
+        for attr in ("_card_loc", "_card_beh", "_card_app", "_card_dev"):
             card = getattr(self, attr, None)
             if card and card.winfo_exists():
                 card.configure(fg_color=T.surface, border_color=T.border)
@@ -158,3 +185,6 @@ class GeneralPanel(_BasePanel):
         w = getattr(self, "_theme_om", None)
         if w and w.winfo_exists():
             w.configure(fg_color=T.surface3, button_color=T.border2, text_color=T.text2)
+        w = getattr(self, "_debug_hint", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text3)
