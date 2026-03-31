@@ -30,7 +30,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from app.event_bus import EventBus
@@ -317,8 +317,8 @@ class TaildropService:
         self,
         file_path: Path,
         nodes: list,
-        on_node_done: Optional[callable] = None,
-        on_node_error: Optional[callable] = None,
+        on_node_done: Optional[Callable[..., None]] = None,
+        on_node_error: Optional[Callable[..., None]] = None,
     ) -> None:
         """Send *file_path* to every node in *nodes* concurrently.
 
