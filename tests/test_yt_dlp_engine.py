@@ -362,17 +362,23 @@ class TestTikTokVodLiveDetection:
         assert info.is_live is False
 
 
+
 # ---------------------------------------------------------------------------
-# FIX-TK-AUDIO: TikTok DASH audio re-encode fix
+# FIX-TK-AUDIO-2: TikTok DASH audio format selector fix
 # ---------------------------------------------------------------------------
 
-class TestTikTokAudioMerge:
-    """FIX-TK-AUDIO — TikTok VOD downloads must inject postprocessor_args
-    so ffmpeg re-encodes audio to AAC during the DASH merge step, preventing
-    silent videos caused by incompatible EC-3/non-standard audio codecs."""
+class TestTikTokFormatIdPatch:
+    """FIX-TK-AUDIO-2 — For TikTok VOD URLs, download() must inject
+    [acodec!=none] into the bestaudio selector so yt-dlp never picks an
+    audio-less DASH stream, which causes FFmpegMergerPP to silently skip
+    the audio-map step and produce a silent mp4.
+
+    Long-form TikTok videos (5+ min) are particularly affected because
+    TikTok's CDN marks their separate audio tracks with acodec='none' in
+    yt-dlp's format table, making bestaudio resolve to a silent stream.
+    """
 
     def _capture_opts(self, task, cfg=None):
-        """Run engine.download() with yt-dlp mocked; return the opts dict used."""
         if cfg is None:
             cfg = make_config()
             cfg.cookie_file = ""
@@ -396,74 +402,72 @@ class TestTikTokAudioMerge:
             engine.download(task)
         return captured
 
-    def _make_tiktok_task(self, ext="mp4"):
+    def _make_tiktok_task(self, format_id, ext="mp4"):
         url = "https://www.tiktok.com/@testuser/video/7620980082118675732"
-        task = DownloadTask(url=url, format_id="bestvideo+bestaudio/best", output_ext=ext)
+        task = DownloadTask(url=url, format_id=format_id, output_ext=ext)
         task.media_info = MediaInfo(url=url, title="Test TikTok", is_live=False)
         return task
 
-    def test_tiktok_mp4_has_audio_postprocessor_args(self):
-        """TikTok VOD + mp4 output must have merger postprocessor args with aac."""
-        task = self._make_tiktok_task(ext="mp4")
+    def test_best_quality_gets_acodec_filter(self):
+        """'bestvideo+bestaudio/best' -> 'bestvideo+bestaudio[acodec!=none]/best'"""
+        task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/best"
 
-        pp_args = opts.get("postprocessor_args", {})
-        assert "merger" in pp_args, "postprocessor_args['merger'] must be set for TikTok VOD"
-        merger = pp_args["merger"]
-        assert "-c:a" in merger
-        aac_idx = merger.index("-c:a") + 1
-        assert merger[aac_idx] == "aac", "Audio codec must be aac"
-        assert "-c:v" in merger
-        cv_idx = merger.index("-c:v") + 1
-        assert merger[cv_idx] == "copy", "Video must be stream-copied (no re-encode)"
-
-    def test_tiktok_mkv_has_audio_postprocessor_args(self):
-        """TikTok VOD + mkv output also gets audio re-encode args."""
-        task = self._make_tiktok_task(ext="mkv")
+    def test_1080p_gets_acodec_filter(self):
+        """'bestvideo[height<=1080]+bestaudio/best' gets acodec filter applied."""
+        task = self._make_tiktok_task("bestvideo[height<=1080]+bestaudio/best")
         opts = self._capture_opts(task)
-        pp_args = opts.get("postprocessor_args", {})
-        assert "merger" in pp_args
+        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/best"
 
-    def test_non_tiktok_url_has_no_audio_postprocessor_args(self):
-        """Non-TikTok URLs (YouTube, Instagram) must NOT get the audio re-encode args."""
+    def test_720p_gets_acodec_filter(self):
+        task = self._make_tiktok_task("bestvideo[height<=720]+bestaudio/best")
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo[height<=720]+bestaudio[acodec!=none]/best"
+
+    def test_360p_gets_acodec_filter(self):
+        task = self._make_tiktok_task("bestvideo[height<=360]+bestaudio/best")
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo[height<=360]+bestaudio[acodec!=none]/best"
+
+    def test_audio_only_not_modified(self):
+        """'bestaudio/best' (audio-only) must NOT be modified — no bestvideo present."""
+        task = self._make_tiktok_task("bestaudio/best")
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestaudio/best"
+
+    def test_best_not_modified(self):
+        """'best' (live/photo path) must not be modified."""
+        url = "https://www.tiktok.com/@testuser/video/9999"
+        task = DownloadTask(url=url, format_id="best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="Test", is_live=False)
+        opts = self._capture_opts(task)
+        assert opts["format"] == "best"
+
+    def test_non_tiktok_url_not_modified(self):
+        """YouTube URLs must NOT have format_id modified."""
         task = make_task(url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        task.format_id = "bestvideo+bestaudio/best"
         task.output_ext = "mp4"
         task.media_info = MediaInfo(url=task.url, title="YouTube video", is_live=False)
-
         cfg = make_config()
         cfg.cookie_file = ""
         cfg.platform_cookies = {}
         cfg.remote_components = None
         opts = self._capture_opts(task, cfg=cfg)
+        assert opts["format"] == "bestvideo+bestaudio/best"
 
-        pp_args = opts.get("postprocessor_args", {})
-        assert "merger" not in pp_args, (
-            "Non-TikTok URLs must not inject audio re-encode postprocessor args"
-        )
-
-    def test_tiktok_live_has_no_audio_postprocessor_args(self):
-        """TikTok livestreams (is_live=True) must NOT get the audio re-encode args
-        since live streams use a single muxed HLS container, not DASH."""
+    def test_tiktok_live_not_modified(self):
+        """TikTok live uses 'best' — format must not be patched."""
         url = "https://www.tiktok.com/@testuser/live"
         task = DownloadTask(url=url, format_id="best", output_ext="mp4")
         task.media_info = MediaInfo(url=url, title="TikTok Live", is_live=True)
-
-        cfg = make_config()
-        cfg.cookie_file = ""
-        cfg.platform_cookies = {}
-        cfg.remote_components = None
-        opts = self._capture_opts(task, cfg=cfg)
-
-        pp_args = opts.get("postprocessor_args", {})
-        assert "merger" not in pp_args, (
-            "Live streams must not inject merger postprocessor args"
-        )
-
-    def test_tiktok_mp3_has_no_merger_args(self):
-        """Audio-only output (mp3) skips the video merge step entirely — no merger args."""
-        task = self._make_tiktok_task(ext="mp3")
         opts = self._capture_opts(task)
-        pp_args = opts.get("postprocessor_args", {})
-        assert "merger" not in pp_args, (
-            "mp3 (audio-only) output must not get merger postprocessor args"
-        )
+        assert opts["format"] == "best"
+
+    def test_acodec_filter_not_duplicated(self):
+        """Running patch twice must not produce double [acodec!=none]."""
+        task = self._make_tiktok_task("bestvideo+bestaudio/best")
+        opts = self._capture_opts(task)
+        fmt = opts["format"]
+        assert fmt.count("[acodec!=none]") == 1, f"Expected exactly 1 filter, got: {fmt}"
