@@ -21,6 +21,10 @@ from utils.ffmpeg_locator import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
+# BUG-BQ DIAGNOSTIC: Force DEBUG level for this module so format-selection
+# diagnostic lines are captured in omnidl_run.log.  Scoped only to this logger.
+logger.setLevel(logging.DEBUG)
+
 
 def _validate_cookie_path(config: "ConfigManager") -> str | None:
     """Resolve and validate the configured cookie_file path (CWE-22).
@@ -490,7 +494,8 @@ class YtDlpEngine:
             "noplaylist": True,
             "socket_timeout": 20,   # DEF-007: prevent hang on stalled server
             # FIX-FINAL: JS challenge solver for YouTube n-challenge
-            "remote_components": "ejs:github",
+            # Must be a list — str causes yt-dlp to iterate characters (BUG-BQ).
+            "remote_components": ["ejs:github"],
         }
         # Deno PATH is injected once at startup (main.py) — not per-call.
         # os.environ.update() from worker threads is not thread-safe on CPython.
@@ -928,33 +933,86 @@ class YtDlpEngine:
         _is_tiktok_vod = (
             _TIKTOK_VOD_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
         )
-        if (
-            not is_live
-            and _is_tiktok_vod
-            and "bestvideo" in _format_id
-            and "bestvideo*" not in _format_id  # idempotency guard
-        ):
-            # Add * to bestvideo (before any filter bracket or + separator)
-            # and to bestaudio, leaving the /best fallback unchanged.
-            _format_id = _format_id.replace("bestvideo", "bestvideo*", 1)
-            _format_id = _format_id.replace("bestaudio", "bestaudio*", 1)
+        if not is_live and _is_tiktok_vod and "bestvideo*" not in _format_id:
+            # BUG-BP FIX: BUG-BO only patched format_id values containing
+            # "bestvideo".  When format_id="best" (the common default), the
+            # guard missed it → single mislabeled DASH stream → silent output.
+            #
+            # BUG-BS FIX (2026-03-31, v2): TikTok exposes three kinds of
+            # streams for VODs:
+            #
+            #   1. format_id="download": progressive muxed MP4, h264+aac,
+            #      ALWAYS has audio, BUT carries a visible TikTok watermark.
+            #
+            #   2. format_id starts with "h264_": watermark-free progressive
+            #      muxed MP4, h264+aac, reliable audio (confirmed by community
+            #      and yt-dlp source).
+            #
+            #   3. format_id starts with "bytevc1_": watermark-free, TikTok
+            #      proprietary H.265 codec.  Audio metadata says acodec=aac
+            #      but the actual CDN stream carries no audio track for many
+            #      VODs (confirmed: EmbedThumbnail OFF still silent → stream
+            #      itself has no audio).
+            #
+            # Previous fix (BUG-BS v1) used "download/..." which solved the
+            # silent-audio problem but introduced watermark on all TikTok VODs.
+            #
+            # Correct fix: prefer h264_* formats first (no watermark + audio),
+            # fall back to "download" (watermark + audio) only if h264 URLs
+            # are expired or geo-blocked, then last-resort starred selectors.
+            #
+            # Selector: best[format_id^=h264]/download/bestvideo*+bestaudio*/best
+            #   best[format_id^=h264] — picks highest-tbr h264_* entry
+            #                           (excludes format_id="download" since
+            #                            it doesn't start with "h264")
+            #   /download             — fallback: watermarked but guaranteed audio
+            #   /bestvideo*+bestaudio*/best — last resort
+            #
+            # NOTE: the previous BUG-BS v1 mistake: only the `else` branch was
+            # patched. task.format_id='bestvideo+bestaudio/best' (UI default)
+            # contains "bestvideo" → the `if` branch ran → no "download" prefix.
+            # Fix: apply the new selector in BOTH the if and else branches.
+            if "bestvideo" in _format_id:
+                # User picked a video+audio quality — honour their intent but
+                # override with the watermark-free h264 chain for TikTok.
+                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+            elif "bestaudio" in _format_id:
+                pass  # audio-only selector — leave unchanged, no video needed
+            else:
+                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+
+        # BUG-BQ DIAGNOSTIC: yt-dlp logger bridge — captures format selection,
+        # FFmpegMergerPP activity, and fallback events into omnidl_run.log.
+        # Read-only: zero effect on download logic or output.
+        _diag_keywords = (
+            "merging formats", "destination:", "requested format",
+            "ffmpeg", "format_id", "vcodec", "acodec", "sorted",
+            "selected", "tiktok", "downloading", "fallback", "not available",
+        )
+
+        class _YtDlpDiagLogger:
+            def debug(self, msg: str) -> None:
+                if any(kw in msg.lower() for kw in _diag_keywords):
+                    logger.debug("[yt-dlp diag] %s", msg.strip())
+            def info(self, msg: str) -> None:
+                pass  # progress bar lines — skip
+            def warning(self, msg: str) -> None:
+                logger.warning("[yt-dlp] %s", msg.strip())
+            def error(self, msg: str) -> None:
+                logger.error("[yt-dlp] %s", msg.strip())
 
         opts: dict[str, Any] = {
-            # Livestreams serve a single HLS/DASH mux — yt-dlp cannot split
-            # them into separate video+audio tracks.  'best' picks the highest-
-            # quality combined stream and skips the ffmpeg merge step entirely.
             "format": "best" if is_live else _format_id,
-            # FIX-FINAL: Enable remote JS challenge solver (ejs:github).
-            # YouTube uses n-challenge (encrypted nonce) to validate stream URLs.
-            # Without solving it, all formats appear unavailable or return garbage.
-            # yt-dlp downloads the solver script from GitHub on first use (~1s),
-            # then caches it. This is the same as --remote-components ejs:github.
+            # FIX-FINAL: JS challenge solver for YouTube n-challenge.
+            # BUG-BQ FIX: must be a list — str causes yt-dlp to iterate over
+            # individual characters and silently discard the solver.
             "allow_unplayable_formats": False,
-            "remote_components": "ejs:github",
-            # Use bundled Deno if available (injected via PATH env override below)
+            "remote_components": ["ejs:github"],
             "outtmpl": outtmpl,
             "quiet": True,
             "no_warnings": True,
+            # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
+            "logger": _YtDlpDiagLogger() if (_is_tiktok_vod and not is_live) else None,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
             # fragment_retries=0 for live streams so that a DownloadError raised
@@ -1060,6 +1118,26 @@ class YtDlpEngine:
                 {"key": "FFmpegMetadata", "add_metadata": True},
                 {"key": "EmbedThumbnail"},
             ]
+            # BUG-BQ FIX: TikTok serves H.265/bytevc1 muxed streams where the
+            # audio track is AAC but the video codec is ByteDance-proprietary.
+            # When EmbedThumbnail invokes FFmpeg to re-mux the file, FFmpeg may
+            # silently drop or corrupt the audio track if it attempts to
+            # transcode rather than stream-copy — particularly with bytevc1
+            # which FFmpeg does not fully recognise as a standard H.265 variant.
+            #
+            # Fix: pass -c copy to FFmpeg for all postprocessor operations so
+            # BOTH video and audio streams are stream-copied as-is, with no
+            # transcoding or codec re-interpretation.  The thumbnail is added
+            # as a separate attachment stream, which does not require any
+            # existing stream to be transcoded.
+            #
+            # postprocessor_args format: {"key": [ffmpeg_flags...]}
+            # "EmbedThumbnail+ffmpeg" targets only the EmbedThumbnail
+            # postprocessor's FFmpeg invocation — does not affect merge or
+            # any other FFmpeg call.
+            opts["postprocessor_args"] = {
+                "EmbedThumbnail+ffmpeg": ["-c", "copy"],
+            }
 
         if self._config.proxy:
             opts["proxy"] = self._config.proxy
@@ -1118,6 +1196,29 @@ class YtDlpEngine:
                         # subsequent size-scan fallback succeeding).
                         with task._lock:
                             task.filename = resolved
+
+                # BUG-BQ DIAGNOSTIC: log stream metadata so we can confirm
+                # vcodec/acodec are preserved through every postprocessor step.
+                if _is_tiktok_vod and not is_live:
+                    _info = d.get("info_dict") or {}
+                    _req_fmts = _info.get("requested_formats") or []
+                    logger.debug(
+                        "[BUG-BQ diag] pp_hook | status=%s | pp=%s | "
+                        "format_id=%s | vcodec=%s | acodec=%s | "
+                        "width=%s | height=%s | requested_formats_count=%d | "
+                        "req_fmt_ids=%s | filepath=%s",
+                        d.get("status"),
+                        d.get("postprocessor", "?"),
+                        _info.get("format_id", "?"),
+                        _info.get("vcodec", "?"),
+                        _info.get("acodec", "?"),
+                        _info.get("width", "?"),
+                        _info.get("height", "?"),
+                        len(_req_fmts),
+                        [f.get("format_id") for f in _req_fmts],
+                        _info.get("filepath") or _info.get("__real_download_filename") or "?",
+                    )
+
             # Also run the original pp hook (progress + postprocess callbacks)
             if _original_pp_hook:
                 _original_pp_hook(d)
@@ -1126,6 +1227,51 @@ class YtDlpEngine:
 
         # Deno PATH is injected once at startup (main.py) — not per-call.
         # os.environ.update() from worker threads is not thread-safe on CPython.
+
+        # BUG-BQ / BUG-BR DIAGNOSTIC: log effective format string + full format
+        # list before download starts.  The full format list is critical for
+        # diagnosing why long-form TikTok VODs download without audio — we need
+        # to see EVERY format yt-dlp received from TikTok's API (not just the
+        # selected one) to understand whether separate audio-only streams exist.
+        if _is_tiktok_vod and not is_live:
+            logger.debug(
+                "[BUG-BQ diag] TikTok VOD starting | task=%s | "
+                "original_format_id=%r | effective_format=%r",
+                task.id[:8],
+                task.format_id,
+                opts.get("format"),
+            )
+            # BUG-BR FORMAT AUDIT: dump every format from extract_info so we
+            # can see whether TikTok provides separate audio streams and how
+            # they are labeled.  This is read-only — no effect on download.
+            _all_formats = (
+                task.media_info.formats if task.media_info else []
+            )
+            if _all_formats:
+                logger.debug(
+                    "[BUG-BR fmt-audit] %d format(s) available from extract_info:",
+                    len(_all_formats),
+                )
+                for _fmt in _all_formats:
+                    logger.debug(
+                        "[BUG-BR fmt-audit]  id=%-35s | vcodec=%-10s | acodec=%-10s"
+                        " | ext=%-5s | tbr=%-8s | abr=%-8s | vbr=%-8s"
+                        " | height=%-5s | protocol=%s",
+                        _fmt.get("format_id", "?"),
+                        _fmt.get("vcodec", "?"),
+                        _fmt.get("acodec", "?"),
+                        _fmt.get("ext", "?"),
+                        _fmt.get("tbr", "?"),
+                        _fmt.get("abr", "?"),
+                        _fmt.get("vbr", "?"),
+                        _fmt.get("height", "?"),
+                        _fmt.get("protocol", "?"),
+                    )
+            else:
+                logger.debug(
+                    "[BUG-BR fmt-audit] No formats in task.media_info "
+                    "(extract_info may not have returned format list)"
+                )
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
