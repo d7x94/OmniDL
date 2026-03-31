@@ -98,7 +98,7 @@ _PRE_PAGE_JS = (
     "  ||l.indexOf('/v/t42')!==-1||l.indexOf('/v/t64')!==-1"
     "  ||l.indexOf('/v/t66')!==-1||l.indexOf('bytestart=')!==-1;"
     "}"
-    "function _isAudio(l){return l.indexOf('/o1/a/')!==-1;}"
+    "function _isAudio(l){return l.indexOf('/o1/a/')!==-1||l.indexOf('/m1/a/')!==-1;}"
     "function _cap(u){"
     "  if(!u||typeof u!=='string'||u.indexOf('fbcdn.net')===-1)return;"
     "  var l=u.toLowerCase();"
@@ -150,12 +150,14 @@ _POLL_JS = (
 _POLL_AUDIO_JS = (
     "(function(){"
     "if(window.__omni_audio_url)return window.__omni_audio_url;"
-    # Scan Performance API for /o1/a/ audio tracks
+    # Scan Performance API for /o1/a/ or /m1/a/ audio tracks
     "try{"
     " var e=performance.getEntriesByType('resource');"
     " for(var i=0;i<e.length;i++){"
     "  var u=e[i].name;"
-    "  if(u&&u.indexOf('fbcdn.net')!==-1&&u.toLowerCase().indexOf('/o1/a/')!==-1)return u;"
+    "  if(!u||u.indexOf('fbcdn.net')===-1)continue;"
+    "  var l=u.toLowerCase();"
+    "  if(l.indexOf('/o1/a/')!==-1||l.indexOf('/m1/a/')!==-1)return u;"
     " }"
     "}catch(x){}"
     "return '';"
@@ -226,6 +228,66 @@ def _full_video_url(cdn_url: str) -> str:
     return urllib.parse.urlunparse(p._replace(
         query=urllib.parse.urlencode({k: v[0] for k, v in q.items()})
     ))
+
+
+def _derive_audio_url(video_url: str) -> Optional[str]:
+    """Derive the Facebook audio-DASH CDN URL from a video-DASH CDN URL.
+
+    Facebook's DASH delivery uses a symmetric CDN path structure: the video
+    track lives under /o1/v/ or /m1/v/, and the corresponding audio track
+    lives under /o1/a/ or /m1/a/ with identical path segments and query
+    parameters.  This deterministic substitution lets us locate the audio URL
+    without waiting for the browser to request it — which is unreliable
+    because Facebook Stories use MSE (Media Source Extensions) and audio
+    segment fetching is driven by JS SourceBuffer logic, not HTMLMediaElement,
+    so play()/muted tricks cannot reliably trigger audio CDN requests.
+
+    Returns the derived candidate URL, or None if the video URL does not
+    contain a known substitutable path segment.
+
+    IMPORTANT: The caller MUST validate the derived URL with a HEAD request
+    before using it — not all stories have a separate audio track, and if
+    the substituted path does not exist the CDN returns 404.  Treat a None
+    or failed-HEAD result as "video-only story" and skip muxing.
+    """
+    for v_seg, a_seg in (("/o1/v/", "/o1/a/"), ("/m1/v/", "/m1/a/")):
+        if v_seg in video_url:
+            return video_url.replace(v_seg, a_seg, 1)
+    return None
+
+
+def _probe_audio_url(candidate: str) -> Optional[str]:
+    """HEAD-check a derived audio URL; return it if the CDN confirms it exists.
+
+    A 200/206 response with Content-Length > 1 KB means a real audio track
+    is present.  Any other outcome (404, network error, too small) means the
+    story is video-only and muxing should be skipped.
+
+    Uses a short timeout (8 s) so a missing audio track does not add
+    noticeable delay to the fallback path.
+    """
+    import requests as _req
+
+    headers = {"User-Agent": _UA, "Referer": "https://www.facebook.com/"}
+    try:
+        resp = _req.head(
+            candidate, headers=headers,
+            timeout=8, allow_redirects=True,
+        )
+        cl = int(resp.headers.get("content-length", 0))
+        if resp.status_code in (200, 206) and cl > 1024:
+            logger.debug(
+                "_probe_audio_url: confirmed audio track (%d bytes) at %s…",
+                cl, candidate[:80],
+            )
+            return candidate
+        logger.debug(
+            "_probe_audio_url: no audio track (status=%d, cl=%d) — video-only",
+            resp.status_code, cl,
+        )
+    except Exception as exc:
+        logger.debug("_probe_audio_url: HEAD failed (%s) — assuming video-only", exc)
+    return None
 
 
 def _validate_mp4(path: Path) -> bool:
@@ -863,9 +925,31 @@ def download_story(
 
     logger.info("Video URL: %s…", cdn_url[:80])
     if audio_url:
-        logger.info("Audio URL: %s…", audio_url[:80])
+        logger.info("Audio URL (intercepted): %s…", audio_url[:80])
     else:
-        logger.info("Audio URL: not captured — will attempt video-only download")
+        logger.info("Audio URL: not intercepted — attempting derivation from video URL")
+
+    # ── Audio URL derivation fallback ──────────────────────────────────────
+    # CDP interception (Layers A/B/C) relies on the browser explicitly
+    # requesting the audio DASH segment, which requires MSE SourceBuffer
+    # logic to run inside Facebook's JS.  With Brave's current autoplay and
+    # MSE policies this is unreliable.
+    #
+    # Fallback: derive the audio URL from the video URL by substituting the
+    # CDN path segment (/o1/v/ → /o1/a/, /m1/v/ → /m1/a/).  Facebook's DASH
+    # CDN is symmetric — video and audio tracks share identical path structure.
+    # A HEAD probe confirms the track exists before we attempt muxing.
+    if not audio_url:
+        candidate = _derive_audio_url(cdn_url)
+        if candidate:
+            logger.debug("Derived audio candidate: %s…", candidate[:80])
+            audio_url = _probe_audio_url(candidate)
+            if audio_url:
+                logger.info("Audio URL (derived+confirmed): %s…", audio_url[:80])
+            else:
+                logger.info("Audio URL: derived candidate returned no valid track — video-only story")
+        else:
+            logger.info("Audio URL: video URL has no substitutable segment — video-only story")
 
     if on_progress:
         try:
@@ -874,12 +958,12 @@ def download_story(
             pass
 
     # ── Download strategy ──────────────────────────────────────────────────
-    # When both video and audio CDN URLs were captured, use FFmpeg to mux
-    # them in a single pass (stream-copy, no re-encode).  This is the only
-    # path that produces a file with sound for DASH-streamed Stories.
-    #
-    # When no audio URL was captured (video-only story, or audio not loaded
-    # in time), fall back to the single-stream download paths.
+    # audio_url is set if either:
+    #   (a) CDP interception (Layers A/B/C) caught it directly, OR
+    #   (b) _derive_audio_url + _probe_audio_url confirmed a symmetric track.
+    # When audio_url is set, FFmpeg muxes video+audio in one stream-copy pass.
+    # When it is None the story is genuinely video-only (or audio CDN returned
+    # no valid track) and we fall back to single-stream download paths.
     result: Optional[Path] = None
     if audio_url:
         result = _ffmpeg_mux(cdn_url, audio_url, dest, on_progress)
