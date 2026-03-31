@@ -879,26 +879,48 @@ class YtDlpEngine:
                 )
             )
 
-        # FIX-TK-AUDIO-2 / BUG-BM: TikTok long-form VODs (5+ min) often have
-        # DASH audio streams where yt-dlp reports acodec='none' due to how
-        # TikTok's CDN delivers separate audio tracks.  When bestvideo+bestaudio
-        # picks such a stream, FFmpegMergerPP skips the audio-map step entirely
-        # (guarded by fmt.get('acodec') != 'none'), producing a silent mp4.
+        # FIX-TK-AUDIO-2 / BUG-BM / BUG-BN: TikTok long-form VODs (2+ min)
+        # often have ONLY DASH streams — separate video and audio tracks with
+        # no muxed (progressive) stream at all.  TikTok's CDN also marks those
+        # audio tracks with acodec='none' in yt-dlp's format table, even though
+        # the streams carry real audio data that FFmpeg can decode.
         #
-        # Fix: for TikTok VOD URLs, append [acodec!=none] to the bestaudio
-        # selector so yt-dlp only considers streams that actually carry audio.
-        # The /best fallback ensures a muxed stream is used if no separate audio
-        # track with a valid codec is found — guaranteeing audio in all cases.
+        # Previous fix (FIX-TK-AUDIO-2): injected [acodec!=none] into bestaudio
+        # so yt-dlp would skip the mislabelled streams.  When no audio stream
+        # passed the filter, the /best fallback was supposed to pick a muxed
+        # stream — but long TikTok VODs have NO muxed stream, so /best picked
+        # the video-only DASH stream, producing a silent mp4.
         #
-        # BUG-BM: task.url is the ORIGINAL user-supplied URL.  Short-link URLs
-        # (vt.tiktok.com/*, vm.tiktok.com/*) also resolve to TikTok VODs but
-        # were NOT matched by the canonical @user/video/<id> pattern.  The fix
-        # uses _TIKTOK_SHORT_RE as a second guard so short links also get the
-        # [acodec!=none] injection.
+        # Root cause confirmed by user report: Video 1 (2:50) and Video 3 (5:47)
+        # are silent; Video 2 (0:18) has audio.  Short videos have a muxed
+        # progressive stream (/best works).  Long videos have only DASH.
+        #
+        # Fix (BUG-BN): build a three-tier fallback chain —
+        #   Tier 1  bestvideo+bestaudio[acodec!=none]  — streams with valid codec metadata
+        #   Tier 2  bestvideo+bestaudio                — any audio (acodec='none' OK —
+        #                                               FFmpeg reads the real stream data,
+        #                                               ignoring the mislabelled metadata)
+        #   Tier 3  best                               — last resort: muxed progressive
+        #
+        # Tier 2 is the new addition.  It handles the common case where TikTok's
+        # DASH audio stream has acodec='none' metadata but carries real AAC/Opus
+        # audio.  FFmpegMergerPP always merges by stream URL, not by codec label,
+        # so the merge succeeds and the output has audio.
+        #
+        # The video_part (bestvideo / bestvideo[height<=N]) is repeated in both
+        # Tier 1 and Tier 2 so the height cap is respected across all fallbacks.
+        #
+        # Guard: already patched ([acodec!=none] present) → skip to avoid
+        # double-injection on hypothetical second call.
+        #
+        # BUG-BM: _TIKTOK_SHORT_RE covers vt.tiktok.com/*, vm.tiktok.com/* so
+        # short share-links get the same treatment as canonical URLs.
         #
         # Transformation examples:
-        #   bestvideo+bestaudio/best               -> bestvideo+bestaudio[acodec!=none]/best
-        #   bestvideo[height<=1080]+bestaudio/best -> bestvideo[height<=1080]+bestaudio[acodec!=none]/best
+        #   bestvideo+bestaudio/best               ->
+        #       bestvideo+bestaudio[acodec!=none]/bestvideo+bestaudio/best
+        #   bestvideo[height<=1080]+bestaudio/best ->
+        #       bestvideo[height<=1080]+bestaudio[acodec!=none]/bestvideo[height<=1080]+bestaudio/best
         #   bestaudio/best  (audio-only)           -> unchanged (no bestvideo present)
         #   best            (live/photo)           -> unchanged
         _format_id = task.format_id
@@ -909,9 +931,13 @@ class YtDlpEngine:
             not is_live
             and _is_tiktok_vod
             and "bestvideo" in _format_id
+            and "[acodec!=none]" not in _format_id  # idempotency guard
         ):
-            _format_id = _format_id.replace(
-                "bestaudio/best", "bestaudio[acodec!=none]/best"
+            _video_part = _format_id[: _format_id.index("+bestaudio")]
+            _format_id = (
+                f"{_video_part}+bestaudio[acodec!=none]"
+                f"/{_video_part}+bestaudio"
+                f"/best"
             )
 
         opts: dict[str, Any] = {

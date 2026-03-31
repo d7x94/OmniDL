@@ -937,7 +937,8 @@ class TestGpuFallback:
 
         def fake_fresh(ffmpeg_bin, src, dest_dir, temp_output,
                        duration_s, preset, on_progress,
-                       encode_settings=None, cancel_event=None):
+                       encode_settings=None, cancel_event=None,
+                       target_ext="mp4"):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First call (GPU) — fail

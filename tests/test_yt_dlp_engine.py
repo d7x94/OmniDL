@@ -368,14 +368,21 @@ class TestTikTokVodLiveDetection:
 # ---------------------------------------------------------------------------
 
 class TestTikTokFormatIdPatch:
-    """FIX-TK-AUDIO-2 — For TikTok VOD URLs, download() must inject
-    [acodec!=none] into the bestaudio selector so yt-dlp never picks an
-    audio-less DASH stream, which causes FFmpegMergerPP to silently skip
-    the audio-map step and produce a silent mp4.
+    """BUG-BN — For TikTok VOD URLs, download() must build a three-tier
+    format selector chain so that long-form VODs (2+ min) always have audio.
 
-    Long-form TikTok videos (5+ min) are particularly affected because
-    TikTok's CDN marks their separate audio tracks with acodec='none' in
-    yt-dlp's format table, making bestaudio resolve to a silent stream.
+    Long TikTok videos have ONLY DASH streams (no muxed progressive).
+    TikTok's CDN also mislabels those audio streams as acodec='none'.
+    The old two-tier chain (bestaudio[acodec!=none]/best) fell through to
+    /best which, with no muxed stream available, picked a video-only DASH
+    stream → silent mp4.
+
+    New three-tier chain:
+      Tier 1  bestvideo+bestaudio[acodec!=none]  — streams with valid codec label
+      Tier 2  bestvideo+bestaudio                — any audio (FFmpeg ignores the
+                                                  mislabelled acodec='none' metadata
+                                                  and decodes the real audio data)
+      Tier 3  best                               — last resort: muxed progressive
     """
 
     def _capture_opts(self, task, cfg=None):
@@ -409,26 +416,26 @@ class TestTikTokFormatIdPatch:
         return task
 
     def test_best_quality_gets_acodec_filter(self):
-        """'bestvideo+bestaudio/best' -> 'bestvideo+bestaudio[acodec!=none]/best'"""
+        """'bestvideo+bestaudio/best' -> 3-tier chain with [acodec!=none] in tier 1."""
         task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/bestvideo+bestaudio/best"
 
     def test_1080p_gets_acodec_filter(self):
-        """'bestvideo[height<=1080]+bestaudio/best' gets acodec filter applied."""
+        """'bestvideo[height<=1080]+bestaudio/best' gets 3-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=1080]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/bestvideo[height<=1080]+bestaudio/best"
 
     def test_720p_gets_acodec_filter(self):
         task = self._make_tiktok_task("bestvideo[height<=720]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo[height<=720]+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo[height<=720]+bestaudio[acodec!=none]/bestvideo[height<=720]+bestaudio/best"
 
     def test_360p_gets_acodec_filter(self):
         task = self._make_tiktok_task("bestvideo[height<=360]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo[height<=360]+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo[height<=360]+bestaudio[acodec!=none]/bestvideo[height<=360]+bestaudio/best"
 
     def test_audio_only_not_modified(self):
         """'bestaudio/best' (audio-only) must NOT be modified — no bestvideo present."""
@@ -466,11 +473,12 @@ class TestTikTokFormatIdPatch:
         assert opts["format"] == "best"
 
     def test_acodec_filter_not_duplicated(self):
-        """Running patch twice must not produce double [acodec!=none]."""
+        """Running patch twice must not produce double [acodec!=none] or extra tiers."""
         task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
         fmt = opts["format"]
         assert fmt.count("[acodec!=none]") == 1, f"Expected exactly 1 filter, got: {fmt}"
+        assert fmt == "bestvideo+bestaudio[acodec!=none]/bestvideo+bestaudio/best"
 
 # ---------------------------------------------------------------------------
 # BUG-BM: TikTok short-link URLs (vt.tiktok.com / vm.tiktok.com) must also
@@ -479,13 +487,15 @@ class TestTikTokFormatIdPatch:
 
 
 class TestTikTokShortUrlAudioFix:
-    """BUG-BM — short-link TikTok URLs (vt.tiktok.com/*, vm.tiktok.com/*)
-    must receive the same [acodec!=none] bestaudio filter as canonical
+    """BUG-BM / BUG-BN — short-link TikTok URLs (vt.tiktok.com/*, vm.tiktok.com/*)
+    must receive the same three-tier format selector chain as canonical
     tiktok.com/@user/video/<id> URLs.
 
     Root cause: task.url holds the ORIGINAL user-supplied URL at download
     time.  The FIX-TK-AUDIO-2 regex only matched the canonical form, so
     short links bypassed the fix → silent video for long-form VODs.
+    BUG-BN extends this to the three-tier chain so the intermediate
+    bestvideo+bestaudio fallback also applies to short links.
     """
 
     def _capture_opts(self, task, cfg=None):
@@ -520,24 +530,24 @@ class TestTikTokShortUrlAudioFix:
     # ── vt.tiktok.com ────────────────────────────────────────────────────
 
     def test_vt_short_url_gets_acodec_filter(self):
-        """vt.tiktok.com short link must inject [acodec!=none] into bestaudio."""
+        """vt.tiktok.com short link must produce the full 3-tier chain."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNx3n8Y/",
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/best", (
-            f"Short URL 'vt.tiktok.com' must receive acodec filter, got: {opts['format']}"
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/bestvideo+bestaudio/best", (
+            f"Short URL 'vt.tiktok.com' must receive 3-tier chain, got: {opts['format']}"
         )
 
     def test_vt_short_url_1080p_gets_acodec_filter(self):
-        """vt.tiktok.com with 1080p selector also gets the filter."""
+        """vt.tiktok.com with 1080p selector gets the full 3-tier chain."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNQHFCu/",
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/bestvideo[height<=1080]+bestaudio/best"
 
     def test_vt_short_url_720p_gets_acodec_filter(self):
         task = self._make_short_task(
@@ -545,19 +555,19 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=720]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo[height<=720]+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo[height<=720]+bestaudio[acodec!=none]/bestvideo[height<=720]+bestaudio/best"
 
     # ── vm.tiktok.com ────────────────────────────────────────────────────
 
     def test_vm_short_url_gets_acodec_filter(self):
-        """vm.tiktok.com short link (global) must also inject [acodec!=none]."""
+        """vm.tiktok.com short link (global) must also produce the 3-tier chain."""
         task = self._make_short_task(
             "https://vm.tiktok.com/ZMJxABCDE/",
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/best", (
-            f"Short URL 'vm.tiktok.com' must receive acodec filter, got: {opts['format']}"
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/bestvideo+bestaudio/best", (
+            f"Short URL 'vm.tiktok.com' must receive 3-tier chain, got: {opts['format']}"
         )
 
     def test_vm_short_url_1080p_gets_acodec_filter(self):
@@ -566,7 +576,7 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/best"
+        assert opts["format"] == "bestvideo[height<=1080]+bestaudio[acodec!=none]/bestvideo[height<=1080]+bestaudio/best"
 
     # ── Short URL edge cases ──────────────────────────────────────────────
 
@@ -596,6 +606,127 @@ class TestTikTokShortUrlAudioFix:
         )
         opts = self._capture_opts(task)
         assert opts["format"].count("[acodec!=none]") == 1
+        assert opts["format"] == "bestvideo+bestaudio[acodec!=none]/bestvideo+bestaudio/best"
+
+
+# ---------------------------------------------------------------------------
+# BUG-BN: 3-tier chain — intermediate bestvideo+bestaudio fallback
+# ---------------------------------------------------------------------------
+
+
+class TestTikTokThreeTierFallback:
+    """BUG-BN — the format selector must contain an intermediate
+    'bestvideo+bestaudio' tier (Tier 2) between the [acodec!=none] tier
+    and the /best fallback.
+
+    This tier is what actually fixes audio for long TikTok VODs (2+ min).
+    Those videos have ONLY DASH streams — no muxed progressive stream —
+    so the old two-tier chain's /best fallback picked a video-only DASH
+    stream, producing a silent mp4.  With Tier 2 present, yt-dlp merges
+    the best video DASH + best audio DASH (even when acodec='none' in
+    metadata) via FFmpegMergerPP, which reads the real stream data and
+    produces a file with audio.
+    """
+
+    def _capture_opts(self, task, cfg=None):
+        if cfg is None:
+            cfg = make_config()
+            cfg.cookie_file = ""
+            cfg.platform_cookies = {}
+            cfg.remote_components = None
+        engine = YtDlpEngine(cfg)
+        captured = {}
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured.update(opts)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def download(self, urls):
+                pass
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.download(task)
+        return captured
+
+    def _make_task(self, url: str, format_id: str):
+        task = DownloadTask(url=url, format_id=format_id, output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="Test", is_live=False)
+        return task
+
+    def test_canonical_url_has_three_tiers(self):
+        """Canonical tiktok.com/@user/video/<id> must produce exactly 3 tiers."""
+        url = "https://www.tiktok.com/@khaly.57/video/7622620153158814996"
+        task = self._make_task(url, "bestvideo+bestaudio/best")
+        opts = self._capture_opts(task)
+        fmt = opts["format"]
+        tiers = fmt.split("/")
+        assert len(tiers) == 3, f"Expected 3 tiers, got {len(tiers)}: {fmt}"
+        assert tiers[0] == "bestvideo+bestaudio[acodec!=none]"
+        assert tiers[1] == "bestvideo+bestaudio"
+        assert tiers[2] == "best"
+
+    def test_short_url_video1_has_three_tiers(self):
+        """vt.tiktok.com/ZSHNx3n8Y/ (Video 1 — 2:50, silent) must produce 3 tiers."""
+        url = "https://vt.tiktok.com/ZSHNx3n8Y/"
+        task = self._make_task(url, "bestvideo+bestaudio/best")
+        opts = self._capture_opts(task)
+        fmt = opts["format"]
+        tiers = fmt.split("/")
+        assert len(tiers) == 3, f"Expected 3 tiers, got {len(tiers)}: {fmt}"
+        assert "[acodec!=none]" in tiers[0], "Tier 1 must have acodec filter"
+        assert "[acodec!=none]" not in tiers[1], "Tier 2 must NOT have acodec filter"
+        assert tiers[2] == "best", "Tier 3 must be bare /best"
+
+    def test_short_url_video3_has_three_tiers(self):
+        """vt.tiktok.com/ZSHNQHFCu/ (Video 3 — 5:47, silent) must produce 3 tiers."""
+        url = "https://vt.tiktok.com/ZSHNQHFCu/"
+        task = self._make_task(url, "bestvideo+bestaudio/best")
+        opts = self._capture_opts(task)
+        fmt = opts["format"]
+        tiers = fmt.split("/")
+        assert len(tiers) == 3, f"Expected 3 tiers, got {len(tiers)}: {fmt}"
+        assert "[acodec!=none]" in tiers[0]
+        assert "[acodec!=none]" not in tiers[1]
+        assert tiers[2] == "best"
+
+    def test_height_cap_preserved_in_all_tiers(self):
+        """Height cap (e.g. height<=1080) must appear in both Tier 1 and Tier 2."""
+        url = "https://www.tiktok.com/@testuser/video/7620980082118675732"
+        task = self._make_task(url, "bestvideo[height<=1080]+bestaudio/best")
+        opts = self._capture_opts(task)
+        fmt = opts["format"]
+        tiers = fmt.split("/")
+        assert len(tiers) == 3
+        assert "height<=1080" in tiers[0], "Tier 1 must preserve height cap"
+        assert "height<=1080" in tiers[1], "Tier 2 must also preserve height cap"
+        assert tiers[2] == "best"
+
+    def test_all_presets_produce_three_tiers(self):
+        """Every quality preset from home_tab must produce the 3-tier chain."""
+        presets = [
+            "bestvideo+bestaudio/best",
+            "bestvideo[height<=2160]+bestaudio/best",
+            "bestvideo[height<=1080]+bestaudio/best",
+            "bestvideo[height<=720]+bestaudio/best",
+            "bestvideo[height<=480]+bestaudio/best",
+            "bestvideo[height<=360]+bestaudio/best",
+        ]
+        url = "https://www.tiktok.com/@testuser/video/1234567890"
+        for preset in presets:
+            task = self._make_task(url, preset)
+            opts = self._capture_opts(task)
+            fmt = opts["format"]
+            tiers = fmt.split("/")
+            assert len(tiers) == 3, (
+                f"Preset {preset!r} must produce 3 tiers, got {len(tiers)}: {fmt}"
+            )
+            assert "[acodec!=none]" in tiers[0]
+            assert "[acodec!=none]" not in tiers[1]
+            assert tiers[2] == "best"
 
 
 class TestTikTokShortUrlLiveDetection:
