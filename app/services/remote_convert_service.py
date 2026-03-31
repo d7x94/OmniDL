@@ -38,11 +38,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from app.services.ffmpeg_convert_service import (
+    _HW_ENCODER_CATALOG,
     ConvertQueue,
     EncodeSettings,
-    detect_available_encoders,
     get_available_encoder_options,
-    _HW_ENCODER_CATALOG,
 )
 from domain.models.conversion_job import ConversionJob, ConversionStatus
 

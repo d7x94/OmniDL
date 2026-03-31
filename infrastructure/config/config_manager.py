@@ -53,7 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     # Enable via Settings → Remote API to start the FastAPI server.
     # api_token is auto-generated on first enable; paste it into the PWA.
     "api_enabled": False,
-    "api_host":    "0.0.0.0",   # listens on all LAN interfaces
+    "api_host":    "0.0.0.0",   # listens on all LAN interfaces  # nosec B104
     "api_port":    7799,
     "api_token":   "",           # auto-populated by api/server.py
     # ── Taildrop — send completed files to iPhone via Tailscale ──────────
@@ -357,8 +357,8 @@ class ConfigManager:
         Defaults to "0.0.0.0" (all LAN interfaces).
         Set to "127.0.0.1" to restrict to localhost only.
         """
-        val = str(self.get("api_host", "0.0.0.0")).strip()
-        return val if val else "0.0.0.0"
+        val = str(self.get("api_host", "0.0.0.0")).strip()  # nosec B104
+        return val if val else "0.0.0.0"  # nosec B104
 
     @property
     def api_port(self) -> int:

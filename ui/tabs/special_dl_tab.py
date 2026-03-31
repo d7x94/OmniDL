@@ -23,8 +23,8 @@ try:
 except ImportError:        # pragma: no cover
     ctk = None             # type: ignore[assignment]
 
-from ui.themes.tokens import T
 from ui.components.post_download_actions import PostDownloadActions
+from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow

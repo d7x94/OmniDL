@@ -53,6 +53,7 @@ from domain.models.download_task import DownloadTask, MediaInfo
 
 if TYPE_CHECKING:
     import uvicorn
+
     from app.services.download_service import DownloadService
     from app.services.remote_convert_service import RemoteConvertService
     from infrastructure.config.config_manager import ConfigManager

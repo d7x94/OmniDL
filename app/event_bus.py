@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from domain.models.download_task import DownloadTask, MediaInfo
     from domain.models.conversion_job import ConversionJob
+    from domain.models.download_task import DownloadTask, MediaInfo
 
 logger = logging.getLogger(__name__)
 

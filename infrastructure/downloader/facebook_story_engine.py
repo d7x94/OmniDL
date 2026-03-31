@@ -170,7 +170,7 @@ _PLAY_JS = (
     " vs[i].muted=true;"
     " (function(v){"
     "  var p=v.paused?v.play():Promise.resolve();"
-    "  if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},100);}).catch(function(){v.muted=false;});}"
+    "  if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},100);}).catch(function(){v.muted=false;});}"  # noqa: E501
     "  else{setTimeout(function(){v.muted=false;},100);}"
     " })(vs[i]);"
     "}"

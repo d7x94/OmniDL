@@ -18,8 +18,8 @@ try:
 except ImportError:          # pragma: no cover
     ctk = None               # type: ignore[assignment]
 
-from ui.themes.tokens import T
 from ui.tabs.settings._base_panel import _BasePanel
+from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -349,12 +349,13 @@ class NetworkPanel(_BasePanel):
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
                 count, error = extract_via_cdp(output_path, platform_key=None, browser=browser)
             except Exception as exc:
-                error = str(exc); count = 0
-            if error:
-                self._ui_queue.put(lambda e=error: (
+                err_msg = str(exc)
+                self._ui_queue.put(lambda e=err_msg: (
                     status.configure(text=f"❌ {e.splitlines()[0][:70]}", text_color=T.error),
                     self._app.toast(f"CDP thất bại: {e.splitlines()[0][:60]}", "error"),
                 ))
+                self._ui_queue.put(lambda: btn.configure(state="normal"))
+                return
             else:
                 path_str = self._resolve_saved_cookie_path(output_path)
                 self._app.config.set("cookie_file", path_str)
@@ -404,7 +405,8 @@ class NetworkPanel(_BasePanel):
                 from infrastructure.downloader.cookie_extractor import extract_browser_cookies
                 count, error = extract_browser_cookies(browser, output_path, platform_key=None)
             except Exception as exc:
-                error = str(exc); count = 0
+                error = str(exc)
+                count = 0
             if error:
                 self._ui_queue.put(lambda e=error: (
                     status.configure(text=f"❌ {e.splitlines()[0][:70]}", text_color=T.error),
@@ -449,7 +451,8 @@ class NetworkPanel(_BasePanel):
             return
         src_path = Path(chosen)
         if not src_path.is_file():
-            self._app.toast("File không tìm thấy.", "error"); return
+            self._app.toast("File không tìm thấy.", "error")
+            return
         safe_dir  = self._app.config.config_path.parent / "cookies"
         safe_dir.mkdir(parents=True, exist_ok=True)
         dest_name = f"{platform_key}_{src_path.name}"
@@ -458,7 +461,8 @@ class NetworkPanel(_BasePanel):
             shutil.copy2(src_path, dest)
         except OSError as exc:
             logger.warning("Failed to copy platform cookie file: %s", exc)
-            self._app.toast(f"Không thể sao chép cookie file: {exc}", "error"); return
+            self._app.toast(f"Không thể sao chép cookie file: {exc}", "error")
+            return
         self._app.config.set_cookie_for_platform(platform_key, str(dest))
         path_lbl.configure(text=self._short_cookie_path(str(dest)))
         self._app.toast(f"Cookie {platform_name} đã được lưu vào thư mục an toàn.", "info")
@@ -484,11 +488,18 @@ class NetworkPanel(_BasePanel):
                 from infrastructure.downloader.cookie_extractor import extract_browser_cookies
                 count, error = extract_browser_cookies(browser, output_path, platform_key=platform_key)
             except Exception as exc:
-                error = str(exc); count = 0
+                error = str(exc)
+                count = 0
             if error:
                 self._ui_queue.put(lambda e=error: (
-                    status.configure(text=f"❌ {platform_name}: {e.splitlines()[0][:65]}", text_color=T.error),
-                    self._app.toast(f"Lấy cookies {platform_name} thất bại: {e.splitlines()[0][:55]}", "error"),
+                    status.configure(
+                        text=f"❌ {platform_name}: {e.splitlines()[0][:65]}",
+                        text_color=T.error,
+                    ),
+                    self._app.toast(
+                        f"Lấy cookies {platform_name} thất bại: {e.splitlines()[0][:55]}",
+                        "error",
+                    ),
                 ))
             else:
                 path_str = self._resolve_saved_cookie_path(output_path)
@@ -536,12 +547,16 @@ class NetworkPanel(_BasePanel):
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
                 count, error = extract_via_cdp(output_path, platform_key=platform_key, browser=browser)
             except Exception as exc:
-                error = str(exc); count = 0
-            if error:
-                self._ui_queue.put(lambda e=error, pn=platform_name: (
+                err_msg = str(exc)
+                self._ui_queue.put(lambda e=err_msg, pn=platform_name: (
                     status.configure(text=f"❌ {pn} CDP: {e.splitlines()[0][:60]}", text_color=T.error),
                     self._app.toast(f"CDP {pn} thất bại: {e.splitlines()[0][:50]}", "error"),
                 ))
+                self._ui_queue.put(lambda: [
+                    btn.configure(state="normal")
+                    for btn in self._pc_extract_btns if btn.winfo_exists()
+                ])
+                return
             else:
                 path_str = self._resolve_saved_cookie_path(output_path)
                 self._app.config.set_cookie_for_platform(platform_key, path_str)

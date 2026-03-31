@@ -20,8 +20,8 @@ try:
 except ImportError:          # pragma: no cover
     ctk = None               # type: ignore[assignment]
 
-from ui.themes.tokens import T
 from ui.tabs.settings._base_panel import _BasePanel
+from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -366,9 +366,11 @@ class TaildropPanel(_BasePanel):
         if w and w.winfo_exists():
             w.configure(fg_color=T.surface, border_color=T.border)
         for lbl in self._section_labels:
-            if lbl.winfo_exists(): lbl.configure(text_color=T.text3)
+            if lbl.winfo_exists():
+                lbl.configure(text_color=T.text3)
         for sw in self._switches:
-            if sw.winfo_exists(): sw.configure(progress_color=T.primary)
+            if sw.winfo_exists():
+                sw.configure(progress_color=T.primary)
         for attr in ("_td_node_save_btn", "_td_scan_btn"):
             w = getattr(self, attr, None)
             if w and w.winfo_exists():

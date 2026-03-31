@@ -25,8 +25,8 @@ try:
 except ImportError:          # pragma: no cover
     ctk = None               # type: ignore[assignment]
 
-from ui.themes.tokens import T
 from ui.tabs.settings._base_panel import _BasePanel
+from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -43,7 +43,11 @@ def _install_ytdlp_frozen() -> str:
     Works inside a PyInstaller-frozen EXE.  Security: SHA-256 from PyPI JSON
     API verified before extraction.  Returns override_dir path string.
     """
-    import hashlib, json, os, shutil, zipfile
+    import hashlib
+    import json
+    import os
+    import shutil
+    import zipfile
     from pathlib import Path as _Path
 
     override_dir = _Path(os.getenv("APPDATA", str(_Path.home()))) / "OmniDL" / "site-packages"
@@ -77,7 +81,8 @@ def _install_ytdlp_frozen() -> str:
     try:
         req = Request(wheel_url, headers={"User-Agent": "OmniDL-updater/1.0"})
         with urlopen(req, timeout=120) as resp, open(tmp_whl, "wb") as fout:  # nosec B310
-            import shutil as _sh; _sh.copyfileobj(resp, fout)
+            import shutil as _sh
+            _sh.copyfileobj(resp, fout)
     except URLError as exc:
         raise RuntimeError(f"Download failed: {exc}") from exc
 
@@ -110,7 +115,11 @@ def _install_gallery_dl_frozen() -> str:
     Install / upgrade gallery-dl without pip.  Same 5-step pattern as
     _install_ytdlp_frozen().  Security: SHA-256 verified before extraction.
     """
-    import hashlib, json, os, shutil, zipfile
+    import hashlib
+    import json
+    import os
+    import shutil
+    import zipfile
     from pathlib import Path as _Path
 
     override_dir = _Path(os.getenv("APPDATA", str(_Path.home()))) / "OmniDL" / "site-packages"
@@ -144,7 +153,8 @@ def _install_gallery_dl_frozen() -> str:
     try:
         req = Request(wheel_url, headers={"User-Agent": "OmniDL-updater/1.0"})
         with urlopen(req, timeout=120) as resp, open(tmp_whl, "wb") as fout:  # nosec B310
-            import shutil as _sh; _sh.copyfileobj(resp, fout)
+            import shutil as _sh
+            _sh.copyfileobj(resp, fout)
     except URLError as exc:
         raise RuntimeError(f"Download failed: {exc}") from exc
 
@@ -345,7 +355,8 @@ class ToolsPanel(_BasePanel):
                         sys.path.insert(0, override)
                     importlib.invalidate_caches()
                     try:
-                        import yt_dlp.version as _yv; importlib.reload(_yv)
+                        import yt_dlp.version as _yv
+                        importlib.reload(_yv)
                     except Exception:
                         pass
                     ver = self._get_ytdlp_version()
@@ -379,7 +390,8 @@ class ToolsPanel(_BasePanel):
         self._keyring_status.configure(text="Đang cài keyring…", text_color=T.primary_text)
 
         def _worker() -> None:
-            import importlib, subprocess
+            import importlib
+            import subprocess
             try:
                 r = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "--upgrade", "keyring"],
@@ -438,7 +450,8 @@ class ToolsPanel(_BasePanel):
                         sys.path.insert(0, override)
                     importlib.invalidate_caches()
                     try:
-                        import gallery_dl as _gdl; importlib.reload(_gdl)
+                        import gallery_dl as _gdl
+                        importlib.reload(_gdl)
                     except Exception:
                         pass
                     ver = self._get_gallery_dl_version()
@@ -470,8 +483,10 @@ class ToolsPanel(_BasePanel):
         active_cv   = getattr(convert_tab, "_active_count", 0)
         if active_tasks or active_cv:
             parts = []
-            if active_tasks: parts.append(f"{len(active_tasks)} download đang chạy")
-            if active_cv:    parts.append(f"{active_cv} conversion đang chạy")
+            if active_tasks:
+                parts.append(f"{len(active_tasks)} download đang chạy")
+            if active_cv:
+                parts.append(f"{active_cv} conversion đang chạy")
             self._app.toast("Không thể xóa dữ liệu khi " + " và ".join(parts) + ".", "error")
             return
 
@@ -519,25 +534,32 @@ class ToolsPanel(_BasePanel):
             if card and card.winfo_exists():
                 card.configure(fg_color=T.surface, border_color=T.border)
         for lbl in self._section_labels:
-            if lbl.winfo_exists(): lbl.configure(text_color=T.text3)
+            if lbl.winfo_exists():
+                lbl.configure(text_color=T.text3)
         for lbl in self._row_labels:
-            if lbl.winfo_exists(): lbl.configure(text_color=T.text2)
+            if lbl.winfo_exists():
+                lbl.configure(text_color=T.text2)
         for attr in ("_ver_lbl", "_gdl_ver_lbl"):
             w = getattr(self, attr, None)
-            if w and w.winfo_exists(): w.configure(text_color=T.primary_text)
+            if w and w.winfo_exists():
+                w.configure(text_color=T.primary_text)
         for attr in ("_upd_status", "_gdl_upd_status", "_keyring_status"):
             w = getattr(self, attr, None)
-            if w and w.winfo_exists(): w.configure(text_color=T.text2)
+            if w and w.winfo_exists():
+                w.configure(text_color=T.text2)
         for attr in ("_upd_btn", "_gdl_upd_btn", "_keyring_btn"):
             w = getattr(self, attr, None)
             if w and w.winfo_exists():
                 w.configure(fg_color=T.surface3, hover_color=T.border2, text_color=T.text2)
         w = getattr(self, "_extra_entry", None)
-        if w and w.winfo_exists(): w.configure(fg_color=T.input, border_color=T.border2)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.input, border_color=T.border2)
         w = getattr(self, "_data_desc_lbl", None)
-        if w and w.winfo_exists(): w.configure(text_color=T.text3)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text3)
         w = getattr(self, "_clear_data_btn", None)
         if w and w.winfo_exists():
             w.configure(fg_color=T.error_bg, hover_color=T.error, text_color=T.error)
         w = getattr(self, "_clear_data_status", None)
-        if w and w.winfo_exists(): w.configure(text_color=T.text2)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)

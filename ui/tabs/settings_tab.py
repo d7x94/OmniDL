@@ -28,7 +28,6 @@ try:
 except ImportError:          # pragma: no cover — headless CI
     ctk = None               # type: ignore[assignment]
 
-from ui.themes.tokens import T
 from ui.tabs.settings import (
     GeneralPanel,
     NetworkPanel,
@@ -36,11 +35,13 @@ from ui.tabs.settings import (
     TaildropPanel,
     ToolsPanel,
 )
+
 # Re-export frozen-build updaters for backward compatibility
-from ui.tabs.settings.tools_panel import (   # noqa: F401
+from ui.tabs.settings.tools_panel import (  # noqa: F401
     _install_gallery_dl_frozen,
     _install_ytdlp_frozen,
 )
+from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow

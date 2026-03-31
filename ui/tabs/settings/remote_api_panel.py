@@ -17,8 +17,8 @@ try:
 except ImportError:          # pragma: no cover
     ctk = None               # type: ignore[assignment]
 
-from ui.themes.tokens import T
 from ui.tabs.settings._base_panel import _BasePanel
+from ui.themes.tokens import T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -177,7 +177,8 @@ class RemoteApiPanel(_BasePanel):
                 self._app.toast("✅  Remote API đã bật.", "success")
             except ImportError:
                 self._api_switch_var.set(False)
-                cfg.set("api_enabled", False); cfg.save()
+                cfg.set("api_enabled", False)
+                cfg.save()
                 self._app.toast(
                     "⚠️  Cần cài fastapi & uvicorn trước: pip install -r requirements-api.txt",
                     "error",
@@ -199,7 +200,8 @@ class RemoteApiPanel(_BasePanel):
     def _on_api_copy_token(self) -> None:
         tok = str(getattr(self._app.config, "api_token", "") or "")
         if not tok:
-            self._app.toast("Chưa có token. Hãy bật Remote API trước.", "error"); return
+            self._app.toast("Chưa có token. Hãy bật Remote API trước.", "error")
+            return
         try:
             self.clipboard_clear()
             self.clipboard_append(tok)
@@ -263,15 +265,20 @@ class RemoteApiPanel(_BasePanel):
         if w and w.winfo_exists():
             w.configure(fg_color=T.surface, border_color=T.border)
         for lbl in self._section_labels:
-            if lbl.winfo_exists(): lbl.configure(text_color=T.text3)
+            if lbl.winfo_exists():
+                lbl.configure(text_color=T.text3)
         for sw in self._switches:
-            if sw.winfo_exists(): sw.configure(progress_color=T.primary)
+            if sw.winfo_exists():
+                sw.configure(progress_color=T.primary)
         w = getattr(self, "_api_token_lbl", None)
-        if w and w.winfo_exists(): w.configure(text_color=T.primary_text)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.primary_text)
         w = getattr(self, "_api_status_lbl", None)
-        if w and w.winfo_exists(): self._refresh_api_status_label()
+        if w and w.winfo_exists():
+            self._refresh_api_status_label()
         w = getattr(self, "_api_token_status", None)
-        if w and w.winfo_exists(): w.configure(text_color=T.text2)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)
         for attr in ("_api_copy_btn", "_api_rotate_btn"):
             w = getattr(self, attr, None)
             if w and w.winfo_exists():

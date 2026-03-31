@@ -38,7 +38,7 @@ import logging
 import os
 import queue
 from pathlib import Path
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 try:
     import customtkinter as ctk
@@ -239,7 +239,8 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
     def _build_custom_panel(self) -> None:
         """Build the encoder / quality widgets inside _custom_frame."""
         from app.services.ffmpeg_convert_service import (
-            ENCODER_OPTIONS, SPEED_OPTIONS, get_available_encoder_options,
+            SPEED_OPTIONS,
+            get_available_encoder_options,
         )
 
         ctk.CTkLabel(
@@ -394,7 +395,8 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
     def _on_quality_change(self, label: str) -> None:
         """Show/hide CRF slider depending on quality selection."""
-        idx = self._quality_menu.cget("values").index(label) if label in self._quality_menu.cget("values") else -1
+        values = self._quality_menu.cget("values")
+        idx = values.index(label) if label in values else -1
         if idx < 0:
             return
         if self._quality_keys[idx] == "custom":

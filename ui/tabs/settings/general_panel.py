@@ -16,8 +16,8 @@ try:
 except ImportError:          # pragma: no cover
     ctk = None               # type: ignore[assignment]
 
-from ui.themes.tokens import THEME_NAMES, T
 from ui.tabs.settings._base_panel import _BasePanel
+from ui.themes.tokens import THEME_NAMES, T
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow

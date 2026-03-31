@@ -79,8 +79,9 @@ def _sanitize_filename(name: str) -> str:
     ────────
     ``"video.mp4"``                                → ``"video.mp4"``   (unchanged)
     ``"clip ❤️‍🔥@Ba dím.mp4"``                  → ``"clip__Ba_dim.mp4"``
-    ``"dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 ❤️‍🔥@Ba dím  #dodonhatminh [762213827654].mp4"``
-                                                   → ``"dodonhatminh109_-_2026-03-28_-_Top_15_edurun_2026__Ba_dim__dodonhatminh_762213827654_.mp4"``
+    ``"dodonhatminh109 - 2026-03-28 - Top 15 ... #dodonhatminh [762213827654].mp4"``
+        → ``"dodonhatminh109_-_2026-03-28_-_Top_15_edurun_2026__Ba_dim__"``
+          ``"dodonhatminh_762213827654_.mp4"``
 
     Security note
     ─────────────
