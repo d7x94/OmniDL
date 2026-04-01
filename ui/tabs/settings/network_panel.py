@@ -26,6 +26,23 @@ if TYPE_CHECKING:
 
 logger = __import__("logging").getLogger(__name__)
 
+
+def _cookie_file_candidates(path_str: str) -> "list[Path]":
+    """Return both the stored path and its .txt/.enc counterpart.
+
+    Config may store a .txt path while only the .enc exists (and vice-versa)
+    because encrypt_cookie_file renames .txt → .enc after config is saved
+    (BUG BE auto-fallback).  We try both variants so deletion is complete.
+    """
+    p = Path(path_str)
+    candidates = [p]
+    if p.suffix == ".txt":
+        candidates.append(p.with_suffix(".enc"))
+    elif p.suffix == ".enc":
+        candidates.append(p.with_suffix(".txt"))
+    return candidates
+
+
 # Platforms with dedicated per-platform cookie rows
 _PC_PLATFORMS = [
     ("youtube",   "YouTube"),
@@ -585,8 +602,38 @@ class NetworkPanel(_BasePanel):
         ).start()
 
     def _clear_platform_cookie(self, platform_key: str, path_lbl: "ctk.CTkLabel") -> None:
+        # Read the stored path BEFORE clearing config, so we can delete the
+        # file on disk.  Clearing only the config entry leaves an orphaned
+        # .enc file that persists indefinitely — a data-minimisation violation
+        # because session credentials remain on disk after the user explicitly
+        # asked to delete them.
+        old_path_str = self._app.config.get_cookie_for_platform(platform_key)
+
+        # Clear config first (fast, must always happen)
         self._app.config.set_cookie_for_platform(platform_key, "")
         path_lbl.configure(text="No file selected")
+
+        # Delete the physical file — CWE-22: only allow paths inside safe_dir
+        if old_path_str:
+            safe_dir = self._app.config.config_path.parent.resolve()
+            for candidate in _cookie_file_candidates(old_path_str):
+                try:
+                    resolved = candidate.resolve()
+                    if safe_dir not in resolved.parents and resolved != safe_dir:
+                        logger.warning(
+                            "_clear_platform_cookie: rejected path outside safe dir: %s",
+                            candidate,
+                        )
+                        continue
+                    if resolved.is_file():
+                        resolved.unlink()
+                        logger.info(
+                            "Deleted platform cookie file on clear: %s", resolved.name
+                        )
+                except OSError as exc:
+                    logger.warning(
+                        "_clear_platform_cookie: could not delete %s — %s", candidate, exc
+                    )
 
     # ── Static helpers ─────────────────────────────────────────────────────
 

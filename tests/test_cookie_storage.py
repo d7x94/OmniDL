@@ -434,3 +434,144 @@ class TestRoundTrip:
                 assert tmp.read_bytes() == SAMPLE_COOKIES
             finally:
                 tmp.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# _cookie_file_candidates helper
+# ---------------------------------------------------------------------------
+
+class TestCookieFileCandidates:
+    """Unit tests for the _cookie_file_candidates helper in network_panel."""
+
+    def _candidates(self, path_str: str):
+        from ui.tabs.settings.network_panel import _cookie_file_candidates
+        return _cookie_file_candidates(path_str)
+
+    def test_txt_path_includes_enc_variant(self, tmp_path):
+        p = str(tmp_path / "facebook_chrome_cookies.txt")
+        result = self._candidates(p)
+        suffixes = [c.suffix for c in result]
+        assert ".txt" in suffixes
+        assert ".enc" in suffixes
+
+    def test_enc_path_includes_txt_variant(self, tmp_path):
+        p = str(tmp_path / "instagram_chrome_cookies.enc")
+        result = self._candidates(p)
+        suffixes = [c.suffix for c in result]
+        assert ".enc" in suffixes
+        assert ".txt" in suffixes
+
+    def test_other_suffix_returns_only_itself(self, tmp_path):
+        p = str(tmp_path / "cookies.dat")
+        result = self._candidates(p)
+        assert len(result) == 1
+        assert result[0].suffix == ".dat"
+
+
+# ---------------------------------------------------------------------------
+# _clear_platform_cookie deletes file on disk
+# ---------------------------------------------------------------------------
+
+class TestClearPlatformCookieDeletesFile:
+    """Verify _clear_platform_cookie removes the .enc file from disk."""
+
+    def _make_config(self, tmp_path, enc_path):
+        """Minimal config-like stub."""
+        class _Cfg:
+            config_path = tmp_path / "config.json"
+            def get_cookie_for_platform(self, key):
+                return str(enc_path)
+            def set_cookie_for_platform(self, key, val):
+                pass
+
+        class _App:
+            config = _Cfg()
+
+        return _App()
+
+    def test_enc_file_deleted_on_clear(self, tmp_path):
+        enc = tmp_path / "facebook_chrome_cookies.enc"
+        enc.write_bytes(b"FAKE_ENC_DATA")
+        assert enc.exists()
+
+        app = self._make_config(tmp_path, enc)
+
+        # Patch CTkLabel so there's no Tkinter dependency
+        from unittest.mock import MagicMock
+        lbl = MagicMock()
+
+        from ui.tabs.settings.network_panel import NetworkPanel
+        # Call the method directly without instantiating the full panel
+        panel = object.__new__(NetworkPanel)
+        panel._app = app
+        panel._clear_platform_cookie.__func__(panel, "facebook", lbl)  # type: ignore[attr-defined]
+
+        assert not enc.exists(), "Encrypted cookie file must be deleted on clear"
+
+    def test_txt_and_enc_both_deleted(self, tmp_path):
+        """If config stores .txt but .enc also exists, both are removed."""
+        txt = tmp_path / "instagram_chrome_cookies.txt"
+        enc = tmp_path / "instagram_chrome_cookies.enc"
+        txt.write_text("# cookies\n")
+        enc.write_bytes(b"FAKE_ENC")
+
+        class _Cfg:
+            config_path = tmp_path / "config.json"
+            def get_cookie_for_platform(self, key):
+                return str(txt)  # config stores .txt path
+            def set_cookie_for_platform(self, key, val):
+                pass
+
+        class _App:
+            config = _Cfg()
+
+        from unittest.mock import MagicMock
+        from ui.tabs.settings.network_panel import NetworkPanel
+        panel = object.__new__(NetworkPanel)
+        panel._app = _App()
+        panel._clear_platform_cookie.__func__(panel, "instagram", MagicMock())  # type: ignore[attr-defined]
+
+        assert not txt.exists(), ".txt file must be deleted"
+        assert not enc.exists(), ".enc file must be deleted"
+
+    def test_path_outside_safe_dir_not_deleted(self, tmp_path):
+        """CWE-22: paths outside config_path.parent must never be deleted."""
+        outside = tmp_path / "outside" / "evil.enc"
+        outside.parent.mkdir()
+        outside.write_bytes(b"SHOULD NOT BE DELETED")
+
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+
+        class _Cfg:
+            config_path = safe_dir / "config.json"
+            def get_cookie_for_platform(self, key):
+                return str(outside)
+            def set_cookie_for_platform(self, key, val):
+                pass
+
+        from unittest.mock import MagicMock
+        from ui.tabs.settings.network_panel import NetworkPanel
+        panel = object.__new__(NetworkPanel)
+        panel._app = type("_App", (), {"config": _Cfg()})()
+        panel._clear_platform_cookie.__func__(panel, "facebook", MagicMock())  # type: ignore[attr-defined]
+
+        assert outside.exists(), "File outside safe_dir must NOT be deleted (CWE-22)"
+
+    def test_missing_file_does_not_raise(self, tmp_path):
+        """Graceful: if file already gone, clear should succeed silently."""
+        nonexistent = tmp_path / "facebook_chrome_cookies.enc"
+
+        class _Cfg:
+            config_path = tmp_path / "config.json"
+            def get_cookie_for_platform(self, key):
+                return str(nonexistent)
+            def set_cookie_for_platform(self, key, val):
+                pass
+
+        from unittest.mock import MagicMock
+        from ui.tabs.settings.network_panel import NetworkPanel
+        panel = object.__new__(NetworkPanel)
+        panel._app = type("_App", (), {"config": _Cfg()})()
+        # Must not raise
+        panel._clear_platform_cookie.__func__(panel, "facebook", MagicMock())  # type: ignore[attr-defined]
