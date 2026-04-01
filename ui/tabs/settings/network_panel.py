@@ -304,6 +304,7 @@ class NetworkPanel(_BasePanel):
     def _browse_cookie_file(self) -> None:
         import shutil
         import tkinter.filedialog as fd
+        from infrastructure.downloader.cookie_storage import encrypt_cookie_file
         chosen = fd.askopenfilename(
             title="Select cookies.txt (Netscape format)",
             filetypes=[("Cookie files", "*.txt"), ("All files", "*.*")])
@@ -313,6 +314,8 @@ class NetworkPanel(_BasePanel):
         if not src.is_file():
             self._app.toast("File not found.", "error")
             return
+        # Capture BEFORE writing so we can clean up the old file afterward.
+        old_path_str = self._app.config.get("cookie_file", "")
         safe_dir = self._app.config.config_path.parent / "cookies"
         safe_dir.mkdir(parents=True, exist_ok=True)
         dest = safe_dir / src.name
@@ -322,13 +325,50 @@ class NetworkPanel(_BasePanel):
             logger.warning("Failed to copy cookie file: %s", exc)
             self._app.toast(f"Cannot copy cookie file: {exc}", "error")
             return
+        # BUG BM: encrypt immediately after copy — plaintext MUST NOT persist
+        # on disk. encrypt_cookie_file() renames .txt → .enc atomically (DPAPI
+        # on Windows, Fernet+Keychain on macOS, chmod 0o600 fallback on Linux).
+        dest = encrypt_cookie_file(dest)
         self._app.config.set("cookie_file", str(dest))
         self._cf_lbl.configure(text=self._short_cookie_path(str(dest)))
-        self._app.toast("Cookie file đã được sao chép vào thư mục an toàn.", "info")
+        self._app.toast("Cookie file đã được mã hóa và lưu vào thư mục an toàn.", "info")
+        # Delete the file that was active before this browse replaced it.
+        # Different acquisition methods produce different filenames, so the old
+        # file is never overwritten — it must be explicitly removed.
+        self._delete_old_cookie_if_replaced(old_path_str, dest)
 
     def _clear_cookie_file(self) -> None:
+        # BUG BN: read the stored path BEFORE clearing config so we can delete
+        # the file on disk.  Clearing only the config entry leaves an orphaned
+        # .enc file — a data-minimisation violation because session credentials
+        # remain on disk after the user explicitly asked to remove them.
+        old_path_str = self._app.config.get("cookie_file", "")
+
+        # Always clear config first (fast, must always happen).
         self._app.config.set("cookie_file", "")
         self._cf_lbl.configure(text="No file selected")
+
+        # Delete the physical file — CWE-22: only allow paths inside safe_dir.
+        if old_path_str:
+            safe_dir = self._app.config.config_path.parent.resolve()
+            for candidate in _cookie_file_candidates(old_path_str):
+                try:
+                    resolved = candidate.resolve()
+                    if safe_dir not in resolved.parents and resolved != safe_dir:
+                        logger.warning(
+                            "_clear_cookie_file: rejected path outside safe dir: %s",
+                            candidate,
+                        )
+                        continue
+                    if resolved.is_file():
+                        resolved.unlink()
+                        logger.info(
+                            "Deleted global cookie file on clear: %s", resolved.name
+                        )
+                except OSError as exc:
+                    logger.warning(
+                        "_clear_cookie_file: could not delete %s — %s", candidate, exc
+                    )
 
     def _extract_global_cdp(self) -> None:
         """Extract all cookies via CDP (Brave/Chrome 127+ App-Bound safe)."""
@@ -360,6 +400,8 @@ class NetworkPanel(_BasePanel):
         output_path = safe_dir / f"{browser}_cdp_cookies.txt"
         btn    = self._extract_cdp_btn
         status = self._extract_global_status
+        # Capture before thread starts (UI thread reads config safely).
+        old_path_str = self._app.config.get("cookie_file", "")
 
         def _worker() -> None:
             try:
@@ -376,6 +418,10 @@ class NetworkPanel(_BasePanel):
             else:
                 path_str = self._resolve_saved_cookie_path(output_path)
                 self._app.config.set("cookie_file", path_str)
+                # Delete whichever file was active before this extraction
+                # replaced it — different methods produce different filenames
+                # so the old file is never overwritten in place.
+                self._delete_old_cookie_if_replaced(old_path_str, Path(path_str))
                 self._ui_queue.put(lambda c=count, ps=path_str: (
                     self._cf_lbl.configure(text=self._short_cookie_path(ps)),
                     status.configure(text=f"✓ {c} cookies đã lưu (CDP)", text_color=T.success),
@@ -416,6 +462,8 @@ class NetworkPanel(_BasePanel):
         output_path = safe_dir / f"{browser}_global_cookies.txt"
         btn    = self._extract_global_btn
         status = self._extract_global_status
+        # Capture before thread starts (UI thread reads config safely).
+        old_path_str = self._app.config.get("cookie_file", "")
 
         def _worker() -> None:
             try:
@@ -434,6 +482,8 @@ class NetworkPanel(_BasePanel):
                 final_path    = enc_candidate if enc_candidate.exists() else output_path
                 path_str      = str(final_path)
                 self._app.config.set("cookie_file", path_str)
+                # Delete whichever file was active before this extraction replaced it.
+                self._delete_old_cookie_if_replaced(old_path_str, final_path)
                 enc_note = " 🔒 (mã hóa DPAPI)" if path_str.endswith(".enc") else ""
                 self._ui_queue.put(lambda c=count, ps=path_str, n=enc_note: (
                     self._cf_lbl.configure(text=self._short_cookie_path(ps)),
@@ -470,6 +520,8 @@ class NetworkPanel(_BasePanel):
         if not src_path.is_file():
             self._app.toast("File không tìm thấy.", "error")
             return
+        # Capture BEFORE writing so we can clean up the old file afterward.
+        old_path_str = self._app.config.get_cookie_for_platform(platform_key)
         safe_dir  = self._app.config.config_path.parent / "cookies"
         safe_dir.mkdir(parents=True, exist_ok=True)
         dest_name = f"{platform_key}_{src_path.name}"
@@ -480,9 +532,14 @@ class NetworkPanel(_BasePanel):
             logger.warning("Failed to copy platform cookie file: %s", exc)
             self._app.toast(f"Không thể sao chép cookie file: {exc}", "error")
             return
+        # BUG BM: encrypt immediately after copy (same as global cookie path).
+        from infrastructure.downloader.cookie_storage import encrypt_cookie_file
+        dest = encrypt_cookie_file(dest)
         self._app.config.set_cookie_for_platform(platform_key, str(dest))
         path_lbl.configure(text=self._short_cookie_path(str(dest)))
-        self._app.toast(f"Cookie {platform_name} đã được lưu vào thư mục an toàn.", "info")
+        self._app.toast(f"Cookie {platform_name} đã được mã hóa và lưu vào thư mục an toàn.", "info")
+        # Delete the file that was active before this browse replaced it.
+        self._delete_old_cookie_if_replaced(old_path_str, dest)
 
     def _extract_platform_cookie(self, platform_key: str, path_lbl: "ctk.CTkLabel") -> None:
         """Extract per-platform cookies from browser (yt-dlp path).
@@ -496,6 +553,8 @@ class NetworkPanel(_BasePanel):
         safe_dir    = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cookies.txt"
         status      = self._pc_extract_status
+        # Capture before thread starts (UI thread reads config safely).
+        old_path_str = self._app.config.get_cookie_for_platform(platform_key)
         for btn in self._pc_extract_btns:
             if btn.winfo_exists():
                 btn.configure(state="disabled")
@@ -521,6 +580,8 @@ class NetworkPanel(_BasePanel):
             else:
                 path_str = self._resolve_saved_cookie_path(output_path)
                 self._app.config.set_cookie_for_platform(platform_key, path_str)
+                # Delete whichever file was active before this extraction replaced it.
+                self._delete_old_cookie_if_replaced(old_path_str, Path(path_str))
                 self._ui_queue.put(lambda c=count, ps=path_str, pn=platform_name: (
                     path_lbl.configure(text=self._short_cookie_path(ps)),
                     status.configure(text=f"✓ {pn}: {c} cookies đã lưu", text_color=T.success),
@@ -555,6 +616,8 @@ class NetworkPanel(_BasePanel):
         safe_dir    = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
         status      = self._pc_extract_status
+        # Capture before thread starts (UI thread reads config safely).
+        old_path_str = self._app.config.get_cookie_for_platform(platform_key)
         for btn in self._pc_extract_btns:
             if btn.winfo_exists():
                 btn.configure(state="disabled")
@@ -577,6 +640,8 @@ class NetworkPanel(_BasePanel):
             else:
                 path_str = self._resolve_saved_cookie_path(output_path)
                 self._app.config.set_cookie_for_platform(platform_key, path_str)
+                # Delete whichever file was active before this extraction replaced it.
+                self._delete_old_cookie_if_replaced(old_path_str, Path(path_str))
                 self._ui_queue.put(lambda c=count, ps=path_str, pn=platform_name: (
                     path_lbl.configure(text=self._short_cookie_path(ps)),
                     status.configure(text=f"✓ {pn}: {c} cookies (CDP)", text_color=T.success),
@@ -600,6 +665,57 @@ class NetworkPanel(_BasePanel):
             target=_worker, daemon=True,
             name=f"omnidl-cdp-extract-{platform_key}",
         ).start()
+
+    def _delete_old_cookie_if_replaced(
+        self, old_path_str: str, new_path: Path
+    ) -> None:
+        """Delete the previously-stored cookie file when it is superseded by a
+        file written via a *different* acquisition method (browse vs yt-dlp vs CDP).
+
+        Each method produces a distinct filename, so switching methods orphans the
+        old file on disk — a data-minimisation violation because session credentials
+        persist even though the user never explicitly kept them.
+
+        Rules:
+        • No-op when old_path_str is empty (no prior cookie).
+        • No-op when old and new paths resolve to the SAME file (same-method
+          re-extraction that overwrites in place — nothing to clean up).
+        • CWE-22 guard: only delete files inside config_path.parent (safe dir).
+        • Deletes both .txt and .enc candidates via _cookie_file_candidates() so
+          both halves of a partial BUG-BE pair are removed.
+        • Safe to call from ANY thread — does only file I/O and logging,
+          never touches UI widgets.
+        """
+        if not old_path_str:
+            return
+        safe_dir = self._app.config.config_path.parent.resolve()
+        try:
+            new_resolved = new_path.resolve()
+        except OSError:
+            new_resolved = new_path  # best-effort fallback
+
+        for candidate in _cookie_file_candidates(old_path_str):
+            try:
+                resolved = candidate.resolve()
+                if resolved == new_resolved:
+                    continue  # same file just re-encrypted — do NOT delete
+                if safe_dir not in resolved.parents and resolved != safe_dir:
+                    logger.warning(
+                        "_delete_old_cookie_if_replaced: rejected path outside "
+                        "safe dir: %s",
+                        candidate,
+                    )
+                    continue
+                if resolved.is_file():
+                    resolved.unlink()
+                    logger.info(
+                        "Deleted replaced cookie file: %s", resolved.name
+                    )
+            except OSError as exc:
+                logger.warning(
+                    "_delete_old_cookie_if_replaced: could not delete %s — %s",
+                    candidate, exc,
+                )
 
     def _clear_platform_cookie(self, platform_key: str, path_lbl: "ctk.CTkLabel") -> None:
         # Read the stored path BEFORE clearing config, so we can delete the
