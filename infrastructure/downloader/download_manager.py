@@ -257,7 +257,7 @@ class DownloadManager:
                             config=self._config,
                             browser=getattr(self._config, "cookies_browser", "brave"),
                             on_progress=_story_progress,
-                            timeout=60.0,
+                            timeout=90.0,
                         )
                         with task._lock:
                             task.filename = str(result_path)

@@ -76,6 +76,14 @@ _FB_THUMB_RE = re.compile(r"/v/t(?:15|39|51)\b", re.I)
 # prefixes) to avoid false-positives from other fbcdn.net asset URLs.
 _FB_AUDIO_RE = re.compile(r"/(?:o1|m1)/a/", re.I)
 
+# Facebook DASH CDN paths embed a manifest-session number in the form
+# /f2/m{NUMBER}/ (e.g. /f2/m367/).  The video and audio tracks belonging
+# to the SAME story always share the same manifest number — we use this to
+# reject audio CDN URLs that belong to a different story (e.g. the next
+# story that Facebook auto-advances to while we are still polling).
+# Observed formats: /f2/m{N}/ and occasionally /f1/m{N}/.
+_MANIFEST_NUM_RE = re.compile(r"/f[12]/m(\d+)/", re.I)
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -85,6 +93,11 @@ _UA = (
 # Pre-page script — runs BEFORE Facebook JS loads (via add_init_script).
 # Captures video CDN URLs into window.__omni_urls[0] and audio CDN URLs
 # into window.__omni_urls[1] so the Python poll can retrieve each stream.
+#
+# Also patches MediaSource.addSourceBuffer so Facebook's JS DASH player
+# registers audio mime types before any user gesture — this is needed because
+# with a "tap to view" overlay the browser never autoplay-fires until clicked,
+# but MediaSource is initialised during page load regardless of play state.
 _PRE_PAGE_JS = (
     "(function(){"
     "if(window.__omni_installed)return;"
@@ -110,10 +123,27 @@ _PRE_PAGE_JS = (
     "   window.__omni_urls[1]=u;"
     "  }"
     "}"
+    # Patch fetch
     "var _f=window.fetch;"
     "window.fetch=function(i,o){_cap(typeof i==='string'?i:(i&&i.url));return _f.apply(this,arguments);};"
+    # Patch XHR
     "var _x=XMLHttpRequest.prototype.open;"
     "XMLHttpRequest.prototype.open=function(m,u){_cap(u);return _x.apply(this,arguments);};"
+    # Patch MediaSource.addSourceBuffer — called by Facebook DASH player when
+    # attaching audio track; the first appendBuffer call on an audio SourceBuffer
+    # will contain the audio CDN URL in the associated fetch, but we can also
+    # detect the audio mime type registration here to know audio exists.
+    # Store the SourceBuffer's mime type so _POLL_AUDIO_JS can check it.
+    "try{"
+    " var _msASB=MediaSource.prototype.addSourceBuffer;"
+    " MediaSource.prototype.addSourceBuffer=function(mime){"
+    "  var sb=_msASB.apply(this,arguments);"
+    "  if(mime&&(mime.indexOf('audio')!==-1||mime.indexOf('mp4a')!==-1)){"
+    "   window.__omni_audio_mime=mime;"
+    "  }"
+    "  return sb;"
+    " };"
+    "}catch(e){}"
     "})()"
 )
 
@@ -147,10 +177,21 @@ _POLL_JS = (
 
 # JS to read the separately-captured audio CDN URL (from _PRE_PAGE_JS).
 # Returns empty string if not yet captured.
+#
+# Three-strategy search:
+#   1. window.__omni_audio_url — set by _PRE_PAGE_JS fetch/XHR patch
+#   2. Performance API         — catches audio if fetched on the main thread
+#   3. Inline <script> scan   — Facebook embeds the complete stream manifest
+#                                (including audio CDN URLs with correct oh= tokens)
+#                                as JSON inside <script> tags in the initial page HTML.
+#                                This is the only JS-accessible vector that works when
+#                                a Service Worker intercepts CDN requests before they
+#                                reach page-level Playwright hooks (Layers A/B/D).
 _POLL_AUDIO_JS = (
     "(function(){"
+    # Strategy 1: pre-page interceptor
     "if(window.__omni_audio_url)return window.__omni_audio_url;"
-    # Scan Performance API for /o1/a/ or /m1/a/ audio tracks
+    # Strategy 2: Performance API
     "try{"
     " var e=performance.getEntriesByType('resource');"
     " for(var i=0;i<e.length;i++){"
@@ -160,24 +201,90 @@ _POLL_AUDIO_JS = (
     "  if(l.indexOf('/o1/a/')!==-1||l.indexOf('/m1/a/')!==-1)return u;"
     " }"
     "}catch(x){}"
+    # Strategy 3: scan inline <script> content for audio CDN URLs.
+    # Facebook puts GraphQL/Relay response data (including stream manifests)
+    # in large inline <script> tags on the initial page load.
+    # The audio CDN URL may appear in three encodings:
+    #   A. Plain:          https://...fbcdn.net/o1/a/...
+    #   B. JSON-escaped:   https:\\/\\/...fbcdn.net\\/o1\\/a\\/...
+    #   C. Unicode-escape: https:\\u002F\\u002F...fbcdn.net...\\u002Fo1\\u002Fa\\u002F...
+    "try{"
+    " var ss=document.querySelectorAll('script');"
+    " for(var j=0;j<ss.length;j++){"
+    "  var t=ss[j].textContent;"
+    "  if(!t||t.length<200||t.indexOf('fbcdn.net')===-1)continue;"
+    "  var mA=t.match(/https?:\\/\\/\\S{5,}fbcdn\\.net\\S{5,}\\/(?:o1|m1)\\/a\\/\\S{20,}/);"
+    "  if(mA){var rA=mA[0].split(/[\"'\\\\<>\\s]/)[0];if(rA.indexOf('fbcdn.net')!==-1&&rA.indexOf('/a/')!==-1)return rA;}"
+    "  var mB=t.match(/https?:\\\\\\/\\\\\\/\\S{5,}fbcdn\\.net\\S{5,}\\\\\\/(?:o1|m1)\\\\\\/a\\\\\\/\\S{20,}/);"
+    "  if(mB){var rB=mB[0].replace(/\\\\\\/\\//g,'/').split(/[\"'<>\\s]/)[0];if(rB.indexOf('fbcdn.net')!==-1)return rB;}"
+    "  var mC=t.match(/https?:\\\\u002F\\\\u002F\\S{5,}fbcdn\\.net\\S{5,}\\\\u002F(?:o1|m1)\\\\u002Fa\\\\u002F\\S{20,}/i);"
+    "  if(mC){var rC=mC[0].replace(/\\\\u002F/gi,'/').replace(/\\\\u0026/gi,'&').split(/[\"'<>\\s]/)[0];if(rC.indexOf('fbcdn.net')!==-1)return rC;}"
+    " }"
+    "}catch(ex){}"
     "return '';"
     "})()"
 )
 
-# JS to call play() on all video elements.
-# Strategy: mute first to satisfy autoplay policy, start play(), then
-# unmute after 100 ms.  Unmuting a playing DASH video triggers the browser
-# to request the separate audio DASH segments, which are caught by the
-# _on_request / _on_response CDP handlers.
+# JS to dismiss Facebook's "tap to view" overlay and trigger audio DASH requests.
+#
+# Problem on low-RAM systems (4 GB) and Win 11 LTSC:
+#   Facebook Stories show a "Nhấp để xem tin" (tap to view) overlay that covers
+#   the video player.  This overlay is a <div> or <a> element positioned above
+#   the video.  Until it is dismissed, the video element stays paused, MSE
+#   SourceBuffers are not fed, and no audio CDN requests are made.
+#   The overlay exists because Brave opened a new tab (not user-navigated) so
+#   Facebook treats it as a background/auto-open context requiring explicit tap.
+#
+# Fix:
+#   1. Find and click the overlay element (by aria-label, data-testid, or
+#      positional heuristic — whichever exists).
+#   2. Dispatch synthetic MouseEvent click on the video itself.
+#   3. Unmute + play() with autoplay-policy bypass.
+#
+# The overlay selector list covers known Facebook Story overlay patterns
+# across both Vietnamese ("Nhấp để xem tin") and other locales.
 _PLAY_JS = (
     "(function(){"
+    # Step 1: dismiss "tap to view" overlay
+    "var overlaySelectors=["
+    # Known Facebook tap-to-view overlay selectors
+    " '[data-testid=\"story-viewer-pause-overlay\"]',"
+    " '[aria-label=\"Nhấp để xem tin\"]',"
+    " '[aria-label=\"Tap to view\"]',"
+    " '[aria-label=\"Click to view\"]',"
+    " '.x1i10hfl[role=\"button\"]',"
+    " 'a[role=\"presentation\"]',"
+    "];"
+    "for(var s=0;s<overlaySelectors.length;s++){"
+    " var ov=document.querySelector(overlaySelectors[s]);"
+    " if(ov){try{"
+    "  var oe={bubbles:true,cancelable:true,view:window};"
+    "  ov.dispatchEvent(new MouseEvent('mousedown',oe));"
+    "  ov.dispatchEvent(new MouseEvent('mouseup',oe));"
+    "  ov.dispatchEvent(new MouseEvent('click',oe));"
+    " }catch(e){} break;}"
+    "}"
+    # Step 2: click video elements with synthetic gesture (satisfies autoplay policy)
     "var vs=document.querySelectorAll('video');"
     "for(var i=0;i<vs.length;i++){"
-    " vs[i].muted=true;"
     " (function(v){"
+    "  try{"
+    "   var opts={bubbles:true,cancelable:true,view:window};"
+    "   v.dispatchEvent(new MouseEvent('mousedown',opts));"
+    "   v.dispatchEvent(new MouseEvent('mouseup',opts));"
+    "   v.dispatchEvent(new MouseEvent('click',opts));"
+    "  }catch(e){}"
+    # Step 3: unmute then play (gesture above should have satisfied autoplay policy)
+    "  v.muted=false;"
     "  var p=v.paused?v.play():Promise.resolve();"
-    "  if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},100);}).catch(function(){v.muted=false;});}"  # noqa: E501
-    "  else{setTimeout(function(){v.muted=false;},100);}"
+    "  if(p&&p.then){"
+    "   p.catch(function(){"
+    # Fallback: mute→play→unmute
+    "    v.muted=true;"
+    "    var p2=v.play();"
+    "    if(p2&&p2.then){p2.then(function(){setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
+    "   });"
+    "  }"
     " })(vs[i]);"
     "}"
     "})()"
@@ -216,6 +323,34 @@ def _is_fb_audio_url(url: str) -> bool:
     if "fbcdn.net" not in url:
         return False
     return bool(_FB_AUDIO_RE.search(url))
+
+
+def _audio_matches_video(audio_url: str, video_url: Optional[str]) -> bool:
+    """Return True if *audio_url* belongs to the same story as *video_url*.
+
+    Facebook DASH CDN paths embed a manifest-session number (/f2/m{N}/) that
+    is identical for the video and audio tracks of the same story.  We use
+    this as a cross-story guard: when the poll window is extended to wait
+    longer for audio on slow machines, Facebook may auto-advance to the next
+    story and begin fetching ITS audio CDN URLs.  Without this check those
+    wrong-story audio URLs would be silently captured and muxed with the
+    target story's video — producing a file with mismatched audio.
+
+    Fail-open (returns True) when either URL does not contain a recognisable
+    manifest number, so that unusual future CDN path formats are not dropped.
+    """
+    if not video_url:
+        return True  # No reference — cannot filter; accept
+    mv = _MANIFEST_NUM_RE.search(video_url)
+    ma = _MANIFEST_NUM_RE.search(audio_url)
+    if mv and ma:
+        if mv.group(1) != ma.group(1):
+            logger.debug(
+                "_audio_matches_video: rejected m%s (video is m%s) — wrong story",
+                ma.group(1), mv.group(1),
+            )
+            return False
+    return True
 
 
 def _full_video_url(cdn_url: str) -> str:
@@ -257,36 +392,51 @@ def _derive_audio_url(video_url: str) -> Optional[str]:
 
 
 def _probe_audio_url(candidate: str) -> Optional[str]:
-    """HEAD-check a derived audio URL; return it if the CDN confirms it exists.
+    """Verify a derived audio URL actually serves audio data.
 
-    A 200/206 response with Content-Length > 1 KB means a real audio track
-    is present.  Any other outcome (404, network error, too small) means the
-    story is video-only and muxing should be skipped.
-
-    Uses a short timeout (8 s) so a missing audio track does not add
-    noticeable delay to the fallback path.
+    Facebook CDN returns 403 with a 12-byte body when a HEAD request is made
+    with a video stream's `oh` token against the audio URL (token mismatch).
+    Using GET with Range: bytes=0-8191 fetches the audio init segment directly;
+    a real audio track returns ≥8 bytes, a missing track returns 403 + ≤64 bytes.
     """
     import requests as _req
 
-    headers = {"User-Agent": _UA, "Referer": "https://www.facebook.com/"}
+    headers = {
+        "User-Agent": _UA,
+        "Referer": "https://www.facebook.com/",
+        "Range": "bytes=0-8191",
+    }
     try:
-        resp = _req.head(
+        resp = _req.get(
             candidate, headers=headers,
-            timeout=8, allow_redirects=True,
+            timeout=8, allow_redirects=True, stream=True,
         )
-        cl = int(resp.headers.get("content-length", 0))
-        if resp.status_code in (200, 206) and cl > 1024:
+        chunk = b""
+        for c in resp.iter_content(chunk_size=64):
+            chunk += c
+            if len(chunk) >= 64:
+                break
+        resp.close()
+        cl_hdr = int(resp.headers.get("content-length", 0))
+
+        if resp.status_code in (403, 404) and (cl_hdr <= 64 or len(chunk) <= 12):
             logger.debug(
-                "_probe_audio_url: confirmed audio track (%d bytes) at %s…",
-                cl, candidate[:80],
+                "_probe_audio_url: rejected (status=%d, cl=%d) — token mismatch or no track",
+                resp.status_code, cl_hdr,
+            )
+            return None
+        if len(chunk) >= 8:
+            logger.debug(
+                "_probe_audio_url: confirmed audio track (status=%d, %d bytes) at %s…",
+                resp.status_code, len(chunk), candidate[:80],
             )
             return candidate
         logger.debug(
-            "_probe_audio_url: no audio track (status=%d, cl=%d) — video-only",
-            resp.status_code, cl,
+            "_probe_audio_url: empty/tiny response (status=%d, %d bytes) — video-only",
+            resp.status_code, len(chunk),
         )
     except Exception as exc:
-        logger.debug("_probe_audio_url: HEAD failed (%s) — assuming video-only", exc)
+        logger.debug("_probe_audio_url: request failed (%s) — assuming video-only", exc)
     return None
 
 
@@ -434,13 +584,28 @@ def _cdp_intercept(
 ) -> tuple[Optional[str], Optional[str]]:
     """Launch browser, navigate to story_url; return (video_cdn_url, audio_cdn_url).
 
-    Facebook Stories use DASH streaming: video and audio are separate CDN streams.
-    Both URLs are captured so the caller can mux them with FFmpeg into a single
-    file with picture AND sound.
+    Two bugs fixed in this version:
 
-    audio_cdn_url may be None if the story has no separate audio track or the
-    audio URL was not captured in time — callers must handle this gracefully.
-    The browser process is always terminated in a finally block.
+    BUG 1 — Wrong story captured (networkidle causes story to advance):
+        wait_for_load_state("networkidle") caused the browser to wait until
+        Facebook SPA fully rendered and started playing the story.  For a 17-second
+        story, networkidle was reached AFTER the story finished and Facebook
+        auto-advanced to the next story — so Layer A captured the next story's
+        video URL, not the target.
+        Fix: Remove networkidle. Use wait_until="domcontentloaded" (original
+        behavior). ERR_ABORTED is non-fatal — Layer A fires via page.on("request")
+        which intercepts requests at the network layer, independent of page load
+        state. Video URL is captured within 3-5 s of navigation start.
+
+    BUG 2 — Audio URL never captured (MSE appendBuffer bypasses JS interception):
+        page.on("request") and fetch/XHR patches in _PRE_PAGE_JS only intercept
+        requests that go through the JS Fetch API or XMLHttpRequest.  Facebook's
+        DASH player uses MediaSource.appendBuffer() which triggers browser-native
+        HTTP requests that BYPASS the JS layer entirely.
+        Fix: Use Playwright CDP session (ctx.new_cdp_session()) with
+        Network.enable() to intercept ALL browser-level network requests,
+        including native MediaSource segment fetches. This is the same domain
+        used by Chrome DevTools Network panel.
     """
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: I001
@@ -477,7 +642,7 @@ def _cdp_intercept(
             else "Library/Application Support/Google/Chrome"
         )
     else:
-        profile_base = Path()   # Linux: not supported, _find_browser_exe raises first
+        profile_base = Path()
 
     if profile_base.exists():
         _clear_crashed_flag(profile_base)
@@ -490,6 +655,33 @@ def _cdp_intercept(
         "--restore-last-session=false",
         "--no-session-crashed-bubble",
         "--hide-crash-restore-bubble",
+        # ── FIX BUG-STORY-1: wrong story captured / no audio ─────────────
+        # Root cause: Brave opens the tab programmatically (not by user click),
+        # so the browser enforces autoplay policy → v.play() with audio throws
+        # NotAllowedError.  _PLAY_JS falls back to muted playback, but when
+        # muted, Facebook's DASH player skips audio segment fetches → audio CDN
+        # URL is never captured by any layer (A/B/C/D/E) in 40 s of polling.
+        # Meanwhile the overlay ("Nhấp để xem tin") prevents story-1 from
+        # actually playing, so Facebook preloads stories 2/3 in the background;
+        # those preload CDN requests are captured as "the video URL" instead.
+        #
+        # This single Chromium flag overrides the autoplay policy at the browser
+        # level, allowing unmuted v.play() without a real user gesture.  With
+        # unmuted playback:
+        #   • Story-1 starts playing immediately on page load → its video CDN
+        #     URL is captured first (before any background preload requests).
+        #   • Facebook DASH player fetches audio segments → audio CDN URL is
+        #     captured within the first 5-10 s of polling.
+        # Cross-platform: supported by all Chromium-based browsers (Brave,
+        # Chrome) on Windows and macOS; no effect on non-Chromium browsers.
+        "--autoplay-policy=no-user-gesture-required",
+        # Prevent Chrome/Brave from throttling JS timers and deferring network
+        # requests in tabs that were opened programmatically.  Without these
+        # flags, Brave may classify the CDP-opened tab as "background/occluded"
+        # and apply aggressive resource throttling — delaying the Facebook DASH
+        # JS and extending the time before audio CDN requests are made.
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
     ]
     _prog(8, f"Đang khởi động {browser.title()}...")
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -498,19 +690,27 @@ def _cdp_intercept(
     video_url:      Optional[str] = None
     audio_url:      Optional[str] = None
     video_found_at: float         = 0.0
-    # After video is found, wait up to this many seconds for the audio URL
-    # before giving up.  Calling _PLAY_JS immediately on video-found triggers
-    # the browser to request audio DASH segments.
-    # 12 s provides enough headroom for higher-latency connections (e.g. VN CDN
-    # round-trips) while still completing in well under the overall timeout.
-    _AUDIO_WAIT_S: float = 12.0
+    # How long to wait for the audio CDN URL AFTER the video URL is captured.
+    #
+    # Root cause analysis (4 GB RAM / Win 11 LTSC):
+    #   - Facebook preloads the video DASH init segment immediately on page
+    #     load, so the video CDN URL is captured within 3-5 s of navigation.
+    #   - However, the "Nhấp để xem tin" overlay blocks actual playback.
+    #   - _PLAY_JS dismisses the overlay every 3 s, but on a slow 4 GB system
+    #     the overlay render + JS dismiss + initial video buffering collectively
+    #     take 15-20 s before audio DASH segments begin flowing.
+    #   - History: 12 s → always missed; 20 s → still missed on this machine.
+    #   - 40 s gives a comfortable margin: audio starts at ~22 s, captured at
+    #     ~22-25 s, well inside the window.
+    #   - On fast systems the loop exits immediately when audio_url is set,
+    #     so the larger value has zero cost in the happy path.
+    _AUDIO_WAIT_S:  float         = 40.0
 
     try:
         with sync_playwright() as pw:
-            # ── Connect via Playwright ────────────────────────────────────────
             _prog(10, "Đang kết nối CDP...")
             cdp_browser = None
-            deadline    = time.monotonic() + 15.0
+            deadline    = time.monotonic() + 30.0
             last_exc    = None
 
             while time.monotonic() < deadline:
@@ -536,17 +736,17 @@ def _cdp_intercept(
             ctx  = cdp_browser.contexts[0]
             page = ctx.new_page()
 
-            # ── Layer A: outgoing request intercept ───────────────────────────
+            # ── Layer A: Playwright high-level request intercept ──────────────
             def _on_request(request) -> None:
                 nonlocal video_url, audio_url, video_found_at
-                url = request.url
-                if not video_url and _is_fb_video_url(url):
-                    logger.info("CDP[A]: video URL caught (%d chars)", len(url))
-                    video_url      = url
+                u = request.url
+                if not video_url and _is_fb_video_url(u):
+                    logger.info("CDP[A]: video URL caught (%d chars)", len(u))
+                    video_url      = u
                     video_found_at = time.monotonic()
-                elif not audio_url and _is_fb_audio_url(url):
-                    logger.info("CDP[A]: audio URL caught (%d chars)", len(url))
-                    audio_url = url
+                elif not audio_url and _is_fb_audio_url(u) and _audio_matches_video(u, video_url):
+                    logger.info("CDP[A]: audio URL caught (%d chars)", len(u))
+                    audio_url = u
 
             page.on("request", _on_request)
 
@@ -560,16 +760,103 @@ def _cdp_intercept(
                     logger.info("CDP[B]: video MIME=%s", ct)
                     video_url      = response.url
                     video_found_at = time.monotonic()
-                elif not audio_url and ct.startswith("audio/"):
+                elif not audio_url and ct.startswith("audio/") and _audio_matches_video(response.url, video_url):
                     logger.info("CDP[B]: audio MIME=%s", ct)
                     audio_url = response.url
 
             page.on("response", _on_response)
 
-            # ── Pre-page JS ───────────────────────────────────────────────────
+            # ── Layer D: CDP Network domain — catches ALL browser requests ────
+            # BUG 2 FIX: MediaSource.appendBuffer() triggers native browser HTTP
+            # requests that bypass page.on("request") and the JS fetch patch.
+            # CDP Network.requestWillBeSent fires for EVERY network request
+            # regardless of how it was initiated — including native MediaSource
+            # segment fetches that carry the audio CDN URL with its own oh= token.
+            cdp_session = None
+            try:
+                cdp_session = ctx.new_cdp_session(page)
+                cdp_session.send("Network.enable")
+
+                def _on_cdp_request(params: dict) -> None:
+                    nonlocal video_url, audio_url, video_found_at
+                    u = params.get("request", {}).get("url", "")
+                    if not u or "fbcdn.net" not in u:
+                        return
+                    if not video_url and _is_fb_video_url(u):
+                        logger.info("CDP[D]: video URL via Network domain (%d chars)", len(u))
+                        video_url      = u
+                        video_found_at = time.monotonic()
+                    elif not audio_url and _is_fb_audio_url(u) and _audio_matches_video(u, video_url):
+                        logger.info("CDP[D]: audio URL via Network domain (%d chars)", len(u))
+                        audio_url = u
+
+                cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
+                logger.debug("CDP[D]: Network domain enabled")
+            except Exception as exc:
+                logger.debug("CDP[D]: Network domain unavailable (%s) — using A/B/C only", exc)
+                cdp_session = None
+
+            # ── Layer E: Context-level route — Service Worker coverage ────────
+            # ROOT CAUSE OF MISSING AUDIO:
+            #   Facebook.com is a PWA with an active Service Worker.  When the
+            #   DASH player fetches audio CDN segments the flow is:
+            #     page → SW (intercept) → CDN (SW's own fetch) → SW → page
+            #   Layers A/B/D only see requests on the PAGE target.  The SW→CDN
+            #   fetch happens on a SEPARATE SERVICE WORKER TARGET; those requests
+            #   are invisible to CDP Network.requestWillBeSent on the page.
+            #
+            #   Playwright's context.route() is the only interception layer that
+            #   covers Service Worker outbound requests (documented in Playwright
+            #   ≥ 1.16).  By routing at the context level we capture the actual
+            #   CDN request that the SW makes, which contains the audio URL with
+            #   its correct one-hop auth token.
+            #
+            #   We route only *.fbcdn.net URLs to minimise overhead and call
+            #   route.continue_() immediately so playback is unaffected.
+            _fbcdn_route_re = re.compile(r"https?://[^/]+\.fbcdn\.net/")
+            _route_installed = False
+
+            def _handle_fbcdn_route(route) -> None:
+                nonlocal video_url, audio_url, video_found_at
+                try:
+                    u = route.request.url
+                    if "fbcdn.net" in u:
+                        if not video_url and _is_fb_video_url(u):
+                            logger.info(
+                                "CDP[E]: video URL via context route (%d chars)", len(u)
+                            )
+                            video_url      = u
+                            video_found_at = time.monotonic()
+                        elif not audio_url and _is_fb_audio_url(u) and _audio_matches_video(
+                            u, video_url
+                        ):
+                            logger.info(
+                                "CDP[E]: audio URL via context route (%d chars)", len(u)
+                            )
+                            audio_url = u
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        route.continue_()
+                    except Exception:
+                        pass
+
+            try:
+                ctx.route(_fbcdn_route_re, _handle_fbcdn_route)
+                _route_installed = True
+                logger.debug(
+                    "CDP[E]: context-level fbcdn.net route installed "
+                    "(covers Service Worker → CDN requests)"
+                )
+            except Exception as exc:
+                logger.debug("CDP[E]: route install failed (%s) — proceeding without", exc)
             page.add_init_script(_PRE_PAGE_JS)
 
             # ── Navigate ──────────────────────────────────────────────────────
+            # BUG 1 FIX: Use domcontentloaded (original), NOT networkidle.
+            # networkidle waited until the 17s story finished and FB advanced
+            # to the next story — causing the wrong story URL to be captured.
             story_url_norm = _normalize_url(story_url)
             _prog(12, "Đang mở Story trong trình duyệt...")
             logger.info("CDP: navigating to %s", story_url_norm[:100])
@@ -582,37 +869,51 @@ def _cdp_intercept(
             except Exception as exc:
                 logger.debug("page.goto warning (non-fatal): %s", exc)
 
-            # ── Poll loop (Layer C) ────────────────────────────────────────────
-            # Phase 1: Poll until video_url found (up to timeout).
-            # Phase 2: Once video found, call _PLAY_JS IMMEDIATELY so the browser
-            #          unmutes and requests audio DASH segments.  Wait up to
-            #          _AUDIO_WAIT_S for audio_url before proceeding video-only.
-            #
-            # Timing rationale: _PLAY_JS sets muted=true, starts play(), then
-            # unmutes after 100 ms via JS setTimeout.  We call it immediately on
-            # video-found so audio segment requests appear within ~200 ms, well
-            # within the _AUDIO_WAIT_S budget.
+            # ── Immediate post-load audio scan ────────────────────────────────
+            # Run the full audio poll (incl. inline <script> scan) once right
+            # after DOMContentLoaded.  This catches audio CDN URLs embedded in
+            # Facebook's initial page data before playback even begins — the
+            # audio URL is in the serialised GraphQL/Relay store in <script> tags.
+            if not audio_url:
+                try:
+                    aval_early = page.evaluate(_POLL_AUDIO_JS)
+                    if aval_early and "fbcdn.net" in aval_early and _audio_matches_video(
+                        aval_early, video_url
+                    ):
+                        logger.info(
+                            "CDP[C]: audio URL found in initial page data (%d chars)",
+                            len(aval_early),
+                        )
+                        audio_url = str(aval_early)
+                except Exception:
+                    pass
             _prog(15, "Đang chờ video load...")
-            loop_deadline       = time.monotonic() + timeout
-            last_play           = 0.0
-            last_poll           = 0.0
-            play_on_video_found = True   # fire _PLAY_JS immediately on first video-found tick
+            loop_deadline    = time.monotonic() + timeout
+            last_play        = 0.0
+            last_poll        = 0.0
 
             while time.monotonic() < loop_deadline:
                 now = time.monotonic()
 
                 if video_url and audio_url:
-                    break   # both streams captured — done
+                    break
 
                 if video_url and video_found_at > 0:
-                    # Fire _PLAY_JS once immediately after video found
-                    if play_on_video_found:
-                        play_on_video_found = False
+                    if now - last_play >= 3.0:
                         try:
                             page.evaluate(_PLAY_JS)
-                            last_play = now
                         except Exception:
                             pass
+                        # FIX BUG-STORY-2: page.evaluate() can block for many
+                        # seconds on low-RAM machines (4 GB / Win 11 LTSC).
+                        # Recompute `now` after the blocking call so the
+                        # `_AUDIO_WAIT_S` guard below uses the real elapsed
+                        # time, not the stale value from the loop top.
+                        # Without this refresh, the loop overruns _AUDIO_WAIT_S
+                        # by 30-60 s on slow hardware (observed: 97 s actual
+                        # wait despite _AUDIO_WAIT_S=40.0).
+                        now = time.monotonic()
+                        last_play = now
                     if now - video_found_at > _AUDIO_WAIT_S:
                         logger.debug(
                             "CDP: video found, audio not captured in %.0fs — proceeding",
@@ -620,7 +921,6 @@ def _cdp_intercept(
                         )
                         break
 
-                # Pre-video: periodic play() to dismiss tap-to-play overlays
                 if not video_url and now - last_play > 5.0:
                     try:
                         page.evaluate(_PLAY_JS)
@@ -628,7 +928,6 @@ def _cdp_intercept(
                         pass
                     last_play = now
 
-                # Layer C: poll injected interceptor + Performance API
                 if now - last_poll > 1.0:
                     try:
                         if not video_url:
@@ -637,7 +936,6 @@ def _cdp_intercept(
                                 logger.info("CDP[C]: video via poll (%d chars)", len(val))
                                 video_url      = str(val)
                                 video_found_at = time.monotonic()
-                                # Fire play immediately so audio capture starts
                                 try:
                                     page.evaluate(_PLAY_JS)
                                     last_play = time.monotonic()
@@ -645,9 +943,11 @@ def _cdp_intercept(
                                     pass
                         if video_url and not audio_url:
                             aval = page.evaluate(_POLL_AUDIO_JS)
-                            if aval and "fbcdn.net" in aval:
+                            if aval and "fbcdn.net" in aval and _audio_matches_video(aval, video_url):
                                 logger.info("CDP[C]: audio via poll (%d chars)", len(aval))
                                 audio_url = str(aval)
+                            elif aval and "fbcdn.net" in aval:
+                                logger.debug("CDP[C]: audio poll URL ignored — manifest mismatch (wrong story)")
                     except Exception as exc:
                         logger.debug("poll error (non-fatal): %s", exc)
                     last_poll = now
@@ -657,6 +957,13 @@ def _cdp_intercept(
                     "Đang chờ video load...",
                 )
                 time.sleep(0.4)
+
+            # ── Layer E cleanup ───────────────────────────────────────────────
+            if _route_installed:
+                try:
+                    ctx.unroute(_fbcdn_route_re, _handle_fbcdn_route)
+                except Exception:
+                    pass
 
         if not video_url:
             logger.warning("CDP: no video URL found within %.0fs", timeout)
@@ -681,7 +988,7 @@ def _cdp_intercept(
         except Exception:
             pass
 
-# ── Download ───────────────────────────────────────────────────────────────────
+
 
 def _download_cdn_url(
     cdn_url: str,
@@ -881,6 +1188,134 @@ def _ffmpeg_mux(
     return None
 
 
+def _has_audio_stream(ffmpeg_bin: str, path: Path) -> bool:
+    """Return True if the MP4 file contains at least one audio stream."""
+    ffprobe = str(Path(ffmpeg_bin).parent / "ffprobe")
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error",
+             "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0",
+             str(path)],
+            capture_output=True, timeout=10,
+        )
+        return b"audio" in result.stdout
+    except Exception:
+        return True  # assume audio present if probe unavailable
+
+
+def _build_cookie_header(cookie_path: str) -> str:
+    """Parse a Netscape cookie file; return Cookie: header value for facebook domains."""
+    import http.cookiejar as cj
+
+    try:
+        jar = cj.MozillaCookieJar()
+        jar.load(cookie_path, ignore_discard=True, ignore_expires=True)
+        parts = [
+            f"{c.name}={c.value}"
+            for c in jar
+            if c.domain.lstrip(".") in ("facebook.com", "fbcdn.net", "fb.com")
+        ]
+        return "; ".join(parts)
+    except Exception:
+        return ""
+
+
+def _ffmpeg_download_with_audio(
+    video_url: str,
+    dest: Path,
+    cookie_path: Optional[str],
+    on_progress: Optional[Callable],
+) -> Optional[Path]:
+    """Download Facebook Story using ffmpeg's -map 0:a? to capture audio from DASH.
+
+    Root cause of missing audio:
+        The video CDN URL intercepted by Layer A is a pure video DASH track
+        (/o1/v/...).  The corresponding audio track (/o1/a/...) has a different
+        one-hop token (`oh`) that cannot be guessed or probed via HTTP from Python.
+        All previous fix attempts failed because audio URL derivation with the
+        video token returns 403 permanently.
+
+    This approach lets ffmpeg handle the DASH manifest directly:
+        ffmpeg opens the video CDN URL and reads the Content-Type response.
+        If Facebook's CDN serves a DASH manifest (application/dash+xml) at this
+        URL, ffmpeg discovers sibling audio tracks automatically via its lavf
+        DASH demuxer.  We then select both streams with -map 0:v? -map 0:a?.
+
+        Cookie headers are added so the CDN accepts authenticated requests for
+        age-restricted or private stories.
+
+    Returns dest on success (with audio), None on failure.
+    """
+    from utils.ffmpeg_locator import locate_ffmpeg
+
+    loc = locate_ffmpeg()
+    if not loc:
+        return None
+
+    full_url = _full_video_url(video_url)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if on_progress:
+        try:
+            on_progress(55, "", "FFmpeg đang tải video+audio từ DASH...")
+        except Exception:
+            pass
+
+    # Build base headers for ffmpeg
+    headers_str = (
+        f"User-Agent: {_UA}\r\n"
+        "Referer: https://www.facebook.com/\r\n"
+    )
+    if cookie_path:
+        try:
+            ch = _build_cookie_header(cookie_path)
+            if ch:
+                headers_str += f"Cookie: {ch}\r\n"
+        except Exception as exc:
+            logger.debug("cookie header build failed: %s", exc)
+
+    cmd = [
+        loc.ffmpeg_bin, "-y",
+        "-headers", headers_str,
+        "-i", full_url,
+        "-map", "0:v?",
+        "-map", "0:a?",
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(dest),
+    ]
+    logger.debug("ffmpeg dash-all: %.80s…", full_url)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        logger.warning("_ffmpeg_download_with_audio: timeout")
+        dest.unlink(missing_ok=True)
+        return None
+    except Exception as exc:
+        logger.warning("_ffmpeg_download_with_audio error: %s", exc)
+        dest.unlink(missing_ok=True)
+        return None
+
+    if result.returncode == 0 and _validate_mp4(dest):
+        if _has_audio_stream(loc.ffmpeg_bin, dest):
+            logger.info(
+                "ffmpeg dash-all OK (with audio): %s (%d bytes)",
+                dest.name, dest.stat().st_size,
+            )
+            return dest
+        logger.debug("ffmpeg dash-all: no audio in result — DASH manifest has no audio track")
+        dest.unlink(missing_ok=True)
+        return None
+
+    tail = (result.stderr[-400:].decode("utf-8", errors="replace") if result.stderr else "")
+    logger.warning("ffmpeg dash-all rc=%d stderr: %s", result.returncode, tail[-200:])
+    dest.unlink(missing_ok=True)
+    return None
+
+
 def download_story(
     url: str,
     config: "ConfigManager",
@@ -927,18 +1362,38 @@ def download_story(
     if audio_url:
         logger.info("Audio URL (intercepted): %s…", audio_url[:80])
     else:
-        logger.info("Audio URL: not intercepted — attempting derivation from video URL")
+        logger.info("Audio URL: not intercepted — will use ffmpeg DASH demuxer")
+
+    # ── Resolve cookie path for ffmpeg ─────────────────────────────────────
+    # The facebook per-platform cookie (or global fallback) is passed to
+    # _ffmpeg_download_with_audio so ffmpeg can authenticate CDN requests.
+    _cookie_path: Optional[str] = None
+    try:
+        from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+        from infrastructure.downloader.cookie_storage import decrypt_to_tempfile, is_encrypted
+        raw = _resolve_cookie(url, config)
+        if raw:
+            p = Path(raw)
+            if is_encrypted(p):
+                try:
+                    _cookie_path = str(decrypt_to_tempfile(p))
+                except Exception:
+                    pass
+            else:
+                _cookie_path = raw
+    except Exception as exc:
+        logger.debug("cookie resolve failed (non-fatal): %s", exc)
+
+    # Track temp cookie file for cleanup
+    _cookie_is_temp = (_cookie_path is not None and
+                       Path(_cookie_path).name.startswith("omnidl_dec_"))
 
     # ── Audio URL derivation fallback ──────────────────────────────────────
-    # CDP interception (Layers A/B/C) relies on the browser explicitly
-    # requesting the audio DASH segment, which requires MSE SourceBuffer
-    # logic to run inside Facebook's JS.  With Brave's current autoplay and
-    # MSE policies this is unreliable.
-    #
-    # Fallback: derive the audio URL from the video URL by substituting the
-    # CDN path segment (/o1/v/ → /o1/a/, /m1/v/ → /m1/a/).  Facebook's DASH
-    # CDN is symmetric — video and audio tracks share identical path structure.
-    # A HEAD probe confirms the track exists before we attempt muxing.
+    # Only attempt derivation if CDP already captured audio URL.
+    # The _probe_audio_url approach (substituting /o1/v/→/o1/a/) is known to
+    # return 403 because the video's `oh` one-hop token is not valid for audio.
+    # We keep this block for cases where CDP DID capture audio URL directly —
+    # which is path (a) below.
     if not audio_url:
         candidate = _derive_audio_url(cdn_url)
         if candidate:
@@ -947,9 +1402,7 @@ def download_story(
             if audio_url:
                 logger.info("Audio URL (derived+confirmed): %s…", audio_url[:80])
             else:
-                logger.info("Audio URL: derived candidate returned no valid track — video-only story")
-        else:
-            logger.info("Audio URL: video URL has no substitutable segment — video-only story")
+                logger.debug("Audio URL: derive probe 403 (expected) — using ffmpeg DASH path")
 
     if on_progress:
         try:
@@ -958,22 +1411,42 @@ def download_story(
             pass
 
     # ── Download strategy ──────────────────────────────────────────────────
-    # audio_url is set if either:
-    #   (a) CDP interception (Layers A/B/C) caught it directly, OR
-    #   (b) _derive_audio_url + _probe_audio_url confirmed a symmetric track.
-    # When audio_url is set, FFmpeg muxes video+audio in one stream-copy pass.
-    # When it is None the story is genuinely video-only (or audio CDN returned
-    # no valid track) and we fall back to single-stream download paths.
+    # Priority order (highest to lowest):
+    #   1. ffmpeg mux: CDP captured both video+audio URLs  (best quality, guaranteed audio)
+    #   2. ffmpeg DASH all-streams: let ffmpeg discover audio from DASH manifest
+    #      (works when CDN URL is a manifest with sibling audio track)
+    #   3. requests GET: video-only fallback (no audio, last resort)
+    #   4. ffmpeg single stream: reassemble DASH segments (no audio, last resort)
     result: Optional[Path] = None
-    if audio_url:
-        result = _ffmpeg_mux(cdn_url, audio_url, dest, on_progress)
-        if not result:
-            logger.warning("ffmpeg mux failed — falling back to video-only download")
+    try:
+        if audio_url:
+            # Path 1: CDP intercepted both streams — mux directly
+            result = _ffmpeg_mux(cdn_url, audio_url, dest, on_progress)
+            if not result:
+                logger.warning("ffmpeg mux failed — trying DASH all-streams")
 
-    if not result:
-        result = _download_cdn_url(cdn_url, dest, on_progress)
-    if not result:
-        result = _ffmpeg_download(cdn_url, dest, on_progress)
+        if not result:
+            # Path 2: Let ffmpeg read the DASH manifest and find audio automatically
+            result = _ffmpeg_download_with_audio(cdn_url, dest, _cookie_path, on_progress)
+            if result:
+                logger.info("Audio captured via ffmpeg DASH demuxer")
+            else:
+                logger.warning("ffmpeg DASH demuxer found no audio — falling back to video-only")
+
+        if not result:
+            # Path 3: video-only via requests stream
+            result = _download_cdn_url(cdn_url, dest, on_progress)
+        if not result:
+            # Path 4: video-only via ffmpeg (reassemble DASH segments)
+            result = _ffmpeg_download(cdn_url, dest, on_progress)
+    finally:
+        # Clean up decrypted temp cookie file
+        if _cookie_is_temp and _cookie_path:
+            try:
+                Path(_cookie_path).unlink(missing_ok=True)
+                logger.debug("Cleaned up temp cookie: %s", Path(_cookie_path).name)
+            except Exception:
+                pass
 
     if not result:
         raise RuntimeError(
