@@ -228,13 +228,13 @@ class TestConfigManagerCacheLoad:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSettingsTabBrowserVar:
-    """ui/tabs/settings_tab.py :: SettingsTab — cookies_browser OptionMenu"""
+    """ui/tabs/settings/network_panel.py :: NetworkPanel — cookies_browser OptionMenu"""
 
     @pytest.fixture(autouse=True)
     def _src(self):
-        """Load settings_tab.py relative to this test file's repo root."""
+        """Load network_panel.py — _browser_var lives in the sub-panel, not settings_tab."""
         repo_root = pathlib.Path(__file__).parent.parent
-        self.src = (repo_root / "ui" / "tabs" / "settings_tab.py").read_text()
+        self.src = (repo_root / "ui" / "tabs" / "settings" / "network_panel.py").read_text()
 
     def test_browser_var_attribute_exists(self):
         """After the fix, SettingsTab must define self._browser_var."""

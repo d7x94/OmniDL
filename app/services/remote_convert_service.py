@@ -287,7 +287,7 @@ class RemoteConvertService:
             # File already gone — still mark as deleted so UI is consistent.
             with job._lock:
                 job.output_deleted = True
-            return False, "File already deleted or not found"
+            return True, ""
 
         # ── Delete ────────────────────────────────────────────────────────
         try:

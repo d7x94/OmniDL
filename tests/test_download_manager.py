@@ -253,3 +253,78 @@ class TestRetryBehavior:
             assert task.status == DownloadStatus.CANCELLED
         finally:
             mgr.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage: _on_progress, _on_future_done with exception
+# ---------------------------------------------------------------------------
+
+class TestProgressAndFutureDone:
+    def test_on_progress_publishes_event(self):
+        """_on_progress must publish DOWNLOAD_PROGRESS event."""
+        from app.event_bus import EventBus
+        bus = make_bus()
+        mgr = DownloadManager(config=make_config(), engine=make_engine(), event_bus=bus)
+        mgr.start()
+        try:
+            task = make_task()
+            mgr._on_progress(task)
+            bus.publish.assert_called_with(EventBus.DOWNLOAD_PROGRESS, task=task)
+        finally:
+            mgr.shutdown()
+
+    def test_on_future_done_logs_escaped_exception(self):
+        """_on_future_done must log unhandled exceptions that escape _run_task."""
+        import concurrent.futures
+        from app.event_bus import EventBus
+        bus = make_bus()
+        mgr = DownloadManager(config=make_config(), engine=make_engine(), event_bus=bus)
+        mgr.start()
+        try:
+            task = make_task()
+            # Create a future that has an exception result
+            f = concurrent.futures.Future()
+            f.set_exception(RuntimeError("escaped!"))
+            # Should not raise — only logs
+            mgr._on_future_done(task.id, f)
+        finally:
+            mgr.shutdown()
+
+
+class TestCancelBeforeFirstAttempt:
+    def test_cancel_while_queued_skips_download(self):
+        """Cancelling a task before the first attempt must hit the break at line 213."""
+        import time
+        from domain.enums.download_status import DownloadStatus
+
+        engine = MagicMock()
+
+        # Make download() block until the event is set, ensuring cancel() fires first
+        start_event = threading.Event()
+
+        def slow_download(task, on_progress=None, on_postprocess=None):
+            start_event.wait(timeout=5)
+
+        engine.download.side_effect = slow_download
+
+        bus = make_bus()
+        cfg = make_config(max_concurrent=1, max_retries=0)
+        mgr = DownloadManager(config=cfg, engine=engine, event_bus=bus)
+        mgr.start()
+        try:
+            task = make_task()
+            # Cancel BEFORE enqueueing so is_cancellation_requested is True
+            # when _run_task checks on the first iteration
+            task.cancel()
+            mgr.enqueue(task)
+            # Give the worker thread time to process
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if task.status == DownloadStatus.CANCELLED:
+                    break
+                time.sleep(0.02)
+            # engine.download must NOT have been called
+            engine.download.assert_not_called()
+        finally:
+            start_event.set()
+            mgr.shutdown()

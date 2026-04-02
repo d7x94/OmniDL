@@ -782,3 +782,34 @@ class TestRegisterAppHwnd:
             assert _helpers._app_hwnd == 0
         finally:
             _helpers._app_hwnd = old
+
+
+# ---------------------------------------------------------------------------
+# Logger OSError branch (lines 103-104 coverage)
+# ---------------------------------------------------------------------------
+
+class TestSetupLoggingOsError:
+    def test_oserror_on_log_file_does_not_crash(self, tmp_path, monkeypatch):
+        """setup_logging() must not raise when RotatingFileHandler raises OSError."""
+        import logging
+        from unittest.mock import patch as _patch
+        from utils.logger import setup_logging
+        from logging.handlers import RotatingFileHandler
+
+        # Force RotatingFileHandler to raise OSError so the except branch runs.
+        with _patch.object(
+            RotatingFileHandler,
+            "__init__",
+            side_effect=OSError("no space left"),
+        ):
+            # Remove any existing file handler for this path first
+            root = logging.getLogger()
+            existing = [
+                h for h in root.handlers
+                if getattr(h, "baseFilename", "") == str((tmp_path / "omnidl.log").resolve())
+            ]
+            for h in existing:
+                h.close()
+                root.removeHandler(h)
+            # Must not raise
+            setup_logging(tmp_path / "logs_err")

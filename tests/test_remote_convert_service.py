@@ -307,3 +307,197 @@ class TestMaxJobsPurge:
         assert new_job.job_id in all_ids
         # Total job count must not exceed MAX_JOBS + 1 (purge fires before insert)
         assert len(svc.get_all_jobs()) <= MAX_JOBS
+
+
+# ---------------------------------------------------------------------------
+# Internal callbacks (lines 165-215 coverage)
+# ---------------------------------------------------------------------------
+
+class TestStartConvertCallbacks:
+    """Exercise the closures passed to ConvertQueue.submit()."""
+
+    def _capture_callbacks(self, tmp_path):
+        """Return (svc, job, callbacks_dict) where callbacks are the real closures."""
+        svc = _make_service(tmp_path)
+        captured = {}
+
+        def fake_submit(**kwargs):
+            captured.update(kwargs)
+            return lambda: None  # fake cancel_fn
+
+        with patch.object(svc._queue, "submit", side_effect=fake_submit):
+            job = svc.start_convert("tid", _dummy_file(tmp_path))
+        return svc, job, captured
+
+    def test_on_start_sets_converting_status(self, tmp_path):
+        _, job, cbs = self._capture_callbacks(tmp_path)
+        cbs["on_start"]()
+        with job._lock:
+            assert job.status == ConversionStatus.CONVERTING
+            assert job.progress == 0.0
+
+    def test_on_start_publishes_event(self, tmp_path):
+        svc, job, cbs = self._capture_callbacks(tmp_path)
+        cbs["on_start"]()
+        svc._bus.publish_convert_started.assert_called()
+
+    def test_on_progress_updates_job(self, tmp_path):
+        _, job, cbs = self._capture_callbacks(tmp_path)
+        cbs["on_progress"](42.5)
+        with job._lock:
+            assert job.progress == 42.5
+
+    def test_on_progress_publishes_event(self, tmp_path):
+        svc, job, cbs = self._capture_callbacks(tmp_path)
+        cbs["on_progress"](10.0)
+        svc._bus.publish_convert_progress.assert_called()
+
+    def test_on_done_sets_completed_status(self, tmp_path):
+        from pathlib import Path
+        _, job, cbs = self._capture_callbacks(tmp_path)
+        out = tmp_path / "out.mp4"
+        out.write_bytes(b"\x00" * 8)
+        cbs["on_done"](out)
+        with job._lock:
+            assert job.status == ConversionStatus.COMPLETED
+            assert job.progress == 100.0
+            assert job.output_filename == str(out)
+            assert job.finished_at is not None
+
+    def test_on_done_publishes_event(self, tmp_path):
+        svc, job, cbs = self._capture_callbacks(tmp_path)
+        out = tmp_path / "out.mp4"
+        out.write_bytes(b"\x00" * 8)
+        cbs["on_done"](out)
+        svc._bus.publish_convert_completed.assert_called()
+
+    def test_on_done_with_taildrop(self, tmp_path):
+        """on_done calls taildrop.send_converted_file when taildrop is set."""
+        from pathlib import Path
+        config = MagicMock()
+        config.download_dir = str(tmp_path)
+        event_bus = MagicMock()
+        taildrop = MagicMock()
+        from app.services.remote_convert_service import RemoteConvertService
+        svc = RemoteConvertService(config=config, event_bus=event_bus, taildrop=taildrop)
+
+        captured = {}
+
+        def fake_submit(**kwargs):
+            captured.update(kwargs)
+            return lambda: None
+
+        with patch.object(svc._queue, "submit", side_effect=fake_submit):
+            svc.start_convert("tid", _dummy_file(tmp_path))
+
+        out = tmp_path / "out.mp4"
+        out.write_bytes(b"\x00" * 8)
+        captured["on_done"](out)
+        taildrop.send_converted_file.assert_called_once_with(out)
+
+    def test_on_done_taildrop_exception_swallowed(self, tmp_path):
+        """Taildrop exception in on_done must not propagate."""
+        from pathlib import Path
+        config = MagicMock()
+        config.download_dir = str(tmp_path)
+        event_bus = MagicMock()
+        taildrop = MagicMock()
+        taildrop.send_converted_file.side_effect = RuntimeError("boom")
+        from app.services.remote_convert_service import RemoteConvertService
+        svc = RemoteConvertService(config=config, event_bus=event_bus, taildrop=taildrop)
+
+        captured = {}
+
+        def fake_submit(**kwargs):
+            captured.update(kwargs)
+            return lambda: None
+
+        with patch.object(svc._queue, "submit", side_effect=fake_submit):
+            svc.start_convert("tid", _dummy_file(tmp_path))
+
+        out = tmp_path / "out.mp4"
+        out.write_bytes(b"\x00" * 8)
+        # Must not raise
+        captured["on_done"](out)
+
+    def test_on_error_sets_failed_status(self, tmp_path):
+        _, job, cbs = self._capture_callbacks(tmp_path)
+        cbs["on_error"]("encode failed")
+        with job._lock:
+            assert job.status == ConversionStatus.FAILED
+            assert job.error_msg == "encode failed"
+            assert job.finished_at is not None
+
+    def test_on_error_publishes_failed_event(self, tmp_path):
+        svc, job, cbs = self._capture_callbacks(tmp_path)
+        cbs["on_error"]("oops")
+        svc._bus.publish_convert_failed.assert_called()
+
+    def test_on_error_sets_cancelled_when_requested(self, tmp_path):
+        _, job, cbs = self._capture_callbacks(tmp_path)
+        job.request_cancel()
+        cbs["on_error"]("cancelled")
+        with job._lock:
+            assert job.status == ConversionStatus.CANCELLED
+
+    def test_on_error_publishes_cancelled_event(self, tmp_path):
+        svc, job, cbs = self._capture_callbacks(tmp_path)
+        job.request_cancel()
+        cbs["on_error"]("cancelled")
+        svc._bus.publish_convert_cancelled.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Additional branch coverage for delete_convert_file and cancel_convert
+# ---------------------------------------------------------------------------
+
+class TestDeleteConvertFileBranches:
+    def test_delete_no_output_filename_fails(self, tmp_path):
+        """Job with empty output_filename must be rejected."""
+        svc = _make_service(tmp_path)
+        with patch.object(svc._queue, "submit", return_value=None):
+            job = svc.start_convert("tid", _dummy_file(tmp_path))
+        with job._lock:
+            job.status = ConversionStatus.COMPLETED
+            job.output_filename = ""
+        ok, msg = svc.delete_convert_file(job.job_id, allowed_dir=tmp_path)
+        assert not ok
+        assert "No output file" in msg
+
+    def test_delete_oserror_returns_false(self, tmp_path):
+        """OSError during unlink must return (False, error_string)."""
+        svc = _make_service(tmp_path)
+        output_file = _dummy_file(tmp_path, "del_test.mp4")
+        with patch.object(svc._queue, "submit", return_value=None):
+            job = svc.start_convert("tid", output_file)
+        with job._lock:
+            job.status = ConversionStatus.COMPLETED
+            job.output_filename = str(output_file)
+        with patch("pathlib.Path.unlink", side_effect=OSError("permission denied")):
+            ok, msg = svc.delete_convert_file(job.job_id, allowed_dir=tmp_path)
+        assert not ok
+        assert "permission denied" in msg
+
+
+class TestCancelConvertBranches:
+    def test_cancel_with_cancel_fn_calls_it(self, tmp_path):
+        """cancel_convert() must invoke _cancel_fn when set."""
+        svc = _make_service(tmp_path)
+        cancel_called = []
+        fake_cancel = lambda: cancel_called.append(True)
+
+        with patch.object(svc._queue, "submit", return_value=fake_cancel):
+            job = svc.start_convert("tid", _dummy_file(tmp_path))
+
+        result = svc.cancel_convert(job.job_id)
+        assert result is True
+        assert cancel_called
+
+    def test_get_available_encoders_returns_list(self, tmp_path):
+        """get_available_encoders() must return a list."""
+        svc = _make_service(tmp_path)
+        with patch("app.services.remote_convert_service.get_available_encoder_options",
+                   return_value=[("libx264", "H.264 (CPU)")]):
+            result = svc.get_available_encoders()
+        assert isinstance(result, list)
+        assert result[0][0] == "libx264"
