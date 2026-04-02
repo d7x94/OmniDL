@@ -187,14 +187,14 @@ class TestPublishHelpers:
     def test_publish_convert_taildrop_completed(self):
         from pathlib import Path
         bus, recv = self._bus_with_capture(EventBus.CONVERT_TAILDROP_COMPLETED)
-        p = Path("/tmp/out.mp4")
+        p = Path("/tmp/out.mp4")  # nosec B108
         bus.publish_convert_taildrop_completed(p, dest_node="phone")
         assert recv and recv[0]["out_path"] == p
 
     def test_publish_convert_taildrop_failed(self):
         from pathlib import Path
         bus, recv = self._bus_with_capture(EventBus.CONVERT_TAILDROP_FAILED)
-        p = Path("/tmp/out.mp4")
+        p = Path("/tmp/out.mp4")  # nosec B108
         bus.publish_convert_taildrop_failed(p, dest_node="phone", error="err")
         assert recv and recv[0]["error"] == "err"
 
