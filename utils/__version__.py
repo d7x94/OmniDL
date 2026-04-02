@@ -8,4 +8,4 @@ Import this module everywhere a version string is needed:
 Never hard-code the version string in main.py, UI labels, or CI scripts.
 """
 
-__version__ = "17.0.0"
+__version__ = "17.1.0"

@@ -214,11 +214,11 @@ _POLL_AUDIO_JS = (
     "  var t=ss[j].textContent;"
     "  if(!t||t.length<200||t.indexOf('fbcdn.net')===-1)continue;"
     "  var mA=t.match(/https?:\\/\\/\\S{5,}fbcdn\\.net\\S{5,}\\/(?:o1|m1)\\/a\\/\\S{20,}/);"
-    "  if(mA){var rA=mA[0].split(/[\"'\\\\<>\\s]/)[0];if(rA.indexOf('fbcdn.net')!==-1&&rA.indexOf('/a/')!==-1)return rA;}"
-    "  var mB=t.match(/https?:\\\\\\/\\\\\\/\\S{5,}fbcdn\\.net\\S{5,}\\\\\\/(?:o1|m1)\\\\\\/a\\\\\\/\\S{20,}/);"
-    "  if(mB){var rB=mB[0].replace(/\\\\\\/\\//g,'/').split(/[\"'<>\\s]/)[0];if(rB.indexOf('fbcdn.net')!==-1)return rB;}"
-    "  var mC=t.match(/https?:\\\\u002F\\\\u002F\\S{5,}fbcdn\\.net\\S{5,}\\\\u002F(?:o1|m1)\\\\u002Fa\\\\u002F\\S{20,}/i);"
-    "  if(mC){var rC=mC[0].replace(/\\\\u002F/gi,'/').replace(/\\\\u0026/gi,'&').split(/[\"'<>\\s]/)[0];if(rC.indexOf('fbcdn.net')!==-1)return rC;}"
+    "  if(mA){var rA=mA[0].split(/[\"'\\\\<>\\s]/)[0];if(rA.indexOf('fbcdn.net')!==-1&&rA.indexOf('/a/')!==-1)return rA;}"  # noqa: E501
+    "  var mB=t.match(/https?:\\\\\\/\\\\\\/\\S{5,}fbcdn\\.net\\S{5,}\\\\\\/(?:o1|m1)\\\\\\/a\\\\\\/\\S{20,}/);"  # noqa: E501
+    "  if(mB){var rB=mB[0].replace(/\\\\\\/\\//g,'/').split(/[\"'<>\\s]/)[0];if(rB.indexOf('fbcdn.net')!==-1)return rB;}"  # noqa: E501
+    "  var mC=t.match(/https?:\\\\u002F\\\\u002F\\S{5,}fbcdn\\.net\\S{5,}\\\\u002F(?:o1|m1)\\\\u002Fa\\\\u002F\\S{20,}/i);"  # noqa: E501
+    "  if(mC){var rC=mC[0].replace(/\\\\u002F/gi,'/').replace(/\\\\u0026/gi,'&').split(/[\"'<>\\s]/)[0];if(rC.indexOf('fbcdn.net')!==-1)return rC;}"  # noqa: E501
     " }"
     "}catch(ex){}"
     "return '';"
@@ -282,7 +282,7 @@ _PLAY_JS = (
     # Fallback: mute→play→unmute
     "    v.muted=true;"
     "    var p2=v.play();"
-    "    if(p2&&p2.then){p2.then(function(){setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
+    "    if(p2&&p2.then){p2.then(function(){setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"  # noqa: E501
     "   });"
     "  }"
     " })(vs[i]);"
@@ -760,7 +760,7 @@ def _cdp_intercept(
                     logger.info("CDP[B]: video MIME=%s", ct)
                     video_url      = response.url
                     video_found_at = time.monotonic()
-                elif not audio_url and ct.startswith("audio/") and _audio_matches_video(response.url, video_url):
+                elif not audio_url and ct.startswith("audio/") and _audio_matches_video(response.url, video_url):  # noqa: E501
                     logger.info("CDP[B]: audio MIME=%s", ct)
                     audio_url = response.url
 
@@ -947,7 +947,7 @@ def _cdp_intercept(
                                 logger.info("CDP[C]: audio via poll (%d chars)", len(aval))
                                 audio_url = str(aval)
                             elif aval and "fbcdn.net" in aval:
-                                logger.debug("CDP[C]: audio poll URL ignored — manifest mismatch (wrong story)")
+                                logger.debug("CDP[C]: audio poll URL ignored — manifest mismatch (wrong story)")  # noqa: E501
                     except Exception as exc:
                         logger.debug("poll error (non-fatal): %s", exc)
                     last_poll = now
@@ -1369,8 +1369,8 @@ def download_story(
     # _ffmpeg_download_with_audio so ffmpeg can authenticate CDN requests.
     _cookie_path: Optional[str] = None
     try:
-        from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
         from infrastructure.downloader.cookie_storage import decrypt_to_tempfile, is_encrypted
+        from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
         raw = _resolve_cookie(url, config)
         if raw:
             p = Path(raw)

@@ -302,7 +302,7 @@ class NetworkPanel(_BasePanel):
     # ── Handlers — Global Cookie ──────────────────────────────────────────
 
     def _browse_cookie_file(self) -> None:
-        import shutil
+        import shutil  # noqa: I001
         import tkinter.filedialog as fd
         from infrastructure.downloader.cookie_storage import encrypt_cookie_file
         chosen = fd.askopenfilename(
