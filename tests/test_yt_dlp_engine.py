@@ -368,31 +368,22 @@ class TestTikTokVodLiveDetection:
 # ---------------------------------------------------------------------------
 
 class TestTikTokFormatIdPatch:
-    """BUG-BS (v2) — For TikTok VOD URLs, download() must build the four-tier
-    h264-priority format selector chain so long-form VODs always have audio
-    AND are watermark-free when possible.
+    """BUG-BP / BUG-BS — For TikTok VOD URLs, download() must build the
+    four-tier format selector introduced by BUG-BS (v2, 2026-03-31):
 
-    TikTok exposes three stream kinds for VODs:
-      1. format_id starts with "h264_": watermark-free progressive MP4, reliable audio.
-      2. format_id == "download": watermarked progressive MP4, guaranteed audio.
-      3. format_id starts with "bytevc1_": watermark-free H.265, but audio unreliable
-         because TikTok CDN mislabels audio codec metadata as acodec='none'.
+        best[format_id^=h264]/download/bestvideo*+bestaudio*/best
 
-    Correct four-tier chain (BUG-BS v2):
-      best[format_id^=h264]   — picks highest-tbr h264_* entry (no watermark + audio)
-      /download               — fallback: watermarked but guaranteed audio
-      /bestvideo*+bestaudio*  — last resort DASH merge with starred selectors
-      /best                   — final catch-all
+    Rationale:
+      Tier 1  best[format_id^=h264]   — watermark-free h264_* muxed stream
+      Tier 2  download                — fallback: watermarked but always has audio
+      Tier 3  bestvideo*+bestaudio*   — DASH merge (last resort, may need FFmpeg)
+      Tier 4  best                    — final safety net
 
-    The starred selectors (bestvideo*, bestaudio*) select by actual stream
-    content rather than trusting the mislabelled acodec/vcodec metadata.
+    Previous BUG-BN 3-tier chain (bestvideo+bestaudio[acodec!=none]/...) is
+    SUPERSEDED. All tests updated to assert the new 4-tier selector.
 
-    History: [acodec!=none] (BUG-BN / FIX-TK-AUDIO-2) was superseded because
-    TikTok mislabels ALL audio tracks as acodec='none', so the filter found no
-    valid audio stream and fell through to a video-only DASH → silent output.
-    BUG-BS replaces the acodec filter with the h264-first chain.
-
-    Guard: "bestvideo*" in _format_id prevents double-patching (idempotency).
+    BUG-BP extension: format_id='best' (single-mux path) now also receives
+    the 4-tier chain instead of being left unmodified.
     """
 
     def _capture_opts(self, task, cfg=None):
@@ -425,29 +416,31 @@ class TestTikTokFormatIdPatch:
         task.media_info = MediaInfo(url=url, title="Test TikTok", is_live=False)
         return task
 
-    _H264_CHAIN = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
-
     def test_best_quality_gets_acodec_filter(self):
-        """'bestvideo+bestaudio/best' -> 4-tier h264 chain (BUG-BS v2)."""
+        """'bestvideo+bestaudio/best' → BUG-BS 4-tier chain (watermark-free h264 first)."""
         task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     def test_1080p_gets_acodec_filter(self):
-        """'bestvideo[height<=1080]+bestaudio/best' -> 4-tier h264 chain."""
+        """'bestvideo[height<=1080]+bestaudio/best' → BUG-BS 4-tier chain.
+        Height cap is not propagated into the new selector (h264_* streams
+        are already height-limited by TikTok CDN; the selector picks best tbr)."""
         task = self._make_tiktok_task("bestvideo[height<=1080]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     def test_720p_gets_acodec_filter(self):
+        """'bestvideo[height<=720]+bestaudio/best' → BUG-BS 4-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=720]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     def test_360p_gets_acodec_filter(self):
+        """'bestvideo[height<=360]+bestaudio/best' → BUG-BS 4-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=360]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     def test_audio_only_not_modified(self):
         """'bestaudio/best' (audio-only) must NOT be modified — no bestvideo present."""
@@ -455,18 +448,15 @@ class TestTikTokFormatIdPatch:
         opts = self._capture_opts(task)
         assert opts["format"] == "bestaudio/best"
 
-    def test_best_not_modified(self):
-        """'best' (bare) on a TikTok VOD URL now also gets the h264 chain (BUG-BS).
-
-        BUG-BP fixed the case where format_id='best' bypassed the audio patch
-        because the old guard only checked for 'bestvideo' in the string.
-        The else-branch now applies the h264 chain to any non-audio selector.
-        """
+    def test_best_gets_four_tier_chain(self):
+        """BUG-BP: format_id='best' on a TikTok VOD now receives the 4-tier chain.
+        Previously the else-branch was missing the BUG-BS fix; it now also maps to
+        best[format_id^=h264]/download/bestvideo*+bestaudio*/best."""
         url = "https://www.tiktok.com/@testuser/video/9999"
         task = DownloadTask(url=url, format_id="best", output_ext="mp4")
         task.media_info = MediaInfo(url=url, title="Test", is_live=False)
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     def test_non_tiktok_url_not_modified(self):
         """YouTube URLs must NOT have format_id modified."""
@@ -489,13 +479,20 @@ class TestTikTokFormatIdPatch:
         opts = self._capture_opts(task)
         assert opts["format"] == "best"
 
-    def test_acodec_filter_not_duplicated(self):
-        """Running patch twice must not produce extra tiers (idempotency guard)."""
+    def test_format_is_idempotent(self):
+        """BUG-BS: Running the patch logic twice must not produce extra tiers.
+        The idempotency guard is 'bestvideo*' not in _format_id — once patched
+        to the 4-tier chain, subsequent calls skip the patch."""
         task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
         fmt = opts["format"]
-        assert fmt.count("bestvideo*") == 1, f"Expected exactly 1 starred selector, got: {fmt}"
-        assert fmt == self._H264_CHAIN
+        # No [acodec!=none] in the new 4-tier selector
+        assert "[acodec!=none]" not in fmt, (
+            f"New 4-tier chain must not contain [acodec!=none], got: {fmt}"
+        )
+        assert fmt == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        # Verify exactly 4 segments
+        assert len(fmt.split("/")) == 4, f"Expected 4 tiers, got: {fmt}"
 
 # ---------------------------------------------------------------------------
 # BUG-BM: TikTok short-link URLs (vt.tiktok.com / vm.tiktok.com) must also
@@ -505,12 +502,13 @@ class TestTikTokFormatIdPatch:
 
 class TestTikTokShortUrlAudioFix:
     """BUG-BM / BUG-BS — short-link TikTok URLs (vt.tiktok.com/*, vm.tiktok.com/*)
-    must receive the same four-tier h264-priority format selector chain as
-    canonical tiktok.com/@user/video/<id> URLs.
+    must receive the same four-tier BUG-BS format selector as canonical
+    tiktok.com/@user/video/<id> URLs:
 
-    Root cause: task.url holds the ORIGINAL user-supplied URL at download
-    time. The _TIKTOK_SHORT_RE regex covers vt.tiktok.com and vm.tiktok.com
-    share-link redirectors, so the BUG-BS h264 chain applies to them too.
+        best[format_id^=h264]/download/bestvideo*+bestaudio*/best
+
+    The _TIKTOK_SHORT_RE regex covers both vt.tiktok.com and vm.tiktok.com.
+    All tests updated to assert the BUG-BS 4-tier selector (3-tier superseded).
     """
 
     def _capture_opts(self, task, cfg=None):
@@ -542,58 +540,58 @@ class TestTikTokShortUrlAudioFix:
         task.media_info = MediaInfo(url=short_url, title="TikTok short", is_live=False)
         return task
 
-    _H264_CHAIN = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
-
     # ── vt.tiktok.com ────────────────────────────────────────────────────
 
     def test_vt_short_url_gets_acodec_filter(self):
-        """vt.tiktok.com short link must produce the full 4-tier h264 chain."""
+        """vt.tiktok.com short link must produce the BUG-BS 4-tier chain."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNx3n8Y/",
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN, (
-            f"Short URL 'vt.tiktok.com' must receive h264 chain, got: {opts['format']}"
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best", (
+            f"Short URL 'vt.tiktok.com' must receive 4-tier chain, got: {opts['format']}"
         )
 
     def test_vt_short_url_1080p_gets_acodec_filter(self):
-        """vt.tiktok.com with 1080p selector gets the full 4-tier h264 chain."""
+        """vt.tiktok.com with 1080p selector → BUG-BS 4-tier chain."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNQHFCu/",
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     def test_vt_short_url_720p_gets_acodec_filter(self):
+        """vt.tiktok.com with 720p selector → BUG-BS 4-tier chain."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNQMpEK/",
             "bestvideo[height<=720]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     # ── vm.tiktok.com ────────────────────────────────────────────────────
 
     def test_vm_short_url_gets_acodec_filter(self):
-        """vm.tiktok.com short link (global) must also produce the 4-tier h264 chain."""
+        """vm.tiktok.com short link (global) → BUG-BS 4-tier chain."""
         task = self._make_short_task(
             "https://vm.tiktok.com/ZMJxABCDE/",
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN, (
-            f"Short URL 'vm.tiktok.com' must receive h264 chain, got: {opts['format']}"
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best", (
+            f"Short URL 'vm.tiktok.com' must receive 4-tier chain, got: {opts['format']}"
         )
 
     def test_vm_short_url_1080p_gets_acodec_filter(self):
+        """vm.tiktok.com with 1080p selector → BUG-BS 4-tier chain."""
         task = self._make_short_task(
             "https://vm.tiktok.com/ZMJxABCDE/",
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
     # ── Short URL edge cases ──────────────────────────────────────────────
 
@@ -606,29 +604,30 @@ class TestTikTokShortUrlAudioFix:
         opts = self._capture_opts(task)
         assert opts["format"] == "bestaudio/best"
 
-    def test_vt_short_url_best_not_modified(self):
-        """'best' format on short TikTok URL now gets the h264 chain (BUG-BS/BP).
-
-        BUG-BP: the else-branch now applies the h264 chain to any non-audio
-        selector including bare 'best', fixing silent downloads when TikTok
-        only serves DASH streams for that video.
-        """
+    def test_vt_short_url_best_gets_four_tier(self):
+        """BUG-BP: format_id='best' on vt.tiktok.com VOD now receives the
+        4-tier chain — same as canonical URLs. Previously left unmodified."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNx3n8Y/",
             "best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == self._H264_CHAIN
+        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
-    def test_vt_short_url_acodec_filter_not_duplicated(self):
-        """Starred selector must appear exactly once even for short URLs (idempotency)."""
+    def test_vt_short_url_format_is_idempotent(self):
+        """BUG-BS: 4-tier chain is idempotent for short URLs too.
+        [acodec!=none] must NOT appear — it was part of the old 3-tier chain."""
         task = self._make_short_task(
             "https://vt.tiktok.com/ZSHNx3n8Y/",
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"].count("bestvideo*") == 1
-        assert opts["format"] == self._H264_CHAIN
+        fmt = opts["format"]
+        assert "[acodec!=none]" not in fmt, (
+            f"4-tier chain must not contain [acodec!=none], got: {fmt}"
+        )
+        assert fmt == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert len(fmt.split("/")) == 4, f"Expected 4 tiers, got: {fmt}"
 
 
 # ---------------------------------------------------------------------------
@@ -636,25 +635,22 @@ class TestTikTokShortUrlAudioFix:
 # ---------------------------------------------------------------------------
 
 
-class TestTikTokThreeTierFallback:
-    """BUG-BS — the format selector for TikTok VODs must use the four-tier
-    h264-priority chain instead of the three-tier [acodec!=none] chain.
+class TestTikTokFourTierSelector:
+    """BUG-BS (v2, 2026-03-31) — validates the four-tier format selector
+    that supersedes the old BUG-BN three-tier chain.
 
-    Chain: best[format_id^=h264]/download/bestvideo*+bestaudio*/best
+    Selector: best[format_id^=h264]/download/bestvideo*+bestaudio*/best
 
-    Tier 1  best[format_id^=h264] — watermark-free h264 progressive MP4
-    Tier 2  download              — watermarked progressive MP4, guaranteed audio
-    Tier 3  bestvideo*+bestaudio* — DASH merge with starred (codec-agnostic) selectors
-    Tier 4  best                  — final catch-all
+      Tier 1  best[format_id^=h264]   — highest-bitrate watermark-free h264 muxed stream
+      Tier 2  download                — TikTok watermarked muxed stream (fallback with audio)
+      Tier 3  bestvideo*+bestaudio*   — DASH merge via FFmpegMergerPP (last resort)
+      Tier 4  best                    — final safety net
 
-    The [acodec!=none] chain (BUG-BN, 3-tier) was superseded because TikTok
-    mislabels ALL DASH audio tracks as acodec='none', so the filter found no
-    valid audio stream and fell through to a video-only DASH → silent mp4.
+    All quality presets (bestvideo+bestaudio/best, bestvideo[height<=N]+bestaudio/best)
+    and short URLs (vt.tiktok.com, vm.tiktok.com) must all resolve to this exact 4-tier
+    string. The BUG-BN 3-tier chain ([acodec!=none]) is fully superseded.
 
-    Note: the new chain does NOT preserve the user's height cap (e.g.
-    height<=1080), because best[format_id^=h264] already picks TikTok's
-    best available h264 progressive format which is inherently capped by
-    what TikTok CDN serves for that video.
+    Renamed from TestTikTokThreeTierFallback to reflect actual behavior.
     """
 
     def _capture_opts(self, task, cfg=None):
@@ -686,14 +682,15 @@ class TestTikTokThreeTierFallback:
         task.media_info = MediaInfo(url=url, title="Test", is_live=False)
         return task
 
-    _H264_CHAIN = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+    FOUR_TIER = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
-    def test_canonical_url_has_three_tiers(self):
-        """Canonical tiktok.com/@user/video/<id> must produce exactly 4 tiers (BUG-BS)."""
+    def test_canonical_url_has_four_tiers(self):
+        """Canonical tiktok.com/@user/video/<id> must produce exactly 4 tiers."""
         url = "https://www.tiktok.com/@khaly.57/video/7622620153158814996"
         task = self._make_task(url, "bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
         fmt = opts["format"]
+        assert fmt == self.FOUR_TIER, f"Expected 4-tier chain, got: {fmt}"
         tiers = fmt.split("/")
         assert len(tiers) == 4, f"Expected 4 tiers, got {len(tiers)}: {fmt}"
         assert tiers[0] == "best[format_id^=h264]"
@@ -701,51 +698,38 @@ class TestTikTokThreeTierFallback:
         assert tiers[2] == "bestvideo*+bestaudio*"
         assert tiers[3] == "best"
 
-    def test_short_url_video1_has_three_tiers(self):
+    def test_short_url_video1_has_four_tiers(self):
         """vt.tiktok.com/ZSHNx3n8Y/ (Video 1 — 2:50, silent) must produce 4 tiers."""
         url = "https://vt.tiktok.com/ZSHNx3n8Y/"
         task = self._make_task(url, "bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
         fmt = opts["format"]
-        tiers = fmt.split("/")
-        assert len(tiers) == 4, f"Expected 4 tiers, got {len(tiers)}: {fmt}"
-        assert tiers[0] == "best[format_id^=h264]", "Tier 1 must be h264 selector"
-        assert tiers[1] == "download", "Tier 2 must be 'download' fallback"
-        assert "*" in tiers[2], "Tier 3 must use starred selectors"
-        assert tiers[3] == "best", "Tier 4 must be bare /best"
+        assert fmt == self.FOUR_TIER, f"Short URL must produce 4-tier chain, got: {fmt}"
+        assert len(fmt.split("/")) == 4
 
-    def test_short_url_video3_has_three_tiers(self):
+    def test_short_url_video3_has_four_tiers(self):
         """vt.tiktok.com/ZSHNQHFCu/ (Video 3 — 5:47, silent) must produce 4 tiers."""
         url = "https://vt.tiktok.com/ZSHNQHFCu/"
         task = self._make_task(url, "bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
         fmt = opts["format"]
-        tiers = fmt.split("/")
-        assert len(tiers) == 4, f"Expected 4 tiers, got {len(tiers)}: {fmt}"
-        assert tiers[0] == "best[format_id^=h264]"
-        assert tiers[1] == "download"
-        assert tiers[3] == "best"
+        assert fmt == self.FOUR_TIER, f"Short URL must produce 4-tier chain, got: {fmt}"
+        assert len(fmt.split("/")) == 4
 
-    def test_height_cap_preserved_in_all_tiers(self):
-        """BUG-BS: height cap is NOT preserved — the h264 chain is a fixed string.
-
-        The new selector 'best[format_id^=h264]/download/bestvideo*+bestaudio*/best'
-        does not embed a height cap. best[format_id^=h264] already selects the
-        highest-tbr h264 format TikTok serves for the video, so the height cap
-        from the UI preset is intentionally dropped for TikTok VODs.
-        """
+    def test_no_acodec_filter_in_four_tier(self):
+        """BUG-BS replaces [acodec!=none] with the h264 format_id prefix selector.
+        The old [acodec!=none] filter must NOT appear in the new chain."""
         url = "https://www.tiktok.com/@testuser/video/7620980082118675732"
         task = self._make_task(url, "bestvideo[height<=1080]+bestaudio/best")
         opts = self._capture_opts(task)
         fmt = opts["format"]
-        assert fmt == self._H264_CHAIN, (
-            f"Expected h264 chain regardless of height cap, got: {fmt}"
+        assert "[acodec!=none]" not in fmt, (
+            f"4-tier chain must not contain [acodec!=none] — old BUG-BN pattern, got: {fmt}"
         )
-        # Height cap is intentionally absent — the h264 chain is a fixed selector
-        assert "height" not in fmt
+        assert fmt == self.FOUR_TIER
 
-    def test_all_presets_produce_three_tiers(self):
-        """Every quality preset from home_tab must produce the 4-tier h264 chain."""
+    def test_all_presets_produce_four_tiers(self):
+        """Every quality preset from home_tab must produce the BUG-BS 4-tier chain."""
         presets = [
             "bestvideo+bestaudio/best",
             "bestvideo[height<=2160]+bestaudio/best",
@@ -759,12 +743,11 @@ class TestTikTokThreeTierFallback:
             task = self._make_task(url, preset)
             opts = self._capture_opts(task)
             fmt = opts["format"]
-            tiers = fmt.split("/")
-            assert len(tiers) == 4, (
-                f"Preset {preset!r} must produce 4 tiers, got {len(tiers)}: {fmt}"
+            assert fmt == self.FOUR_TIER, (
+                f"Preset {preset!r} must produce 4-tier chain, got: {fmt}"
             )
-            assert fmt == self._H264_CHAIN, (
-                f"Preset {preset!r} must produce h264 chain, got: {fmt}"
+            assert len(fmt.split("/")) == 4, (
+                f"Preset {preset!r}: expected 4 tiers, got {len(fmt.split('/'))}: {fmt}"
             )
 
 

@@ -184,18 +184,22 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
                 home.on_analysis_start()
 
             def _safe_done(info) -> None:
-                if not self.winfo_exists():
-                    return
+                # BUG-CRITICAL-1 FIX: winfo_exists() and after(0, ...) are
+                # Tkinter calls — ILLEGAL from a background thread on Python
+                # 3.14 (raises RuntimeError immediately).
+                # Route ALL outcomes through _ui_queue so they execute on the
+                # UI thread. The queue drain loop already handles destruction
+                # (winfo_exists guard lives in the drain method, not here).
                 if my_token != self._analyse_token:
-                    self.after(0, self._reset_btn)
+                    self._ui_queue.put(self._reset_btn)
                     return
                 self._ui_queue.put(lambda: self._on_done(info))
 
             def _safe_error(err: str) -> None:
-                if not self.winfo_exists():
-                    return
+                # BUG-CRITICAL-1 FIX: same as _safe_done — no Tkinter calls
+                # from background thread.
                 if my_token != self._analyse_token:
-                    self.after(0, self._reset_btn)
+                    self._ui_queue.put(self._reset_btn)
                     return
                 self._ui_queue.put(lambda: self._on_error(err))
 

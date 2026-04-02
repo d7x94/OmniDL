@@ -197,7 +197,7 @@ class TestInstallYtdlpFrozenSha256:
                 return fake_meta_response
             return fake_whl_response
 
-        with patch("ui.tabs.settings.tools_panel.urlopen", side_effect=mock_urlopen):
+        with patch("ui.tabs.settings_tab.urlopen", side_effect=mock_urlopen):
             with patch("builtins.open", MagicMock()):
                 with patch("shutil.copyfileobj") as mock_copy:
                     # Write fake content to the tmp file path
@@ -237,11 +237,11 @@ class TestInstallYtdlpFrozenSha256:
         fake_meta_response.__exit__ = MagicMock(return_value=False)
         fake_meta_response.read.return_value = json.dumps(fake_meta).encode()
 
-        with patch("ui.tabs.settings.tools_panel.urlopen", return_value=fake_meta_response):
+        with patch("ui.tabs.settings_tab.urlopen", return_value=fake_meta_response):
             with patch("pathlib.Path.mkdir"):
                 import importlib
                 settings_mod = importlib.import_module("ui.tabs.settings_tab")
-                with pytest.raises(RuntimeError, match="SHA-256"):
+                with pytest.raises(RuntimeError, match="SHA-256 digest"):
                     settings_mod._install_ytdlp_frozen()
 
 

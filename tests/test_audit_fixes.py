@@ -349,14 +349,17 @@ class TestAnalyzeButtonRace:
                src.count("lambda: None") == 0, \
             "_safe_done must not contain a no-op 'lambda: None'"
 
-        # _reset_btn must be scheduled in the stale-success path
-        # Look for 'after(0, self._reset_btn)' appearing at least twice
-        # (once in _safe_done, once in _safe_error)
+        # BUG-CRITICAL-1 FIX VERIFICATION: after(0, self._reset_btn) is a
+        # Tkinter call from a background thread — illegal on Python 3.14.
+        # The fix replaces it with _ui_queue.put(self._reset_btn).
+        # Assert that the forbidden pattern is GONE (0 occurrences).
         reset_count = src.count("after(0, self._reset_btn)")
-        assert reset_count >= 2, (
-            f"Expected _reset_btn() in both _safe_done and _safe_error,"
-            f" found {reset_count} occurrences"
-        )
+        assert reset_count == 0, (
+            f"after(0, self._reset_btn) is a Tkinter call from a background "            f"thread — illegal on Python 3.14. Must be replaced with "            f"_ui_queue.put(self._reset_btn). Found {reset_count} occurrence(s)."        )
+        # Verify the fix is actually present: _ui_queue.put(self._reset_btn)
+        queue_count = src.count("_ui_queue.put(self._reset_btn)")
+        assert queue_count >= 2, (
+            f"Expected _ui_queue.put(self._reset_btn) in both _safe_done and "            f"_safe_error, found {queue_count} occurrence(s)."        )
 
 
 # ===========================================================================
@@ -364,15 +367,15 @@ class TestAnalyzeButtonRace:
 # ===========================================================================
 
 class TestVersionString:
-    """main.py must report OmniDL v16, not v15."""
+    """main.py must report OmniDL v17 (v17.1), not v16 or earlier."""
 
-    def test_docstring_says_v16(self):
+    def test_docstring_says_v17(self):
         import main  # local import required for reload test
         importlib.reload(main)
-        assert "v16" in (main.__doc__ or ""), \
-            "main.py module docstring must say 'v16'"
-        assert "v15" not in (main.__doc__ or ""), \
-            "main.py module docstring must not say 'v15'"
+        assert "v17" in (main.__doc__ or ""), \
+            "main.py module docstring must say 'v17' (currently v17.1)"
+        assert "v16" not in (main.__doc__ or ""), \
+            "main.py module docstring must not say 'v16' — update to v17.1"
 
     def test_main_py_source_has_version_log(self):
         """Startup log must use _APP_VERSION placeholder, not a hardcoded version."""
@@ -383,6 +386,9 @@ class TestVersionString:
             "Startup log must use 'OmniDL v%s starting' with _APP_VERSION arg"
         )
         # Must NOT hardcode any specific version literal in the format string
+        assert "OmniDL v17 starting" not in src, (
+            "Startup log must not hardcode version — use _APP_VERSION instead"
+        )
         assert "OmniDL v16 starting" not in src, (
             "Startup log must not hardcode version — use _APP_VERSION instead"
         )
