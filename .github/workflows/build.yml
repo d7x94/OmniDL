@@ -67,7 +67,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-cov ruff mypy
+        run: pip install -r requirements.txt pytest pytest-cov ruff mypy types-requests
 
       # ── Lint (mirrors ci.yml — catches issues before building EXE/APP) ──
       - name: Lint with ruff
