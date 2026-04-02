@@ -45,9 +45,10 @@ permissions:
   contents: read
 
 env:
-  PYTHON_VERSION:      "3.13"
-  PYINSTALLER_VERSION: "6.19.0"
-  APP_NAME:            "OmniDL"
+  PYTHON_VERSION:                  "3.13"
+  PYINSTALLER_VERSION:             "6.19.0"
+  APP_NAME:                        "OmniDL"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
 
@@ -144,6 +145,7 @@ jobs:
       - name: pip-audit CVE scan
         run: |
           pip install -r requirements.txt
+          touch pip_audit_report.md
           pip-audit \
             --requirement requirements.txt \
             --format markdown \

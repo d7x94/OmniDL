@@ -20,6 +20,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -142,6 +145,7 @@ jobs:
       - name: pip-audit CVE scan
         run: |
           pip install -r requirements.txt
+          touch pip_audit_report.md
           pip-audit \
             --requirement requirements.txt \
             --format markdown \
