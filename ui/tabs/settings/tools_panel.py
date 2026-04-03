@@ -385,8 +385,36 @@ class ToolsPanel(_BasePanel):
             return "⚠ Chưa cài — cần cho Brave/Chrome 127+"
 
     def _install_keyring(self) -> None:
+        # FIX-KEYRING-FROZEN: In a PyInstaller frozen build, sys.executable is
+        # OmniDL.exe — running [sys.executable, "-m", "pip", "install", ...]
+        # launches the EXE with those args and fails immediately.
+        # keyring is bundled at build time (requirements.txt), so in frozen
+        # mode the button just reflects the already-bundled status.
+        # In source mode, pip install works normally via sys.executable = python.exe.
         import sys
+
         self._keyring_btn.configure(state="disabled")
+
+        if getattr(sys, "frozen", False):
+            # Frozen build: keyring is bundled at build time.
+            # Just reflect the current import status and re-enable the button.
+            status_text = self._keyring_installed_text()
+            try:
+                import keyring  # noqa: F401
+                self._keyring_status.configure(
+                    text=status_text + " (bundled)", text_color=T.success)
+                self._app.toast(
+                    "keyring đã có sẵn trong bản build. Thử lại lấy cookies.", "success")
+            except ImportError:
+                self._keyring_status.configure(
+                    text="keyring không có — tải lại phiên bản mới hơn",
+                    text_color=T.error)
+                self._app.toast(
+                    "keyring không tìm thấy trong build. Vui lòng tải phiên bản EXE mới nhất.",
+                    "error")
+            self._keyring_btn.configure(state="normal")
+            return
+
         self._keyring_status.configure(text="Đang cài keyring…", text_color=T.primary_text)
 
         def _worker() -> None:

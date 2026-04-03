@@ -68,7 +68,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-cov ruff mypy types-requests
+        run: pip install -r requirements.txt -r requirements-api.txt pytest pytest-cov ruff mypy types-requests
 
       # ── Lint (mirrors ci.yml — catches issues before building EXE/APP) ──
       - name: Lint with ruff
@@ -180,12 +180,9 @@ jobs:
           cache: pip
 
       - name: Install runtime dependencies
-        run: pip install -r requirements.txt
-
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (Windows) ──────────────────────────────
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-api.txt
       # Source: gyan.dev canonical Windows FFmpeg builds.
       # We download the "essentials" zip and extract ONLY ffmpeg.exe and
       # ffprobe.exe into resources/ffmpeg/.  The directory is gitignored.
@@ -299,6 +296,26 @@ jobs:
             --collect-all customtkinter `
             --collect-all tkinter `
             --collect-all yt_dlp `
+            --collect-all fastapi `
+            --collect-all uvicorn `
+            --collect-all keyring `
+            --hidden-import fastapi `
+            --hidden-import uvicorn `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols `
+            --hidden-import uvicorn.protocols.http `
+            --hidden-import uvicorn.protocols.http.auto `
+            --hidden-import uvicorn.protocols.websockets `
+            --hidden-import uvicorn.protocols.websockets.auto `
+            --hidden-import uvicorn.lifespan `
+            --hidden-import uvicorn.lifespan.on `
+            --hidden-import keyring.backends `
+            --hidden-import keyring.backends.Windows `
+            --hidden-import keyring.backends.fail `
+            --hidden-import win32ctypes `
+            --hidden-import win32ctypes.core `
             --noupx `
             --distpath dist `
             main.py
@@ -381,7 +398,9 @@ jobs:
           cache: pip
 
       - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-api.txt
 
       - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
         run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
@@ -477,6 +496,24 @@ jobs:
             --collect-all customtkinter \
             --collect-all tkinter \
             --collect-all yt_dlp \
+            --collect-all fastapi \
+            --collect-all uvicorn \
+            --collect-all keyring \
+            --hidden-import fastapi \
+            --hidden-import uvicorn \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols \
+            --hidden-import uvicorn.protocols.http \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import keyring.backends \
+            --hidden-import keyring.backends.macOS \
+            --hidden-import keyring.backends.fail \
             --noupx \
             --distpath dist \
             main.py
@@ -601,7 +638,9 @@ jobs:
           cache: pip
 
       - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-api.txt
 
       - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
         run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
@@ -687,6 +726,24 @@ jobs:
             --collect-all customtkinter \
             --collect-all tkinter \
             --collect-all yt_dlp \
+            --collect-all fastapi \
+            --collect-all uvicorn \
+            --collect-all keyring \
+            --hidden-import fastapi \
+            --hidden-import uvicorn \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols \
+            --hidden-import uvicorn.protocols.http \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import keyring.backends \
+            --hidden-import keyring.backends.SecretService \
+            --hidden-import keyring.backends.fail \
             --noupx \
             --distpath dist \
             main.py

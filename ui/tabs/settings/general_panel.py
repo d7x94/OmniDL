@@ -25,6 +25,117 @@ if TYPE_CHECKING:
 logger = __import__("logging").getLogger(__name__)
 
 
+# ── FIX-BROWSE-1: Windows IFileOpenDialog folder picker ───────────────────
+# Tkinter's askdirectory uses the legacy SHBrowseForFolder dialog which has
+# two bugs on Windows:
+#   1. Folder rename inside the dialog silently fails (text reverts to "New Folder")
+#   2. initialdir with a path that doesn't resolve → silently falls back to Documents
+#
+# The modern IFileOpenDialog (COM, Vista+) fixes both. We invoke it via ctypes
+# with zero new dependencies. Falls back to askdirectory on any error.
+#
+# Vtable offsets (IFileOpenDialog inherits IFileDialog → IModalWindow → IUnknown):
+#   IUnknown:       QueryInterface=0, AddRef=1, Release=2
+#   IModalWindow:   Show=3
+#   IFileDialog:    SetFileTypes=4..8, SetOptions=9, GetOptions=10,
+#                   SetDefaultFolder=11, SetFolder=12, GetFolder=13,
+#                   GetCurrentSelection=14..18, GetResult=20, AddPlace=21..26
+#   IFileOpenDialog: GetResults=27, GetSelectedItems=28
+
+def _pick_folder_win32(initial_dir: str) -> "str | None":
+    """
+    Use Windows IFileOpenDialog (COM, Vista+) to pick a folder.
+    Unlike Tkinter's dialog, this supports in-dialog folder creation
+    and rename correctly (no "New Folder" revert bug).
+    Returns the selected absolute path or None on cancel / error.
+    """
+    import ctypes
+    import ctypes.wintypes as wt
+    import struct
+    from pathlib import Path
+
+    # GUIDs (GUID wire format: first 3 fields are LE, last 8 bytes are BE)
+    def _guid(data32: int, data16a: int, data16b: int, *rest8: int) -> "ctypes.Array[ctypes.c_byte]":
+        raw = struct.pack("<IHH", data32, data16a, data16b) + bytes(rest8)
+        return (ctypes.c_byte * 16)(*raw)
+
+    CLSID_FileOpenDialog = _guid(0xDC1C5A9C, 0xE88A, 0x4DDE, 0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7)
+    IID_IFileOpenDialog  = _guid(0xD57C7288, 0xD4AD, 0x4768, 0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60)
+    IID_IShellItem       = _guid(0x43826D1E, 0xE718, 0x42EE, 0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE)
+
+    S_OK                 = 0
+    CLSCTX_INPROC_SERVER = 1
+    FOS_PICKFOLDERS      = 0x00000020
+    FOS_FORCEFILESYSTEM  = 0x00000040
+    SIGDN_FILESYSPATH    = ctypes.c_int(-2147319808)  # 0x80058000 as signed int
+
+    ole32  = ctypes.windll.ole32
+    shell32 = ctypes.windll.shell32
+
+    # Helper: call a COM vtable method by index
+    def _com(obj: ctypes.c_void_p, idx: int, restype, *args):
+        vtbl_ptr = ctypes.cast(ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0],
+                               ctypes.POINTER(ctypes.c_void_p))
+        fn_addr = vtbl_ptr[idx]
+        arg_types = [ctypes.c_void_p] + [type(a) for a in args]
+        proto = ctypes.WINFUNCTYPE(restype, *arg_types)
+        return proto(fn_addr)(obj, *args)
+
+    dialog = ctypes.c_void_p()
+    hr = ole32.CoCreateInstance(
+        CLSID_FileOpenDialog, None, CLSCTX_INPROC_SERVER,
+        IID_IFileOpenDialog, ctypes.byref(dialog),
+    )
+    if hr != S_OK or not dialog:
+        return None
+
+    try:
+        # SetOptions: pick folder + filesystem items only
+        _com(dialog, 9, ctypes.HRESULT, ctypes.c_uint(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM))
+
+        # SetFolder: set the initial directory using IShellItem
+        _init = Path(initial_dir)
+        if _init.exists():
+            shell_item = ctypes.c_void_p()
+            hr2 = shell32.SHCreateItemFromParsingName(
+                str(_init), None, IID_IShellItem, ctypes.byref(shell_item)
+            )
+            if hr2 == S_OK and shell_item:
+                try:
+                    _com(dialog, 12, ctypes.HRESULT, shell_item)  # SetFolder
+                finally:
+                    _com(shell_item, 2, ctypes.HRESULT)  # Release IShellItem
+
+        # Show the dialog (hwnd=0 → no parent)
+        hr3 = _com(dialog, 3, ctypes.HRESULT, wt.HWND(0))  # Show
+        if hr3 != S_OK:
+            return None  # user cancelled (HRESULT_FROM_WIN32 ERROR_CANCELLED)
+
+        # GetResult → IShellItem
+        result = ctypes.c_void_p()
+        hr4 = _com(dialog, 20, ctypes.HRESULT, ctypes.byref(result))  # GetResult
+        if hr4 != S_OK or not result:
+            return None
+
+        try:
+            # GetDisplayName(SIGDN_FILESYSPATH) → PWSTR
+            pwstr = ctypes.c_wchar_p()
+            hr5 = _com(result, 5, ctypes.HRESULT, SIGDN_FILESYSPATH, ctypes.byref(pwstr))  # GetDisplayName
+            if hr5 != S_OK or not pwstr:
+                return None
+            chosen = pwstr.value
+            ole32.CoTaskMemFree(pwstr)
+            return str(Path(chosen).resolve()) if chosen else None
+        finally:
+            _com(result, 2, ctypes.HRESULT)  # Release IShellItem result
+
+    except Exception as exc:
+        logger.debug("IFileOpenDialog error (non-fatal, will fallback): %s", exc)
+        return None
+    finally:
+        _com(dialog, 2, ctypes.HRESULT)  # Release IFileOpenDialog
+
+
 class GeneralPanel(_BasePanel):
     """
     Renders the three purely-general settings sections:
@@ -129,13 +240,58 @@ class GeneralPanel(_BasePanel):
     # ── Handlers ──────────────────────────────────────────────────────────
 
     def _browse_dir(self) -> None:
-        import tkinter.filedialog as fd
-        chosen = fd.askdirectory(
-            title="Select download folder",
-            initialdir=str(self._app.config.download_dir))
-        if chosen:
-            self._app.config.set("download_dir", chosen)
-            self._dir_lbl.configure(text=chosen)
+        """
+        FIX-BROWSE-1: Open folder picker.
+        On Windows: use IFileOpenDialog (modern COM dialog) which correctly
+        supports in-dialog folder creation and rename.
+        Other platforms: fall back to tkinter.filedialog.askdirectory.
+        Always normalize the returned path and verify the folder exists
+        before updating config, preventing the 'opens at Documents' bug
+        caused by a stale/non-existent initialdir.
+        """
+        import sys
+        from pathlib import Path
+
+        # Determine safe initialdir — fall back to home if stored path is gone
+        current_dir = Path(str(self._app.config.download_dir))
+        initialdir = str(current_dir) if current_dir.exists() else str(Path.home())
+
+        chosen: "str | None" = None
+
+        # Try the modern Windows COM dialog first
+        if sys.platform == "win32":
+            try:
+                chosen = _pick_folder_win32(initialdir)
+            except Exception as exc:
+                logger.debug("_pick_folder_win32 raised (fallback): %s", exc)
+                chosen = None
+
+        # Fallback: Tkinter dialog (macOS, Linux, or Windows COM failure)
+        if chosen is None:
+            import tkinter.filedialog as fd
+            chosen = fd.askdirectory(
+                title="Select download folder",
+                initialdir=initialdir,
+            )
+
+        if not chosen:
+            return  # user cancelled
+
+        # Normalize to OS-native absolute path (fixes mixed-separator bug)
+        chosen_path = Path(chosen).resolve()
+
+        # Safety: create the folder if the user typed a new path that
+        # doesn't exist yet (edge case with fallback dialog)
+        try:
+            chosen_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning("Cannot create download dir %s: %s", chosen_path, exc)
+            self._app.toast(f"Không thể tạo thư mục: {exc}", "error")
+            return
+
+        chosen_str = str(chosen_path)
+        self._app.config.set("download_dir", chosen_str)
+        self._dir_lbl.configure(text=chosen_str)
 
     def _change_theme(self, theme: str) -> None:
         self._app.config.set("theme", theme)
