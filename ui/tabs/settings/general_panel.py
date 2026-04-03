@@ -94,7 +94,7 @@ def _pick_folder_win32(initial_dir: str) -> "str | None | object":
     CLSCTX_INPROC_SERVER = 1
     FOS_PICKFOLDERS      = 0x00000020
     FOS_FORCEFILESYSTEM  = 0x00000040
-    SIGDN_FILESYSPATH    = ctypes.c_int(-2147319808)  # 0x80058000 as signed int
+    SIGDN_FILESYSPATH    = ctypes.c_int(-2147123200)  # 0x80058000 as signed int32
 
     ole32   = ctypes.windll.ole32
     shell32 = ctypes.windll.shell32
@@ -202,6 +202,47 @@ def _pick_folder_win32(initial_dir: str) -> "str | None | object":
         _com(dialog, 2)  # Release IFileOpenDialog
         if _co_needs_uninit:
             ole32.CoUninitialize()
+
+
+def _resolve_com_rename(stale_path: "pathlib.Path") -> "pathlib.Path | None":
+    """
+    FIX-BROWSE-4: IFileOpenDialog can return a stale path when the user
+    renames 'New Folder' and presses Enter before the Windows Shell rename
+    notification propagates to the dialog's IShellItem cache.
+
+    Symptom: GetDisplayName returns 'New Folder' even though the folder was
+    already renamed on disk. The stale path does not exist.
+
+    Recovery: scan the parent directory for a folder created within the last
+    30 seconds (tight enough to avoid picking unrelated folders, loose enough
+    for slow machines). The renamed folder will be the most recently created
+    entry matching that window.
+
+    Returns the resolved Path, or None if the renamed folder cannot be found.
+    """
+    import time
+
+    parent = stale_path.parent
+    if not parent.is_dir():
+        return None
+    try:
+        now = time.time()
+        candidates = [
+            d for d in parent.iterdir()
+            if d.is_dir()
+            and d.name != stale_path.name
+            and (now - d.stat().st_ctime) < 30
+        ]
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda d: d.stat().st_ctime)
+        logger.debug(
+            "_resolve_com_rename: stale=%r → resolved=%r",
+            stale_path.name, best.name,
+        )
+        return best
+    except OSError:
+        return None
 
 
 class GeneralPanel(_BasePanel):
@@ -321,6 +362,14 @@ class GeneralPanel(_BasePanel):
 
         FIX-BROWSE-3: byref() args in the COM vtable caller no longer crash
         ctypes, so the COM dialog is now reached reliably on Windows.
+
+        FIX-BROWSE-4: Do NOT call mkdir() on the path returned by the COM dialog.
+        IFileOpenDialog only returns existing filesystem paths; calling mkdir on a
+        stale "New Folder" path (caused by Shell rename-notification lag) would
+        re-create the old folder on disk and save the wrong name to config.
+        Instead, use _resolve_com_rename() to recover the actual renamed folder.
+        mkdir() is only called for the tkinter fallback path (where the user may
+        type a path that doesn't yet exist).
         """
         import sys
         from pathlib import Path
@@ -330,6 +379,7 @@ class GeneralPanel(_BasePanel):
         initialdir = str(current_dir) if current_dir.exists() else str(Path.home())
 
         chosen: "str | None" = None
+        _from_com = False
 
         # Try the modern Windows COM dialog first
         if sys.platform == "win32":
@@ -341,7 +391,9 @@ class GeneralPanel(_BasePanel):
 
             if result is _CANCELLED:
                 return  # FIX-BROWSE-2: user cancelled — do NOT open tkinter
-            chosen = result  # None → COM setup failed, fall through to tkinter
+            if result is not None:
+                chosen = result
+                _from_com = True  # FIX-BROWSE-4: track origin for mkdir decision
 
         # Fallback: Tkinter dialog (macOS, Linux, or Windows COM setup failure)
         if chosen is None:
@@ -357,14 +409,29 @@ class GeneralPanel(_BasePanel):
         # Normalize to OS-native absolute path (fixes mixed-separator bug)
         chosen_path = Path(chosen).resolve()
 
-        # Safety: create the folder if the user typed a new path that
-        # doesn't exist yet (edge case with fallback dialog)
-        try:
-            chosen_path.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            logger.warning("Cannot create download dir %s: %s", chosen_path, exc)
-            self._app.toast(f"Không thể tạo thư mục: {exc}", "error")
-            return
+        if _from_com:
+            # FIX-BROWSE-4: COM dialog returns only existing filesystem paths.
+            # If the path doesn't exist, Shell rename-notification lag caused
+            # GetDisplayName to return the pre-rename "New Folder" name.
+            # Recover the actual renamed folder; never call mkdir here.
+            if not chosen_path.exists():
+                recovered = _resolve_com_rename(chosen_path)
+                if recovered is None or not recovered.exists():
+                    logger.warning(
+                        "_browse_dir: COM path not found and recovery failed: %s",
+                        chosen_path,
+                    )
+                    self._app.toast("Không tìm thấy thư mục. Hãy thử chọn lại.", "error")
+                    return
+                chosen_path = recovered
+        else:
+            # Tkinter fallback: user may type a new path that doesn't exist yet.
+            try:
+                chosen_path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("Cannot create download dir %s: %s", chosen_path, exc)
+                self._app.toast(f"Không thể tạo thư mục: {exc}", "error")
+                return
 
         chosen_str = str(chosen_path)
         self._app.config.set("download_dir", chosen_str)

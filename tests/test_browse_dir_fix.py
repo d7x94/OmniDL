@@ -349,23 +349,188 @@ class TestBrowseDirCancelBehaviour:
             "_pick_folder_win32 must not be called on non-Windows"
         )
 
-    def test_chosen_path_saved_to_config(self, tmp_path):
-        """When a valid folder is chosen, config and label must be updated."""
-        new_dir = tmp_path / "chosen"
-        new_dir.mkdir()
 
-        gp_mod = _import_module()
+# ---------------------------------------------------------------------------
+# Tests for FIX-BROWSE-4: _resolve_com_rename + no-mkdir for COM paths
+# ---------------------------------------------------------------------------
+
+class TestResolveComRename:
+    """
+    _resolve_com_rename must find the actual renamed folder when the COM
+    dialog returns a stale 'New Folder' path that no longer exists.
+    """
+
+    def _get_fn(self):
+        return _import_module()._resolve_com_rename
+
+    def test_returns_none_when_parent_missing(self, tmp_path):
+        fn = _import_module()._resolve_com_rename
+        stale = tmp_path / "nonexistent_parent" / "New Folder"
+        assert fn(stale) is None
+
+    def test_returns_none_when_no_recent_dirs(self, tmp_path):
+        """No folders created in the last 30s (except stale) → None."""
+        fn = _import_module()._resolve_com_rename
+        stale = tmp_path / "New Folder"
+        # Don't create any folder — parent exists but has no candidates
+        assert fn(stale) is None
+
+    def test_finds_renamed_folder(self, tmp_path):
+        """The most recently created dir in parent within 30s is returned."""
+        fn = _import_module()._resolve_com_rename
+        # Simulate: user renamed "New Folder" to "MyDownloads"
+        renamed = tmp_path / "MyDownloads"
+        renamed.mkdir()
+        stale = tmp_path / "New Folder"  # never created on disk
+        result = fn(stale)
+        assert result == renamed
+
+    def test_ignores_stale_name_if_it_exists(self, tmp_path):
+        """
+        If both 'New Folder' (stale) and 'MyDownloads' exist, the stale name
+        is excluded from candidates (d.name != stale_path.name).
+        """
+        fn = _import_module()._resolve_com_rename
+        old_folder = tmp_path / "New Folder"
+        old_folder.mkdir()
+        renamed = tmp_path / "MyDownloads"
+        renamed.mkdir()
+        stale = tmp_path / "New Folder"
+        result = fn(stale)
+        assert result == renamed
+
+    def test_returns_most_recently_created(self, tmp_path):
+        """When multiple recent dirs exist, the one with the latest ctime wins."""
+        import time
+        fn = _import_module()._resolve_com_rename
+        older = tmp_path / "OlderDir"
+        older.mkdir()
+        time.sleep(0.01)  # ensure ctime ordering
+        newer = tmp_path / "NewerDir"
+        newer.mkdir()
+        stale = tmp_path / "New Folder"
+        result = fn(stale)
+        assert result == newer
+
+    def test_returns_none_on_oserror(self, tmp_path):
+        """OSError during iterdir is caught and returns None."""
+        fn = _import_module()._resolve_com_rename
+        stale = tmp_path / "New Folder"
+        with patch("pathlib.Path.iterdir", side_effect=OSError("perm")):
+            result = fn(stale)
+        assert result is None
+
+
+class TestBrowseDirNoMkdirForComPath:
+    """
+    FIX-BROWSE-4: _browse_dir must NOT call mkdir() when the chosen path
+    came from the COM dialog. mkdir would re-create the stale 'New Folder'
+    and save the wrong name to config.
+    """
+
+    def _make_panel(self, gp_mod, tmp_path):
         panel = object.__new__(gp_mod.GeneralPanel)
-        panel._app = self._make_app(tmp_path)
+        panel._app = MagicMock()
+        panel._app.config.download_dir = str(tmp_path)
         panel._dir_lbl = MagicMock()
+        return panel
 
-        with self._stub_tkinter(), \
-             patch.object(gp_mod, "_pick_folder_win32",
-                          return_value=str(new_dir)), \
+    def test_no_mkdir_when_com_returns_existing_path(self, tmp_path):
+        """COM dialog returns an existing path → mkdir must NOT be called."""
+        gp_mod = _import_module()
+        panel = self._make_panel(gp_mod, tmp_path)
+        existing = tmp_path / "MyDownloads"
+        existing.mkdir()
+
+        mkdir_calls = []
+        original_mkdir = existing.__class__.mkdir
+
+        with patch.object(gp_mod, "_pick_folder_win32", return_value=str(existing)), \
+             patch("sys.platform", "win32"), \
+             patch("pathlib.Path.mkdir", side_effect=lambda *a, **k: mkdir_calls.append(True)):
+            panel._browse_dir()
+
+        assert not mkdir_calls, "mkdir must NOT be called for COM dialog result"
+
+    def test_stale_com_path_resolved_via_helper(self, tmp_path):
+        """
+        FIX-BROWSE-4: COM returns 'New Folder' (stale, doesn't exist).
+        _browse_dir must call _resolve_com_rename and use its result.
+        """
+        gp_mod = _import_module()
+        panel = self._make_panel(gp_mod, tmp_path)
+
+        stale_path = tmp_path / "New Folder"  # doesn't exist on disk
+        actual_path = tmp_path / "MyDownloads"
+        actual_path.mkdir()
+
+        with patch.object(gp_mod, "_pick_folder_win32", return_value=str(stale_path)), \
              patch("sys.platform", "win32"):
             panel._browse_dir()
 
+        # Config must be saved with the resolved name, not "New Folder"
         panel._app.config.set.assert_called_with(
-            "download_dir", str(new_dir.resolve())
+            "download_dir", str(actual_path.resolve())
         )
-        panel._dir_lbl.configure.assert_called()
+
+    def test_stale_com_path_no_candidate_shows_toast(self, tmp_path):
+        """
+        If COM returns a stale path and no candidate is found, show an error
+        toast and do NOT save to config.
+        """
+        gp_mod = _import_module()
+        panel = self._make_panel(gp_mod, tmp_path)
+
+        stale_path = tmp_path / "New Folder"  # doesn't exist, no candidates
+
+        with patch.object(gp_mod, "_pick_folder_win32", return_value=str(stale_path)), \
+             patch("sys.platform", "win32"):
+            panel._browse_dir()
+
+        panel._app.config.set.assert_not_called()
+        panel._app.toast.assert_called()
+
+    def test_tkinter_fallback_still_calls_mkdir(self, tmp_path):
+        """
+        Tkinter fallback path must still call mkdir (user may type new paths).
+        """
+        import types as _types
+
+        gp_mod = _import_module()
+        panel = self._make_panel(gp_mod, tmp_path)
+
+        new_dir = tmp_path / "NewDir"  # doesn't exist yet
+
+        # Stub tkinter.filedialog in sys.modules (headless CI compatible)
+        fd_mod = _types.ModuleType("tkinter.filedialog")
+        fd_mod.askdirectory = MagicMock(return_value=str(new_dir))
+        prev_fd = sys.modules.get("tkinter.filedialog")
+        prev_tk = sys.modules.get("tkinter")
+        tk_stub = _types.ModuleType("tkinter")
+        tk_stub.filedialog = fd_mod
+        sys.modules["tkinter"] = tk_stub
+        sys.modules["tkinter.filedialog"] = fd_mod
+
+        mkdir_calls = []
+        original_mkdir = type(new_dir).mkdir
+
+        def capturing_mkdir(self_path, *a, **k):
+            mkdir_calls.append(str(self_path))
+            original_mkdir(self_path, *a, **k)
+
+        try:
+            with patch.object(gp_mod, "_pick_folder_win32", return_value=None), \
+                 patch("sys.platform", "win32"), \
+                 patch.object(type(new_dir), "mkdir", capturing_mkdir):
+                panel._browse_dir()
+        finally:
+            sys.modules.pop("tkinter", None)
+            sys.modules.pop("tkinter.filedialog", None)
+            if prev_tk is not None:
+                sys.modules["tkinter"] = prev_tk
+            if prev_fd is not None:
+                sys.modules["tkinter.filedialog"] = prev_fd
+
+        assert any(str(new_dir.resolve()) in c for c in mkdir_calls), \
+            "mkdir must still be called for tkinter fallback path"
+
