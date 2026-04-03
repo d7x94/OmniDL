@@ -25,6 +25,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -40,8 +41,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Suppress console window on Windows for all subprocess calls.
-# subprocess.CREATE_NO_WINDOW is 0x08000000 on Windows; absent on other platforms.
-_WIN_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Only injected on win32 — on Linux/macOS creationflags must be absent entirely.
+_SUBPROCESS_EXTRA: dict = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if sys.platform == "win32"
+    else {}
+)
 
 # ── Security: allowlist for Tailscale node names / IPs ───────────────────
 # Accepts:
@@ -429,7 +434,7 @@ class TaildropService:
             out = subprocess.run(
                 [tailscale, "status", "--json"],
                 capture_output=True, text=True, timeout=8,
-                creationflags=_WIN_NO_WINDOW,
+                **_SUBPROCESS_EXTRA,
             )
             if out.returncode != 0:
                 return []
@@ -478,7 +483,7 @@ class TaildropService:
             out = subprocess.run(
                 [tailscale, "status"],
                 capture_output=True, text=True, timeout=8,
-                creationflags=_WIN_NO_WINDOW,
+                **_SUBPROCESS_EXTRA,
             )
             if out.returncode != 0:
                 return []
@@ -624,7 +629,7 @@ class TaildropService:
                 capture_output=True,
                 text=True,
                 timeout=120,  # 2-min timeout for large files
-                creationflags=_WIN_NO_WINDOW,
+                **_SUBPROCESS_EXTRA,
             )
             if result.returncode == 0:
                 return TransferResult(success=True, dest_node=node)
