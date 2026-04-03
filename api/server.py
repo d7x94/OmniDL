@@ -966,11 +966,15 @@ def start_api_server(
 
     # Instantiate RemoteConvertService — shares the same EventBus so convert
     # progress events flow through the existing SSE broadcaster automatically.
+    # BUG-BU FIX: Use getattr() so that if start_api_server is called with a
+    # ServiceFacade that pre-dates the taildrop property (e.g. an older build
+    # started from Settings toggle), the call degrades gracefully to taildrop=None
+    # instead of raising AttributeError and leaving the API permanently disabled.
     from app.services.remote_convert_service import RemoteConvertService
     remote_convert = RemoteConvertService(
         config=config,
         event_bus=bus,
-        taildrop=service.taildrop,   # wire so converted files auto-send to iPhone
+        taildrop=getattr(service, "taildrop", None),  # BUG-BU: safe fallback
     )
 
     app = create_app(service, config, remote_convert=remote_convert)

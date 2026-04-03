@@ -437,6 +437,13 @@ _MEDIA_EXTS: frozenset[str] = frozenset({
     ".ts",   # MPEG-TS live recordings — needed so pp_hook captures task.filename
 })
 
+# BUG-BT: Audio-only output formats that require FFmpegExtractAudio postprocessor
+# instead of merge_output_format.  merge_output_format is designed to pick the
+# container when MERGING separate video+audio streams; it cannot transcode audio
+# to a different codec independently.  Using it with mp3/m4a/flac on YouTube
+# (where the native format is webm/opus) causes "Postprocessing: Conversion failed!".
+_AUDIO_ONLY_EXTS: frozenset[str] = frozenset({"mp3", "m4a", "aac", "flac", "opus", "wav", "ogg"})
+
 
 class YtDlpEngine:
     """
@@ -933,6 +940,22 @@ class YtDlpEngine:
         _is_tiktok_vod = (
             _TIKTOK_VOD_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
         )
+
+        # BUG-BT FIX: Detect audio-only output formats early so downstream
+        # logic can route to FFmpegExtractAudio instead of merge_output_format.
+        _out_ext = task.output_ext.lower().lstrip(".")
+        _is_audio_output = _out_ext in _AUDIO_ONLY_EXTS
+
+        # BUG-BT FIX: When the user requests an audio-only output format
+        # (mp3, m4a, flac …) but the format_id still pulls both video and audio
+        # streams (e.g. "bestvideo+bestaudio/best"), downloading the video
+        # stream is wasteful and FFmpeg cannot mux the result into an audio
+        # container.  Patch format_id to audio-only so only the audio stream
+        # is fetched.  This is safe: if the user explicitly chose "Audio Only"
+        # quality in the UI, format_id is already "bestaudio/best" and the
+        # guard below is a no-op.
+        if _is_audio_output and not is_live and "bestvideo" in _format_id:
+            _format_id = "bestaudio/best"
         if not is_live and _is_tiktok_vod and "bestvideo*" not in _format_id:
             # BUG-BP FIX: BUG-BO only patched format_id values containing
             # "bestvideo".  When format_id="best" (the common default), the
@@ -1106,13 +1129,49 @@ class YtDlpEngine:
         # downloaded streams.  For livestreams the HLS segments are already a
         # single muxed container — adding a merge step causes ffmpeg to crash
         # (Windows exit code 3419392776).  Only set it for non-live downloads.
-        if not is_live:
+        #
+        # BUG-BT FIX: merge_output_format is designed for MERGING separate
+        # video+audio streams into a single container.  It cannot transcode
+        # audio from one codec to another (e.g. opus → mp3).  For audio-only
+        # output formats, FFmpegExtractAudio is the correct postprocessor —
+        # it is added below in the thumbnail/metadata block.
+        if not is_live and not _is_audio_output:
             opts["merge_output_format"] = task.output_ext
 
         # Proper thumbnail embedding via postprocessors.
         # Skip for livestreams — there is no single output file to embed into
         # while the stream is ongoing; ffmpeg will crash trying.
-        if self._config.embed_thumbnail and not is_live:
+        #
+        # BUG-BT FIX: For audio-only output formats (mp3, m4a, flac …) the
+        # FFmpegExtractAudio postprocessor MUST come first — it performs the
+        # codec transcode.  Subsequent postprocessors (Metadata, EmbedThumbnail)
+        # then operate on the already-transcoded audio file.
+        if _is_audio_output and not is_live:
+            _audio_pp: dict = {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": _out_ext,
+                # "0" = highest VBR quality for mp3/aac; ignored for lossless
+                # formats (flac, wav) where quality is not applicable.
+                "preferredquality": "0",
+            }
+            if self._config.embed_thumbnail:
+                opts["writethumbnail"] = True
+                opts["postprocessors"] = [
+                    _audio_pp,
+                    {"key": "FFmpegMetadata", "add_metadata": True},
+                    {"key": "EmbedThumbnail"},
+                ]
+                # EmbedThumbnail stream-copies the audio so no re-encode occurs
+                # when attaching the thumbnail artwork (ID3 for mp3, covr for m4a).
+                opts["postprocessor_args"] = {
+                    "EmbedThumbnail+ffmpeg": ["-c", "copy"],
+                }
+            else:
+                pps: list = [_audio_pp]
+                if self._config.embed_metadata:
+                    pps.append({"key": "FFmpegMetadata", "add_metadata": True})
+                opts["postprocessors"] = pps
+        elif self._config.embed_thumbnail and not is_live:
             opts["writethumbnail"] = True
             opts["postprocessors"] = [
                 {"key": "FFmpegMetadata", "add_metadata": True},
