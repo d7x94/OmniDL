@@ -972,6 +972,14 @@ def start_api_server(
         port=config.api_port,
         log_level="warning",
         access_log=False,
+        # BUG-BT: log_config=None disables uvicorn's default logging setup.
+        # Without this, uvicorn.Config.__init__ calls configure_logging() →
+        # dictConfig() → DefaultFormatter.__init__ → sys.stdout.isatty().
+        # In a PyInstaller --windowed EXE sys.stdout is None (no console),
+        # causing:  AttributeError: 'NoneType' object has no attribute 'isatty'
+        # OmniDL already has its own logging via setup_logging(), so we do not
+        # need uvicorn's DefaultFormatter at all.
+        log_config=None,
         # loop="asyncio" is the default and works on all platforms.
         # Do NOT use "uvloop" — it requires a separate install and may
         # not be available in the frozen PyInstaller bundle.
