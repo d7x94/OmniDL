@@ -183,6 +183,11 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-api.txt
+
+      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
+        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
+
+      # ── Download & stage FFmpeg (Windows) ──────────────────────────────
       # Source: gyan.dev canonical Windows FFmpeg builds.
       # We download the "essentials" zip and extract ONLY ffmpeg.exe and
       # ffprobe.exe into resources/ffmpeg/.  The directory is gitignored.
