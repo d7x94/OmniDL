@@ -25,6 +25,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor

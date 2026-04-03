@@ -85,9 +85,8 @@ def _pick_folder_win32(initial_dir: str) -> "str | None":
     # Tkinter may have already initialized COM (OleInitialize → APARTMENTTHREADED),
     # in which case CoInitialize returns S_FALSE (1) — still needs matching
     # CoUninitialize.  If COM was initialized with a different threading model,
-    # it returns RPC_E_CHANGED_MODE and we must NOT call CoUninitialize.
+    # it returns RPC_E_CHANGED_MODE (0x80010106) and we must NOT call CoUninitialize.
     S_FALSE              = 1
-    RPC_E_CHANGED_MODE   = 0x80010106
     co_hr = ole32.CoInitialize(None)
     _co_needs_uninit = co_hr in (S_OK, S_FALSE)
 
