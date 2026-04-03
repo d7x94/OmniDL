@@ -574,3 +574,8 @@ class ServiceFacade:
     def check_tiktok_profile_live(self, url: str, on_done, on_error) -> None:
         """Check if a TikTok profile URL is currently live (background thread)."""
         self._svc.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
+
+    @property
+    def taildrop(self) -> "TaildropService":
+        """Expose TaildropService so api.server can access it via ServiceFacade."""
+        return self._svc.taildrop
