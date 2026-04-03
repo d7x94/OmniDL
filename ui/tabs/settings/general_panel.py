@@ -124,10 +124,12 @@ def _pick_folder_win32(initial_dir: str) -> "str | None":
 
         # GetResult → IShellItem
         # IFileDialog vtable (counting from IUnknown=0):
-        #   0-2: IUnknown, 3: Show, 4-24: IFileDialog methods,
-        #   25: GetResult  (NOT 20 — index 20 is SetDefaultExtension)
+        #   0-2: IUnknown, 3: Show, 4-19: IFileDialog methods,
+        #   20: GetResult, 21: AddPlace, 22: SetDefaultExtension,
+        #   23: Close, 24: SetClientGuid, 25: ClearClientData, 26: SetFilter
+        # IFileOpenDialog: 27: GetResults, 28: GetSelectedItems
         result = ctypes.c_void_p()
-        hr4 = _com(dialog, 25, ctypes.HRESULT, ctypes.byref(result))  # GetResult
+        hr4 = _com(dialog, 20, ctypes.HRESULT, ctypes.byref(result))  # GetResult
         if hr4 != S_OK or not result:
             return None
 
