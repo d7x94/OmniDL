@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Suppress console window on Windows for all subprocess calls.
 # Only injected on win32 — on Linux/macOS creationflags must be absent entirely.
 _SUBPROCESS_EXTRA: dict = (
-    {"creationflags": subprocess.CREATE_NO_WINDOW}
+    {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
     if sys.platform == "win32"
     else {}
 )
