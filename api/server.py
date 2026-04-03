@@ -26,6 +26,7 @@ import logging
 import mimetypes
 import queue
 import secrets
+import sys
 import threading
 import time
 from pathlib import Path
@@ -837,8 +838,25 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def web_ui():
-        """Serve the mobile PWA web interface."""
+        """Serve the mobile PWA web interface.
+
+        Path resolution order (handles both source-run and PyInstaller bundle):
+          1. Path(__file__).parent / "static" — works in source mode and in most
+             frozen builds where __file__ resolves inside sys._MEIPASS/api/.
+          2. sys._MEIPASS / "api" / "static" — explicit PyInstaller fallback for
+             edge cases where __file__ does not resolve as expected inside the
+             bundle (e.g. some one-file builds).
+        Both paths target the same file when the bundle is built with:
+          --add-data "api/static:api/static"  (macOS / Linux)
+          --add-data "api/static;api/static"  (Windows)
+        """
+        # Primary path: works in source mode and standard onedir frozen builds.
         html_path = Path(__file__).parent / "static" / "index.html"
+
+        # Fallback: explicit _MEIPASS lookup for PyInstaller frozen builds.
+        if not html_path.exists() and getattr(sys, "frozen", False):
+            html_path = Path(sys._MEIPASS) / "api" / "static" / "index.html"  # type: ignore[attr-defined]
+
         if html_path.exists():
             return HTMLResponse(
                 content=html_path.read_text(encoding="utf-8"),

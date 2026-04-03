@@ -289,6 +289,7 @@ jobs:
             --add-data "config.json;." `
             --add-data "resources/ffmpeg;ffmpeg" `
             --add-data "resources/deno;deno" `
+            --add-data "api/static;api/static" `
             --hidden-import multiprocessing `
             --hidden-import multiprocessing.freeze_support `
             --hidden-import customtkinter `
@@ -489,6 +490,7 @@ jobs:
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
             --add-data "resources/deno:deno" \
+            --add-data "api/static:api/static" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \
@@ -719,6 +721,7 @@ jobs:
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
             --add-data "resources/deno:deno" \
+            --add-data "api/static:api/static" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \
