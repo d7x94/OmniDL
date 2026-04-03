@@ -29,6 +29,9 @@ from infrastructure.config.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
+# Suppress console window on Windows for all subprocess calls.
+_WIN_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 # Platforms gallery-dl handles better than yt-dlp for image content
 _SUPPORTED_RE = re.compile(
     r"instagram\.com|twitter\.com|x\.com|pinterest\.|pixiv\.net|deviantart\.com",
@@ -169,6 +172,7 @@ class GalleryDlEngine:
                 timeout=30,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=_WIN_NO_WINDOW,
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError("gallery-dl hết thời gian khi lấy thông tin URL.") from None
@@ -288,6 +292,7 @@ class GalleryDlEngine:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=_WIN_NO_WINDOW,
             )
         except FileNotFoundError:
             raise RuntimeError(

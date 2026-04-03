@@ -39,6 +39,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Suppress console window on Windows for all subprocess calls.
+_WIN_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 # ── Security: allowlist for Tailscale node names / IPs ───────────────────
 # Accepts:
 #   • Tailscale Magic DNS names  e.g. "iphone", "my-iphone", "pixel-7"
@@ -425,6 +428,7 @@ class TaildropService:
             out = subprocess.run(
                 [tailscale, "status", "--json"],
                 capture_output=True, text=True, timeout=8,
+                creationflags=_WIN_NO_WINDOW,
             )
             if out.returncode != 0:
                 return []
@@ -473,6 +477,7 @@ class TaildropService:
             out = subprocess.run(
                 [tailscale, "status"],
                 capture_output=True, text=True, timeout=8,
+                creationflags=_WIN_NO_WINDOW,
             )
             if out.returncode != 0:
                 return []
@@ -618,6 +623,7 @@ class TaildropService:
                 capture_output=True,
                 text=True,
                 timeout=120,  # 2-min timeout for large files
+                creationflags=_WIN_NO_WINDOW,
             )
             if result.returncode == 0:
                 return TransferResult(success=True, dest_node=node)

@@ -38,6 +38,10 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+
+# Suppress console window on Windows for all subprocess calls.
+# subprocess.CREATE_NO_WINDOW is 0x08000000 on Windows; 0 elsewhere (no-op).
+_WIN_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
@@ -311,6 +315,7 @@ def _validate_encoder_codec(ffmpeg_bin: Path, codec: str) -> bool:
             cmd,
             capture_output=True,
             timeout=30,
+            creationflags=_WIN_NO_WINDOW,
         )
         if result.returncode == 0:
             return True
@@ -374,6 +379,7 @@ def detect_available_encoders(
             timeout=10,
             encoding="utf-8",
             errors="replace",
+            creationflags=_WIN_NO_WINDOW,
         )
         if result.returncode != 0:
             if _use_cache:
@@ -434,6 +440,7 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
             timeout=15,
             encoding="utf-8",
             errors="replace",
+            creationflags=_WIN_NO_WINDOW,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None
@@ -794,7 +801,8 @@ class FfmpegConvertService:
                 "-c", "copy",
                 str(remux_output),
             ]
-            result = subprocess.run(remux_cmd, capture_output=True, timeout=120)
+            result = subprocess.run(remux_cmd, capture_output=True, timeout=120,
+                                    creationflags=_WIN_NO_WINDOW)
             temp_output.unlink(missing_ok=True)
             if result.returncode != 0:
                 tail = result.stderr[-200:].decode("utf-8", errors="replace")
@@ -987,6 +995,8 @@ class FfmpegConvertService:
         }
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True   # new process group on POSIX
+        else:
+            popen_kwargs["creationflags"] = _WIN_NO_WINDOW
 
         proc = subprocess.Popen(cmd, **popen_kwargs)
 
@@ -1103,7 +1113,8 @@ class FfmpegConvertService:
                 "-c", "copy",
                 str(output),
             ]
-            result = subprocess.run(concat_cmd, capture_output=True, timeout=120)
+            result = subprocess.run(concat_cmd, capture_output=True, timeout=120,
+                                    creationflags=_WIN_NO_WINDOW)
             if result.returncode != 0:
                 err = result.stderr.decode("utf-8", errors="replace")[-500:]
                 raise ConversionError(
@@ -1156,6 +1167,7 @@ class FfmpegConvertService:
             r = subprocess.run(
                 [str(ffmpeg_bin), "-i", str(source)],
                 capture_output=True, timeout=10,
+                creationflags=_WIN_NO_WINDOW,
             )
             return _parse_duration(r.stderr.decode("utf-8", errors="replace"))
         except Exception as exc:

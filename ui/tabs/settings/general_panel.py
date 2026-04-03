@@ -81,12 +81,24 @@ def _pick_folder_win32(initial_dir: str) -> "str | None":
         proto = ctypes.WINFUNCTYPE(restype, *arg_types)
         return proto(fn_addr)(obj, *args)
 
+    # CoInitialize is required before CoCreateInstance.
+    # Tkinter may have already initialized COM (OleInitialize → APARTMENTTHREADED),
+    # in which case CoInitialize returns S_FALSE (1) — still needs matching
+    # CoUninitialize.  If COM was initialized with a different threading model,
+    # it returns RPC_E_CHANGED_MODE and we must NOT call CoUninitialize.
+    S_FALSE              = 1
+    RPC_E_CHANGED_MODE   = 0x80010106
+    co_hr = ole32.CoInitialize(None)
+    _co_needs_uninit = co_hr in (S_OK, S_FALSE)
+
     dialog = ctypes.c_void_p()
     hr = ole32.CoCreateInstance(
         CLSID_FileOpenDialog, None, CLSCTX_INPROC_SERVER,
         IID_IFileOpenDialog, ctypes.byref(dialog),
     )
     if hr != S_OK or not dialog:
+        if _co_needs_uninit:
+            ole32.CoUninitialize()
         return None
 
     try:
@@ -112,8 +124,11 @@ def _pick_folder_win32(initial_dir: str) -> "str | None":
             return None  # user cancelled (HRESULT_FROM_WIN32 ERROR_CANCELLED)
 
         # GetResult → IShellItem
+        # IFileDialog vtable (counting from IUnknown=0):
+        #   0-2: IUnknown, 3: Show, 4-24: IFileDialog methods,
+        #   25: GetResult  (NOT 20 — index 20 is SetDefaultExtension)
         result = ctypes.c_void_p()
-        hr4 = _com(dialog, 20, ctypes.HRESULT, ctypes.byref(result))  # GetResult
+        hr4 = _com(dialog, 25, ctypes.HRESULT, ctypes.byref(result))  # GetResult
         if hr4 != S_OK or not result:
             return None
 
@@ -134,6 +149,8 @@ def _pick_folder_win32(initial_dir: str) -> "str | None":
         return None
     finally:
         _com(dialog, 2, ctypes.HRESULT)  # Release IFileOpenDialog
+        if _co_needs_uninit:
+            ole32.CoUninitialize()
 
 
 class GeneralPanel(_BasePanel):
