@@ -30,7 +30,7 @@ from infrastructure.config.config_manager import ConfigManager
 logger = logging.getLogger(__name__)
 
 # Suppress console window on Windows for all subprocess calls.
-_WIN_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+_WIN_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Platforms gallery-dl handles better than yt-dlp for image content
 _SUPPORTED_RE = re.compile(

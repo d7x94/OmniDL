@@ -25,7 +25,6 @@ import logging
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -41,7 +40,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Suppress console window on Windows for all subprocess calls.
-_WIN_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+# subprocess.CREATE_NO_WINDOW is 0x08000000 on Windows; absent on other platforms.
+_WIN_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # ── Security: allowlist for Tailscale node names / IPs ───────────────────
 # Accepts:

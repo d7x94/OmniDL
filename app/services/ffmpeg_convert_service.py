@@ -44,8 +44,8 @@ from typing import Callable, Literal, Optional
 from utils.ffmpeg_locator import locate_ffmpeg
 
 # Suppress console window on Windows for all subprocess calls.
-# subprocess.CREATE_NO_WINDOW is 0x08000000 on Windows; 0 elsewhere (no-op).
-_WIN_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+# subprocess.CREATE_NO_WINDOW is 0x08000000 on Windows; absent on other platforms.
+_WIN_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 logger = logging.getLogger(__name__)
 
