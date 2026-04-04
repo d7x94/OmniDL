@@ -1,5 +1,6 @@
 # Development / build dependencies — not needed in production venvs.
 pytest>=8.0.0
 pytest-cov>=5.0.0
+mypy>=1.20.0
 pyinstaller==6.19.0
 types-requests>=2.31.0        # mypy stubs for requests

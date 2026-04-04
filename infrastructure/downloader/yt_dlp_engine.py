@@ -21,10 +21,6 @@ from utils.ffmpeg_locator import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
-# BUG-BQ DIAGNOSTIC: Force DEBUG level for this module so format-selection
-# diagnostic lines are captured in omnidl_run.log.  Scoped only to this logger.
-logger.setLevel(logging.DEBUG)
-
 
 def _validate_cookie_path(config: "ConfigManager") -> str | None:
     """Resolve and validate the configured cookie_file path (CWE-22).
