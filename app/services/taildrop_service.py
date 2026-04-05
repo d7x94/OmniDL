@@ -26,8 +26,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import unicodedata
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -580,6 +582,12 @@ class TaildropService:
         • node validated against _NODE_RE before use in subprocess args.
         • file_path is passed as a Path object (no string interpolation).
         • subprocess called with a list (not shell=True) — no shell injection.
+
+        Directory support (BUG-BV):
+        • Tailscale CLI rejects directories with "directories not supported".
+        • When file_path is a directory, it is zipped into a NamedTemporaryFile
+          first, the zip is sent under --name <folder>.zip, then the temp file
+          is deleted in a finally block regardless of success or failure.
         """
         # 1. Validate node name
         if not _NODE_RE.match(node):
@@ -589,7 +597,7 @@ class TaildropService:
                 error=f"Invalid node name '{node}' — rejected by security policy",
             )
 
-        # 2. Validate file exists inside expected bounds
+        # 2. Validate path exists
         if not file_path.exists():
             return TransferResult(
                 success=False,
@@ -606,44 +614,85 @@ class TaildropService:
                 error="tailscale CLI not found on PATH — install Tailscale on this PC",
             )
 
-        # 4. Execute: tailscale file cp [--name <safe_name>] <file> <node>:
-        #
-        # Tailscale's peer-side (iOS / macOS) returns "400 Bad Request:
-        # invalid filename" when the filename contains emoji, non-ASCII
-        # characters, or certain special characters (#, @, diacritics, …).
-        # The ``--name`` flag lets us pass an ASCII-safe alias that will be
-        # displayed on the device without altering the file on disk.
-        safe_name = _sanitize_filename(file_path.name)
-        cmd = [tailscale, "file", "cp"]
-        if safe_name != file_path.name:
-            logger.debug(
-                "Taildrop: sanitised filename %r → %r (using --name flag)",
-                file_path.name, safe_name,
-            )
-            cmd += ["--name", safe_name]
-        cmd += [str(file_path), node + _NODE_SUFFIX]
+        # 4. If path is a directory, zip it to a temp file.
+        #    send_path and display_name are updated; tmp_zip is cleaned up in finally.
+        tmp_zip: Optional[Path] = None
+        send_path = file_path
+        display_name = file_path.name
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2-min timeout for large files
-                **_SUBPROCESS_EXTRA,
-            )
-            if result.returncode == 0:
-                return TransferResult(success=True, dest_node=node)
-            stderr = (result.stderr or result.stdout or "").strip()
-            return TransferResult(
-                success=False,
-                dest_node=node,
-                error=f"tailscale exit {result.returncode}: {stderr}",
-            )
-        except subprocess.TimeoutExpired:
-            return TransferResult(
-                success=False,
-                dest_node=node,
-                error="Transfer timed out after 120 s — file may be too large",
-            )
-        except Exception as exc:
-            return TransferResult(success=False, dest_node=node, error=str(exc))
+            if file_path.is_dir():
+                safe_stem = _sanitize_filename(file_path.name)
+                display_name = safe_stem if safe_stem.endswith(".zip") else safe_stem + ".zip"
+                logger.debug(
+                    "Taildrop: '%s' is a directory — zipping as '%s'",
+                    file_path.name, display_name,
+                )
+                fd, tmp_str = tempfile.mkstemp(suffix=".zip", prefix="omnidl_td_")
+                import os as _os
+                _os.close(fd)
+                tmp_zip = Path(tmp_str)
+                with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for member in sorted(file_path.rglob("*")):
+                        if member.is_file():
+                            zf.write(member, member.relative_to(file_path.parent))
+                send_path = tmp_zip
+                logger.debug(
+                    "Taildrop: zip ready — %d byte(s)", tmp_zip.stat().st_size
+                )
+
+            # 5. Execute: tailscale file cp [--name <safe_name>] <send_path> <node>:
+            #
+            # Tailscale's peer-side (iOS / macOS) returns "400 Bad Request:
+            # invalid filename" when the filename contains emoji, non-ASCII
+            # characters, or certain special characters (#, @, diacritics, ...).
+            # The --name flag passes an ASCII-safe alias without altering the
+            # file on disk.
+            safe_name = _sanitize_filename(display_name)
+            cmd = [tailscale, "file", "cp"]
+            # Always supply --name for zipped dirs (send_path is a tempfile with
+            # an opaque name); also supply it for regular files when sanitisation
+            # changed the name.
+            if tmp_zip is not None or safe_name != file_path.name:
+                if safe_name != display_name:
+                    logger.debug(
+                        "Taildrop: sanitised filename %r -> %r (using --name flag)",
+                        display_name, safe_name,
+                    )
+                cmd += ["--name", safe_name]
+            cmd += [str(send_path), node + _NODE_SUFFIX]
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5-min timeout for large files / multi-image zips
+                    **_SUBPROCESS_EXTRA,
+                )
+                if result.returncode == 0:
+                    return TransferResult(success=True, dest_node=node)
+                stderr = (result.stderr or result.stdout or "").strip()
+                return TransferResult(
+                    success=False,
+                    dest_node=node,
+                    error=f"tailscale exit {result.returncode}: {stderr}",
+                )
+            except subprocess.TimeoutExpired:
+                return TransferResult(
+                    success=False,
+                    dest_node=node,
+                    error="Transfer timed out after 300 s — file may be too large",
+                )
+            except Exception as exc:
+                return TransferResult(success=False, dest_node=node, error=str(exc))
+
+        finally:
+            if tmp_zip is not None and tmp_zip.exists():
+                try:
+                    tmp_zip.unlink()
+                    logger.debug("Taildrop: deleted temp zip %s", tmp_zip)
+                except Exception as exc:
+                    logger.warning(
+                        "Taildrop: failed to delete temp zip %s: %s", tmp_zip, exc
+                    )

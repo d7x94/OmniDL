@@ -301,6 +301,132 @@ class TestSendFileNameFlag:
 # TransferResult
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+# -----------------------------------------------------------------------------
+# Directory -> zip (BUG-BV)
+# -----------------------------------------------------------------------------
+
+class TestDirectoryZip:
+    """
+    _do_send() must zip a directory to a temp file, send the zip under
+    --name <folder>.zip, and delete the temp file after the call.
+    """
+
+    def test_directory_is_zipped_and_sent(self, tmp_path):
+        """Happy path: directory zipped, sent as <folder>.zip, temp cleaned up."""
+        folder = tmp_path / "jossias_py"
+        folder.mkdir()
+        (folder / "img1.jpg").write_bytes(b"jpeg1")
+        (folder / "img2.jpg").write_bytes(b"jpeg2")
+
+        svc = _make_svc(enabled=True, node="iphone")
+        ok = MagicMock()
+        ok.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            r = svc.send_file(folder, "iphone")
+
+        assert r.success
+        cmd = mock_run.call_args[0][0]
+        assert "--name" in cmd
+        name_idx = cmd.index("--name")
+        assert cmd[name_idx + 1].endswith(".zip")
+        # Actual src passed to tailscale must be the temp zip, not the folder.
+        actual_src = cmd[-2]
+        assert actual_src != str(folder)
+        # Temp file must be deleted after send.
+        from pathlib import Path
+        assert not Path(actual_src).exists()
+        svc.close()
+
+    def test_directory_zip_contains_files(self, tmp_path):
+        """Zip created from directory must contain expected members."""
+        import zipfile as _zf
+        import shutil as _sh
+
+        folder = tmp_path / "gallery"
+        folder.mkdir()
+        (folder / "a.jpg").write_bytes(b"A")
+        sub = folder / "sub"
+        sub.mkdir()
+        (sub / "b.png").write_bytes(b"B")
+
+        captured_zip: list = []
+        svc = _make_svc(enabled=True, node="iphone")
+        ok = MagicMock()
+        ok.returncode = 0
+
+        def capturing_run(cmd, **kwargs):
+            from pathlib import Path
+            captured_zip.append(Path(cmd[-2]))
+            _sh.copy2(cmd[-2], str(cmd[-2]) + ".bak")
+            return ok
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", side_effect=capturing_run):
+            svc.send_file(folder, "iphone")
+
+        from pathlib import Path
+        bak = Path(str(captured_zip[0]) + ".bak")
+        assert bak.exists()
+        with _zf.ZipFile(bak) as zf:
+            names = zf.namelist()
+        bak.unlink()
+
+        assert any("a.jpg" in n for n in names)
+        assert any("b.png" in n for n in names)
+        svc.close()
+
+    def test_directory_temp_deleted_on_failure(self, tmp_path):
+        """Temp zip must be deleted even when tailscale returns non-zero."""
+        folder = tmp_path / "myfolder"
+        folder.mkdir()
+        (folder / "x.jpg").write_bytes(b"x")
+
+        svc = _make_svc(enabled=True, node="iphone")
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = "some error"
+        fail.stdout = ""
+
+        captured: list = []
+
+        def capturing_run(cmd, **kwargs):
+            from pathlib import Path
+            captured.append(Path(cmd[-2]))
+            return fail
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", side_effect=capturing_run):
+            r = svc.send_file(folder, "iphone")
+
+        assert not r.success
+        assert captured
+        assert not captured[0].exists(), "Temp zip must be deleted after failure"
+        svc.close()
+
+    def test_ascii_directory_name_uses_name_flag(self, tmp_path):
+        """Even an ASCII-named directory must pass --name <folder>.zip."""
+        folder = tmp_path / "photos"
+        folder.mkdir()
+        (folder / "img.jpg").write_bytes(b"data")
+
+        svc = _make_svc(enabled=True, node="iphone")
+        ok = MagicMock()
+        ok.returncode = 0
+
+        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
+             patch("subprocess.run", return_value=ok) as mock_run:
+            svc.send_file(folder, "iphone")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--name" in cmd
+        name_idx = cmd.index("--name")
+        assert cmd[name_idx + 1] == "photos.zip"
+        svc.close()
+
+
 class TestTransferResult:
     def test_success_result(self):
         r = TransferResult(success=True, dest_node="iphone")
@@ -385,7 +511,7 @@ class TestSendFile:
         f.write_bytes(b"data")
         svc = _make_svc()
         with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ts", timeout=120)):
+             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ts", timeout=300)):
             r = svc.send_file(f, "iphone")
         assert not r.success
         assert "timed out" in r.error
@@ -737,7 +863,7 @@ class TestSendConvertedFile:
             ["/usr/bin/tailscale", "file", "cp", str(f), "my-iphone:"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
 
     # ── Failure paths ────────────────────────────────────────────────────
@@ -785,7 +911,7 @@ class TestSendConvertedFile:
         f.write_bytes(b"data")
 
         with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=120)):
+             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=300)):
             svc.send_converted_file(f)
             svc.close()
 
