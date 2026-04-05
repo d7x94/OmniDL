@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -539,7 +540,10 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
         try:
             if path.exists():
-                os.remove(path)
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
                 logger.info("PostDownloadActions: deleted '%s'", path)
             else:
                 logger.warning("PostDownloadActions: file already gone: '%s'", path)

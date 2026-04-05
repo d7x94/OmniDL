@@ -373,6 +373,8 @@ class DownloadManager:
         if task.is_cancellation_requested:
             with task._lock:
                 task.status = DownloadStatus.CANCELLED
+                task.speed = ""
+                task.eta = ""
                 task.finished_at = time.time()
             logger.info("Task cancelled: %s", task.id)
             self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
@@ -381,6 +383,8 @@ class DownloadManager:
             with task._lock:
                 task.status = DownloadStatus.COMPLETED
                 task.progress = 100.0
+                task.speed = ""
+                task.eta = ""
                 task.finished_at = time.time()
             logger.info("Task completed: %s → %s", task.id, task.filename)
             self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
@@ -388,6 +392,8 @@ class DownloadManager:
         else:
             with task._lock:
                 task.status = DownloadStatus.FAILED
+                task.speed = ""
+                task.eta = ""
                 task.error_msg = str(last_exc)
                 task.finished_at = time.time()
             logger.error(

@@ -26,6 +26,7 @@ import logging
 import mimetypes
 import queue
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -448,7 +449,10 @@ def create_app(
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File already deleted or not found")
 
-        file_path.unlink()
+        if file_path.is_dir():
+            shutil.rmtree(file_path)
+        else:
+            file_path.unlink()
         # Clear filename on the task so the UI knows the file is gone.
         task.filename = ""
         logger.info("Remote API: deleted file '%s' for task %s", file_path.name, task_id)
