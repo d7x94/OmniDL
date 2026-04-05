@@ -371,8 +371,31 @@ class GeneralPanel(_BasePanel):
         Instead, use _resolve_com_rename() to recover the actual renamed folder.
         mkdir() is only called for the tkinter fallback path (where the user may
         type a path that doesn't yet exist).
+
+        FIX-BROWSE-5: Two remaining race conditions after FIX-BROWSE-4:
+
+          Race A — rename in-flight when Show() returns:
+            The user presses Enter in the inline rename field, sees the dialog
+            briefly revert to "New Folder" (Shell rename notification lag), and
+            immediately clicks OK. At that instant NTFS may not have finished the
+            rename, so chosen_path ("New Folder") still exists on disk.
+            chosen_path.exists() → True → _resolve_com_rename is never called →
+            wrong "New Folder" path saved.
+            Fix: sleep 100 ms after Show() returns to let NTFS complete the rename,
+            then re-check existence before deciding on recovery.
+
+          Race B — user clicks OK while inline rename field is still active:
+            The user types a new name but presses OK without pressing Enter first.
+            Windows may not commit the rename, leaving "New Folder" on disk.
+            Again chosen_path.exists() → True → wrong path saved.
+            Fix: if chosen_path exists but its parent directory was modified within
+            the last 1.5 s (≈ a rename just happened in that directory), also run
+            _resolve_com_rename. Only override chosen_path when exactly one
+            unambiguous candidate is found, to avoid false positives from unrelated
+            filesystem activity.
         """
         import sys
+        import time
         from pathlib import Path
 
         # Determine safe initialdir — fall back to home if stored path is gone
@@ -411,10 +434,16 @@ class GeneralPanel(_BasePanel):
         chosen_path = Path(chosen).resolve()
 
         if _from_com:
-            # FIX-BROWSE-4: COM dialog returns only existing filesystem paths.
-            # If the path doesn't exist, Shell rename-notification lag caused
-            # GetDisplayName to return the pre-rename "New Folder" name.
-            # Recover the actual renamed folder; never call mkdir here.
+            # FIX-BROWSE-5 Race A: give NTFS up to 100 ms to finish any in-flight
+            # rename before we test existence.  This is a no-op on the normal path
+            # (path already exists) and costs nothing when there is no rename race.
+            if not chosen_path.exists():
+                time.sleep(0.1)
+
+            # FIX-BROWSE-4 + FIX-BROWSE-5: COM dialog returns only existing
+            # filesystem paths.  If the path still does not exist after the brief
+            # wait, Shell rename-notification lag caused GetDisplayName to return
+            # the pre-rename "New Folder" name.  Recover the actual renamed folder.
             if not chosen_path.exists():
                 recovered = _resolve_com_rename(chosen_path)
                 if recovered is None or not recovered.exists():
@@ -425,6 +454,25 @@ class GeneralPanel(_BasePanel):
                     self._app.toast("Không tìm thấy thư mục. Hãy thử chọn lại.", "error")
                     return
                 chosen_path = recovered
+            else:
+                # FIX-BROWSE-5 Race B: chosen_path exists on disk, but the
+                # parent was modified very recently (< 1.5 s) — a strong signal
+                # that a rename just occurred in this directory.  GetDisplayName
+                # may still be returning the stale pre-rename name.  Run
+                # recovery and override only when exactly one unambiguous
+                # recently-created candidate exists (avoids false positives when
+                # unrelated files changed in the same directory).
+                try:
+                    if time.time() - chosen_path.parent.stat().st_mtime < 1.5:
+                        recovered = _resolve_com_rename(chosen_path)
+                        if recovered is not None and recovered.exists():
+                            logger.debug(
+                                "_browse_dir: Race-B recovery: %r → %r",
+                                chosen_path.name, recovered.name,
+                            )
+                            chosen_path = recovered
+                except OSError:
+                    pass
         else:
             # Tkinter fallback: user may type a new path that doesn't exist yet.
             try:

@@ -74,6 +74,14 @@ class AnalyseResponse(BaseModel):
     formats: list[dict]     # raw yt-dlp format dicts — client picks format_id
     is_live: bool
     playlist_count: int     # 0 for single-item results
+    # BUG-BT: source_engine was missing from AnalyseResponse.
+    # When the analysis fell back from yt-dlp to gallery-dl (e.g. Instagram
+    # photos), the client received no signal to forward source_engine="gallery_dl"
+    # in the subsequent /api/download call.  The download therefore defaulted to
+    # yt_dlp and failed with "no video in this post".
+    # Fix: expose source_engine so Remote clients (iOS app, etc.) can echo it
+    # back in DownloadRequest.source_engine and route correctly.
+    source_engine: str = "yt_dlp"   # "yt_dlp" | "gallery_dl"
 
 
 class TaskResponse(BaseModel):

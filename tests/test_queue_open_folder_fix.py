@@ -360,3 +360,62 @@ def test_open_folder_resolves_relative_output_dir_fallback(tmp_path):
         f"Expected {download_dir!r}, got {opened_paths[0]!r}. "
         "Relative output_dir fallback must be resolved to absolute."
     )
+
+
+# ── Test 9: BUG BT — pause/cancel always hidden when COMPLETED (empty filename) ─
+
+def test_pause_cancel_hidden_on_completed_with_empty_filename():
+    """BUG BT regression: pause and cancel buttons must be pack_forgotten when
+    status reaches COMPLETED even if task.filename is empty/falsy.
+
+    Previously the pack_forget() calls only ran inside the block guarded by
+    ``if st == DownloadStatus.COMPLETED and task.filename``, so a COMPLETED
+    task whose filename was not yet populated left both buttons visible-but-
+    disabled — clicking them silently did nothing.
+    """
+    from ui.components.download_item_widget import DownloadItemWidget
+
+    task = _make_task(filename="", output_dir="/downloads")   # no filename
+    task.status = DownloadStatus.COMPLETED
+
+    widget = DownloadItemWidget.__new__(DownloadItemWidget)
+    widget.task = task
+    widget._completed_path = ""
+    widget._converting = False
+    widget._on_convert = None
+
+    # Build mock widgets; start with pause/cancel *mapped* (winfo_ismapped=True)
+    # so we can verify pack_forget is called on them.
+    pause_btn  = MagicMock()
+    cancel_btn = MagicMock()
+    pause_btn.winfo_ismapped.return_value  = True   # currently visible
+    cancel_btn.winfo_ismapped.return_value = True   # currently visible
+
+    folder_btn  = MagicMock()
+    preview_btn = MagicMock()
+    folder_btn.winfo_ismapped.return_value  = False
+    preview_btn.winfo_ismapped.return_value = False
+
+    for attr in ("_title_lbl", "_status_badge", "_type_dot", "_prog",
+                 "_speed_lbl", "_eta_lbl", "_size_lbl", "_err_lbl",
+                 "_convert_btn"):
+        m = MagicMock()
+        m.winfo_ismapped.return_value = False
+        setattr(widget, attr, m)
+
+    widget._pause_btn   = pause_btn
+    widget._cancel_btn  = cancel_btn
+    widget._folder_btn  = folder_btn
+    widget._preview_btn = preview_btn
+    widget._url_lbl     = MagicMock()
+    widget._url_lbl.winfo_ismapped.return_value = False
+    widget._elapsed_lbl = MagicMock()
+
+    widget.refresh(task)
+
+    pause_btn.pack_forget.assert_called_once(), (
+        "pause_btn.pack_forget() must be called when COMPLETED even with empty filename"
+    )
+    cancel_btn.pack_forget.assert_called_once(), (
+        "cancel_btn.pack_forget() must be called when COMPLETED even with empty filename"
+    )

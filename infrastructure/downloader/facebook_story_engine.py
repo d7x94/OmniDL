@@ -877,6 +877,30 @@ def _cdp_intercept(
             except Exception as exc:
                 logger.debug("page.goto warning (non-fatal): %s", exc)
 
+            # ── BUG-STORY-3: Dismiss overlay immediately after DOMContentLoaded ─────
+            # On 4 GB RAM / Win 11 LTSC, page.evaluate(_POLL_AUDIO_JS) blocks
+            # for 2-5 s while Facebook's JS evaluates large inline <script> data.
+            # During that blocking window, Facebook's DASH preloader fires CDN
+            # requests for stories 2/3 in the background; those requests arrive
+            # via Layer A/B/D/E and win the "first video URL" race against story-1.
+            #
+            # Fix: call _PLAY_JS BEFORE _POLL_AUDIO_JS so the "Nhấp để xem tin"
+            # overlay is dismissed as early as possible — right at DOMContentLoaded,
+            # before any background preload requests have a chance to fire.
+            # This gives story-1 a head start: the DASH player starts story-1's
+            # CDN requests before story-2/3 preloads are initiated.
+            # _PLAY_JS is idempotent; calling it again in the poll loop (3-5 s
+            # cadence) is harmless and keeps the overlay dismissed if Facebook
+            # re-renders it after the initial click.
+            try:
+                page.evaluate(_PLAY_JS)
+                logger.debug(
+                    "CDP: _PLAY_JS fired immediately after DOMContentLoaded"
+                    " (BUG-STORY-3 fix — dismisses overlay before audio scan)"
+                )
+            except Exception as _pjs_exc:
+                logger.debug("CDP: pre-scan _PLAY_JS failed (non-fatal): %s", _pjs_exc)
+
             # ── Immediate post-load audio scan ────────────────────────────────
             # Run the full audio poll (incl. inline <script> scan) once right
             # after DOMContentLoaded.  This catches audio CDN URLs embedded in
@@ -897,7 +921,12 @@ def _cdp_intercept(
                     pass
             _prog(15, "Đang chờ video load...")
             loop_deadline    = time.monotonic() + timeout
-            last_play        = 0.0
+            # Initialize last_play to now so the polling loop waits the full
+            # cadence (5 s / 3 s) before calling _PLAY_JS again — we already
+            # called it immediately above (BUG-STORY-3 fix).  Without this,
+            # the first loop iteration would call _PLAY_JS a second time within
+            # 0.4 s, which is harmless but wastes a page.evaluate() round-trip.
+            last_play        = time.monotonic()
             last_poll        = 0.0
 
             while time.monotonic() < loop_deadline:

@@ -284,6 +284,7 @@ def create_app(
             formats=info.formats,
             is_live=info.is_live,
             playlist_count=len(info.playlist_entries),
+            source_engine=info.source_engine,  # BUG-BT fix: forward engine choice to client
         )
 
     # ── Download ──────────────────────────────────────────────────────────

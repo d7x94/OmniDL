@@ -123,8 +123,17 @@ class GalleryDlEngine:
             )
         return exe
 
-    def _base_cmd(self, url: str = "") -> list[str]:
+    def _base_cmd(self, url: str = "") -> "tuple[list[str], str | None]":
         """Build base command with shared options (cookie, proxy, quiet).
+
+        Returns (cmd, cookie_temp_path).  cookie_temp_path is the path of a
+        decrypted plaintext temp file that the caller MUST delete after the
+        subprocess exits.  It is None when no temp file was created (no cookie
+        configured, or cookie was already a plaintext .txt file).
+
+        Gallery-dl cannot parse Windows DPAPI-encrypted .enc cookie files
+        directly — _prepare_cookie_for_use() decrypts them to a temp file
+        first, mirroring the approach used by yt_dlp_engine.download().
 
         url is used for per-platform cookie resolution when provided.
         Callers that know the target URL (download, extract_info) should
@@ -135,23 +144,35 @@ class GalleryDlEngine:
         # -q suppresses info/progress output — gallery-dl does not have
         # --no-progress; that flag is yt-dlp only and causes an arg-parse error.
         cmd: list[str] = [self._exe(), "-q"]
+        cookie_temp: str | None = None
 
         # Per-platform cookie resolution — same logic as yt_dlp_engine.
         # Import inline to avoid circular imports at module level.
-        from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+            _prepare_cookie_for_use,
+            _resolve_cookie,
+        )
         cookie_path = _resolve_cookie(url, self._config) if url else None
         # Fallback: if no URL or per-platform cookie not found, use global
         if not cookie_path:
-            from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+            from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path  # noqa: PLC0415
             cookie_path = _validate_cookie_path(self._config)
         if cookie_path:
-            cmd += ["--cookies", cookie_path]
-            logger.debug("gallery-dl using cookie file: %s", cookie_path)
+            # Decrypt DPAPI-encrypted .enc files to a temp plaintext file so
+            # gallery-dl can parse them as Netscape cookies.  gallery-dl cannot
+            # read the binary .enc format directly.  When is_temp=True the
+            # caller MUST delete the returned temp file after the subprocess
+            # exits to avoid plaintext cookie files persisting on disk.
+            usable, is_temp = _prepare_cookie_for_use(cookie_path)
+            if is_temp:
+                cookie_temp = usable
+            cmd += ["--cookies", usable]
+            logger.debug("gallery-dl using cookie file: %s", usable)
 
         if self._config.proxy:
             cmd += ["--proxy", self._config.proxy]
 
-        return cmd
+        return cmd, cookie_temp
 
     # ── Metadata extraction ───────────────────────────────────────────────
 
@@ -161,7 +182,8 @@ class GalleryDlEngine:
         Returns MediaInfo(source_engine="gallery_dl", formats=[], duration=0).
         Raises RuntimeError on failure.
         """
-        cmd = self._base_cmd(url=url) + ["--dump-json", "--no-download", url]
+        base_cmd, cookie_temp = self._base_cmd(url=url)
+        cmd = base_cmd + ["--dump-json", "--no-download", url]
         logger.debug("gallery-dl extract_info: %s", cmd)
 
         try:
@@ -180,6 +202,17 @@ class GalleryDlEngine:
             raise RuntimeError(
                 "gallery-dl không tìm thấy.\nCài đặt: pip install gallery-dl"
             ) from None
+        finally:
+            # Always clean up decrypted temp cookie file, even on error.
+            if cookie_temp:
+                try:
+                    Path(cookie_temp).unlink(missing_ok=True)
+                    logger.debug(
+                        "gallery-dl extract_info: cleaned up temp cookie: %s",
+                        cookie_temp,
+                    )
+                except Exception:
+                    pass
 
         # gallery-dl --dump-json emits one JSON array per line:
         # [1, "url", {metadata}]  → type 1 = image URL
@@ -277,7 +310,8 @@ class GalleryDlEngine:
         ).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd = self._base_cmd(url=task.url) + [
+        base_cmd, cookie_temp = self._base_cmd(url=task.url)
+        cmd = base_cmd + [
             "-d", str(output_dir),
             task.url,
         ]
@@ -295,6 +329,13 @@ class GalleryDlEngine:
                 creationflags=_WIN_NO_WINDOW,
             )
         except FileNotFoundError:
+            # Clean up temp cookie before propagating so plaintext files
+            # never linger on disk when the binary is missing.
+            if cookie_temp:
+                try:
+                    Path(cookie_temp).unlink(missing_ok=True)
+                except Exception:
+                    pass
             raise RuntimeError(
                 "gallery-dl không tìm thấy.\nCài đặt: pip install gallery-dl"
             ) from None
@@ -415,3 +456,15 @@ class GalleryDlEngine:
             "gallery-dl complete: %d file(s) → %s",
             len(downloaded_files), task.filename,
         )
+
+        # Always clean up the decrypted temp cookie file after subprocess exits.
+        # On early-exit paths (cancel / error raises above) the atexit handler
+        # registered by cookie_storage.decrypt_to_tempfile() provides a safety net.
+        if cookie_temp:
+            try:
+                Path(cookie_temp).unlink(missing_ok=True)
+                logger.debug(
+                    "gallery-dl download: cleaned up temp cookie: %s", cookie_temp
+                )
+            except Exception:
+                pass

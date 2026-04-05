@@ -166,6 +166,11 @@ class DownloadManager:
         "challenge_required",  # two-factor / bot challenge
         "no video in this post",   # photo-only post — retry cannot add video
         "no video formats found",  # photo-only post (with cookies, yt-dlp >= 2024)
+        # Vietnamese translations of the two photo-only yt-dlp messages above.
+        # _friendly_error() in yt_dlp_engine translates them before raising, so
+        # the raw English strings above never appear in the exception message.
+        # Without these entries the task retries 4× unnecessarily.
+        "bài đăng này chỉ có ảnh",  # "This post only has photos, no video"
         # Facebook-specific
         "content not available",    # post removed or region-blocked
         "this content isn",         # "This content isn't available"
@@ -205,6 +210,9 @@ class DownloadManager:
 
         max_attempts = max(1, self._config.max_retries + 1)
         last_exc: Optional[Exception] = None
+        # BUG-BU: set True when yt-dlp hits a photo-only error and gallery-dl
+        # hasn't been tried yet (Remote API client omitted source_engine).
+        _gallery_fallback_needed: bool = False
 
         for attempt in range(max_attempts):
             # Check for cancellation before each attempt (including before
@@ -285,6 +293,34 @@ class DownloadManager:
             except Exception as exc:
                 msg = str(exc).lower()
 
+                # BUG-BU: yt-dlp photo-only error on a task submitted via the
+                # Remote API without source_engine="gallery_dl" forwarded from
+                # /api/analyse.  Detect both the raw English yt-dlp keywords AND
+                # the Vietnamese _friendly_error translation (the actual string
+                # raised by yt_dlp_engine.download).  Stop yt-dlp retries
+                # immediately and flag a single gallery-dl attempt after the loop
+                # — avoids 3 pointless yt-dlp retries before the final FAILED.
+                _is_photo_error = (
+                    "no video in this post" in msg
+                    or "no video formats found" in msg
+                    or "bài đăng này chỉ có ảnh" in msg
+                )
+                if (
+                    _is_photo_error
+                    and self._gallery_engine is not None
+                    and task.media_info is not None
+                    and getattr(task.media_info, "source_engine", "yt_dlp") == "yt_dlp"
+                ):
+                    logger.info(
+                        "Task %s: yt-dlp photo-only error — switching to gallery-dl "
+                        "(BUG-BU: Remote API client did not forward source_engine)",
+                        task.id,
+                    )
+                    task.media_info.source_engine = "gallery_dl"
+                    _gallery_fallback_needed = True
+                    last_exc = exc
+                    break  # stop yt-dlp retries; gallery-dl attempt follows below
+
                 # Hard errors: stop immediately, no retry.
                 if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
                     logger.warning(
@@ -295,6 +331,43 @@ class DownloadManager:
 
                 last_exc = exc
                 # Loop continues to next attempt (if any remain).
+
+        # ── BUG-BU: gallery-dl fallback for photo-only posts ─────────────
+        # When yt-dlp exhausted retries (or stopped early) with a photo-only
+        # error and gallery-dl hasn't been tried, attempt gallery-dl once.
+        # This covers the Remote API path where the iOS client sends
+        # source_engine="yt_dlp" (default) instead of forwarding "gallery_dl"
+        # from /api/analyse.  One attempt is enough — gallery-dl is fast and
+        # a second failure is not recoverable without user action (e.g. cookies).
+        if (
+            _gallery_fallback_needed
+            and last_exc is not None
+            and not task.is_cancellation_requested
+        ):
+            logger.info(
+                "Task %s: attempting gallery-dl fallback for photo-only post",
+                task.id,
+            )
+            with task._lock:
+                task.progress = 0.0
+                task.speed = ""
+                task.eta = ""
+                task.status = DownloadStatus.DOWNLOADING
+            self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+            try:
+                assert self._gallery_engine is not None  # guarded by _gallery_fallback_needed
+                self._gallery_engine.download(
+                    task,
+                    on_progress=self._on_progress,
+                    on_postprocess=self._on_progress,
+                )
+                last_exc = None
+            except Exception as gdl_exc:
+                last_exc = gdl_exc
+                logger.warning(
+                    "gallery-dl fallback failed for task %s: %s",
+                    task.id, gdl_exc,
+                )
 
         # ── Resolve final state ───────────────────────────────────────────
         if task.is_cancellation_requested:
