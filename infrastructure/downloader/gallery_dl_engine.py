@@ -428,7 +428,10 @@ class GalleryDlEngine:
 
         # ── Resolve output path ───────────────────────────────────────────
         # For multi-file downloads, point to the directory so "Open Folder" works.
+        # Record the specific files downloaded in this task so TaildropService
+        # can zip only them instead of the entire account directory.
         if downloaded_files:
+            task.gallery_dl_files = downloaded_files[:]
             if len(downloaded_files) == 1:
                 task.filename = downloaded_files[0]
             else:

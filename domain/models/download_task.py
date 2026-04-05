@@ -79,6 +79,10 @@ class DownloadTask:
     total_bytes: int = 0
     filename: str = ""            # final output path
     error_msg: str = ""
+    # Files downloaded in this task by GalleryDlEngine (populated only for
+    # gallery-dl image downloads).  Used by TaildropService to zip only the
+    # newly-downloaded files instead of the entire account directory.
+    gallery_dl_files: list = field(default_factory=list)  # list[str]
 
     # ── Timing ────────────────────────────────────────────────────────────
     created_at: float = field(default_factory=time.time)

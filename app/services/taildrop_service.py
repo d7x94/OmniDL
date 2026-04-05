@@ -535,7 +535,15 @@ class TaildropService:
         node: str,
     ) -> None:
         """Worker submitted to the executor."""
-        result = self._do_send(file_path, node)
+        # For gallery-dl image downloads, task.gallery_dl_files contains the
+        # exact files downloaded in this task.  Pass them to _do_send so it
+        # can zip only those files instead of the entire account directory.
+        specific_files: list[Path] | None = None
+        gdl = getattr(task, "gallery_dl_files", None)
+        if gdl:
+            specific_files = [Path(f) for f in gdl if Path(f).exists()]
+
+        result = self._do_send(file_path, node, specific_files=specific_files)
         if result.success:
             logger.info(
                 "Taildrop: ✅ sent '%s' → %s", file_path.name, node
@@ -574,7 +582,7 @@ class TaildropService:
                 out_path=out_path, dest_node=node, error=result.error
             )
 
-    def _do_send(self, file_path: Path, node: str) -> TransferResult:
+    def _do_send(self, file_path: Path, node: str, specific_files: "list[Path] | None" = None) -> TransferResult:
         """
         Core send logic. Validates inputs then calls tailscale CLI.
 
@@ -588,6 +596,12 @@ class TaildropService:
         • When file_path is a directory, it is zipped into a NamedTemporaryFile
           first, the zip is sent under --name <folder>.zip, then the temp file
           is deleted in a finally block regardless of success or failure.
+
+        specific_files (BUG-BW):
+        • When provided, only these files are zipped instead of the full directory.
+        • Used by gallery-dl image downloads where multiple posts from the same
+          account share one directory — without this, successive downloads zip the
+          entire growing account folder, sending previously-sent images again.
         """
         # 1. Validate node name
         if not _NODE_RE.match(node):
@@ -633,9 +647,20 @@ class TaildropService:
                 _os.close(fd)
                 tmp_zip = Path(tmp_str)
                 with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    for member in sorted(file_path.rglob("*")):
-                        if member.is_file():
-                            zf.write(member, member.relative_to(file_path.parent))
+                    if specific_files:
+                        # BUG-BW: zip only the files from this task, not the
+                        # entire account directory which accumulates across downloads.
+                        for member in sorted(specific_files):
+                            if member.is_file():
+                                zf.write(member, member.relative_to(file_path.parent))
+                        logger.debug(
+                            "Taildrop: zipped %d specific file(s) (not full dir)",
+                            len([f for f in specific_files if f.is_file()]),
+                        )
+                    else:
+                        for member in sorted(file_path.rglob("*")):
+                            if member.is_file():
+                                zf.write(member, member.relative_to(file_path.parent))
                 send_path = tmp_zip
                 logger.debug(
                     "Taildrop: zip ready — %d byte(s)", tmp_zip.stat().st_size
