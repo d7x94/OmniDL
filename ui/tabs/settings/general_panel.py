@@ -458,19 +458,29 @@ class GeneralPanel(_BasePanel):
                 # FIX-BROWSE-5 Race B: chosen_path exists on disk, but the
                 # parent was modified very recently (< 1.5 s) — a strong signal
                 # that a rename just occurred in this directory.  GetDisplayName
-                # may still be returning the stale pre-rename name.  Run
-                # recovery and override only when exactly one unambiguous
-                # recently-created candidate exists (avoids false positives when
-                # unrelated files changed in the same directory).
+                # may still be returning the stale pre-rename name.
+                #
+                # FIX-BROWSE-6: previous implementation called _resolve_com_rename
+                # which picks max(candidates) regardless of count.  When multiple
+                # folders were created recently (e.g. from a previous download
+                # session), this incorrectly overrode a correct chosen_path with
+                # an unrelated folder.  The stated contract was "only override
+                # when exactly one unambiguous candidate" — enforce it explicitly.
                 try:
                     if time.time() - chosen_path.parent.stat().st_mtime < 1.5:
-                        recovered = _resolve_com_rename(chosen_path)
-                        if recovered is not None and recovered.exists():
+                        _rb_now = time.time()
+                        _rb_candidates = [
+                            d for d in chosen_path.parent.iterdir()
+                            if d.is_dir()
+                            and d.name != chosen_path.name
+                            and (_rb_now - d.stat().st_ctime) < 30
+                        ]
+                        if len(_rb_candidates) == 1 and _rb_candidates[0].exists():
                             logger.debug(
                                 "_browse_dir: Race-B recovery: %r → %r",
-                                chosen_path.name, recovered.name,
+                                chosen_path.name, _rb_candidates[0].name,
                             )
-                            chosen_path = recovered
+                            chosen_path = _rb_candidates[0]
                 except OSError:
                     pass
         else:

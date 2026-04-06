@@ -178,7 +178,14 @@ def _ytdlp_audio_rescue(
             / "%(title).60B [%(id).12B].%(ext)s"
         )
     opts: dict[str, object] = {
-        "format": "bestvideo+bestaudio/best",
+        # BUG-BX: use explicit video-only + audio-only stream selectors so
+        # FFmpeg always performs a mux.  "bestvideo+bestaudio/best" can fall
+        # back to the "best" single stream which may be video-only on some
+        # Instagram carousel items, producing a silent output file.
+        # bestvideo[acodec=none]+bestaudio[vcodec=none]: separate V+A streams → mux
+        # bestvideo+bestaudio: combined streams if no pure-V/pure-A pair found
+        # best: last-resort single stream (should include audio on Instagram)
+        "format": "bestvideo[acodec=none]+bestaudio[vcodec=none]/bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
         "outtmpl": outtmpl,
         "quiet": True,
@@ -462,6 +469,10 @@ class GalleryDlEngine:
             r'instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)', re.I
         )
         _sc_m = _insta_post_re.search(task.url)
+        # BUG-BX: track whether we isolated output to a per-post slug folder.
+        # When True, the fallback scan can include ALL files in output_dir
+        # (no mtime filter needed) because the folder is post-specific.
+        _is_post_isolated = bool(_sc_m)
         if _sc_m:
             _shortcode = _sc_m.group(1)[:8]
             _upl = ""
@@ -631,8 +642,16 @@ class GalleryDlEngine:
                     if f.is_file()
                     and f.suffix.lower() in _media_exts
                     and f.stat().st_size > 1_000
-                    # BUG-BV: scope to files written during THIS download session
-                    and f.stat().st_mtime >= _dl_start_ts
+                    # BUG-BX: skip mtime filter when output_dir is a per-post
+                    # slug folder (Instagram /p/ URLs).  gallery-dl may set file
+                    # mtime from post metadata (e.g. user has mtime:true in their
+                    # gallery-dl config), causing images to have historical
+                    # timestamps that fail the >= _dl_start_ts check.  Since the
+                    # slug folder is post-specific, all files here belong to this
+                    # post regardless of their mtime.  For non-isolated dirs
+                    # (other platforms), keep the mtime filter to avoid including
+                    # files from previous downloads of the same account directory.
+                    and (_is_post_isolated or f.stat().st_mtime >= _dl_start_ts)
                 ]
                 if candidates:
                     # Separate images and videos for logging; both go into gallery_dl_files

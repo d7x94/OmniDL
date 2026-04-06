@@ -487,6 +487,15 @@ def create_app(
         file_path = _resolve_task_file(task)
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found on disk")
+        # BUG-BY: gallery-dl multi-file downloads set task.filename to a
+        # directory (the account subfolder).  FileResponse raises RuntimeError
+        # when passed a directory path.  Return 400 so the client knows it
+        # cannot preview a multi-file download directly — use Taildrop instead.
+        if file_path.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="Task output is a folder (multi-file download) — use Taildrop to transfer",
+            )
 
         media_type = (
             mimetypes.guess_type(file_path.name)[0]
