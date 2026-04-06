@@ -137,7 +137,7 @@ def _has_audio(video_path: Path, ffmpeg_dir: Optional[str] = None) -> bool:
         return True  # fail-open: assume audio OK, skip rescue pass
 
 
-def _ytdlp_audio_rescue(
+def _ytdlp_carousel_videos(
     url: str,
     output_dir: Path,
     dl_start_ts: float,
@@ -147,22 +147,14 @@ def _ytdlp_audio_rescue(
     max_retries: int = 0,
     rescue_dir: Optional[Path] = None,
 ) -> list[str]:
-    """Run yt-dlp on *url* with noplaylist=False + ignoreerrors=True to
-    download all VIDEO items in an Instagram carousel with proper audio.
+    """Download all VIDEO items in an Instagram carousel with proper audio.
 
-    Returns a list of newly created file paths (mtime ≥ dl_start_ts - 5s).
+    Uses yt-dlp with noplaylist=False + ignoreerrors=True so:
+    - All video items are fetched with bestvideo+bestaudio merge (audio OK).
+    - Image items silently raise "no video formats" and are skipped.
+
+    Returns a list of newly created video file paths.
     Returns [] on any failure so callers can treat it as a no-op.
-
-    Design rules
-    ────────────
-    • noplaylist=False: expands carousel playlist so all video items are fetched.
-    • ignoreerrors=True: image items in the carousel will raise "no video formats"
-      errors — silently skip them so video items still download correctly.
-    • Output template uses a unique prefix so we can distinguish rescue files.
-    • The rescue pass runs synchronously in the gallery-dl worker thread — it is
-      NOT a retry of the original download, just a supplementary video fetch.
-    • On failure (auth, rate-limit, network) we log a warning and return [] so
-      the caller surfaces the gallery-dl images as-is (degraded, not failed).
     """
     import yt_dlp  # noqa: PLC0415 — lazy import, yt-dlp may not always be present
 
@@ -487,11 +479,28 @@ class GalleryDlEngine:
             output_dir = (output_dir / _slug).resolve()
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        # ── Instagram carousel: images-only strategy ─────────────────────
+        # gallery-dl fetches Instagram video CDN URLs which are video-only
+        # DASH streams (no audio).  For carousel posts (/p/ URLs), tell
+        # gallery-dl to skip video files entirely — yt-dlp will download
+        # them afterwards with proper bestvideo+bestaudio merge.
+        _is_ig_carousel = bool(_sc_m) and bool(
+            re.search(r"instagram\.com/p/", task.url, re.I)
+        )
+
         base_cmd, cookie_temp = self._base_cmd(url=task.url)
-        cmd = base_cmd + [
-            "-d", str(output_dir),
-            task.url,
-        ]
+        if _is_ig_carousel:
+            cmd = base_cmd + [
+                "--filter",
+                "extension in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic')",
+                "-d", str(output_dir),
+                task.url,
+            ]
+        else:
+            cmd = base_cmd + [
+                "-d", str(output_dir),
+                task.url,
+            ]
         logger.info("gallery-dl download: %s → %s", task.url, output_dir)
 
         # BUG-BV: capture wall-clock time before the subprocess starts so the
@@ -595,7 +604,10 @@ class GalleryDlEngine:
             raise DownloadError("Cancelled by user")
 
         # ── Error handling ────────────────────────────────────────────────
-        if proc.returncode != 0 and not downloaded_files:
+        # For Instagram carousels with --filter, gallery-dl may exit non-zero
+        # when all items are videos (filter excludes everything).  That is OK
+        # — yt-dlp will handle the videos below.
+        if proc.returncode != 0 and not downloaded_files and not _is_ig_carousel:
             err = "\n".join(
                 ln for ln in stderr_lines if ln and not ln.startswith("[debug]")
             )
@@ -686,131 +698,105 @@ class GalleryDlEngine:
             _total_files, task.filename,
         )
 
-        # ── BUG-BW: Audio rescue pass for gallery-dl carousel videos ─────────
-        # Instagram carousel videos downloaded by gallery-dl may lack audio
-        # because gallery-dl fetches the raw CDN URL which, for newer posts,
-        # is a video-only DASH stream (no FFmpeg merge step in gallery-dl).
+        # ── Instagram carousel: yt-dlp primary video download ────────────────
+        # gallery-dl fetches Instagram video CDN URLs as video-only DASH
+        # streams (no audio).  The --filter above tells gallery-dl to skip
+        # videos, so we download them here with yt-dlp which performs a
+        # proper bestvideo+bestaudio merge via FFmpeg.
         #
-        # Rescue strategy:
-        #   1. Identify video files in gallery_dl_files.
-        #   2. FFprobe-check each for the presence of an audio stream.
-        #   3. If ANY video has no audio, run yt-dlp on the original URL with
-        #      noplaylist=False + ignoreerrors=True.  yt-dlp downloads every
-        #      VIDEO item in the carousel with a proper bestvideo+bestaudio merge.
-        #      Image items silently raise "no video formats" and are skipped.
-        #   4. Replace the audio-less gallery-dl video(s) with the yt-dlp copies
-        #      and update task.gallery_dl_files so Taildrop sends the fixed files.
-        #
-        # Guard: only runs for Instagram carousel URLs.  Other platforms (Twitter,
-        # Pinterest …) are not affected.
-        _carousel_re = re.compile(r"instagram\.com/p/", re.I)
+        # If the --filter was ignored (gallery-dl still downloaded videos),
+        # the yt-dlp pass replaces them — silent gallery-dl videos are
+        # deleted and the yt-dlp copies (with audio) take their place.
         _current_gdl_files: list[str] = getattr(task, "gallery_dl_files", None) or []
-        _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
-        _video_files_this_dl = [
-            Path(f) for f in _current_gdl_files
-            if Path(f).suffix.lower() in _vid_exts_set and Path(f).is_file()
-        ]
 
-        if (
-            _video_files_this_dl
-            and _carousel_re.search(task.url)
-            and not task.is_cancellation_requested
-        ):
+        if _is_ig_carousel and not task.is_cancellation_requested:
             from utils.ffmpeg_locator import get_ffmpeg_path  # noqa: PLC0415
             _ffmpeg_dir = get_ffmpeg_path()
 
-            _silent_videos = [
-                v for v in _video_files_this_dl
-                if not _has_audio(v, ffmpeg_dir=_ffmpeg_dir)
+            # Delete any silent gallery-dl videos that slipped through the
+            # filter (e.g. gallery-dl version without --filter support).
+            _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+            _gdl_videos = [
+                Path(f) for f in _current_gdl_files
+                if Path(f).suffix.lower() in _vid_exts_set and Path(f).is_file()
             ]
-            if _silent_videos:
-                logger.warning(
-                    "BUG-BW: %d gallery-dl Instagram video(s) have no audio — "
-                    "attempting yt-dlp rescue pass: %s",
-                    len(_silent_videos),
-                    [v.name for v in _silent_videos],
-                )
-                task.eta = "⬇ Đang tải lại video có âm thanh…"
-                if on_progress:
-                    on_progress(task)
-
-                # Prepare cookie for the rescue pass (same cookie used by gallery-dl).
-                # When cookie_temp is set it is already decrypted and alive; reuse it.
-                # Otherwise decrypt once more into a fresh temp file and clean it up
-                # after the rescue call — never let decrypted cookies linger on disk.
-                _rescue_cookie: str | None = None
-                _rescue_cookie_is_temp: bool = False
-                if cookie_temp:
-                    _rescue_cookie = cookie_temp
-                else:
+            if _gdl_videos:
+                for sv in _gdl_videos:
                     try:
-                        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415,E501
-                            _prepare_cookie_for_use,
-                            _resolve_cookie,
+                        sv.unlink(missing_ok=True)
+                        logger.debug("Deleted gallery-dl silent video: %s", sv.name)
+                    except Exception:
+                        pass
+                _gdl_video_paths = {str(v) for v in _gdl_videos}
+                _current_gdl_files = [
+                    f for f in _current_gdl_files if f not in _gdl_video_paths
+                ]
+
+            task.eta = "⬇ Đang tải video có âm thanh…"
+            if on_progress:
+                on_progress(task)
+
+            # Determine output directory for yt-dlp videos — same folder as
+            # gallery-dl images so Taildrop zips everything together.
+            _image_files = [Path(f) for f in _current_gdl_files if Path(f).is_file()]
+            _video_out_dir: Path | None = (
+                _image_files[0].parent if _image_files else None
+            )
+
+            # Prepare cookie — reuse the decrypted temp if still alive.
+            _vid_cookie: str | None = None
+            _vid_cookie_is_temp: bool = False
+            if cookie_temp:
+                _vid_cookie = cookie_temp
+            else:
+                try:
+                    from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415,E501
+                        _prepare_cookie_for_use,
+                        _resolve_cookie,
+                    )
+                    _rcp = _resolve_cookie(task.url, self._config)
+                    if _rcp:
+                        _vid_cookie, _vid_cookie_is_temp = (
+                            _prepare_cookie_for_use(_rcp)
                         )
-                        _rcp = _resolve_cookie(task.url, self._config)
-                        if _rcp:
-                            _rescue_cookie, _rescue_cookie_is_temp = (
-                                _prepare_cookie_for_use(_rcp)
-                            )
+                except Exception:
+                    pass
+
+            _vid_dl_start = time.time()
+            try:
+                video_files = _ytdlp_carousel_videos(
+                    url=task.url,
+                    output_dir=output_dir,
+                    dl_start_ts=_vid_dl_start,
+                    cookie_file=_vid_cookie,
+                    proxy=self._config.proxy or None,
+                    ffmpeg_dir=_ffmpeg_dir,
+                    max_retries=0,
+                    rescue_dir=_video_out_dir,
+                )
+            finally:
+                if _vid_cookie_is_temp and _vid_cookie:
+                    try:
+                        Path(_vid_cookie).unlink(missing_ok=True)
                     except Exception:
                         pass
 
-                # BUG-BT: rescue_dir = gallery-dl subdir so audio files land
-                # next to the images (not in a separate uploader subdir).
-                # Tight timestamp prevents the scan from picking up the
-                # just-written gallery-dl silent files in the same directory.
-                _rescue_dir = (
-                    _video_files_this_dl[0].parent
-                    if _video_files_this_dl
-                    else None
+            if video_files:
+                task.gallery_dl_files = _current_gdl_files + video_files
+                if len(task.gallery_dl_files) > 1:
+                    _parent2 = Path(task.gallery_dl_files[-1]).parent
+                    task.filename = str(_parent2)
+                elif task.gallery_dl_files:
+                    task.filename = task.gallery_dl_files[0]
+                logger.info(
+                    "Instagram carousel: %d image(s) + %d video(s) with audio",
+                    len(_current_gdl_files), len(video_files),
                 )
-                _rescue_ts = time.time()
-                try:
-                    rescued = _ytdlp_audio_rescue(
-                        url=task.url,
-                        output_dir=output_dir,
-                        dl_start_ts=_rescue_ts,
-                        cookie_file=_rescue_cookie,
-                        proxy=self._config.proxy or None,
-                        ffmpeg_dir=_ffmpeg_dir,
-                        max_retries=0,  # one attempt only — rescue is best-effort
-                        rescue_dir=_rescue_dir,
-                    )
-                finally:
-                    if _rescue_cookie_is_temp and _rescue_cookie:
-                        try:
-                            Path(_rescue_cookie).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                if rescued:
-                    # Remove the silent video files from gallery_dl_files and
-                    # add the yt-dlp rescued versions.  Delete the gallery-dl
-                    # video-only files so they don't clutter the folder.
-                    _silent_paths = {str(v) for v in _silent_videos}
-                    _kept = [f for f in _current_gdl_files if f not in _silent_paths]
-                    task.gallery_dl_files = _kept + rescued
-                    for sv in _silent_videos:
-                        try:
-                            sv.unlink(missing_ok=True)
-                            logger.debug("BUG-BW: deleted silent video %s", sv.name)
-                        except Exception:
-                            pass
-                    # Update filename to directory if multiple files remain
-                    if len(task.gallery_dl_files) > 1:
-                        _parent2 = Path(task.gallery_dl_files[-1]).parent
-                        task.filename = str(_parent2)
-                    elif task.gallery_dl_files:
-                        task.filename = task.gallery_dl_files[0]
-                    logger.info(
-                        "BUG-BW rescue complete: %d video(s) replaced with audio-bearing copies",
-                        len(rescued),
-                    )
-                else:
-                    logger.warning(
-                        "BUG-BW rescue: yt-dlp could not provide audio-bearing versions — "
-                        "gallery-dl video(s) kept as-is (may be silent)"
-                    )
+            else:
+                logger.warning(
+                    "Instagram carousel: yt-dlp could not download videos — "
+                    "carousel may have images only or video download failed"
+                )
 
         # Always clean up the decrypted temp cookie file after subprocess exits.
         # On early-exit paths (cancel / error raises above) the atexit handler
