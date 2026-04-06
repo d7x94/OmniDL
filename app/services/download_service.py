@@ -189,8 +189,8 @@ class DownloadService:
     def cancel_download(self, task_id: str) -> None:
         self._manager.cancel(task_id)
 
-    def clear_finished(self) -> None:
-        self._manager.clear_terminal()
+    def clear_finished(self, exclude_ids: "frozenset[str] | None" = None) -> None:
+        self._manager.clear_terminal(exclude_ids=exclude_ids)
 
     # ── Query ─────────────────────────────────────────────────────────────
 

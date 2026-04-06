@@ -349,9 +349,22 @@ def create_app(
 
     @app.delete("/api/queue/finished")
     async def clear_finished(_: None = Depends(_require_auth)):
-        """Remove all COMPLETED / FAILED / CANCELLED tasks from the queue."""
-        service.clear_finished()
-        return {"status": "ok"}
+        """Remove all COMPLETED / FAILED / CANCELLED tasks from the queue.
+
+        Tasks that currently have an active (PENDING/CONVERTING) remote convert
+        job are excluded — clearing them would orphan the running FFmpeg process
+        and leave it with no corresponding queue entry on next reconnect.
+        """
+        exclude: frozenset[str] = frozenset()
+        if remote_convert is not None:
+            _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
+            exclude = frozenset(
+                j.source_task_id
+                for j in remote_convert.get_all_jobs()
+                if j.status in _ACTIVE
+            )
+        service.clear_finished(exclude_ids=exclude or None)
+        return {"status": "ok", "excluded_count": len(exclude)}
 
     # ── File actions (completed tasks only) ───────────────────────────────
 

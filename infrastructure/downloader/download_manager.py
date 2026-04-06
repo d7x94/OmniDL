@@ -126,13 +126,18 @@ class DownloadManager:
         with self._lock:
             return list(self._tasks.values())
 
-    def clear_terminal(self) -> None:
-        """Remove completed / failed / cancelled tasks from tracking."""
+    def clear_terminal(self, exclude_ids: "frozenset[str] | None" = None) -> None:
+        """Remove completed / failed / cancelled tasks from tracking.
+
+        *exclude_ids* — task IDs that must not be removed even if terminal
+        (e.g. tasks that still have an active convert job running on them).
+        """
         with self._lock:
             terminal = DownloadStatus.terminal_states()
             to_del = [
                 tid for tid, t in self._tasks.items()
                 if t.status in terminal
+                and (exclude_ids is None or tid not in exclude_ids)
             ]
             for tid in to_del:
                 del self._tasks[tid]

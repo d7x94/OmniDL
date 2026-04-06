@@ -177,7 +177,7 @@ def _ytdlp_carousel_videos(
         # bestvideo[acodec=none]+bestaudio[vcodec=none]: separate V+A streams → mux
         # bestvideo+bestaudio: combined streams if no pure-V/pure-A pair found
         # best: last-resort single stream (should include audio on Instagram)
-        "format": "bestvideo[acodec=none]+bestaudio[vcodec=none]/bestvideo+bestaudio/best",
+        "format": "bestvideo[acodec=none]+bestaudio[vcodec=none]/bestvideo*+bestaudio*/best",
         "merge_output_format": "mp4",
         "outtmpl": outtmpl,
         "quiet": True,
