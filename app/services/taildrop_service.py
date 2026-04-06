@@ -181,9 +181,12 @@ class TaildropService:
         if self._config.taildrop_send_mode == "ask":
             logger.debug("Taildrop: skip auto-send — send_mode is 'ask'")
             return
-        node = self._config.taildrop_target_node
-        if not node:
-            logger.debug("Taildrop: skip — target_node not configured")
+        # BUG-GD: use the full node list so multi-device auto-send works.
+        # taildrop_target_nodes already falls back to [taildrop_target_node]
+        # for legacy single-node configs, so no migration needed.
+        nodes = self._config.taildrop_target_nodes
+        if not nodes:
+            logger.debug("Taildrop: skip — no target nodes configured")
             return
 
         # Get the output path from the task (may be None for failed tasks
@@ -213,7 +216,10 @@ class TaildropService:
         with self._lock:
             if self._closed:
                 return
-            self._executor.submit(self._transfer, task, file_path, node)
+            # Submit one transfer job per node; the single-worker executor
+            # serialises them so Tailscale is not hammered concurrently.
+            for node in nodes:
+                self._executor.submit(self._transfer, task, file_path, node)
 
     def send_converted_file(self, out_path: Path) -> None:
         """
@@ -540,7 +546,10 @@ class TaildropService:
         # can zip only those files instead of the entire account directory.
         specific_files: list[Path] | None = None
         gdl = getattr(task, "gallery_dl_files", None)
-        if gdl:
+        # BUG-GA: check for None explicitly — empty list [] is falsy but
+        # means "gallery-dl ran but scan found nothing", which is different
+        # from None (yt-dlp task, no gallery_dl_files attribute).
+        if gdl is not None:
             specific_files = [Path(f) for f in gdl if Path(f).exists()]
 
         result = self._do_send(file_path, node, specific_files=specific_files)
@@ -652,7 +661,16 @@ class TaildropService:
                         # entire account directory which accumulates across downloads.
                         for member in sorted(specific_files):
                             if member.is_file():
-                                zf.write(member, member.relative_to(file_path.parent))
+                                # BUG-BT: guard against files that land outside
+                                # file_path.parent (e.g. rescue files from a
+                                # different subdir) — fall back to bare filename
+                                # so the zip still includes them instead of
+                                # crashing the entire send silently.
+                                try:
+                                    arc_path = member.relative_to(file_path.parent)
+                                except ValueError:
+                                    arc_path = Path(member.name)
+                                zf.write(member, arc_path)
                         logger.debug(
                             "Taildrop: zipped %d specific file(s) (not full dir)",
                             len([f for f in specific_files if f.is_file()]),

@@ -13,6 +13,7 @@ Cancel:       proc.kill() when task.is_cancellation_requested is set.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -95,6 +97,147 @@ def _friendly_error(msg: str) -> str:
             "cần cookie tài khoản có quyền xem."
         )
     return msg[:300] if msg else "gallery-dl thất bại không rõ nguyên nhân."
+
+
+# ── BUG-BW helpers ────────────────────────────────────────────────────────────
+
+def _has_audio(video_path: Path, ffmpeg_dir: Optional[str] = None) -> bool:
+    """Return True when *video_path* contains at least one audio stream.
+
+    Uses ffprobe (bundled with FFmpeg) with a fast stream-count query.
+    Returns True on any error so that callers do NOT attempt a rescue pass
+    when the check itself fails (fail-open is safer than false negatives).
+    """
+    ffprobe = "ffprobe"
+    if ffmpeg_dir:
+        candidate = Path(ffmpeg_dir) / "ffprobe"
+        if not candidate.is_file():
+            candidate = Path(ffmpeg_dir) / "ffprobe.exe"
+        if candidate.is_file():
+            ffprobe = str(candidate)
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "quiet",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=_WIN_NO_WINDOW,
+        )
+        # ffprobe outputs one "audio" line per audio stream; empty = no audio
+        return bool(result.stdout.strip())
+    except Exception as exc:
+        logger.debug("_has_audio: ffprobe check failed for %s — %s", video_path.name, exc)
+        return True  # fail-open: assume audio OK, skip rescue pass
+
+
+def _ytdlp_audio_rescue(
+    url: str,
+    output_dir: Path,
+    dl_start_ts: float,
+    cookie_file: Optional[str] = None,
+    proxy: Optional[str] = None,
+    ffmpeg_dir: Optional[str] = None,
+    max_retries: int = 0,
+    rescue_dir: Optional[Path] = None,
+) -> list[str]:
+    """Run yt-dlp on *url* with noplaylist=False + ignoreerrors=True to
+    download all VIDEO items in an Instagram carousel with proper audio.
+
+    Returns a list of newly created file paths (mtime ≥ dl_start_ts - 5s).
+    Returns [] on any failure so callers can treat it as a no-op.
+
+    Design rules
+    ────────────
+    • noplaylist=False: expands carousel playlist so all video items are fetched.
+    • ignoreerrors=True: image items in the carousel will raise "no video formats"
+      errors — silently skip them so video items still download correctly.
+    • Output template uses a unique prefix so we can distinguish rescue files.
+    • The rescue pass runs synchronously in the gallery-dl worker thread — it is
+      NOT a retry of the original download, just a supplementary video fetch.
+    • On failure (auth, rate-limit, network) we log a warning and return [] so
+      the caller surfaces the gallery-dl images as-is (degraded, not failed).
+    """
+    import yt_dlp  # noqa: PLC0415 — lazy import, yt-dlp may not always be present
+
+    # BUG-BT: when rescue_dir is provided (the gallery-dl output subdir), place
+    # rescued files directly there — no uploader subdir — so they share the same
+    # directory as the gallery-dl images and task.filename already points there.
+    if rescue_dir is not None:
+        outtmpl = str(rescue_dir / "%(title).60B [%(id).12B].%(ext)s")
+    else:
+        outtmpl = str(
+            output_dir
+            / "%(uploader,channel|instagram_rescue)s"
+            / "%(title).60B [%(id).12B].%(ext)s"
+        )
+    opts: dict[str, object] = {
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "outtmpl": outtmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+        # BUG-BW: expand carousel so all video items are fetched
+        "noplaylist": False,
+        "socket_timeout": 30,
+        "retries": max_retries,
+        "windowsfilenames": True,
+        "trim_file_name": 180,
+    }
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    if proxy:
+        opts["proxy"] = proxy
+    if ffmpeg_dir:
+        opts["ffmpeg_location"] = ffmpeg_dir
+
+    # BUG-BT: when rescue_dir is provided, scan only that directory with a tight
+    # window (dl_start_ts, no -5s offset) so gallery-dl's just-written silent
+    # files (same dir, slightly older mtime) are excluded.  Without this, both
+    # the 5 silent gallery-dl files and 5 new yt-dlp files are returned (10
+    # total), and the stale paths persist in task.gallery_dl_files after the
+    # silent files are deleted on disk.
+    if rescue_dir is not None:
+        _scan_root = rescue_dir
+        rescue_start = dl_start_ts  # tight — gallery-dl files pre-date this
+    else:
+        _scan_root = output_dir
+        rescue_start = dl_start_ts - 5.0
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception as exc:
+        logger.warning("BUG-BW rescue: yt-dlp failed for %s — %s", url, exc)
+        return []
+
+    # Collect files created during the rescue pass
+    _vid_exts = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+    new_files: list[str] = []
+    try:
+        for f in _scan_root.rglob("*"):
+            if (
+                f.is_file()
+                and f.suffix.lower() in _vid_exts
+                and f.stat().st_mtime >= rescue_start
+                and f.stat().st_size > 10_000  # skip tiny/corrupt files
+            ):
+                new_files.append(str(f))
+    except Exception as scan_exc:
+        logger.warning("BUG-BW rescue: post-rescue scan failed — %s", scan_exc)
+
+    logger.info(
+        "BUG-BW rescue: yt-dlp rescued %d video file(s) with audio from %s",
+        len(new_files), url,
+    )
+    return new_files
 
 
 class GalleryDlEngine:
@@ -310,12 +453,41 @@ class GalleryDlEngine:
         ).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # BUG-BT / Issue-3: per-post output isolation for Instagram posts/reels.
+        # Without this, all posts from the same account share one directory, so
+        # successive downloads accumulate in the same folder and Taildrop can't
+        # distinguish which files belong to which post.
+        # Folder name: {username}_{YYYYMMDD}_{shortcode[:8]}
+        _insta_post_re = re.compile(
+            r'instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)', re.I
+        )
+        _sc_m = _insta_post_re.search(task.url)
+        if _sc_m:
+            _shortcode = _sc_m.group(1)[:8]
+            _upl = ""
+            if task.media_info and task.media_info.uploader:
+                _upl = re.sub(r'[^\w.]', '_', task.media_info.uploader)[:32].strip('_')
+            _date_str = datetime.date.today().strftime("%Y%m%d")
+            _slug = (
+                f"{_upl}_{_date_str}_{_shortcode}"
+                if _upl
+                else f"instagram_{_date_str}_{_shortcode}"
+            )
+            output_dir = (output_dir / _slug).resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+
         base_cmd, cookie_temp = self._base_cmd(url=task.url)
         cmd = base_cmd + [
             "-d", str(output_dir),
             task.url,
         ]
         logger.info("gallery-dl download: %s → %s", task.url, output_dir)
+
+        # BUG-BV: capture wall-clock time before the subprocess starts so the
+        # fallback scan can scope results to files created in THIS session only.
+        # We subtract a 5-second buffer to absorb filesystem timestamp rounding
+        # and NAS/network-drive clock skew.
+        _dl_start_ts: float = time.time() - 5.0
 
         # ── Subprocess ────────────────────────────────────────────────────
         try:
@@ -440,25 +612,186 @@ class GalleryDlEngine:
                     last_output_dir if last_output_dir else Path(downloaded_files[0]).parent
                 )
         else:
-            # Fallback: largest image file in output subtree
+            # BUG-BV FIX: gallery-dl with -q suppresses stdout so downloaded_files
+            # is always empty.  Scan the output subtree for ALL media types (images
+            # AND videos) written after the download started.  Scoping by mtime
+            # prevents picking up files from previous downloads of the same account.
+            # Set task.gallery_dl_files so TaildropService zips only this session's
+            # files rather than the accumulated account directory.
             try:
-                _img_exts = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"})
+                _media_exts = frozenset({
+                    # images
+                    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif",
+                    # videos — BUG-BV: previously missing, causing carousel videos
+                    # to be excluded from gallery_dl_files and Taildrop sends
+                    ".mp4", ".mov", ".webm", ".mkv", ".m4v",
+                })
                 candidates = [
                     f for f in output_dir.rglob("*")
-                    if f.suffix.lower() in _img_exts
+                    if f.is_file()
+                    and f.suffix.lower() in _media_exts
                     and f.stat().st_size > 1_000
+                    # BUG-BV: scope to files written during THIS download session
+                    and f.stat().st_mtime >= _dl_start_ts
                 ]
                 if candidates:
-                    best = max(candidates, key=lambda f: f.stat().st_mtime)
-                    task.filename = str(best.parent if len(candidates) > 1 else best)
+                    # Separate images and videos for logging; both go into gallery_dl_files
+                    _vid_exts = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+                    n_imgs = sum(1 for f in candidates if f.suffix.lower() not in _vid_exts)
+                    n_vids = sum(1 for f in candidates if f.suffix.lower() in _vid_exts)
+                    logger.info(
+                        "gallery-dl fallback scan: found %d image(s) + %d video(s) "
+                        "in output subtree (mtime ≥ session start)",
+                        n_imgs, n_vids,
+                    )
+                    task.gallery_dl_files = [str(f) for f in sorted(candidates)]
+                    if len(candidates) == 1:
+                        task.filename = str(candidates[0])
+                    else:
+                        # Point to the common parent directory
+                        _parent = max(candidates, key=lambda f: f.stat().st_mtime).parent
+                        task.filename = str(_parent)
+                else:
+                    logger.warning(
+                        "gallery-dl fallback scan: no new media files found "
+                        "in %s (mtime ≥ session start)", output_dir
+                    )
             except Exception as scan_err:
                 logger.warning("gallery-dl output scan failed: %s", scan_err)
                 task.filename = str(output_dir)
 
+        _gdl_files_attr = getattr(task, "gallery_dl_files", None)
+        _total_files = len(_gdl_files_attr) if _gdl_files_attr else len(downloaded_files)
         logger.info(
             "gallery-dl complete: %d file(s) → %s",
-            len(downloaded_files), task.filename,
+            _total_files, task.filename,
         )
+
+        # ── BUG-BW: Audio rescue pass for gallery-dl carousel videos ─────────
+        # Instagram carousel videos downloaded by gallery-dl may lack audio
+        # because gallery-dl fetches the raw CDN URL which, for newer posts,
+        # is a video-only DASH stream (no FFmpeg merge step in gallery-dl).
+        #
+        # Rescue strategy:
+        #   1. Identify video files in gallery_dl_files.
+        #   2. FFprobe-check each for the presence of an audio stream.
+        #   3. If ANY video has no audio, run yt-dlp on the original URL with
+        #      noplaylist=False + ignoreerrors=True.  yt-dlp downloads every
+        #      VIDEO item in the carousel with a proper bestvideo+bestaudio merge.
+        #      Image items silently raise "no video formats" and are skipped.
+        #   4. Replace the audio-less gallery-dl video(s) with the yt-dlp copies
+        #      and update task.gallery_dl_files so Taildrop sends the fixed files.
+        #
+        # Guard: only runs for Instagram carousel URLs.  Other platforms (Twitter,
+        # Pinterest …) are not affected.
+        _carousel_re = re.compile(r"instagram\.com/p/", re.I)
+        _current_gdl_files: list[str] = getattr(task, "gallery_dl_files", None) or []
+        _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+        _video_files_this_dl = [
+            Path(f) for f in _current_gdl_files
+            if Path(f).suffix.lower() in _vid_exts_set and Path(f).is_file()
+        ]
+
+        if (
+            _video_files_this_dl
+            and _carousel_re.search(task.url)
+            and not task.is_cancellation_requested
+        ):
+            from utils.ffmpeg_locator import get_ffmpeg_path  # noqa: PLC0415
+            _ffmpeg_dir = get_ffmpeg_path()
+
+            _silent_videos = [
+                v for v in _video_files_this_dl
+                if not _has_audio(v, ffmpeg_dir=_ffmpeg_dir)
+            ]
+            if _silent_videos:
+                logger.warning(
+                    "BUG-BW: %d gallery-dl Instagram video(s) have no audio — "
+                    "attempting yt-dlp rescue pass: %s",
+                    len(_silent_videos),
+                    [v.name for v in _silent_videos],
+                )
+                task.eta = "⬇ Đang tải lại video có âm thanh…"
+                if on_progress:
+                    on_progress(task)
+
+                # Prepare cookie for the rescue pass (same cookie used by gallery-dl).
+                # When cookie_temp is set it is already decrypted and alive; reuse it.
+                # Otherwise decrypt once more into a fresh temp file and clean it up
+                # after the rescue call — never let decrypted cookies linger on disk.
+                _rescue_cookie: str | None = None
+                _rescue_cookie_is_temp: bool = False
+                if cookie_temp:
+                    _rescue_cookie = cookie_temp
+                else:
+                    try:
+                        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415,E501
+                            _prepare_cookie_for_use,
+                            _resolve_cookie,
+                        )
+                        _rcp = _resolve_cookie(task.url, self._config)
+                        if _rcp:
+                            _rescue_cookie, _rescue_cookie_is_temp = (
+                                _prepare_cookie_for_use(_rcp)
+                            )
+                    except Exception:
+                        pass
+
+                # BUG-BT: rescue_dir = gallery-dl subdir so audio files land
+                # next to the images (not in a separate uploader subdir).
+                # Tight timestamp prevents the scan from picking up the
+                # just-written gallery-dl silent files in the same directory.
+                _rescue_dir = (
+                    _video_files_this_dl[0].parent
+                    if _video_files_this_dl
+                    else None
+                )
+                _rescue_ts = time.time()
+                try:
+                    rescued = _ytdlp_audio_rescue(
+                        url=task.url,
+                        output_dir=output_dir,
+                        dl_start_ts=_rescue_ts,
+                        cookie_file=_rescue_cookie,
+                        proxy=self._config.proxy or None,
+                        ffmpeg_dir=_ffmpeg_dir,
+                        max_retries=0,  # one attempt only — rescue is best-effort
+                        rescue_dir=_rescue_dir,
+                    )
+                finally:
+                    if _rescue_cookie_is_temp and _rescue_cookie:
+                        try:
+                            Path(_rescue_cookie).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                if rescued:
+                    # Remove the silent video files from gallery_dl_files and
+                    # add the yt-dlp rescued versions.  Delete the gallery-dl
+                    # video-only files so they don't clutter the folder.
+                    _silent_paths = {str(v) for v in _silent_videos}
+                    _kept = [f for f in _current_gdl_files if f not in _silent_paths]
+                    task.gallery_dl_files = _kept + rescued
+                    for sv in _silent_videos:
+                        try:
+                            sv.unlink(missing_ok=True)
+                            logger.debug("BUG-BW: deleted silent video %s", sv.name)
+                        except Exception:
+                            pass
+                    # Update filename to directory if multiple files remain
+                    if len(task.gallery_dl_files) > 1:
+                        _parent2 = Path(task.gallery_dl_files[-1]).parent
+                        task.filename = str(_parent2)
+                    elif task.gallery_dl_files:
+                        task.filename = task.gallery_dl_files[0]
+                    logger.info(
+                        "BUG-BW rescue complete: %d video(s) replaced with audio-bearing copies",
+                        len(rescued),
+                    )
+                else:
+                    logger.warning(
+                        "BUG-BW rescue: yt-dlp could not provide audio-bearing versions — "
+                        "gallery-dl video(s) kept as-is (may be silent)"
+                    )
 
         # Always clean up the decrypted temp cookie file after subprocess exits.
         # On early-exit paths (cancel / error raises above) the atexit handler
