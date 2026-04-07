@@ -125,9 +125,17 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        # ── Inner frame for button row ─────────────────────────────────────
+        # Buttons are children of _btn_row (packed side="left" inside it).
+        # _btn_row itself is packed side="top" (default) inside self, so
+        # _format_frame — also a child of self — packs BELOW the buttons
+        # instead of to the right of them.
+        _btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        _btn_row.pack(fill="x")
+
         # ── Button 1: Convert ─────────────────────────────────────────────
         self._convert_btn = ctk.CTkButton(
-            self,
+            _btn_row,
             text="🔄 Convert" if not self._compact else "🔄 Conv",
             width=90 if not self._compact else 72,
             height=28,
@@ -142,7 +150,7 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
         # ── Button 2: Send to device ──────────────────────────────────────
         self._send_btn = ctk.CTkButton(
-            self,
+            _btn_row,
             text="📲 Gửi",
             width=72 if not self._compact else 68,
             height=28,
@@ -157,7 +165,7 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
         # ── Button 3: Delete ──────────────────────────────────────────────
         self._delete_btn = ctk.CTkButton(
-            self,
+            _btn_row,
             text="🗑 Xoá",
             width=72 if not self._compact else 68,
             height=28,
@@ -172,15 +180,14 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
         # ── Status label ──────────────────────────────────────────────────
         self._status_lbl = ctk.CTkLabel(
-            self, text="",
+            _btn_row, text="",
             font=ctk.CTkFont(size=10),
             text_color=T.text3,
         )
 
         # ── Format picker (hidden by default) ─────────────────────────────
-        # Kept as a child of self so pack() correctly stacks it below the
-        # button row inside PostDownloadActions.  Do NOT use in_=self.master;
-        # Tkinter only allows in_= with an ancestor of the widget.
+        # Child of self (not _btn_row) so it packs below _btn_row when shown.
+        # Do NOT use in_=self.master; Tkinter only allows in_= with an ancestor.
         self._format_frame = ctk.CTkFrame(
             self, fg_color=T.surface2, corner_radius=8,
             border_width=1, border_color=T.border,
@@ -686,7 +693,14 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
         if not self.winfo_exists():
             return
         self._convert_btn.configure(text="✓ Done", state="disabled")
-        self._file_path = output_path
+        # BUG-CA: For multi-file posts, keep _file_path pointing to the
+        # parent directory so "Gửi" triggers _do_send's zip branch, which
+        # respects specific_files built from task.gallery_dl_files (updated
+        # by DownloadItemWidget._on_post_convert to include converted outputs).
+        if self._gallery_dl_files is not None:
+            self._file_path = output_path.parent
+        else:
+            self._file_path = output_path
 
     def notify_convert_error(self, msg: str) -> None:
         """Caller invokes this after a failed conversion (on UI thread)."""

@@ -521,9 +521,16 @@ class DownloadItemWidget(ctk.CTkFrame):
 
         def _on_done(output_path: Path) -> None:
             self._converting = False
-            self._ui_queue.put(
-                lambda op=output_path: self._post_actions.notify_convert_done(op)
-            )
+            # BUG-CA: For multi-file posts, append the converted output to
+            # task.gallery_dl_files so a subsequent "Gửi" click zips all
+            # converted files instead of sending only the last one.
+            # _notify runs on the UI thread via _ui_queue — safe to mutate task.
+            def _notify(op=output_path):
+                gdl = getattr(self.task, "gallery_dl_files", None)
+                if gdl is not None and str(op) not in gdl:
+                    self.task.gallery_dl_files = gdl + [str(op)]
+                self._post_actions.notify_convert_done(op)
+            self._ui_queue.put(_notify)
 
         def _on_error(msg: str) -> None:
             self._converting = False

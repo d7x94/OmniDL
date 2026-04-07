@@ -50,7 +50,7 @@ from api.models import (
     TaskResponse,
 )
 from app.event_bus import EventBus
-from domain.models.conversion_job import ConversionJob
+from domain.models.conversion_job import ConversionJob, ConversionStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 
 if TYPE_CHECKING:
@@ -628,6 +628,40 @@ def create_app(
         file_path = _resolve_task_file(task)
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Output file not found on disk")
+
+        # BUG-BZ: gallery-dl multi-file downloads set task.filename to a
+        # directory.  Scan for individual video files and start one conversion
+        # job per file.  Progress for every job arrives via SSE convert_* events.
+        if file_path.is_dir():
+            from app.services.ffmpeg_convert_service import SUPPORTED_EXTS
+            video_files = sorted([
+                f for f in file_path.rglob("*")
+                if (f.is_file()
+                    and f.suffix.lower().lstrip(".") in SUPPORTED_EXTS
+                    and not f.name.endswith(".part.mp4")
+                    and not f.stem.endswith("_iPhone"))
+            ])
+            if not video_files:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No convertible video files found in the multi-file download folder",
+                )
+            jobs = []
+            for vf in video_files:
+                try:
+                    j = remote_convert.start_convert(
+                        source_task_id=task_id,
+                        file_path=vf,
+                        encoder_key=body.encoder_key or "cpu",
+                        quality=body.quality or "standard",
+                        speed_preset=body.speed_preset or "balanced",
+                        custom_crf=body.custom_crf if body.custom_crf is not None else 23,
+                    )
+                    jobs.append(j)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            # Return first job; all jobs' progress is broadcast via SSE.
+            return _job_to_response(jobs[0])
 
         try:
             job = remote_convert.start_convert(
