@@ -137,14 +137,15 @@ class QueueTab(ctk.CTkFrame):
     def _clear_finished(self) -> None:
         self._app.service.clear_finished()
 
-    def _on_send(self, file_path, restore_btn) -> None:
+    def _on_send(self, file_path, restore_btn, task=None) -> None:
         """Send completed file to all configured Taildrop nodes.
 
         Reads node list from config (multi-node list, falls back to legacy
         single-node scalar).  Runs in the background via TaildropService so
         the UI never blocks.  restore_btn() is always called — on success,
         on error, and when Taildrop is not configured — so the Send button
-        is never left in a disabled state.
+        is never left in a disabled state.  task is forwarded to
+        send_file_to_nodes so gallery_dl_files is used for multi-file posts.
         """
         nodes = self._app.config.taildrop_target_nodes
         if not nodes:
@@ -174,6 +175,7 @@ class QueueTab(ctk.CTkFrame):
                 nodes,
                 on_node_done=_on_node_done,
                 on_node_error=_on_node_error,
+                task=task,
             )
             self._app.toast(f"📲  Đang gửi đến {len(nodes)} thiết bị: {node_list_str}", "info")
         except Exception as exc:

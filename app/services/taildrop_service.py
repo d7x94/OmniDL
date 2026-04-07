@@ -336,6 +336,7 @@ class TaildropService:
         nodes: list,
         on_node_done: Optional[Callable[..., None]] = None,
         on_node_error: Optional[Callable[..., None]] = None,
+        task: "Optional[DownloadTask]" = None,
     ) -> None:
         """Send *file_path* to every node in *nodes* concurrently.
 
@@ -358,6 +359,9 @@ class TaildropService:
         on_node_error:
             Optional ``Callable[[str, str], None]`` called with
             ``(node_name, error_message)`` after each failed transfer.
+        task:
+            Optional DownloadTask.  When provided and task.gallery_dl_files
+            is set, only those specific files are zipped (not the full dir).
         """
         if not file_path.exists():
             logger.warning(
@@ -376,8 +380,16 @@ class TaildropService:
             logger.warning("send_file_to_nodes: no valid nodes — nothing to send")
             return
 
+        # Build specific_files from task.gallery_dl_files if available so
+        # only this post's files are zipped (not accumulated account dir).
+        specific_files: "list[Path] | None" = None
+        if task is not None:
+            gdl = getattr(task, "gallery_dl_files", None)
+            if gdl is not None:
+                specific_files = [Path(f) for f in gdl if Path(f).exists()]
+
         def _send_one(node: str) -> None:
-            result = self._do_send(file_path, node)
+            result = self._do_send(file_path, node, specific_files=specific_files)
             if result.success:
                 logger.info(
                     "send_file_to_nodes: ✓ '%s' → %s", file_path.name, node

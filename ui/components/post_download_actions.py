@@ -111,6 +111,9 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
         self._file_path: Optional[Path] = None
         self._converting = False
+        # gallery_dl_files: set by show() for multi-file posts (carousel/gallery).
+        # None means single-file (yt-dlp); list means multi-file (gallery-dl).
+        self._gallery_dl_files: Optional[list] = None
 
         # Thread-safe UI queue — worker threads post callables here.
         self._ui_queue: queue.Queue = queue.Queue()
@@ -354,15 +357,47 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def show(self, file_path: Path) -> None:
-        """Bind the action bar to *file_path* and reveal it."""
+    def show(self, file_path: Path, gallery_dl_files: Optional[list] = None) -> None:
+        """Bind the action bar to *file_path* and reveal it.
+
+        gallery_dl_files: list of individual file paths for multi-file posts
+        (Instagram carousel/gallery).  When set:
+          - Convert operates on each video file individually.
+          - Delete removes all files in the list (with confirmation).
+          - Send uses gallery_dl_files via the task object (forwarded by caller).
+        When None, the post is single-file and Convert/Delete/Send work on file_path.
+        """
         self._file_path  = file_path
+        self._gallery_dl_files = gallery_dl_files
         self._converting = False
         self._set_status("")
-        self._convert_btn.configure(
-            state="normal",
-            text="🔄 Convert" if not self._compact else "🔄 Conv",
-        )
+
+        # For multi-file posts: check if there are any videos to convert.
+        # If only images, disable Convert since FFmpeg can't convert images.
+        _is_multifile = gallery_dl_files is not None and len(gallery_dl_files) > 0
+        if _is_multifile:
+            _vid_exts = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+            _has_video = any(
+                Path(f).suffix.lower() in _vid_exts
+                for f in gallery_dl_files
+            )
+            if _has_video:
+                self._convert_btn.configure(
+                    state="normal",
+                    text="🔄 Conv video" if not self._compact else "🔄 Conv",
+                )
+            else:
+                # Images only — convert not applicable
+                self._convert_btn.configure(
+                    state="disabled",
+                    text="🔄 Conv" if not self._compact else "🔄 Conv",
+                )
+        else:
+            self._convert_btn.configure(
+                state="normal",
+                text="🔄 Convert" if not self._compact else "🔄 Conv",
+            )
+
         self._send_btn.configure(state="normal")
         self._delete_btn.configure(state="normal")
         if not self.winfo_ismapped():
@@ -371,6 +406,7 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
     def hide(self) -> None:
         """Hide the action bar."""
         self._file_path = None
+        self._gallery_dl_files = None
         self._hide_format_picker()
         if self.winfo_ismapped():
             self.pack_forget()
@@ -481,13 +517,17 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
             self._format_frame.pack_forget()
 
     def _confirm_convert(self) -> None:
-        """User confirmed — resolve target_ext + optional EncodeSettings and call on_convert."""
+        """User confirmed — resolve target_ext + optional EncodeSettings and call on_convert.
+
+        For multi-file posts (gallery_dl_files set): converts each video file
+        individually.  Images in the list are skipped silently.
+        """
         fmt_key = self._format_var.get()
         if not self._file_path or not fmt_key:
             return
 
         # "custom" maps to mp4 output but with user-specified EncodeSettings
-        target_ext     = "mp4" if fmt_key == "custom" else fmt_key
+        target_ext      = "mp4" if fmt_key == "custom" else fmt_key
         encode_settings = self._get_encode_settings()   # None unless custom
 
         self._hide_format_picker()
@@ -497,7 +537,48 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
             state="disabled",
             text=(f"Converting → .{display_ext}…" if not self._compact else "Converting…"),
         )
-        if self._on_convert:
+
+        if not self._on_convert:
+            self._converting = False
+            self._convert_btn.configure(
+                state="normal",
+                text="🔄 Convert" if not self._compact else "🔄 Conv",
+            )
+            return
+
+        # Multi-file post: convert each video file; skip images.
+        _vid_exts = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+        gdl = self._gallery_dl_files
+        if gdl is not None:
+            video_files = [
+                Path(f) for f in gdl
+                if Path(f).suffix.lower() in _vid_exts and Path(f).is_file()
+            ]
+            if not video_files:
+                self._converting = False
+                self._set_status("Không có video để convert.")
+                self._convert_btn.configure(
+                    state="disabled",
+                    text="🔄 Conv" if not self._compact else "🔄 Conv",
+                )
+                return
+            # Convert all videos sequentially via the callback.
+            # The caller (_on_post_convert in DownloadItemWidget) handles
+            # progress/done/error notifications per file.
+            for vf in video_files:
+                try:
+                    self._on_convert(vf, target_ext, encode_settings)
+                except Exception as exc:
+                    logger.warning("PostDownloadActions on_convert raised for %s: %s", vf.name, exc)
+                    self._set_status(f"Lỗi convert {vf.name}: {exc}")
+                    self._converting = False
+                    self._convert_btn.configure(
+                        state="normal",
+                        text="🔄 Conv video" if not self._compact else "🔄 Conv",
+                    )
+                    return
+        else:
+            # Single file
             try:
                 self._on_convert(self._file_path, target_ext, encode_settings)
             except Exception as exc:
@@ -538,19 +619,46 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
         if not dialog.confirmed:
             return
 
-        try:
-            if path.exists():
-                if path.is_dir():
-                    shutil.rmtree(path)
+        gdl = self._gallery_dl_files
+        if gdl is not None:
+            # Multi-file post: delete each individual file, not the directory.
+            # The directory may be shared with other posts (same account).
+            errors = []
+            for f_str in gdl:
+                fp = Path(f_str)
+                try:
+                    if fp.exists():
+                        os.remove(fp)
+                        logger.info("PostDownloadActions: deleted '%s'", fp)
+                    else:
+                        logger.warning("PostDownloadActions: file already gone: '%s'", fp)
+                except OSError as exc:
+                    logger.error("PostDownloadActions: cannot delete '%s': %s", fp, exc)
+                    errors.append(fp.name)
+            if errors:
+                self._set_status(f"Không xoá được: {', '.join(errors[:3])}")
+                return
+            # Try to remove the parent dir if now empty
+            try:
+                if path.is_dir() and not any(path.iterdir()):
+                    path.rmdir()
+                    logger.info("PostDownloadActions: removed empty dir '%s'", path)
+            except OSError:
+                pass
+        else:
+            try:
+                if path.exists():
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                    logger.info("PostDownloadActions: deleted '%s'", path)
                 else:
-                    os.remove(path)
-                logger.info("PostDownloadActions: deleted '%s'", path)
-            else:
-                logger.warning("PostDownloadActions: file already gone: '%s'", path)
-        except OSError as exc:
-            logger.error("PostDownloadActions: cannot delete '%s': %s", path, exc)
-            self._set_status(f"Không xoá được: {exc.strerror}")
-            return
+                    logger.warning("PostDownloadActions: file already gone: '%s'", path)
+            except OSError as exc:
+                logger.error("PostDownloadActions: cannot delete '%s': %s", path, exc)
+                self._set_status(f"Không xoá được: {exc.strerror}")
+                return
 
         self._file_path = None
         self.hide()

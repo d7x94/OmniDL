@@ -310,7 +310,8 @@ class DownloadItemWidget(ctk.CTkFrame):
                 _pa = getattr(self, "_post_actions", None)
                 if _pa is not None and not _pa.winfo_ismapped():
                     _pa.pack(side="left", padx=(4, 0))
-                    _pa.show(Path(task.filename))
+                    _gdl = getattr(task, "gallery_dl_files", None)
+                    _pa.show(Path(task.filename), gallery_dl_files=_gdl)
                 # Hide the legacy → MP4 button (kept in code for safety;
                 # PostDownloadActions supersedes it).
                 if hasattr(self, "_convert_btn") and self._convert_btn.winfo_ismapped():
@@ -547,13 +548,14 @@ class DownloadItemWidget(ctk.CTkFrame):
 
         Reads the target node list from config via the on_send callback
         provided at widget construction.  If no on_send callback was given,
-        restores the button immediately.
+        restores the button immediately.  Forwards self.task so TaildropService
+        can use gallery_dl_files for multi-file posts.
         """
         if not self._on_send:
             restore_btn()
             return
         try:
-            self._on_send(file_path, restore_btn)
+            self._on_send(file_path, restore_btn, task=self.task)
         except Exception as exc:
             logger.warning("DownloadItemWidget on_send raised: %s", exc)
             restore_btn()

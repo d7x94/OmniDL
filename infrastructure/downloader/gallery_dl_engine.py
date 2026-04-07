@@ -170,14 +170,19 @@ def _ytdlp_carousel_videos(
             / "%(title).60B [%(id).12B].%(ext)s"
         )
     opts: dict[str, object] = {
-        # BUG-BX: use explicit video-only + audio-only stream selectors so
-        # FFmpeg always performs a mux.  "bestvideo+bestaudio/best" can fall
-        # back to the "best" single stream which may be video-only on some
-        # Instagram carousel items, producing a silent output file.
-        # bestvideo[acodec=none]+bestaudio[vcodec=none]: separate V+A streams → mux
-        # bestvideo+bestaudio: combined streams if no pure-V/pure-A pair found
-        # best: last-resort single stream (should include audio on Instagram)
-        "format": "bestvideo[acodec=none]+bestaudio[vcodec=none]/bestvideo*+bestaudio*/best",
+        # BUG-BX / BUG-BY: Instagram carousel videos may be:
+        #   (a) separate DASH streams (video-only + audio-only) → need mux
+        #   (b) combined stream with embedded audio (background music posts)
+        # The old "bestvideo[acodec=none]+bestaudio[vcodec=none]" selector
+        # only matched case (a). For case (b), acodec=none rejects the combined
+        # stream, the fallback bestvideo*+bestaudio* picks the combined stream
+        # as "best video" but pairs it with a separate audio stream — FFmpeg
+        # then muxes them and the result has duplicated/wrong audio or silence.
+        # Fix: prefer separate streams for proper mux, but fall back to the
+        # combined stream directly (no forced re-mux) when no separate pair
+        # exists. bestvideo+bestaudio covers both: yt-dlp uses separate streams
+        # when available, and the combined stream when not.
+        "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
         "outtmpl": outtmpl,
         "quiet": True,
