@@ -37,7 +37,6 @@ from __future__ import annotations
 import logging
 import os
 import queue
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 

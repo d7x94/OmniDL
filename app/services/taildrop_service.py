@@ -613,7 +613,9 @@ class TaildropService:
                 out_path=out_path, dest_node=node, error=result.error
             )
 
-    def _do_send(self, file_path: Path, node: str, specific_files: "list[Path] | None" = None) -> TransferResult:
+    def _do_send(
+        self, file_path: Path, node: str, specific_files: "list[Path] | None" = None
+    ) -> TransferResult:
         """
         Core send logic. Validates inputs then calls tailscale CLI.
 

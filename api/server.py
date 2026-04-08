@@ -26,7 +26,6 @@ import logging
 import mimetypes
 import queue
 import secrets
-import shutil
 import sys
 import threading
 import time
