@@ -181,7 +181,7 @@ class TestSendFileToNodes:
             from app.services.taildrop_service import TransferResult
             return TransferResult(success=False, dest_node=node, error="timeout")
 
-        with patch.object(svc, "_do_send", side_effect=lambda fp, n: _fail_result_for(n)):
+        with patch.object(svc, "_do_send", side_effect=lambda fp, n, **kw: _fail_result_for(n)):
             svc.send_file_to_nodes(
                 file_path, ["iphone"],
                 on_node_error=lambda n, e: errors.update({n: e}),
@@ -262,6 +262,26 @@ class TestSendFileToNodes:
             svc.close()
         # Must not propagate the exception.
 
+    def test_specific_files_override_passed_to_do_send(self, tmp_path):
+        svc = self._make_service(tmp_path)
+        file_path = _make_tmp_file(tmp_path)
+        extra = _make_tmp_file(tmp_path, "img.jpg")
+        missing = tmp_path / "ghost.jpg"
+        done = []
+
+        with patch.object(svc, "_do_send", return_value=self._ok_result()) as mock_send:
+            svc.send_file_to_nodes(
+                file_path, ["iphone"],
+                on_node_done=done.append,
+                specific_files_override=[extra, missing],
+            )
+            svc.close()
+
+        assert "iphone" in done
+        kw = mock_send.call_args.kwargs
+        # only existing files passed through
+        assert kw.get("specific_files") == [extra]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PostDownloadActions — pure-logic tests (no Tkinter)
@@ -319,6 +339,7 @@ class TestPostDownloadActionsLogic:
         # Minimal mock of a PostDownloadActions instance.
         obj = MagicMock(spec=PostDownloadActions)
         obj._file_path = file_path
+        obj._gallery_dl_files = None
         obj._on_delete = deleted_paths.append
 
         # Simulate what _on_delete_click does (without the dialog — inject
@@ -353,6 +374,7 @@ class TestPostDownloadActionsLogic:
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._file_path = file_path
+        obj._gallery_dl_files = None
         obj._on_delete = deleted_paths.append
 
         class _NeverConfirm:
@@ -375,6 +397,7 @@ class TestPostDownloadActionsLogic:
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._file_path = ghost
+        obj._gallery_dl_files = None
         obj._on_delete = MagicMock()
 
         class _AlwaysConfirm:
@@ -403,6 +426,7 @@ class TestPostDownloadActionsLogic:
         obj._converting = True
         obj._compact = False
         obj._convert_btn = MagicMock()
+        obj._gallery_dl_files = None
         obj.winfo_exists = MagicMock(return_value=True)
 
         pda_mod.PostDownloadActions.notify_convert_done(obj, output)

@@ -40,6 +40,7 @@ def _make_config(enabled=False, node="iphone", mode="always"):
     type(cfg).taildrop_enabled = property(lambda self: enabled)
     type(cfg).taildrop_target_node = property(lambda self: node)
     type(cfg).taildrop_send_mode = property(lambda self: mode)
+    type(cfg).taildrop_target_nodes = property(lambda self: [node] if node else [])
     return cfg
 
 
@@ -664,6 +665,17 @@ class TestOnDownloadCompleted:
             svc.on_download_completed(_make_task(str(f)))
         mock_submit.assert_not_called()
 
+    def test_ask_mode_skips(self, tmp_path):
+        cfg = _make_config(enabled=True, node="iphone", mode="ask")
+        svc = TaildropService(config=cfg, event_bus=_make_bus())
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        task = _make_task(str(f))
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.on_download_completed(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Event publishing via _transfer
@@ -939,3 +951,46 @@ class TestSendConvertedFile:
         # Download-pipeline methods must remain untouched
         svc._bus.publish_taildrop_completed.assert_not_called()
         svc._bus.publish_taildrop_failed.assert_not_called()
+
+    def test_ask_mode_skips(self, tmp_path):
+        cfg = _make_config(enabled=True, node="iphone", mode="ask")
+        svc = TaildropService(config=cfg, event_bus=_make_bus())
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"data")
+        with patch("subprocess.run") as mock_run:
+            svc.send_converted_file(f)
+            svc.close()
+        mock_run.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# send_now() — on-demand transfer (bypasses send_mode guard)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSendNow:
+    def test_no_node_skips(self, tmp_path):
+        cfg = _make_config(enabled=True, node="")
+        svc = TaildropService(config=cfg, event_bus=_make_bus())
+        task = _make_task(str(tmp_path / "file.mp4"))
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.send_now(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
+    def test_missing_file_skips(self):
+        svc = _make_svc(enabled=True, node="iphone")
+        task = _make_task(output_path=None)
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.send_now(task)
+        mock_submit.assert_not_called()
+        svc.close()
+
+    def test_valid_file_submits(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+        task = _make_task(str(f))
+        with patch.object(svc._executor, "submit") as mock_submit:
+            svc.send_now(task)
+        mock_submit.assert_called_once()
+        svc.close()
