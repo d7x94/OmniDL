@@ -213,6 +213,9 @@ def main() -> None:
     engine         = YtDlpEngine(config)
     gallery_engine = GalleryDlEngine(config)
 
+    from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+    instagram_live_engine = InstagramLiveEngine(config)
+
     # Inject bundled Deno into PATH once on the main thread before any worker
     # thread starts.  os.environ.update() is not thread-safe on CPython — calling
     # it from ThreadPoolExecutor workers (the old approach) was a latent race.
@@ -227,7 +230,8 @@ def main() -> None:
         logger.warning("Deno PATH injection failed (non-fatal): %s", _deno_exc)
 
     manager = DownloadManager(
-        config, engine=engine, gallery_engine=gallery_engine, story_engine_enabled=True
+        config, engine=engine, gallery_engine=gallery_engine,
+        story_engine_enabled=True, instagram_live_engine=instagram_live_engine,
     )
     manager.start()
 

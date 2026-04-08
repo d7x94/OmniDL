@@ -246,6 +246,86 @@ def _resolve_com_rename(stale_path: "pathlib.Path") -> "pathlib.Path | None":
         return None
 
 
+# Module-level flag: pre-warm runs once per process, not once per instance.
+_DIALOG_PREWARMED = False
+
+
+def _prewarm_file_dialog_win32() -> None:
+    """
+    FIX-BROWSE-7: First-launch Shell change notification lag inside the dialog.
+
+    CoCreateInstance(CLSID_FileOpenDialog) loads ExplorerFrame.dll /
+    windows.storage.dll cold on the very first call.  The dialog's internal
+    Shell change notification listener is registered during DLL initialisation.
+    Because that registration is asynchronous, a folder rename that occurs
+    before it completes is silently missed: the dialog view stays stale
+    (shows "New Folder") for up to ~30 s until Windows re-broadcasts the
+    notification on its retry timer.
+
+    Symptom: rename inside Browse does not visually update on first app
+    launch; works instantly on every subsequent launch (DLLs already in RAM).
+
+    Fix: call CoCreateInstance + Release at GeneralPanel.__init__ time — purely
+    a background DLL warm-up, the dialog is never shown.  By the time the user
+    clicks Browse, all DLLs are in memory and the listener registers instantly.
+    """
+    import sys as _sys
+
+    global _DIALOG_PREWARMED
+    if _DIALOG_PREWARMED or _sys.platform != "win32":
+        return
+    _DIALOG_PREWARMED = True
+    try:
+        import ctypes
+        import struct
+
+        def _guid(d32: int, d16a: int, d16b: int, *b8: int):
+            raw = struct.pack("<IHH", d32, d16a, d16b) + bytes(b8)
+            return (ctypes.c_byte * 16)(*raw)
+
+        CLSID_FileOpenDialog = _guid(0xDC1C5A9C, 0xE88A, 0x4DDE, 0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7)
+        IID_IFileOpenDialog  = _guid(0xD57C7288, 0xD4AD, 0x4768, 0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60)
+        S_OK                 = 0
+        CLSCTX_INPROC_SERVER = 1
+
+        ole32 = ctypes.windll.ole32
+        co_hr = ole32.CoInitialize(None)
+        _needs_uninit = co_hr in (S_OK, 1)  # S_OK or S_FALSE
+        try:
+            dialog = ctypes.c_void_p()
+            hr = ole32.CoCreateInstance(
+                CLSID_FileOpenDialog, None, CLSCTX_INPROC_SERVER,
+                IID_IFileOpenDialog, ctypes.byref(dialog),
+            )
+            if hr == S_OK and dialog:
+                # Release immediately (IUnknown::Release = vtable slot 2).
+                # We only needed CoCreateInstance to trigger DLL loading.
+                vtbl = ctypes.cast(
+                    ctypes.cast(dialog, ctypes.POINTER(ctypes.c_void_p))[0],
+                    ctypes.POINTER(ctypes.c_void_p),
+                )
+                ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vtbl[2])(dialog)
+
+            # FIX-BROWSE-8: IFileOpenDialog's rename-update listener registers
+            # via the SHChangeNotify subsystem when Show() is called.  On first
+            # cold launch, that subsystem is not yet initialised, so the
+            # async registration races with a quick rename (30 s retry lag).
+            # Calling SHChangeNotify with SHCNF_FLUSH forces synchronous
+            # initialisation of the subsystem before the user opens Browse.
+            shell32 = ctypes.windll.shell32
+            shell32.SHChangeNotify(
+                ctypes.c_long(0x08000000),   # SHCNE_ASSOCCHANGED
+                ctypes.c_uint(0x00001000),   # SHCNF_IDLIST | SHCNF_FLUSH
+                None,
+                None,
+            )
+        finally:
+            if _needs_uninit:
+                ole32.CoUninitialize()
+    except Exception:
+        pass  # pre-warm is best-effort — never crashes startup
+
+
 class GeneralPanel(_BasePanel):
     """
     Renders the three purely-general settings sections:
@@ -257,6 +337,7 @@ class GeneralPanel(_BasePanel):
 
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, app)
+        _prewarm_file_dialog_win32()  # FIX-BROWSE-7: pre-load COM DLLs before first Browse
         self._build()
 
     # ── Build ─────────────────────────────────────────────────────────────

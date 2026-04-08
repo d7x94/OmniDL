@@ -137,7 +137,7 @@ class QueueTab(ctk.CTkFrame):
     def _clear_finished(self) -> None:
         self._app.service.clear_finished()
 
-    def _on_send(self, file_path, restore_btn, task=None) -> None:
+    def _on_send(self, file_path, restore_btn, task=None, specific_files=None) -> None:
         """Send completed file to all configured Taildrop nodes.
 
         Reads node list from config (multi-node list, falls back to legacy
@@ -176,6 +176,7 @@ class QueueTab(ctk.CTkFrame):
                 on_node_done=_on_node_done,
                 on_node_error=_on_node_error,
                 task=task,
+                specific_files_override=specific_files,
             )
             self._app.toast(f"📲  Đang gửi đến {len(nodes)} thiết bị: {node_list_str}", "info")
         except Exception as exc:

@@ -556,7 +556,7 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
         # Multi-file post: convert each video file; skip images.
         _vid_exts = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
         gdl = self._gallery_dl_files
-        if gdl is not None:
+        if gdl:
             video_files = [
                 Path(f) for f in gdl
                 if Path(f).suffix.lower() in _vid_exts and Path(f).is_file()
@@ -600,6 +600,30 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
     def _on_send_click(self) -> None:
         if not self._file_path:
             return
+        path = self._file_path
+
+        # When path is a directory but no specific files are known (gallery_dl_files
+        # is falsy), show a picker so the user can choose which file to send.
+        # This prevents zipping the entire download folder unintentionally.
+        specific_files = None
+        if path.is_dir() and not self._gallery_dl_files:
+            files = sorted(f for f in path.iterdir() if f.is_file())
+            if not files:
+                self._set_status("Thư mục rỗng, không có file nào để gửi.")
+                return
+            if len(files) == 1:
+                specific_files = files  # auto-select the only file
+            else:
+                picker = _FolderFilePickerDialog(
+                    self, directory=path,
+                    title="Chọn file cần gửi",
+                    confirm_text="📲  Gửi đã chọn",
+                )
+                self.wait_window(picker)
+                if not picker.confirmed or not picker.selected:
+                    return
+                specific_files = picker.selected
+
         self._send_btn.configure(state="disabled", text="📲 Đang gửi…")
 
         def _restore() -> None:
@@ -608,7 +632,10 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
 
         if self._on_send:
             try:
-                self._on_send(self._file_path, _restore)
+                if specific_files is not None:
+                    self._on_send(path, _restore, specific_files=specific_files)
+                else:
+                    self._on_send(path, _restore)
             except Exception as exc:
                 logger.warning("PostDownloadActions on_send raised: %s", exc)
                 _restore()
@@ -620,16 +647,16 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
         if not self._file_path:
             return
         path = self._file_path
-
-        dialog = _ConfirmDeleteDialog(self, filename=path.name)
-        self.wait_window(dialog)
-        if not dialog.confirmed:
-            return
-
         gdl = self._gallery_dl_files
-        if gdl is not None:
-            # Multi-file post: delete each individual file, not the directory.
-            # The directory may be shared with other posts (same account).
+
+        if gdl:
+            # ── Multi-file gallery-dl post ────────────────────────────────
+            # Delete each individual file; never delete the parent directory
+            # unconditionally — it may be shared with other posts.
+            dialog = _ConfirmDeleteDialog(self, filename=path.name)
+            self.wait_window(dialog)
+            if not dialog.confirmed:
+                return
             errors = []
             for f_str in gdl:
                 fp = Path(f_str)
@@ -645,20 +672,72 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
             if errors:
                 self._set_status(f"Không xoá được: {', '.join(errors[:3])}")
                 return
-            # Try to remove the parent dir if now empty
+            # Remove parent directory only if it is now completely empty.
             try:
                 if path.is_dir() and not any(path.iterdir()):
                     path.rmdir()
                     logger.info("PostDownloadActions: removed empty dir '%s'", path)
             except OSError:
                 pass
+
+        elif path.is_dir():
+            # ── Unexpected directory (should not normally happen after the
+            # root-cause fix, but kept as a safety net) ────────────────────
+            # Never call shutil.rmtree here — it would delete the entire
+            # download folder.  Instead show a file picker so the user
+            # explicitly selects which files to delete.
+            files = sorted(f for f in path.iterdir() if f.is_file())
+            if not files:
+                # Already empty — safe to remove
+                dialog = _ConfirmDeleteDialog(self, filename=path.name)
+                self.wait_window(dialog)
+                if not dialog.confirmed:
+                    return
+                try:
+                    path.rmdir()
+                    logger.info("PostDownloadActions: removed empty dir '%s'", path)
+                except OSError as exc:
+                    logger.error("PostDownloadActions: cannot rmdir '%s': %s", path, exc)
+                    self._set_status(f"Không xoá được: {exc.strerror}")
+                    return
+            else:
+                picker = _FolderFilePickerDialog(
+                    self, directory=path,
+                    title="Chọn file cần xoá",
+                    confirm_text="🗑  Xoá đã chọn",
+                )
+                self.wait_window(picker)
+                if not picker.confirmed or not picker.selected:
+                    return
+                errors = []
+                for fp in picker.selected:
+                    try:
+                        if fp.exists():
+                            os.remove(fp)
+                            logger.info("PostDownloadActions: deleted '%s'", fp)
+                    except OSError as exc:
+                        logger.error("PostDownloadActions: cannot delete '%s': %s", fp, exc)
+                        errors.append(fp.name)
+                if errors:
+                    self._set_status(f"Không xoá được: {', '.join(errors[:3])}")
+                    return
+                # Remove directory only if now empty
+                try:
+                    if not any(path.iterdir()):
+                        path.rmdir()
+                        logger.info("PostDownloadActions: removed empty dir '%s'", path)
+                except OSError:
+                    pass
+
         else:
+            # ── Normal single file ────────────────────────────────────────
+            dialog = _ConfirmDeleteDialog(self, filename=path.name)
+            self.wait_window(dialog)
+            if not dialog.confirmed:
+                return
             try:
                 if path.exists():
-                    if path.is_dir():
-                        shutil.rmtree(path)
-                    else:
-                        os.remove(path)
+                    os.remove(path)
                     logger.info("PostDownloadActions: deleted '%s'", path)
                 else:
                     logger.warning("PostDownloadActions: file already gone: '%s'", path)
@@ -697,7 +776,11 @@ class PostDownloadActions(_BaseFrame):  # type: ignore[misc]
         # parent directory so "Gửi" triggers _do_send's zip branch, which
         # respects specific_files built from task.gallery_dl_files (updated
         # by DownloadItemWidget._on_post_convert to include converted outputs).
-        if self._gallery_dl_files is not None:
+        # NOTE: Use truthy check (not `is not None`) — DownloadTask.gallery_dl_files
+        # defaults to [] for all tasks including yt-dlp, so an empty list must
+        # NOT trigger the parent-dir assignment (which would point _file_path
+        # at the download folder and cause shutil.rmtree on Delete).
+        if self._gallery_dl_files:
             self._file_path = output_path.parent
         else:
             self._file_path = output_path
@@ -804,4 +887,134 @@ class _ConfirmDeleteDialog(_BaseToplevel):  # type: ignore[misc]
 
     def _confirm(self) -> None:
         self.confirmed = True
+        self.destroy()
+
+
+# ── Folder file picker dialog ─────────────────────────────────────────────────
+
+class _FolderFilePickerDialog(_BaseToplevel):  # type: ignore[misc]
+    """Modal dialog to select specific files from a directory.
+
+    Used by Send and Delete when the target path is a directory and the app
+    cannot determine which file(s) to act on automatically.
+
+    After ``wait_window()``:
+      • ``confirmed`` — True if user clicked the confirm button with >= 1 file.
+      • ``selected``  — list[Path] of checked files.
+    """
+
+    def __init__(
+        self, parent, *,
+        directory: Path,
+        title: str,
+        confirm_text: str,
+    ) -> None:
+        if ctk is None:  # pragma: no cover
+            self.confirmed = False
+            self.selected = []
+            return
+        super().__init__(parent)
+        self.confirmed = False
+        self.selected: list[Path] = []
+        self._check_vars: dict[Path, "ctk.BooleanVar"] = {}
+
+        self.title(title)
+        self.resizable(False, False)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+
+        ctk.CTkLabel(
+            self,
+            text=f"📁  {directory.name}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=T.text,
+        ).pack(padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            self,
+            text="Chọn file cần thực hiện:",
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+        ).pack(padx=24, pady=(0, 8))
+
+        # Scrollable file list
+        scroll = ctk.CTkScrollableFrame(
+            self, width=460, height=180,
+            fg_color=T.surface2, corner_radius=8,
+        )
+        scroll.pack(padx=24, fill="x")
+
+        files = sorted(f for f in directory.iterdir() if f.is_file())
+        for fp in files:
+            var = ctk.BooleanVar(value=True)
+            self._check_vars[fp] = var
+            try:
+                size_kb = fp.stat().st_size // 1024
+                size_str = f"{size_kb} KB" if size_kb < 1024 else f"{size_kb // 1024} MB"
+            except OSError:
+                size_str = "?"
+            label = f"{fp.name}  ({size_str})"
+            ctk.CTkCheckBox(
+                scroll,
+                text=label[:80] + ("…" if len(label) > 80 else ""),
+                variable=var,
+                font=ctk.CTkFont(size=11),
+                text_color=T.text,
+                fg_color=T.primary,
+                hover_color=T.primary_hover,
+                checkmark_color=T.text_inv,
+            ).pack(anchor="w", padx=8, pady=3)
+
+        # Select-all / deselect-all helpers
+        sel_row = ctk.CTkFrame(self, fg_color="transparent")
+        sel_row.pack(padx=24, pady=(8, 0), fill="x")
+
+        ctk.CTkButton(
+            sel_row, text="Chọn tất cả",
+            width=100, height=24, corner_radius=6,
+            font=ctk.CTkFont(size=10),
+            fg_color=T.surface2, hover_color=T.surface3,
+            text_color=T.text2,
+            command=lambda: [v.set(True) for v in self._check_vars.values()],
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            sel_row, text="Bỏ chọn tất cả",
+            width=110, height=24, corner_radius=6,
+            font=ctk.CTkFont(size=10),
+            fg_color=T.surface2, hover_color=T.surface3,
+            text_color=T.text2,
+            command=lambda: [v.set(False) for v in self._check_vars.values()],
+        ).pack(side="left")
+
+        # Confirm / Cancel
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(pady=(12, 20))
+
+        ctk.CTkButton(
+            btn_row, text="Huỷ",
+            width=90, height=32, corner_radius=8,
+            fg_color=T.surface2, hover_color=T.surface3,
+            text_color=T.text2,
+            command=self.destroy,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_row, text=confirm_text,
+            width=130, height=32, corner_radius=8,
+            fg_color=T.primary, hover_color=T.primary_hover,
+            text_color=T.text_inv,
+            font=ctk.CTkFont(weight="bold"),
+            command=self._confirm,
+        ).pack(side="left")
+
+        self.update_idletasks()
+        px = parent.winfo_rootx() + parent.winfo_width()  // 2 - self.winfo_width()  // 2
+        py = parent.winfo_rooty() + parent.winfo_height() // 2 - self.winfo_height() // 2
+        self.geometry(f"+{px}+{py}")
+
+    def _confirm(self) -> None:
+        self.selected = [fp for fp, var in self._check_vars.items() if var.get()]
+        self.confirmed = bool(self.selected)
         self.destroy()

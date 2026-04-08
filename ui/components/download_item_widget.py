@@ -102,13 +102,6 @@ class DownloadItemWidget(ctk.CTkFrame):
 
         self._type_dot = ctk.CTkLabel(top, text="●", font=ctk.CTkFont(size=9),
                                        text_color=T.primary, width=12)
-        self._type_dot.pack(side="left", padx=(0, 8))
-
-        self._title_lbl = ctk.CTkLabel(
-            top, text=self._trunc(self.task.title, 64),
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=T.text, anchor="w")
-        self._title_lbl.pack(side="left", fill="x", expand=True)
 
         s_label, s_dot_key, s_bg_key = _STATUS.get(
             self.task.status, ("Unknown", "text3", "surface2"))
@@ -117,10 +110,20 @@ class DownloadItemWidget(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=getattr(T, s_dot_key),
             fg_color=getattr(T, s_bg_key), corner_radius=5)
-        self._status_badge.pack(side="left", padx=(8, 8))
 
         self._btn_box = ctk.CTkFrame(top, fg_color="transparent")
-        self._btn_box.pack(side="left")
+
+        # Pack right-anchored widgets FIRST so they always get their space;
+        # _title_lbl (expand=True) then fills whatever remains.
+        self._btn_box.pack(side="right")
+        self._status_badge.pack(side="right", padx=(8, 8))
+        self._type_dot.pack(side="left", padx=(0, 8))
+
+        self._title_lbl = ctk.CTkLabel(
+            top, text=self._trunc(self.task.title, 64),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=T.text, anchor="w", width=1)
+        self._title_lbl.pack(side="left", fill="x", expand=True)
 
         self._pause_btn = ctk.CTkButton(
             self._btn_box, text="⏸", width=30, height=26, corner_radius=6,
@@ -527,7 +530,11 @@ class DownloadItemWidget(ctk.CTkFrame):
             # _notify runs on the UI thread via _ui_queue — safe to mutate task.
             def _notify(op=output_path):
                 gdl = getattr(self.task, "gallery_dl_files", None)
-                if gdl is not None and str(op) not in gdl:
+                # Truthy check: DownloadTask.gallery_dl_files defaults to []
+                # for all tasks — only append when gallery-dl actually populated
+                # the list (non-empty), otherwise we'd corrupt a yt-dlp task's
+                # gallery_dl_files and make send_file_to_nodes zip the directory.
+                if gdl and str(op) not in gdl:
                     self.task.gallery_dl_files = gdl + [str(op)]
                 self._post_actions.notify_convert_done(op)
             self._ui_queue.put(_notify)
@@ -550,19 +557,21 @@ class DownloadItemWidget(ctk.CTkFrame):
             on_error=_on_error,
         )
 
-    def _on_post_send(self, file_path: Path, restore_btn: callable) -> None:
+    def _on_post_send(self, file_path: Path, restore_btn: callable, specific_files=None) -> None:
         """Bridge PostDownloadActions → TaildropService.send_file_to_nodes().
 
         Reads the target node list from config via the on_send callback
         provided at widget construction.  If no on_send callback was given,
         restores the button immediately.  Forwards self.task so TaildropService
         can use gallery_dl_files for multi-file posts.
+        specific_files: list[Path] | None — when provided (from file picker),
+        takes precedence over task.gallery_dl_files in send_file_to_nodes.
         """
         if not self._on_send:
             restore_btn()
             return
         try:
-            self._on_send(file_path, restore_btn, task=self.task)
+            self._on_send(file_path, restore_btn, task=self.task, specific_files=specific_files)
         except Exception as exc:
             logger.warning("DownloadItemWidget on_send raised: %s", exc)
             restore_btn()

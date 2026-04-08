@@ -463,7 +463,36 @@ def create_app(
             raise HTTPException(status_code=404, detail="File already deleted or not found")
 
         if file_path.is_dir():
-            shutil.rmtree(file_path)
+            # Gallery-dl multi-file download: delete only the known files so
+            # the download folder is never rmtree'd silently.
+            gdl: list = getattr(task, "gallery_dl_files", None) or []
+            if not gdl:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Task output is a directory but no file list is available. "
+                        "Delete the files manually from the server."
+                    ),
+                )
+            errors: list[str] = []
+            for f_str in gdl:
+                fp = Path(f_str)
+                try:
+                    if fp.exists():
+                        fp.unlink()
+                except OSError as exc:
+                    errors.append(f"{fp.name}: {exc.strerror}")
+            if errors:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Partial delete — could not remove: {'; '.join(errors[:3])}",
+                )
+            # Remove directory only if now empty
+            try:
+                if not any(file_path.iterdir()):
+                    file_path.rmdir()
+            except OSError:
+                pass
         else:
             file_path.unlink()
         # Clear filename on the task so the UI knows the file is gone.

@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from app.event_bus import EventBus
@@ -20,6 +21,7 @@ from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 
 if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
+    from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class DownloadManager:
         event_bus: Optional[EventBus] = None,
         gallery_engine: Optional[GalleryDlEngine] = None,
         story_engine_enabled: bool = False,
+        instagram_live_engine: Optional[InstagramLiveEngine] = None,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
@@ -53,6 +56,9 @@ class DownloadManager:
         # Injected from main.py; defaults to False so tests and non-CDP builds
         # are unaffected.
         self._story_engine_enabled: bool = story_engine_enabled
+        # Optional Instagram Live engine — direct HLS recording via FFmpeg.
+        # When present, Instagram live URLs are routed here instead of yt-dlp.
+        self._instagram_live_engine = instagram_live_engine
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
@@ -218,6 +224,13 @@ class DownloadManager:
         # BUG-BU: set True when yt-dlp hits a photo-only error and gallery-dl
         # hasn't been tried yet (Remote API client omitted source_engine).
         _gallery_fallback_needed: bool = False
+        # BUG-BU orphan cleanup: timestamp before any yt-dlp attempt so we can
+        # identify files yt-dlp wrote to disk before the photo-only error.
+        # Subtract 1 s to absorb filesystem timestamp rounding.
+        _attempt_start_ts: float = time.time() - 1.0
+        # Base output directory where yt-dlp saves files (before gallery-dl
+        # creates its per-post slug subfolder).  Set when BUG-BU triggers.
+        _orphan_cleanup_root: Optional[Path] = None
 
         for attempt in range(max_attempts):
             # Check for cancellation before each attempt (including before
@@ -277,6 +290,25 @@ class DownloadManager:
                         last_exc = None
                         break  # success — skip yt-dlp / gallery routing
 
+                # Route to InstagramLiveEngine for Instagram live URLs.
+                # Direct HLS recording via FFmpeg is more reliable than yt-dlp
+                # for Instagram Live because yt-dlp's Instagram extractor
+                # frequently fails to resolve the live HLS stream URL.
+                # This check runs before gallery-dl routing since live URLs
+                # are never routed to gallery-dl.
+                if self._instagram_live_engine is not None:
+                    from infrastructure.downloader.instagram_live_engine import (  # noqa: PLC0415
+                        is_instagram_live_url,
+                    )
+                    if is_instagram_live_url(task.url):
+                        self._instagram_live_engine.download(
+                            task,
+                            on_progress=self._on_progress,
+                            on_postprocess=self._on_progress,
+                        )
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
                 # Route to gallery-dl engine when MediaInfo carries the hint.
                 # Falls back to yt-dlp if gallery engine is not wired (e.g. tests).
                 use_gallery = (
@@ -324,6 +356,15 @@ class DownloadManager:
                     task.media_info.source_engine = "gallery_dl"
                     _gallery_fallback_needed = True
                     last_exc = exc
+                    # Capture the base output dir NOW — gallery-dl will create a
+                    # slug subfolder inside it, so we need the parent to scan for
+                    # yt-dlp orphaned files after the fallback succeeds.
+                    _raw_od = getattr(task, "output_dir", None) or ""
+                    _orphan_cleanup_root = (
+                        Path(_raw_od).resolve()
+                        if _raw_od
+                        else self._config.download_dir
+                    )
                     break  # stop yt-dlp retries; gallery-dl attempt follows below
 
                 # Hard errors: stop immediately, no retry.
@@ -373,6 +414,55 @@ class DownloadManager:
                     "gallery-dl fallback failed for task %s: %s",
                     task.id, gdl_exc,
                 )
+
+        # ── BUG-BU orphan cleanup ─────────────────────────────────────────
+        # When gallery-dl fallback succeeded, yt-dlp may have written partial
+        # carousel files to disk before the photo-only error triggered the
+        # fallback.  These files are NOT in task.gallery_dl_files (which only
+        # contains gallery-dl + BUG-BW rescue files) and sit in the base
+        # output dir rather than the gallery-dl slug subfolder.
+        # Delete them so the user does not see duplicate video files alongside
+        # the correctly organised slug folder.  Applies to both the app path
+        # (yt-dlp ran first because extract_info saw a video item) and the
+        # Remote API path (source_engine not forwarded by the iOS client).
+        if (
+            _gallery_fallback_needed
+            and last_exc is None
+            and _orphan_cleanup_root is not None
+            and _orphan_cleanup_root.is_dir()
+        ):
+            _gdl_files_set: set[Path] = {
+                Path(f).resolve()
+                for f in (getattr(task, "gallery_dl_files", None) or [])
+            }
+            _deleted_parents: set[Path] = set()
+            try:
+                for _f in list(_orphan_cleanup_root.rglob("*")):
+                    if (
+                        _f.is_file()
+                        and _f.resolve() not in _gdl_files_set
+                        and _f.stat().st_mtime >= _attempt_start_ts
+                    ):
+                        _f.unlink(missing_ok=True)
+                        logger.info(
+                            "BUG-BU orphan cleanup: deleted yt-dlp partial file %s",
+                            _f.name,
+                        )
+                        _deleted_parents.add(_f.parent)
+                # Remove empty directories left behind (deepest first).
+                for _d in sorted(
+                    _deleted_parents, key=lambda p: len(p.parts), reverse=True
+                ):
+                    try:
+                        if _d.is_dir() and not any(_d.iterdir()):
+                            _d.rmdir()
+                            logger.debug(
+                                "BUG-BU orphan cleanup: removed empty dir %s", _d.name
+                            )
+                    except Exception:
+                        pass
+            except Exception as _ce:
+                logger.warning("BUG-BU orphan cleanup scan failed: %s", _ce)
 
         # ── Resolve final state ───────────────────────────────────────────
         if task.is_cancellation_requested:

@@ -120,8 +120,10 @@ def _sanitize_filename(name: str) -> str:
     # 4. Replace characters that are problematic for Tailscale / iOS/macOS.
     safe = re.sub(r'[#@!?*|<>"\\/:%]+', "_", ascii_stem)
 
-    # 5. Collapse runs of whitespace and underscores; strip outer underscores.
-    safe = re.sub(r"[\s_]+", "_", safe).strip("_")
+    # 5. Collapse runs of whitespace and underscores; strip outer underscores
+    #    and hyphens (e.g. when non-ASCII prefix is dropped, stem starts with
+    #    " - " which collapses to "_-_" then strips to "-_..." without this).
+    safe = re.sub(r"[\s_]+", "_", safe).strip("-_")
 
     # 6. Fallback for degenerate case (e.g. filename was pure emoji).
     if not safe:
@@ -337,6 +339,7 @@ class TaildropService:
         on_node_done: Optional[Callable[..., None]] = None,
         on_node_error: Optional[Callable[..., None]] = None,
         task: "Optional[DownloadTask]" = None,
+        specific_files_override: "Optional[list[Path]]" = None,
     ) -> None:
         """Send *file_path* to every node in *nodes* concurrently.
 
@@ -362,6 +365,11 @@ class TaildropService:
         task:
             Optional DownloadTask.  When provided and task.gallery_dl_files
             is set, only those specific files are zipped (not the full dir).
+        specific_files_override:
+            Optional list of Path objects selected by the user via the file
+            picker dialog.  Takes precedence over task.gallery_dl_files when
+            provided.  Used when the user explicitly picks which files to send
+            from a directory (e.g. after an ambiguous single-task download).
         """
         if not file_path.exists():
             logger.warning(
@@ -380,12 +388,14 @@ class TaildropService:
             logger.warning("send_file_to_nodes: no valid nodes — nothing to send")
             return
 
-        # Build specific_files from task.gallery_dl_files if available so
-        # only this post's files are zipped (not accumulated account dir).
+        # Build specific_files — user's picker selection takes priority over
+        # task.gallery_dl_files so the file picker result is always respected.
         specific_files: "list[Path] | None" = None
-        if task is not None:
+        if specific_files_override is not None:
+            specific_files = [f for f in specific_files_override if f.exists()]
+        elif task is not None:
             gdl = getattr(task, "gallery_dl_files", None)
-            if gdl is not None:
+            if gdl:
                 specific_files = [Path(f) for f in gdl if Path(f).exists()]
 
         def _send_one(node: str) -> None:
