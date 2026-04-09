@@ -12,6 +12,7 @@ build/
 # Ruff / type checker
 .ruff_cache/
 .mypy_cache/
+pytest-cache-files-*/
 
 # Virtual environments
 venv_build/
@@ -75,9 +76,13 @@ tests.zip
 # Deno binary -- downloaded at CI build time, never stored in the repo.
 resources/deno/
 
+# gallery-dl binary -- downloaded at CI build time, never stored in the repo.
+resources/gallery-dl/
+
 # IDE / Local development
 *.code-workspace
 .DS_Store/
+.code-review-graph/
 
 # macOS specific
 .AppleDouble
@@ -141,3 +146,15 @@ yarn.lock
 # PIDs and lock files
 *.pid
 *.lock
+
+# Graphify - temporary cache & analysis files
+.graphify_*
+
+# Graphify - output folder (reports, graph HTML, JSON)
+graphify-out/
+
+# Graphify - optional ignore file
+.graphifyignore
+
+# Code-review-graph
+.code-review-graphignore

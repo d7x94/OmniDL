@@ -1200,6 +1200,7 @@ class ConvertQueue:
         on_error: Optional[Callable[[str], None]] = None,
         on_start: Optional[Callable[[], None]] = None,
         encode_settings: Optional[EncodeSettings] = None,
+        target_ext: str = "mp4",
     ) -> Callable[[], None]:
         """Queue a conversion job.  Returns immediately.
 
@@ -1220,6 +1221,7 @@ class ConvertQueue:
                     on_progress, on_done, on_error,
                     encode_settings=encode_settings,
                     cancel_event=cancel_event,
+                    target_ext=target_ext,
                 )
             finally:
                 self._semaphore.release()

@@ -50,14 +50,23 @@ def _find_executable() -> Optional[str]:
     """
     Locate gallery-dl binary.
     Search order:
-      1. System PATH (shutil.which)
-      2. Scripts dir of the current Python environment (venv / frozen)
+      1. Frozen app: sys._MEIPASS/gallery-dl/ (bundled binary)
+      2. System PATH (shutil.which)
+      3. Scripts dir of the current Python environment (venv / dev)
     Returns None if not found — callers raise RuntimeError with install hint.
     """
+    # 1. PyInstaller frozen bundle — gallery-dl binary lives in _MEIPASS/gallery-dl/
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        for name in ("gallery-dl", "gallery-dl.exe"):
+            candidate = meipass / "gallery-dl" / name
+            if candidate.is_file():
+                return str(candidate)
+    # 2. System PATH
     found = shutil.which("gallery-dl")
     if found:
         return found
-    # Same directory as the running python executable (venv Scripts / bin)
+    # 3. Scripts dir alongside Python executable (venv Scripts / bin)
     scripts = Path(sys.executable).parent
     for name in ("gallery-dl", "gallery-dl.exe", "gallery_dl", "gallery_dl.exe"):
         candidate = scripts / name

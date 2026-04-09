@@ -105,6 +105,7 @@ class RemoteConvertService:
         quality:      str = "standard",
         speed_preset: str = "balanced",
         custom_crf:   int = 23,
+        target_ext:   str = "mp4",
     ) -> ConversionJob:
         """
         Validate settings, create a ConversionJob, and dispatch to ConvertQueue.
@@ -225,6 +226,7 @@ class RemoteConvertService:
             on_error        = _on_error,
             on_start        = _on_start,
             encode_settings = encode_settings,
+            target_ext      = target_ext,
         )
         # Store the ConvertQueue cancel callable so cancel_convert() can
         # call it.  We also wire the job's own cancel_event to it so the
@@ -232,6 +234,32 @@ class RemoteConvertService:
         job._cancel_fn = _cancel_fn  # type: ignore[attr-defined]
 
         return job
+
+    def start_convert_from_path(
+        self,
+        file_path: Path,
+        encoder_key:  str = "cpu",
+        quality:      str = "standard",
+        speed_preset: str = "balanced",
+        custom_crf:   int = 23,
+        target_ext:   str = "mp4",
+    ) -> ConversionJob:
+        """
+        Start a conversion job on an arbitrary local file.
+
+        Identical to start_convert() but uses source_task_id="" to signal
+        that this job is not tied to any download task.  Called by the
+        POST /api/files/convert endpoint after path-traversal validation.
+        """
+        return self.start_convert(
+            source_task_id = "",
+            file_path      = file_path,
+            encoder_key    = encoder_key,
+            quality        = quality,
+            speed_preset   = speed_preset,
+            custom_crf     = custom_crf,
+            target_ext     = target_ext,
+        )
 
     def delete_convert_file(
         self, job_id: str, allowed_dir: Path

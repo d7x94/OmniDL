@@ -44,6 +44,10 @@ from api.models import (
     DownloadRequest,
     EncoderOption,
     FileActionResponse,
+    FileBrowseItem,
+    FileBrowseResponse,
+    FileConvertJobResponse,
+    FileConvertRequest,
     FileInfoResponse,
     QueueActionResponse,
     TaskResponse,
@@ -842,6 +846,130 @@ def create_app(
     async def get_history(_: None = Depends(_require_auth)):
         """Return the full download history (newest first)."""
         return list(reversed(service.get_history()))
+
+    # ── File Browser ──────────────────────────────────────────────────────
+
+    @app.get(
+        "/api/files/browse",
+        response_model=FileBrowseResponse,
+        summary="Browse files/directories on the server within download_dir",
+    )
+    async def browse_files(
+        path: Optional[str] = Query(None, description="Absolute path to browse; defaults to download_dir"),
+        _: None = Depends(_require_auth),
+    ) -> FileBrowseResponse:
+        """
+        List the contents of a directory on the server.
+
+        Security:
+        - The resolved path MUST be within config.download_dir.
+        - Returns 400 if the path escapes download_dir.
+        - Returns 404 if the path does not exist or is not a directory.
+        """
+        root = config.download_dir.resolve()
+
+        if path is None:
+            target = root
+        else:
+            try:
+                target = Path(path).resolve()
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid path")
+
+        if not target.is_relative_to(root):
+            raise HTTPException(
+                status_code=400,
+                detail="Path is outside the allowed download directory",
+            )
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path does not exist")
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+
+        parent_path: Optional[str] = None
+        if target != root:
+            parent_path = str(target.parent)
+
+        items: list[FileBrowseItem] = []
+        try:
+            entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied reading directory")
+
+        for entry in entries:
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            items.append(FileBrowseItem(
+                name        = entry.name,
+                type        = "file" if entry.is_file() else "dir",
+                size        = stat.st_size if entry.is_file() else None,
+                modified_at = stat.st_mtime,
+            ))
+
+        return FileBrowseResponse(
+            current_path = str(target),
+            parent_path  = parent_path,
+            items        = items,
+        )
+
+    @app.post(
+        "/api/files/convert",
+        response_model=FileConvertJobResponse,
+        summary="Start a conversion job on a local file (not tied to a download task)",
+    )
+    async def convert_file(
+        body: FileConvertRequest, _: None = Depends(_require_auth)
+    ) -> FileConvertJobResponse:
+        """
+        Convert any file on the server that lives within download_dir.
+
+        Typical flow from iPhone:
+          1. GET /api/files/browse  → pick a file path
+          2. POST /api/files/convert { file_path, target_ext, encoder_key, ... }
+          3. GET /api/convert/{job_id}  (or SSE events)  → track progress
+
+        Security:
+        - file_path resolved against config.download_dir (CWE-22 guard).
+        - encoder_key validated against _VALID_ENCODERS allowlist.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+
+        root = config.download_dir.resolve()
+        try:
+            file_path = Path(body.file_path).resolve()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid file_path")
+
+        if not file_path.is_relative_to(root):
+            raise HTTPException(
+                status_code=400,
+                detail="file_path is outside the allowed download directory",
+            )
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found on server")
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail="file_path is not a file")
+
+        try:
+            job = remote_convert.start_convert_from_path(
+                file_path    = file_path,
+                encoder_key  = body.encoder_key or "cpu",
+                quality      = body.quality or "standard",
+                speed_preset = body.speed_preset or "balanced",
+                custom_crf   = body.custom_crf if body.custom_crf is not None else 23,
+                target_ext   = body.target_ext or "mp4",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        logger.info(
+            "Remote API: started standalone convert job %s for '%s'",
+            job.job_id, file_path.name,
+        )
+        return FileConvertJobResponse(job_id=job.job_id)
 
     # ── SSE ───────────────────────────────────────────────────────────────
 

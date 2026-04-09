@@ -295,24 +295,15 @@ def main() -> None:
 
 
 def _clear_history_on_version_change(config, history) -> None:
-    """Reset settings and clear download history when the installed app version changes.
+    """Track the installed app version in config.
 
-    History and user settings are stored in the OS user-data directory
-    (platformdirs) which persists across reinstalls.  Resetting on version
-    change ensures a fresh install always starts with factory-default settings
-    and an empty history, without requiring the user to manually delete the
-    OmniDL data directory.
+    Settings are never auto-reset on update — the user controls this
+    explicitly via Settings → Data & Privacy → Clear All Data.
+    New config keys introduced in any version are automatically populated
+    with their defaults by ConfigManager on load (missing-key merge).
     """
-    
-    import re as _re
     stored = config.get("app_version", "")
     if stored != _APP_VERSION:
-        def _major(v: str) -> str:
-            m = _re.match(r"(\d+)", v)
-            return m.group(0) if m else "0"
-        if _major(stored or "0") != _major(_APP_VERSION):
-            history.clear()
-            config.reset_to_defaults()
         config.set("app_version", _APP_VERSION)
 
 

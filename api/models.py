@@ -160,3 +160,36 @@ class EncoderOption(BaseModel):
     """One available encoder entry returned by GET /api/convert/encoders."""
     key:   str   # e.g. "nvenc"
     label: str   # e.g. "NVIDIA NVENC"
+
+
+# ── Remote File Browse / Standalone Convert ───────────────────────────────────
+
+class FileBrowseItem(BaseModel):
+    """One entry in a directory listing."""
+    name:        str            # basename
+    type:        str            # "file" | "dir"
+    size:        Optional[int]  # bytes; None for directories
+    modified_at: float          # Unix timestamp
+
+
+class FileBrowseResponse(BaseModel):
+    """Directory listing returned by GET /api/files/browse."""
+    current_path: str                  # absolute path on the server
+    parent_path:  Optional[str]        # None when already at download_dir root
+    items:        list[FileBrowseItem]
+
+
+class FileConvertRequest(BaseModel):
+    """Start a conversion job on an arbitrary local file (not tied to a task)."""
+    # Absolute path on the server, must be within download_dir.
+    file_path:     str
+    target_ext:    Optional[str] = "mp4"
+    encoder_key:   Optional[str] = "cpu"
+    quality:       Optional[str] = "standard"
+    speed_preset:  Optional[str] = "balanced"
+    custom_crf:    Optional[int] = 23
+
+
+class FileConvertJobResponse(BaseModel):
+    """Returned by POST /api/files/convert — client polls /api/convert/{job_id}."""
+    job_id: str

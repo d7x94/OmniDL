@@ -263,6 +263,29 @@ jobs:
           Write-Output "OK  Deno binary verified"
 
 
+      # ── Download & stage gallery-dl (Windows) ──────────────────────────
+      # gallery-dl is bundled as a standalone exe so users need NOT install
+      # it separately.  The binary lives in sys._MEIPASS/gallery-dl/ at runtime.
+      - name: Download gallery-dl (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl.exe"
+          New-Item -ItemType Directory -Force -Path "resources\gallery-dl" | Out-Null
+          Write-Output "Downloading gallery-dl from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile "resources\gallery-dl\gallery-dl.exe" -UseBasicParsing
+          $size = (Get-Item "resources\gallery-dl\gallery-dl.exe").Length
+          Write-Output "OK  gallery-dl.exe  ($size bytes)"
+
+      - name: Verify gallery-dl (Windows)
+        shell: pwsh
+        run: |
+          $exe = "resources\gallery-dl\gallery-dl.exe"
+          if (-not (Test-Path $exe)) { Write-Error "gallery-dl.exe missing"; exit 1 }
+          & $exe --version 2>&1 | Select-Object -First 1
+          Write-Output "OK  gallery-dl binary verified"
+
+
       - name: Resolve icon flag
         id: icon
         shell: pwsh
@@ -289,6 +312,7 @@ jobs:
             --add-data "config.json;." `
             --add-data "resources/ffmpeg;ffmpeg" `
             --add-data "resources/deno;deno" `
+            --add-data "resources/gallery-dl;gallery-dl" `
             --add-data "api/static;api/static" `
             --hidden-import multiprocessing `
             --hidden-import multiprocessing.freeze_support `
@@ -466,6 +490,25 @@ jobs:
           echo "OK  Deno binary verified"
 
 
+      # ── Download & stage gallery-dl (macOS) ────────────────────────────
+      - name: Download gallery-dl (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/gallery-dl
+          echo "Downloading gallery-dl ..."
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl" \
+            -o resources/gallery-dl/gallery-dl
+          chmod +x resources/gallery-dl/gallery-dl
+          echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
+
+      - name: Verify gallery-dl (macOS)
+        run: |
+          [ -f resources/gallery-dl/gallery-dl ] || { echo "ERROR: gallery-dl missing"; exit 1; }
+          resources/gallery-dl/gallery-dl --version 2>&1 | head -1
+          echo "OK  gallery-dl binary verified"
+
+
       - name: Resolve icon flag
         id: icon
         run: |
@@ -490,6 +533,7 @@ jobs:
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
             --add-data "resources/deno:deno" \
+            --add-data "resources/gallery-dl:gallery-dl" \
             --add-data "api/static:api/static" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
@@ -712,6 +756,25 @@ jobs:
           echo "OK  Deno binary verified"
 
 
+      # ── Download & stage gallery-dl (Linux) ────────────────────────────
+      - name: Download gallery-dl (Linux)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/gallery-dl
+          echo "Downloading gallery-dl ..."
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl" \
+            -o resources/gallery-dl/gallery-dl
+          chmod +x resources/gallery-dl/gallery-dl
+          echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
+
+      - name: Verify gallery-dl (Linux)
+        run: |
+          [ -f resources/gallery-dl/gallery-dl ] || { echo "ERROR: gallery-dl missing"; exit 1; }
+          resources/gallery-dl/gallery-dl --version 2>&1 | head -1
+          echo "OK  gallery-dl binary verified"
+
+
       - name: PyInstaller build
         run: |
           pyinstaller \
@@ -721,6 +784,7 @@ jobs:
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
             --add-data "resources/deno:deno" \
+            --add-data "resources/gallery-dl:gallery-dl" \
             --add-data "api/static:api/static" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
