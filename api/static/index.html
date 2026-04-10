@@ -562,6 +562,66 @@
       border-radius: 50%;
       animation: spin .6s linear infinite;
     }
+
+    /* ── File browser ─────────────────────────────────────────────────── */
+    .fb-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      min-height: 36px;
+    }
+    .fb-path {
+      font-size: 12px;
+      color: var(--text2);
+      flex: 1;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+    .fb-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 11px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+    }
+    .fb-icon {
+      font-size: 20px;
+      flex-shrink: 0;
+      width: 28px;
+      text-align: center;
+      padding-top: 1px;
+    }
+    .fb-body { flex: 1; min-width: 0; }
+    .fb-name {
+      font-size: 14px;
+      font-weight: 500;
+      word-break: break-all;
+      line-height: 1.3;
+    }
+    .fb-meta {
+      font-size: 12px;
+      color: var(--text2);
+      margin-top: 2px;
+    }
+    .fb-item.fb-dir { cursor: pointer; }
+    .fb-item.fb-dir:active { opacity: .75; }
+    .fb-cvprog {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: var(--surface2);
+      border-radius: 6px;
+    }
+    .fb-cvprog-label {
+      font-size: 11px;
+      color: var(--text2);
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+    }
   </style>
 </head>
 <body>
@@ -590,6 +650,10 @@
     <button class="tab-btn" onclick="switchTab('history',this)" id="tab-history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       History
+    </button>
+    <button class="tab-btn" onclick="switchTab('files',this)" id="tab-files">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+      Files
     </button>
   </nav>
 
@@ -670,6 +734,15 @@
     <!-- ── History tab ───────────────────────────────────────────────── -->
     <div class="tab-panel" id="panel-history">
       <div id="history-list"></div>
+    </div>
+
+    <!-- ── Files tab ────────────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-files">
+      <div class="fb-nav" id="fb-nav">
+        <button class="btn btn-secondary btn-sm" id="fb-up-btn" onclick="browseUp()" style="display:none">⬆ Lên</button>
+        <div class="fb-path" id="fb-path"></div>
+      </div>
+      <div id="fb-list"></div>
     </div>
 
   </main>
@@ -764,6 +837,9 @@ let connected = false;
 let _analyseAbortCtrl = null;  // AbortController for the in-flight analyse fetch
 let convertJobs = {};          // job_id → ConversionJob snapshot
 let _pendingConvertTaskId = null; // task_id being configured in the convert sheet
+let _pendingFilePath = null;   // absolute file path being configured in convert sheet (Files tab)
+let _fileJobMap = {};          // absolute filePath → job_id (file-based convert jobs)
+let _browseData = null;        // last /api/files/browse response (for re-render without re-fetch)
 
 /* ── Persistence ────────────────────────────────────────────────────── */
 function loadCfg() {
@@ -853,12 +929,14 @@ function connectSSE() {
       }
     });
     renderQueue();
+    _maybeRenderFileBrowser();
   });
 
   evtSrc.addEventListener('convert_started', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;
-    renderQueue();   // re-render so progress bar appears
+    renderQueue();
+    _maybeRenderFileBrowser();
   });
   evtSrc.addEventListener('convert_progress', e => {
     const j = JSON.parse(e.data);
@@ -874,18 +952,21 @@ function connectSSE() {
     convertJobs[j.job_id] = j;
     toast(`✅ Convert xong: ${j.output_filename || 'file'}`);
     renderQueue();
+    _maybeRenderFileBrowser();
   });
   evtSrc.addEventListener('convert_failed', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;
     toast(`❌ Convert thất bại: ${j.error_msg || 'lỗi không xác định'}`);
     renderQueue();
+    _maybeRenderFileBrowser();
   });
   evtSrc.addEventListener('convert_cancelled', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;
     toast('⊘ Đã huỷ convert');
     renderQueue();
+    _maybeRenderFileBrowser();
   });
 
   evtSrc.onerror = () => setConnected(false);
@@ -921,6 +1002,7 @@ function switchTab(name, btn) {
   btn.classList.add('active');
   document.getElementById('panel-' + name).classList.add('active');
   if (name === 'history') loadHistory();
+  if (name === 'files')   browseFiles();
 }
 
 /* ── Download flow ──────────────────────────────────────────────────── */
@@ -1407,6 +1489,7 @@ async function openConvertSheet(taskId, title) {
 function closeConvertSheet() {
   document.getElementById('convert-overlay').classList.remove('open');
   _pendingConvertTaskId = null;
+  _pendingFilePath = null;
 }
 
 function setCvq(el) {
@@ -1424,9 +1507,10 @@ function _setActive(gridId, attr, value) {
 }
 
 async function submitConvert() {
-  // Capture BEFORE closeConvertSheet() nullifies _pendingConvertTaskId
-  const taskId = _pendingConvertTaskId;
-  if (!taskId) return;
+  // Capture BEFORE closeConvertSheet() nullifies pending state
+  const taskId   = _pendingConvertTaskId;
+  const filePath = _pendingFilePath;
+  if (!taskId && !filePath) return;
 
   const quality     = document.querySelector('#cvq-grid   .radio-btn.active')?.dataset.cvq   || 'standard';
   const encoderKey  = document.querySelector('#cvenc-grid .radio-btn.active')?.dataset.cvenc || 'cpu';
@@ -1435,18 +1519,39 @@ async function submitConvert() {
 
   closeConvertSheet();
 
-  try {
-    const job = await api('POST', `/api/queue/${taskId}/convert`, {
-      encoder_key:  encoderKey,
-      quality,
-      speed_preset: speedPreset,
-      custom_crf:   customCrf,
-    });
-    convertJobs[job.job_id] = job;
-    toast('🎬 Đang convert…');
-    renderQueue();
-  } catch(e) {
-    toast('❌ ' + e.message);
+  if (filePath) {
+    // Convert a file selected from the Files tab
+    try {
+      const job = await api('POST', '/api/files/convert', {
+        file_path:    filePath,
+        target_ext:   'mp4',
+        encoder_key:  encoderKey,
+        quality,
+        speed_preset: speedPreset,
+        custom_crf:   customCrf,
+      });
+      convertJobs[job.job_id] = { ...job, status: 'PENDING', progress: 0, output_filename: '', error_msg: '' };
+      _fileJobMap[filePath]   = job.job_id;
+      toast('🎬 Đang convert…');
+      renderFileBrowser();
+    } catch(e) {
+      toast('❌ ' + e.message);
+    }
+  } else {
+    // Convert a file from the Queue tab
+    try {
+      const job = await api('POST', `/api/queue/${taskId}/convert`, {
+        encoder_key:  encoderKey,
+        quality,
+        speed_preset: speedPreset,
+        custom_crf:   customCrf,
+      });
+      convertJobs[job.job_id] = job;
+      toast('🎬 Đang convert…');
+      renderQueue();
+    } catch(e) {
+      toast('❌ ' + e.message);
+    }
   }
 }
 
@@ -1472,6 +1577,7 @@ async function deleteConvertFile(jobId, btn) {
     if (convertJobs[jobId]) {
       convertJobs[jobId].output_deleted = true;
       renderQueue();
+      _maybeRenderFileBrowser();
     }
   } catch(e) {
     toast('❌ Xoá thất bại: ' + e.message);
@@ -1573,6 +1679,152 @@ function fmtDur(sec) {
   const h = Math.floor(m / 60);
   return h ? `${h}:${String(m%60).padStart(2,'0')}:${String(s).padStart(2,'0')}`
            : `${m}:${String(s).padStart(2,'0')}`;
+}
+
+/* ── File browser ───────────────────────────────────────────────────── */
+function joinPath(dir, name) {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  return dir.replace(/[/\\]+$/, '') + sep + name;
+}
+
+async function browseFiles(path) {
+  if (!connected) { toast('Not connected'); return; }
+  const list = document.getElementById('fb-list');
+  list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
+  try {
+    const params = (path != null) ? '?path=' + encodeURIComponent(path) : '';
+    const data   = await api('GET', '/api/files/browse' + params);
+    _browseData  = data;
+    renderFileBrowser();
+  } catch(e) {
+    list.innerHTML = `<div class="empty"><p style="color:var(--danger)">${escHtml(e.message)}</p></div>`;
+  }
+}
+
+function browseUp() {
+  if (_browseData && _browseData.parent_path != null) browseFiles(_browseData.parent_path);
+}
+
+function renderFileBrowser() {
+  if (!_browseData) return;
+  const data = _browseData;
+
+  document.getElementById('fb-path').textContent = data.current_path;
+  const upBtn = document.getElementById('fb-up-btn');
+  upBtn.style.display = data.parent_path != null ? 'inline-flex' : 'none';
+
+  const list = document.getElementById('fb-list');
+  if (!data.items.length) {
+    list.innerHTML = '<div class="empty"><p>Thư mục trống</p></div>';
+    return;
+  }
+
+  list.innerHTML = data.items.map(item => {
+    const fullPath = joinPath(data.current_path, item.name);
+
+    if (item.type === 'dir') {
+      return `<div class="fb-item fb-dir" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">
+        <div class="fb-icon">📁</div>
+        <div class="fb-body"><div class="fb-name">${escHtml(item.name)}</div></div>
+      </div>`;
+    }
+
+    const meta = [fmtSize(item.size),
+      item.modified_at ? new Date(item.modified_at * 1000).toLocaleDateString() : '']
+      .filter(Boolean).join(' · ');
+
+    const jobId = _fileJobMap[fullPath];
+    const job   = jobId ? convertJobs[jobId] : null;
+
+    let cvBlock = '';
+    if (job && ['PENDING','CONVERTING'].includes(job.status)) {
+      cvBlock = `<div class="fb-cvprog">
+        <div class="fb-cvprog-label">
+          <span>🎬 Converting…</span>
+          <span id="cvpct-${job.job_id}">${job.progress.toFixed(0)}%</span>
+        </div>
+        <div class="qi-convert-track">
+          <div class="qi-convert-fill" id="cvfill-${job.job_id}" style="width:${job.progress}%"></div>
+        </div>
+      </div>`;
+    } else if (job && job.status === 'COMPLETED' && !job.output_deleted) {
+      cvBlock = `<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--success);margin-bottom:6px;">
+          ✅ ${escHtml(job.output_filename || 'Đã convert xong')}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <button class="btn btn-sm btn-preview"
+            data-jid="${escHtml(job.job_id)}" data-fname="${escHtml(job.output_filename||'')}"
+            onclick="previewConvertFile(this.dataset.jid,this.dataset.fname)">
+            ▶ Xem trước
+          </button>
+          <button class="btn btn-sm btn-delete"
+            data-jid="${escHtml(job.job_id)}"
+            onclick="deleteConvertFile(this.dataset.jid,this)">
+            🗑 Xoá
+          </button>
+        </div>
+      </div>`;
+    } else if (job && job.status === 'FAILED') {
+      cvBlock = `<div style="margin-top:6px;font-size:12px;color:var(--danger)">
+        ❌ ${escHtml(job.error_msg || 'Convert thất bại')}
+      </div>`;
+    }
+
+    if (!cvBlock) {
+      cvBlock = `<button class="btn btn-sm btn-convert" style="margin-top:6px;width:100%"
+        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+        onclick="openFileConvertSheet(this.dataset.path,this.dataset.name)">
+        🎬 Convert
+      </button>`;
+    }
+
+    return `<div class="fb-item">
+      <div class="fb-icon">📄</div>
+      <div class="fb-body">
+        <div class="fb-name">${escHtml(item.name)}</div>
+        ${meta ? `<div class="fb-meta">${escHtml(meta)}</div>` : ''}
+        ${cvBlock}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openFileConvertSheet(filePath, fileName) {
+  _pendingFilePath      = filePath;
+  _pendingConvertTaskId = null;
+  document.getElementById('convert-sheet-sub').textContent = fileName || filePath;
+
+  _setActive('cvq-grid',   'data-cvq',   'standard');
+  _setActive('cvenc-grid', 'data-cvenc', 'cpu');
+  _setActive('cvspd-grid', 'data-cvspd', 'balanced');
+  document.getElementById('crf-row').style.display = 'none';
+  document.getElementById('crf-slider').value      = '23';
+  document.getElementById('crf-val').textContent   = '23';
+
+  api('GET', '/api/convert/encoders').then(encs => {
+    const grid = document.getElementById('cvenc-grid');
+    grid.innerHTML = encs.map((e, i) =>
+      `<div class="radio-btn ${i===0?'active':''}" data-cvenc="${escHtml(e.key)}"
+            onclick="setCvenc(this)">${escHtml(e.label)}</div>`
+    ).join('');
+  }).catch(() => {});
+
+  document.getElementById('convert-overlay').classList.add('open');
+}
+
+function fmtSize(bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024)       return bytes + ' B';
+  if (bytes < 1048576)    return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+function _maybeRenderFileBrowser() {
+  if (_browseData && document.getElementById('panel-files').classList.contains('active')) {
+    renderFileBrowser();
+  }
 }
 
 /* ── Bootstrap ──────────────────────────────────────────────────────── */

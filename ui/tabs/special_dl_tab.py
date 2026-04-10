@@ -511,7 +511,7 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
             logger.warning("SpecialDlTab _on_post_convert error: %s", exc)
             self._post_actions.notify_convert_error(str(exc))
 
-    def _on_post_send(self, file_path: Path, restore_btn) -> None:
+    def _on_post_send(self, file_path: Path, restore_btn, specific_files=None) -> None:
         """Bridge PostDownloadActions → TaildropService.send_file_to_nodes()."""
         cfg = self._config
         nodes = cfg.taildrop_target_nodes
@@ -542,6 +542,7 @@ class SpecialDlTab(_BaseFrame):   # type: ignore[misc]
                 nodes,
                 on_node_done=_on_node_done,
                 on_node_error=_on_node_error,
+                specific_files_override=specific_files,
             )
             self._set_status("info", f"📲 Đang gửi đến: {node_list_str}")
         except Exception as exc:

@@ -1,6 +1,13 @@
-# OmniDL v16.3.0
+# OmniDL v17.1.0
 
 A desktop video downloader supporting YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, CustomTkinter, yt-dlp, and gallery-dl.
+
+Additional capabilities added in v17.x:
+- Live stream monitor with auto-recording (Instagram + TikTok profile watch, all yt-dlp platforms)
+- Remote API (FastAPI + uvicorn, optional) for mobile/iOS control via PWA
+- Per-platform cookie management with DPAPI/Fernet at-rest encryption and orphan cleanup
+- Multi-device Taildrop file transfer
+- Post-download convert/send/delete action bar (`PostDownloadActions`)
 
 ## Architecture
 
@@ -66,5 +73,14 @@ Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 | playwright | >=1.40 | Facebook Story CDP via `connect_over_cdp()` |
 | cryptography | >=41.0.0 | Cookie at-rest encryption (macOS Fernet) |
 | keyring | >=24.0.0 | macOS Keychain key storage; Brave/Chrome 127+ App-Bound cookie decrypt |
+
+**Optional — Remote API** (`requirements-api.txt`, only needed when `api_enabled=True`):
+
+| Package | Version | Purpose |
+|---|---|---|
+| fastapi | >=0.111.0 | ASGI web framework for remote-control API |
+| uvicorn[standard] | >=0.29.0 | ASGI server — runs as daemon thread alongside Tkinter |
+
+Install with: `pip install -r requirements-api.txt`
 
 Dev/build deps live in `requirements-dev.txt` (pytest, pytest-cov, pyinstaller, types-requests).

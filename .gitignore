@@ -158,3 +158,5 @@ graphify-out/
 
 # Code-review-graph
 .code-review-graphignore
+
+OmniDL_Skill/
