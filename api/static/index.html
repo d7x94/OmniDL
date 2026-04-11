@@ -1723,9 +1723,16 @@ function renderFileBrowser() {
     const fullPath = joinPath(data.current_path, item.name);
 
     if (item.type === 'dir') {
-      return `<div class="fb-item fb-dir" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">
-        <div class="fb-icon">📁</div>
-        <div class="fb-body"><div class="fb-name">${escHtml(item.name)}</div></div>
+      return `<div class="fb-item">
+        <div class="fb-icon" style="cursor:pointer" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">📁</div>
+        <div class="fb-body">
+          <div class="fb-name" style="cursor:pointer" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">${escHtml(item.name)}</div>
+          <button class="btn btn-sm btn-delete" style="margin-top:6px"
+            data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+            onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
+            🗑 Xoá thư mục
+          </button>
+        </div>
       </div>`;
     }
 
@@ -1772,11 +1779,18 @@ function renderFileBrowser() {
     }
 
     if (!cvBlock) {
-      cvBlock = `<button class="btn btn-sm btn-convert" style="margin-top:6px;width:100%"
-        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
-        onclick="openFileConvertSheet(this.dataset.path,this.dataset.name)">
-        🎬 Convert
-      </button>`;
+      cvBlock = `<div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:6px;align-items:stretch">
+        <button class="btn btn-sm btn-convert"
+          data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+          onclick="openFileConvertSheet(this.dataset.path,this.dataset.name)">
+          🎬 Convert
+        </button>
+        <button class="btn btn-sm btn-delete"
+          data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+          onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
+          🗑
+        </button>
+      </div>`;
     }
 
     return `<div class="fb-item">
@@ -1788,6 +1802,19 @@ function renderFileBrowser() {
       </div>
     </div>`;
   }).join('');
+}
+
+async function deleteFileItem(path, name, btn) {
+  if (!confirm(`Xoá "${name}"?\n\nHành động này không thể hoàn tác.`)) return;
+  btn.disabled = true;
+  try {
+    await api('DELETE', '/api/files/delete', { path });
+    toast(`Đã xoá: ${name}`);
+    browseFiles(_browseData.current_path);
+  } catch(e) {
+    toast(`Lỗi: ${e.message}`);
+    btn.disabled = false;
+  }
 }
 
 function openFileConvertSheet(filePath, fileName) {

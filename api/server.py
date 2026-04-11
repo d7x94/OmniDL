@@ -26,6 +26,7 @@ import logging
 import mimetypes
 import queue
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -48,6 +49,8 @@ from api.models import (
     FileBrowseResponse,
     FileConvertJobResponse,
     FileConvertRequest,
+    FileDeleteRequest,
+    FileDeleteResponse,
     FileInfoResponse,
     QueueActionResponse,
     TaskResponse,
@@ -971,6 +974,56 @@ def create_app(
             job.job_id, file_path.name,
         )
         return FileConvertJobResponse(job_id=job.job_id)
+
+    @app.delete(
+        "/api/files/delete",
+        response_model=FileDeleteResponse,
+        summary="Delete a file or directory within download_dir",
+    )
+    async def delete_file(
+        body: FileDeleteRequest, _: None = Depends(_require_auth)
+    ) -> FileDeleteResponse:
+        """
+        Permanently delete a file or directory from the server.
+
+        Security:
+        - Resolved path MUST be within config.download_dir (CWE-22).
+        - Root download_dir itself is never deletable.
+        - No shell=True, no subprocess.
+        """
+        root = config.download_dir.resolve()
+        try:
+            target = Path(body.path).resolve()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid path") from None
+
+        if not target.is_relative_to(root):
+            raise HTTPException(
+                status_code=400,
+                detail="Path is outside the allowed download directory",
+            )
+        if target == root:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the root download directory",
+            )
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path does not exist")
+
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=exc.strerror) from exc
+
+        logger.info("Remote API: deleted '%s'", target)
+        return FileDeleteResponse(
+            path=body.path,
+            action="deleted",
+            detail=f"Deleted: {target.name}",
+        )
 
     # ── SSE ───────────────────────────────────────────────────────────────
 

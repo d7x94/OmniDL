@@ -193,3 +193,15 @@ class FileConvertRequest(BaseModel):
 class FileConvertJobResponse(BaseModel):
     """Returned by POST /api/files/convert — client polls /api/convert/{job_id}."""
     job_id: str
+
+
+class FileDeleteRequest(BaseModel):
+    """Delete a file or directory within download_dir."""
+    path: str
+
+
+class FileDeleteResponse(BaseModel):
+    """Result of a file/directory delete from the file browser."""
+    path: str
+    action: str    # "deleted"
+    detail: str = ""
