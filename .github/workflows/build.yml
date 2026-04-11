@@ -115,10 +115,10 @@ jobs:
 
       - name: pip-audit CVE scan
         run: |
-          uv sync --extra api
+          uv export --extra api --no-dev --frozen > /tmp/requirements-audit.txt
           touch pip_audit_report.md
           uv tool run pip-audit \
-            --requirement requirements.txt \
+            --requirement /tmp/requirements-audit.txt \
             --format markdown \
             --output pip_audit_report.md \
             || (cat pip_audit_report.md && exit 1)
@@ -131,11 +131,41 @@ jobs:
           path: pip_audit_report.md
           retention-days: 7
 
-  # ── JOB 3: Windows EXE ───────────────────────────────────────────────────
+  # ── JOB 3: Resolve latest tool packages ─────────────────────────────────
+  prepare:
+    name: "Resolve latest tool packages"
+    runs-on: ubuntu-latest
+    needs: [test, security]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Upgrade tool packages to latest
+        run: uv lock --upgrade-package yt-dlp --upgrade-package gallery-dl --upgrade-package playwright
+
+      - name: Upload updated lock file
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-lock
+          path: uv.lock
+          retention-days: 1
+
+  # ── JOB 4: Windows EXE ───────────────────────────────────────────────────
   build-windows:
     name: "Build — Windows EXE"
     runs-on: windows-latest
-    needs: [test, security]
+    needs: [prepare]
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -143,6 +173,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download updated lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-lock
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -357,11 +392,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 4: macOS .app ────────────────────────────────────────────────────
+  # ── JOB 5: macOS .app ────────────────────────────────────────────────────
   build-macos:
     name: "Build — macOS .app"
     runs-on: macos-latest
-    needs: [test, security]
+    needs: [prepare]
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_P12 != '' }}
 
@@ -371,6 +406,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download updated lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-lock
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -607,11 +647,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 5: Linux tarball ──────────────────────────────────────────────────
+  # ── JOB 6: Linux tarball ──────────────────────────────────────────────────
   build-linux:
     name: "Build — Linux tarball"
     runs-on: ubuntu-latest
-    needs: [test, security]
+    needs: [prepare]
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -619,6 +659,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download updated lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-lock
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -793,6 +838,7 @@ jobs:
           if-no-files-found: error
 
   # ── JOB 6: GitHub Release (tag builds only) ──────────────────────────────
+  # ── JOB 7: GitHub Release (tag builds only) ──────────────────────────────
   release:
     name: "GitHub Release — ${{ github.ref_name }}"
     runs-on: ubuntu-latest

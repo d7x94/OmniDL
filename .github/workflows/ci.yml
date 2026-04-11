@@ -110,10 +110,10 @@ jobs:
 
       - name: pip-audit CVE scan
         run: |
-          uv sync --extra api
+          uv export --extra api --no-dev --frozen > /tmp/requirements-audit.txt
           touch pip_audit_report.md
           uv tool run pip-audit \
-            --requirement requirements.txt \
+            --requirement /tmp/requirements-audit.txt \
             --format markdown \
             --output pip_audit_report.md \
             || (cat pip_audit_report.md && exit 1)
