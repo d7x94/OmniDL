@@ -146,7 +146,8 @@ yarn.lock
 
 # PIDs and lock files
 *.pid
-requirements.lock
+*.lock 
+!uv.lock
 
 # Graphify - temporary cache & analysis files
 .graphify_*
