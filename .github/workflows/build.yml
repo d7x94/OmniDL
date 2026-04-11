@@ -444,7 +444,7 @@ jobs:
           mkdir -p resources/gallery-dl
           echo "Downloading gallery-dl ..."
           curl -fsSL --retry 3 --retry-delay 5 \
-            "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl" \
+            "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl.bin" \
             -o resources/gallery-dl/gallery-dl
           chmod +x resources/gallery-dl/gallery-dl
           echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
@@ -691,7 +691,7 @@ jobs:
           mkdir -p resources/gallery-dl
           echo "Downloading gallery-dl ..."
           curl -fsSL --retry 3 --retry-delay 5 \
-            "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl" \
+            "https://github.com/mikf/gallery-dl/releases/latest/download/gallery-dl.bin" \
             -o resources/gallery-dl/gallery-dl
           chmod +x resources/gallery-dl/gallery-dl
           echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
