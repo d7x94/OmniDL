@@ -1009,7 +1009,7 @@ class TestConvertQueueEncodeSettings:
         queue = ConvertQueue(max_concurrent=1)
 
         def fake_run(src, quality, output_dir, on_progress, on_done, on_error,
-                     encode_settings=None, cancel_event=None):
+                     encode_settings=None, cancel_event=None, target_ext="mp4"):
             received.append(encode_settings)
             done_event.set()
 
@@ -1033,7 +1033,7 @@ class TestConvertQueueEncodeSettings:
         queue = ConvertQueue(max_concurrent=1)
 
         def fake_run(src, quality, output_dir, on_progress, on_done, on_error,
-                     encode_settings=None, cancel_event=None):
+                     encode_settings=None, cancel_event=None, target_ext="mp4"):
             received.append(encode_settings)
             done_event.set()
 
@@ -1935,3 +1935,92 @@ class TestGetAvailableEncoderOptionsContract:
             get_available_encoder_options(ffmpeg_bin=tmp_path / "ffmpeg")
 
         assert received[0] == tmp_path / "ffmpeg"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# scan_folder_for_media - error branches
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestScanFolderForMediaErrors:
+    def test_permission_error_returns_empty(self, tmp_path: Path):
+        with patch.object(Path, "rglob", side_effect=PermissionError("denied")):
+            result = scan_folder_for_media(tmp_path)
+        assert result == []
+
+    def test_unexpected_error_returns_empty(self, tmp_path: Path):
+        with patch.object(Path, "rglob", side_effect=OSError("boom")):
+            result = scan_folder_for_media(tmp_path)
+        assert result == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FfmpegConvertService._find_output_path - collision branches
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFindOutputPath:
+    def test_no_collision_returns_base(self, tmp_path: Path):
+        src = tmp_path / "clip.mkv"
+        result = FfmpegConvertService._find_output_path(tmp_path, src, "mp4")
+        assert result == tmp_path / "clip_iPhone.mp4"
+
+    def test_collision_returns_numbered(self, tmp_path: Path):
+        src = tmp_path / "clip.mkv"
+        (tmp_path / "clip_iPhone.mp4").touch()
+        result = FfmpegConvertService._find_output_path(tmp_path, src, "mp4")
+        assert result == tmp_path / "clip_iPhone_2.mp4"
+
+    def test_multiple_collisions(self, tmp_path: Path):
+        src = tmp_path / "clip.mkv"
+        (tmp_path / "clip_iPhone.mp4").touch()
+        (tmp_path / "clip_iPhone_2.mp4").touch()
+        result = FfmpegConvertService._find_output_path(tmp_path, src, "mp4")
+        assert result == tmp_path / "clip_iPhone_3.mp4"
+
+    def test_ext_without_dot(self, tmp_path: Path):
+        src = tmp_path / "clip.mkv"
+        result = FfmpegConvertService._find_output_path(tmp_path, src, ".mkv")
+        assert result.suffix == ".mkv"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FfmpegConvertService._validate_output
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestValidateOutputStatic:
+    def test_raises_if_file_too_small(self, tmp_path: Path):
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"x" * 100)
+        with pytest.raises(ConversionError):
+            FfmpegConvertService._validate_output(f)
+
+    def test_raises_if_missing(self, tmp_path: Path):
+        f = tmp_path / "missing.mp4"
+        with pytest.raises(ConversionError):
+            FfmpegConvertService._validate_output(f)
+
+    def test_passes_for_large_file(self, tmp_path: Path):
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"x" * 2000)
+        FfmpegConvertService._validate_output(f)  # no raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# detect_available_encoders - returncode != 0 branch (lines 385-387)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.services.ffmpeg_convert_service import detect_available_encoders
+
+
+class TestDetectAvailableEncodersErrorBranch:
+    def test_returns_cpu_when_ffmpeg_list_fails(self, tmp_path: Path):
+        fake = MagicMock()
+        fake.returncode = 1
+        fake.stdout = ""
+        with patch("subprocess.run", return_value=fake):
+            result = detect_available_encoders(ffmpeg_bin=tmp_path / "ffmpeg")
+        assert "cpu" in result
+
+    def test_returns_cpu_on_exception(self, tmp_path: Path):
+        with patch("subprocess.run", side_effect=OSError("no ffmpeg")):
+            result = detect_available_encoders(ffmpeg_bin=tmp_path / "ffmpeg")
+        assert "cpu" in result
