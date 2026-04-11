@@ -874,7 +874,7 @@ def create_app(
             try:
                 target = Path(path).resolve()
             except Exception:
-                raise HTTPException(status_code=400, detail="Invalid path")
+                raise HTTPException(status_code=400, detail="Invalid path") from None
 
         if not target.is_relative_to(root):
             raise HTTPException(
@@ -893,8 +893,8 @@ def create_app(
         items: list[FileBrowseItem] = []
         try:
             entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Permission denied reading directory")
+        except PermissionError as err:
+            raise HTTPException(status_code=403, detail="Permission denied reading directory") from err
 
         for entry in entries:
             try:
@@ -941,7 +941,7 @@ def create_app(
         try:
             file_path = Path(body.file_path).resolve()
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid file_path")
+            raise HTTPException(status_code=400, detail="Invalid file_path") from None
 
         if not file_path.is_relative_to(root):
             raise HTTPException(
@@ -963,7 +963,7 @@ def create_app(
                 target_ext   = body.target_ext or "mp4",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         logger.info(
             "Remote API: started standalone convert job %s for '%s'",
