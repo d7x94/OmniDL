@@ -5,6 +5,7 @@ Live download queue — polls service every 500ms.
 from __future__ import annotations
 
 import logging
+import queue
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
@@ -25,9 +26,25 @@ class QueueTab(ctk.CTkFrame):
         super().__init__(master, fg_color=T.bg, corner_radius=0)
         self._app = app
         self._widgets: dict[str, DownloadItemWidget] = {}
+        self._ui_queue: queue.Queue = queue.Queue()
         self._build()
+        self._drain_ui_queue()
         self._poll()
         T.register(self._on_theme)
+
+    def _drain_ui_queue(self) -> None:
+        if not self.winfo_exists():
+            return
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception as exc:
+                    logger.warning("QueueTab _ui_queue raised: %s", exc)
+        except queue.Empty:
+            pass
+        self.after(150, self._drain_ui_queue)
 
     def _build(self) -> None:
         # Header
@@ -160,12 +177,12 @@ class QueueTab(ctk.CTkFrame):
         node_list_str = ", ".join(nodes)
 
         def _on_node_done(node: str) -> None:
-            self.after(0, lambda: self._app.toast(
+            self._ui_queue.put(lambda: self._app.toast(
                 f"📲  Đã gửi → {node}", "success"
             ))
 
         def _on_node_error(node: str, err: str) -> None:
-            self.after(0, lambda: self._app.toast(
+            self._ui_queue.put(lambda: self._app.toast(
                 f"❌  Gửi thất bại → {node}: {err[:60]}", "error"
             ))
 

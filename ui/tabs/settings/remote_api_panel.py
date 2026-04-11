@@ -242,13 +242,13 @@ class RemoteApiPanel(_BasePanel):
                     svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
                     if svc:
                         restart_api_server(service=svc, config=cfg, bus=_bus)
-                    self.after(500, self._refresh_api_status_label)
-                    self.after(100, lambda: self._app.toast(
+                    self._ui_queue.put(self._refresh_api_status_label)
+                    self._ui_queue.put(lambda: self._app.toast(
                         "✅  Server đã khởi động lại với token mới.", "success"
                     ))
                 except Exception as exc:
                     logger.exception("Failed to restart API after token rotation: %s", exc)
-                    self.after(0, lambda e=exc: self._app.toast(
+                    self._ui_queue.put(lambda e=exc: self._app.toast(
                         f"Lỗi restart API: {e!s:.60}", "error"
                     ))
 

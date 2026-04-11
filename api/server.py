@@ -843,6 +843,7 @@ def create_app(
         )
 
 
+    @app.get("/api/history", summary="Return full download history (newest first)")
     async def get_history(_: None = Depends(_require_auth)):
         """Return the full download history (newest first)."""
         return list(reversed(service.get_history()))
