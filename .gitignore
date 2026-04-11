@@ -42,6 +42,7 @@ coverage.xml
 
 # Logs
 *.log
+report.txt
 
 # Temporary files
 *.tmp
@@ -63,7 +64,7 @@ pip_audit_report.md
 *.tmp.jsonl
 
 # Build scripts
-build/build_windows 7.bat
+build/
 
 # FFmpeg binaries — downloaded at CI build time, never stored in the repo.
 # To test locally: place ffmpeg[.exe] + ffprobe[.exe] in resources/ffmpeg/

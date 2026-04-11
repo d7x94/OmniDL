@@ -1,32 +1,3 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# OmniDL — Build & Release Pipeline
-#
-# TWO DISTINCT TRIGGER PATHS:
-#
-#   push → main branch
-#     1. test     Run the full test suite (fast Ubuntu gate)
-#     2. build-*  Build Windows EXE + macOS .app with PyInstaller
-#     3. Binaries uploaded as Actions artifacts (7-day retention)
-#
-#   push → tag matching v*.*.*  (e.g. v16.0.0)
-#     1. test     Same test gate
-#     2. build-*  Same builds, but artifacts are also zipped as release assets
-#     3. release  Creates a GitHub Release with both platform zips
-#
-#   workflow_dispatch
-#     Allows manually re-triggering any branch or tag build.
-#
-# FFMPEG BUNDLING (users need NOT install FFmpeg):
-#   Binaries are downloaded from official sources during CI, placed in
-#   resources/ffmpeg/, and bundled via --add-data into PyInstaller output.
-#   At runtime, utils/ffmpeg_locator.get_ffmpeg_path() resolves sys._MEIPASS.
-#   The repository NEVER stores FFmpeg — resources/ffmpeg/ is in .gitignore.
-#
-#   Sources:
-#     Windows : https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-#     macOS   : https://evermeet.cx/ffmpeg/  (individual static binaries)
-# ──────────────────────────────────────────────────────────────────────────────
-
 name: Build & Release
 
 on:
@@ -61,29 +32,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-api.txt pytest pytest-cov ruff mypy types-requests
+        run: uv sync --extra api --extra dev
 
-      # ── Lint (mirrors ci.yml — catches issues before building EXE/APP) ──
       - name: Lint with ruff
-        run: ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+        run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
 
-      # ── Type check ──────────────────────────────────────────────────────
       - name: Type check with mypy
         run: |
-          mypy domain/ app/ infrastructure/ utils/ \
+          uv run mypy domain/ app/ infrastructure/ utils/ \
             --ignore-missing-imports \
             --no-strict-optional
 
       - name: Run test suite
         run: |
-          pytest \
+          uv run pytest \
             --ignore=tests/test_e2e.py \
             --ignore=tests/test_logger_and_manager_extra.py \
             --tb=short -q \
@@ -100,8 +73,6 @@ jobs:
           retention-days: 7
 
   # ── JOB 2: Security scan ─────────────────────────────────────────────────
-  # Runs in parallel with builds but gates the release job.
-  # Mirrors the security job in ci.yml so every release artifact is scanned.
   security:
     name: "Security scan"
     runs-on: ubuntu-latest
@@ -111,21 +82,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
       - name: Install security tools
-        run: pip install bandit pip-audit
+        run: uv tool install bandit && uv tool install pip-audit
 
-      # ── bandit: static analysis ──────────────────────────────────────────
-      # Severity threshold: MEDIUM (-ll).  HIGH findings fail the build.
-      # Skips test files (B101 assert usage is expected in tests).
       - name: bandit SAST scan
         run: |
-          bandit \
+          uv tool run bandit \
             -r . \
             -x tests/,build/,venv_build/ \
             -ll \
@@ -141,12 +113,11 @@ jobs:
           path: bandit_report.txt
           retention-days: 7
 
-      # ── pip-audit: CVE scan ──────────────────────────────────────────────
       - name: pip-audit CVE scan
         run: |
-          pip install -r requirements.txt
+          uv sync --extra api
           touch pip_audit_report.md
-          pip-audit \
+          uv tool run pip-audit \
             --requirement requirements.txt \
             --format markdown \
             --output pip_audit_report.md \
@@ -173,24 +144,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install runtime dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-api.txt
+      - name: Install dependencies + PyInstaller
+        run: uv sync --extra api --extra build
 
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (Windows) ──────────────────────────────
-      # Source: gyan.dev canonical Windows FFmpeg builds.
-      # We download the "essentials" zip and extract ONLY ffmpeg.exe and
-      # ffprobe.exe into resources/ffmpeg/.  The directory is gitignored.
       - name: Download FFmpeg (Windows)
         shell: pwsh
         run: |
@@ -205,8 +171,6 @@ jobs:
           Write-Output "Extracting archive ..."
           Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
-          # Locate bin\ folder regardless of the versioned subfolder name
-          # e.g. ffmpeg-7.1-essentials_build\bin\ffmpeg.exe
           $binDir = Get-ChildItem -Path $tmp -Recurse -Filter "ffmpeg.exe" |
                       Select-Object -First 1 -ExpandProperty DirectoryName
           if (-not $binDir) {
@@ -236,10 +200,6 @@ jobs:
           & "resources\ffmpeg\ffprobe.exe" -version 2>&1 | Select-Object -First 1
           Write-Output "OK  FFmpeg binaries verified"
 
-
-      # ── Download & stage Deno (Windows) ────────────────────────────────
-      # Deno is required by yt-dlp to solve YouTube JS n-challenge.
-      # Bundled so users need NOT install Deno separately.
       - name: Download Deno (Windows)
         shell: pwsh
         run: |
@@ -262,10 +222,6 @@ jobs:
           & $deno --version 2>&1 | Select-Object -First 1
           Write-Output "OK  Deno binary verified"
 
-
-      # ── Download & stage gallery-dl (Windows) ──────────────────────────
-      # gallery-dl is bundled as a standalone exe so users need NOT install
-      # it separately.  The binary lives in sys._MEIPASS/gallery-dl/ at runtime.
       - name: Download gallery-dl (Windows)
         shell: pwsh
         run: |
@@ -285,7 +241,6 @@ jobs:
           & $exe --version 2>&1 | Select-Object -First 1
           Write-Output "OK  gallery-dl binary verified"
 
-
       - name: Resolve icon flag
         id: icon
         shell: pwsh
@@ -296,14 +251,10 @@ jobs:
             "flag=" | Out-File -Append $env:GITHUB_OUTPUT
           }
 
-      # ── PyInstaller build (Windows) ────────────────────────────────────
-      # --add-data "resources/ffmpeg;ffmpeg"
-      #   Semicolon separator is required on Windows by PyInstaller.
-      #   The dest name "ffmpeg" becomes sys._MEIPASS/ffmpeg/ at runtime.
       - name: PyInstaller build
         shell: pwsh
         run: |
-          pyinstaller `
+          uv run pyinstaller `
             --noconfirm `
             --onedir `
             --windowed `
@@ -406,7 +357,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 3: macOS .app ────────────────────────────────────────────────────
+  # ── JOB 4: macOS .app ────────────────────────────────────────────────────
   build-macos:
     name: "Build — macOS .app"
     runs-on: macos-latest
@@ -421,24 +372,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install runtime dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-api.txt
+      - name: Install dependencies + PyInstaller
+        run: uv sync --extra api --extra build
 
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (macOS) ────────────────────────────────
-      # Source: evermeet.cx static builds — each binary is its own zip.
-      # We download ffmpeg and ffprobe separately, extract flat (-j flag),
-      # and make both files executable.  The directory is gitignored.
       - name: Download FFmpeg (macOS)
         run: |
           set -euo pipefail
@@ -471,13 +417,16 @@ jobs:
           done
           echo "OK  FFmpeg binaries verified"
 
-
-      # ── Download & stage Deno (macOS) ──────────────────────────────────
       - name: Download Deno (macOS)
         run: |
           set -euo pipefail
           mkdir -p resources/deno
-          curl -fsSL --retry 3             "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip"             -o /tmp/deno.zip 2>/dev/null ||           curl -fsSL --retry 3             "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip"             -o /tmp/deno.zip
+          curl -fsSL --retry 3 \
+            "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip" \
+            -o /tmp/deno.zip 2>/dev/null || \
+          curl -fsSL --retry 3 \
+            "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip" \
+            -o /tmp/deno.zip
           unzip -jo /tmp/deno.zip -d resources/deno
           rm /tmp/deno.zip
           chmod +x resources/deno/deno
@@ -489,8 +438,6 @@ jobs:
           resources/deno/deno --version 2>&1 | head -1
           echo "OK  Deno binary verified"
 
-
-      # ── Download & stage gallery-dl (macOS) ────────────────────────────
       - name: Download gallery-dl (macOS)
         run: |
           set -euo pipefail
@@ -508,7 +455,6 @@ jobs:
           resources/gallery-dl/gallery-dl --version 2>&1 | head -1
           echo "OK  gallery-dl binary verified"
 
-
       - name: Resolve icon flag
         id: icon
         run: |
@@ -518,13 +464,9 @@ jobs:
             echo "flag=" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── PyInstaller build (macOS) ──────────────────────────────────────
-      # --add-data "resources/ffmpeg:ffmpeg"
-      #   Colon separator is required on POSIX by PyInstaller.
-      #   The dest name "ffmpeg" becomes sys._MEIPASS/ffmpeg/ at runtime.
       - name: PyInstaller build
         run: |
-          pyinstaller \
+          uv run pyinstaller \
             --noconfirm \
             --onedir \
             --windowed \
@@ -576,8 +518,6 @@ jobs:
           }
           echo "OK  ${{ env.APP_NAME }}.app  ($(du -sh "dist/${{ env.APP_NAME }}.app" | cut -f1))"
 
-          # Use find to locate ffmpeg regardless of PyInstaller version layout
-          # (pre-6: Contents/MacOS/ffmpeg, 6+: Contents/MacOS/_internal/ffmpeg)
           APP_BUNDLE="dist/${{ env.APP_NAME }}.app"
           for bin in ffmpeg ffprobe; do
             full=$(find "$APP_BUNDLE" -name "$bin" -type f | head -1)
@@ -608,7 +548,6 @@ jobs:
           FFmpeg  : ${FF_VER}
           EOF
 
-      # ── Code signing (tag builds only; skipped when cert secrets absent) ──
       - name: Sign .app bundle
         if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_CERT == 'true' }}
         env:
@@ -632,7 +571,6 @@ jobs:
             "dist/${{ env.APP_NAME }}.app"
           echo "OK  Code signing complete"
 
-      # ── Notarization (tag builds only; skipped when cert secrets absent) ──
       - name: Notarize .app bundle
         if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_CERT == 'true' }}
         env:
@@ -669,7 +607,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 4: Linux tarball ──────────────────────────────────────────────────
+  # ── JOB 5: Linux tarball ──────────────────────────────────────────────────
   build-linux:
     name: "Build — Linux tarball"
     runs-on: ubuntu-latest
@@ -682,24 +620,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install runtime dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -r requirements-api.txt
+      - name: Install dependencies + PyInstaller
+        run: uv sync --extra api --extra build
 
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (Linux) ────────────────────────────────
-      # Source: johnvansickle.com static FFmpeg builds (x86_64).
-      # We download the "release" build, extract ffmpeg and ffprobe, and
-      # stage them under resources/ffmpeg/ for PyInstaller bundling.
       - name: Download FFmpeg (Linux)
         run: |
           set -euo pipefail
@@ -713,7 +646,6 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 5 \
             "${BASE_URL}/${TARBALL}" -o /tmp/ffmpeg.tar.xz
 
-          # Extract only ffmpeg and ffprobe (they sit inside a versioned dir)
           tar -xJf /tmp/ffmpeg.tar.xz \
             --wildcards \
             --no-anchored \
@@ -735,15 +667,13 @@ jobs:
           done
           echo "OK  FFmpeg binaries verified"
 
-      # ── PyInstaller build (Linux) ─────────────────────────────────────
-      # Colon separator for --add-data on POSIX.
-
-      # ── Download & stage Deno (Linux) ──────────────────────────────────
       - name: Download Deno (Linux)
         run: |
           set -euo pipefail
           mkdir -p resources/deno
-          curl -fsSL --retry 3             "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip"             -o /tmp/deno.zip
+          curl -fsSL --retry 3 \
+            "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip" \
+            -o /tmp/deno.zip
           unzip -jo /tmp/deno.zip -d resources/deno
           rm /tmp/deno.zip
           chmod +x resources/deno/deno
@@ -755,8 +685,6 @@ jobs:
           resources/deno/deno --version 2>&1 | head -1
           echo "OK  Deno binary verified"
 
-
-      # ── Download & stage gallery-dl (Linux) ────────────────────────────
       - name: Download gallery-dl (Linux)
         run: |
           set -euo pipefail
@@ -774,10 +702,9 @@ jobs:
           resources/gallery-dl/gallery-dl --version 2>&1 | head -1
           echo "OK  gallery-dl binary verified"
 
-
       - name: PyInstaller build
         run: |
-          pyinstaller \
+          uv run pyinstaller \
             --noconfirm \
             --onedir \
             --name "${{ env.APP_NAME }}" \
@@ -865,7 +792,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 5: GitHub Release (tag builds only) ──────────────────────────────
+  # ── JOB 6: GitHub Release (tag builds only) ──────────────────────────────
   release:
     name: "GitHub Release — ${{ github.ref_name }}"
     runs-on: ubuntu-latest

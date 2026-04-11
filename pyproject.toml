@@ -1,3 +1,47 @@
+[project]
+name = "omnidl"
+version = "17.1.0"
+description = "Ultimate Media Downloader"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "yt-dlp>=2025.1.1",
+    "gallery-dl>=1.27.0",
+    "Pillow>=10.3.0",
+    "requests>=2.31.0",
+    "packaging>=23.0",
+    "platformdirs>=4.0.0",
+    "PySocks>=1.7.1",
+    "keyring>=24.0.0",
+    "cryptography>=41.0.0",
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.20.0",
+    "types-requests>=2.31.0",
+    "ruff>=0.4.0",
+]
+build = [
+    "pyinstaller==6.19.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.20.0",
+    "types-requests>=2.31.0",
+    "ruff>=0.4.0",
+]
+
 [tool.ruff]
 line-length = 110
 
@@ -5,6 +49,28 @@ line-length = 110
 select = ["E", "F", "B", "I"]
 
 [tool.ruff.lint.isort]
-# Declare project-local packages so ruff places them in the FIRST-PARTY
-# section (after third-party like customtkinter) and sorts them correctly.
 known-first-party = ["api", "app", "domain", "infrastructure", "ui", "utils"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+omit = [
+    "api/*",
+    "ui/*",
+    "tests/*",
+    "build/*",
+    "main.py",
+    "infrastructure/downloader/gallery_dl_engine.py",
+    "infrastructure/downloader/facebook_story_engine.py",
+    "utils/instagram_live_checker.py",
+    "utils/tiktok_live_checker.py",
+    "infrastructure/downloader/instagram_live_engine.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
