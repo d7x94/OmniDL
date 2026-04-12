@@ -1120,6 +1120,22 @@ class YtDlpEngine:
             _live_tmp = Path(tempfile.gettempdir()) / "omnidl_live"
             _live_tmp.mkdir(parents=True, exist_ok=True)
             opts["paths"] = {"temp": str(_live_tmp)}
+            # BUG-BV FIX: ffmpeg exit code 3419392776 (0xCBAE0008,
+            # STATUS_PIPE_NOT_AVAILABLE) on Windows when the live stream
+            # title contains Unicode/emoji characters.  yt-dlp passes the
+            # final output path to ffmpeg as a command-line argument; Windows
+            # ffmpeg cannot open a path with non-ASCII characters when the
+            # process codepage is not UTF-8.
+            # paths["temp"] only redirects fragment/temp files — the final
+            # output path is still derived from outtmpl and may contain emoji.
+            # restrictfilenames=True causes yt-dlp to sanitise the filename
+            # to ASCII-safe characters before constructing the ffmpeg command,
+            # eliminating the crash.  Applied only for live streams because
+            # VOD downloads are not affected (ffmpeg is not called for HLS
+            # muxing in that path).
+            import sys as _sys
+            if _sys.platform == "win32":
+                opts["restrictfilenames"] = True
 
         # merge_output_format tells yt-dlp to invoke ffmpeg to remux/merge the
         # downloaded streams.  For livestreams the HLS segments are already a

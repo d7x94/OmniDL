@@ -276,17 +276,14 @@ class DownloadItemWidget(ctk.CTkFrame):
         if terminal:
             self._pause_btn.configure(state="disabled", text_color=T.text3)
             self._cancel_btn.configure(state="disabled", text_color=T.text3)
-            # BUG BT: For COMPLETED status the pause/cancel buttons must be
-            # hidden unconditionally — even when task.filename is not yet
-            # populated.  Previously pack_forget() only ran inside the
-            # "if st == COMPLETED and task.filename" block below, so a
-            # COMPLETED task with an empty filename left both buttons visible
-            # (but disabled) with no way to dismiss them.
-            if st == DownloadStatus.COMPLETED:
-                if self._pause_btn.winfo_ismapped():
-                    self._pause_btn.pack_forget()
-                if self._cancel_btn.winfo_ismapped():
-                    self._cancel_btn.pack_forget()
+            # BUG-BT / BUG-BW: Hide pause/cancel for ALL terminal states
+            # (COMPLETED, FAILED, CANCELLED) — not just COMPLETED.
+            # Previously FAILED/CANCELLED left buttons visible-but-disabled
+            # with no effect, confusing users.
+            if self._pause_btn.winfo_ismapped():
+                self._pause_btn.pack_forget()
+            if self._cancel_btn.winfo_ismapped():
+                self._cancel_btn.pack_forget()
         elif processing:
             self._pause_btn.configure(state="disabled", text_color=T.text3)
             self._cancel_btn.configure(state="normal",  text_color=T.error)
