@@ -11,10 +11,85 @@ import re
 import subprocess
 import sys
 import threading
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+# ── Filename sanitisation (BUG-CB) ────────────────────────────────────────
+
+def _ascii_safe(s: str, max_len: int = 32) -> str:
+    """Convert string to ASCII-safe filename component.
+
+    1. NFKD normalise (e.g. e with accent -> e + combining accent)
+    2. Encode to ASCII, ignoring non-representable chars
+    3. Replace runs of non-word chars with single underscore
+    4. Strip leading/trailing underscores
+    5. Truncate to max_len
+    6. Fallback to "unknown" if empty
+    """
+    if not s:
+        return "unknown"
+    # NFKD splits composed chars; encode-ignore drops non-ASCII
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    # Replace non-word chars (except dot) with underscore, collapse runs
+    s = re.sub(r"[^\w.]+", "_", s)
+    s = s.strip("_")[:max_len].rstrip("_")
+    return s or "unknown"
+
+
+def _extract_url_username(url: str) -> str:
+    """Extract username from TikTok/Twitter/Instagram profile/live URLs.
+
+    Patterns:
+      tiktok.com/@username/live  ->  username
+      tiktok.com/@username       ->  username
+      twitter.com/username/...   ->  username
+      x.com/username/...         ->  username
+      instagram.com/username/live  ->  username
+
+    Returns empty string if no match.
+    """
+    # TikTok: /@username at path start
+    m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)", url, re.I)
+    if m:
+        return m.group(1)
+    # Twitter/X: /username (exclude reserved paths)
+    m = re.search(r"(?:twitter|x)\.com/([A-Za-z0-9_]+)", url, re.I)
+    if m:
+        uname = m.group(1).lower()
+        if uname not in ("i", "intent", "search", "explore", "settings", "home"):
+            return m.group(1)
+    # Instagram: /username/live
+    m = re.search(r"instagram\.com/([A-Za-z0-9_.]+)/live", url, re.I)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def build_download_filename(
+    username: str,
+    platform: str,
+    date_str: str,
+    video_id: str,
+    ext: str,
+    is_live: bool = False,
+) -> str:
+    """Build ASCII-safe download filename.
+
+    Format: {username}_{Platform}_{YYYYMMDD}_{id10}[_LIVE].{ext}
+
+    All components are sanitised to ASCII. video_id truncated to 10 chars.
+    """
+    u = _ascii_safe(username, 32)
+    p = _ascii_safe(platform, 16)
+    d = re.sub(r"[^0-9]", "", date_str)[:8] or "00000000"
+    vid = _ascii_safe(video_id, 10)
+    e = ext.lstrip(".").lower() or "mp4"
+    suffix = "_LIVE" if is_live else ""
+    return f"{u}_{p}_{d}_{vid}{suffix}.{e}"
 
 
 # ── File-size formatting ──────────────────────────────────────────────────

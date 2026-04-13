@@ -12,12 +12,18 @@ Covers every public function:
 - open_file        — Windows: ShellExecuteExW branches (ok+hproc,
                      ok+no-hproc, fail→startfile); macOS/Linux popen;
                      register_app_hwnd hwnd registration
+- _ascii_safe      — BUG-CB: Unicode->ASCII, truncation, empty input
+- _extract_url_username — BUG-CB: TikTok/Twitter/Instagram URL parsing
+- build_download_filename — BUG-CB: ASCII-safe filename schema
 """
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from utils.helpers import (
+    _ascii_safe,
+    _extract_url_username,
+    build_download_filename,
     fmt_bytes,
     fmt_duration,
     is_valid_url,
@@ -813,3 +819,184 @@ class TestSetupLoggingOsError:
                 root.removeHandler(h)
             # Must not raise
             setup_logging(tmp_path / "logs_err")
+
+
+# ---------------------------------------------------------------------------
+# _ascii_safe (BUG-CB)
+# ---------------------------------------------------------------------------
+
+class TestAsciiSafe:
+    def test_ascii_passthrough(self):
+        assert _ascii_safe("hello_world") == "hello_world"
+
+    def test_unicode_stripped(self):
+        # Vietnamese diacritics stripped
+        assert _ascii_safe("Nguyễn Văn A") == "Nguyen_Van_A"
+
+    def test_emoji_stripped(self):
+        result = _ascii_safe("user🎉name")
+        assert result == "username"
+
+    def test_accented_normalized(self):
+        # e with acute accent -> e
+        assert _ascii_safe("cafe") == "cafe"
+        assert _ascii_safe("cafe\u0301") == "cafe"  # combining accent
+
+    def test_empty_returns_unknown(self):
+        assert _ascii_safe("") == "unknown"
+
+    def test_only_emoji_returns_unknown(self):
+        assert _ascii_safe("🎉🔥💯") == "unknown"
+
+    def test_max_len_truncates(self):
+        result = _ascii_safe("a" * 100, max_len=10)
+        assert len(result) == 10
+
+    def test_special_chars_replaced(self):
+        result = _ascii_safe("user@name#123")
+        assert "@" not in result
+        assert "#" not in result
+
+    def test_trailing_underscore_stripped(self):
+        result = _ascii_safe("test___", max_len=10)
+        assert not result.endswith("_")
+
+    def test_japanese_stripped(self):
+        result = _ascii_safe("user日本語name")
+        assert result == "username"
+
+
+# ---------------------------------------------------------------------------
+# _extract_url_username (BUG-CB)
+# ---------------------------------------------------------------------------
+
+class TestExtractUrlUsername:
+    def test_tiktok_live(self):
+        url = "https://www.tiktok.com/@username123/live"
+        assert _extract_url_username(url) == "username123"
+
+    def test_tiktok_profile(self):
+        url = "https://tiktok.com/@cool_user"
+        assert _extract_url_username(url) == "cool_user"
+
+    def test_twitter_status(self):
+        url = "https://twitter.com/elonmusk/status/123456"
+        assert _extract_url_username(url) == "elonmusk"
+
+    def test_x_status(self):
+        url = "https://x.com/jack/status/789"
+        assert _extract_url_username(url) == "jack"
+
+    def test_twitter_reserved_paths_skipped(self):
+        assert _extract_url_username("https://twitter.com/search") == ""
+        assert _extract_url_username("https://twitter.com/explore") == ""
+        assert _extract_url_username("https://twitter.com/home") == ""
+
+    def test_instagram_live(self):
+        url = "https://www.instagram.com/cooluser/live/"
+        assert _extract_url_username(url) == "cooluser"
+
+    def test_instagram_profile_no_live(self):
+        # Instagram profile without /live is NOT extracted
+        url = "https://www.instagram.com/user123/p/ABC"
+        assert _extract_url_username(url) == ""
+
+    def test_youtube_no_match(self):
+        url = "https://www.youtube.com/watch?v=abc"
+        assert _extract_url_username(url) == ""
+
+    def test_empty_url(self):
+        assert _extract_url_username("") == ""
+
+
+# ---------------------------------------------------------------------------
+# build_download_filename (BUG-CB)
+# ---------------------------------------------------------------------------
+
+class TestBuildDownloadFilename:
+    def test_basic_vod(self):
+        result = build_download_filename(
+            username="testuser",
+            platform="TikTok",
+            date_str="20260413",
+            video_id="1234567890123",
+            ext="mp4",
+            is_live=False,
+        )
+        assert result == "testuser_TikTok_20260413_1234567890.mp4"
+
+    def test_live_suffix(self):
+        result = build_download_filename(
+            username="streamer",
+            platform="Instagram",
+            date_str="20260413",
+            video_id="abc123",
+            ext="ts",
+            is_live=True,
+        )
+        assert result == "streamer_Instagram_20260413_abc123_LIVE.ts"
+
+    def test_unicode_username_sanitized(self):
+        result = build_download_filename(
+            username="Nguyễn Văn 🎉",
+            platform="YouTube",
+            date_str="20260413",
+            video_id="xyz",
+            ext="mp4",
+        )
+        # Unicode stripped, spaces->underscore
+        assert "Nguy" in result
+        assert "🎉" not in result
+
+    def test_empty_username_fallback(self):
+        result = build_download_filename(
+            username="",
+            platform="TikTok",
+            date_str="20260413",
+            video_id="123",
+            ext="mp4",
+        )
+        assert result.startswith("unknown_")
+
+    def test_date_non_numeric_stripped(self):
+        result = build_download_filename(
+            username="user",
+            platform="X",
+            date_str="2026-04-13",  # dashes should be stripped
+            video_id="abc",
+            ext="mp4",
+        )
+        assert "_20260413_" in result
+
+    def test_ext_dot_stripped(self):
+        result = build_download_filename(
+            username="user",
+            platform="X",
+            date_str="20260413",
+            video_id="abc",
+            ext=".MP4",  # leading dot and uppercase
+        )
+        assert result.endswith(".mp4")
+
+    def test_video_id_truncated(self):
+        result = build_download_filename(
+            username="user",
+            platform="Facebook",
+            date_str="20260413",
+            video_id="12345678901234567890",  # 20 chars -> truncated to 10
+            ext="mp4",
+        )
+        # video_id must be truncated to exactly 10 chars (hard truncation)
+        parts = result.replace(".mp4", "").split("_")
+        assert parts[-1] == "1234567890", f"expected '1234567890', got {parts[-1]!r}"
+
+    def test_video_id_exact_10_chars_unchanged(self):
+        result = build_download_filename(
+            username="user",
+            platform="Facebook",
+            date_str="20260413",
+            video_id="1234567890",  # exactly 10 chars - must not be modified
+            ext="mp4",
+        )
+        parts = result.replace(".mp4", "").split("_")
+        assert parts[-1] == "1234567890"

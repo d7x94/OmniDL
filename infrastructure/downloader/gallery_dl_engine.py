@@ -480,10 +480,11 @@ class GalleryDlEngine:
         # (no mtime filter needed) because the folder is post-specific.
         _is_post_isolated = bool(_sc_m)
         if _sc_m:
+            from utils.helpers import _ascii_safe
             _shortcode = _sc_m.group(1)[:8]
             _upl = ""
             if task.media_info and task.media_info.uploader:
-                _upl = re.sub(r'[^\w.]', '_', task.media_info.uploader)[:32].strip('_')
+                _upl = _ascii_safe(task.media_info.uploader, 32)
             _date_str = datetime.date.today().strftime("%Y%m%d")
             _slug = (
                 f"{_upl}_{_date_str}_{_shortcode}"
