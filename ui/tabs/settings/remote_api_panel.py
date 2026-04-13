@@ -410,6 +410,25 @@ class RemoteApiPanel(_BasePanel):
                         cfg.set("api_ts_https_dns_name", dns)
                         cfg.save()
                     ok = start_tailscale_serve(new_port)
+                    if not ok:
+                        cfg.set("api_ts_https_enabled", False)
+                        cfg.set("api_ts_https_internal_port", 0)
+                        cfg.save()
+                        try:
+                            from api.server import restart_api_server
+                            from app.event_bus import bus as _bus
+                            svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                            if svc:
+                                restart_api_server(service=svc, config=cfg, bus=_bus)
+                        except Exception as exc:
+                            logger.exception("HTTPS Profile rollback: API restart failed: %s", exc)
+                        hint = " Tailscale chua dang nhap? Chay 'tailscale login' roi thu lai." if not dns else ""
+                        self._ui_queue.put(lambda: self._ts_https_var.set(False))
+                        self._ui_queue.put(self._refresh_ts_https_status)
+                        self._ui_queue.put(lambda h=hint: self._app.toast(
+                            f"tailscale serve that bai.{h}", "error"
+                        ))
+                        return
                     try:
                         from api.server import restart_api_server
                         from app.event_bus import bus as _bus
@@ -423,17 +442,13 @@ class RemoteApiPanel(_BasePanel):
                         ))
                         return
                     self._ui_queue.put(self._refresh_ts_https_status)
-                    if ok and dns:
+                    if dns:
                         self._ui_queue.put(lambda d=dns: self._app.toast(
                             f"HTTPS Profile da bat: https://{d}", "success"
                         ))
-                    elif ok and not dns:
-                        self._ui_queue.put(lambda: self._app.toast(
-                            "serve da bat nhung khong lay duoc DNS name. Kiem tra Tailscale da dang nhap.", "error"
-                        ))
                     else:
                         self._ui_queue.put(lambda: self._app.toast(
-                            "tailscale serve that bai. Xem log de biet chi tiet.", "error"
+                            "serve da bat nhung khong lay duoc DNS name. Kiem tra Tailscale da dang nhap.", "error"
                         ))
                 except Exception as exc:
                     logger.exception("HTTPS Profile enable error: %s", exc)
@@ -504,7 +519,7 @@ class RemoteApiPanel(_BasePanel):
                     start_tailscale_serve,
                 )
                 reset_tailscale_serve()
-                start_tailscale_serve(new_port)
+                ok = start_tailscale_serve(new_port)
                 dns = get_tailscale_dns_name()
                 if dns:
                     cfg.set("api_ts_https_dns_name", dns)
@@ -523,9 +538,14 @@ class RemoteApiPanel(_BasePanel):
                     self._ts_https_reset_status.winfo_exists() and
                     self._ts_https_reset_status.configure(text="")
                 ))
-                self._ui_queue.put(lambda: self._app.toast(
-                    "Profile da reset. Token moi da tao — cap nhat tren thiet bi.", "success"
-                ))
+                if ok:
+                    self._ui_queue.put(lambda: self._app.toast(
+                        "Profile da reset. Token moi da tao — cap nhat tren thiet bi.", "success"
+                    ))
+                else:
+                    self._ui_queue.put(lambda: self._app.toast(
+                        "tailscale serve that bai khi reset. Kiem tra Tailscale da dang nhap.", "error"
+                    ))
             except Exception as exc:
                 logger.exception("HTTPS Profile reset error: %s", exc)
                 self._ui_queue.put(lambda e=exc: self._app.toast(
