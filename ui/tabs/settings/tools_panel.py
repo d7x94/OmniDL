@@ -182,6 +182,18 @@ def _install_gallery_dl_frozen() -> str:
     return str(override_dir)
 
 
+def _pip_install_cmd(package: str) -> list[str]:
+    import shutil
+    import sys
+
+    if not getattr(sys, "frozen", False):
+        uv_exe = shutil.which("uv")
+        if uv_exe:
+            return [uv_exe, "pip", "install", "--upgrade", package]
+
+    return [sys.executable, "-m", "pip", "install", "--upgrade", package]
+
+
 # ── Panel class ───────────────────────────────────────────────────────────
 
 class ToolsPanel(_BasePanel):
@@ -345,7 +357,7 @@ class ToolsPanel(_BasePanel):
                     override_str = None
                     import subprocess
                     r = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+                        _pip_install_cmd("yt-dlp"),
                         capture_output=True, timeout=60)
                     if r.returncode != 0:
                         raise RuntimeError(r.stderr.decode(errors="replace")[:200])
@@ -422,7 +434,7 @@ class ToolsPanel(_BasePanel):
             import subprocess
             try:
                 r = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "--upgrade", "keyring"],
+                    _pip_install_cmd("keyring"),
                     capture_output=True, timeout=120,
                 )
                 if r.returncode != 0:
@@ -468,7 +480,7 @@ class ToolsPanel(_BasePanel):
                     override_str = None
                     import subprocess
                     r = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "--upgrade", "gallery-dl"],
+                        _pip_install_cmd("gallery-dl"),
                         capture_output=True, timeout=60)
                     if r.returncode != 0:
                         raise RuntimeError(r.stderr.decode(errors="replace")[:200])
