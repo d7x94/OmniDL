@@ -842,69 +842,48 @@ class YtDlpEngine:
                 "Task %s detected as livestream — using HLS-safe options", task.id
             )
 
-        # ── Filename template (BUG-CB: ASCII-safe schema) ─────────────────
+        # ── Filename template (all fixes applied) ────────────────────────
         #
-        # Schema: {username}_{Platform}_{YYYYMMDD}_{id10}[_LIVE].{ext}
+        # VOD template breakdown:
+        #   %(uploader,channel|Unknown).50B          uploader capped at 50 bytes
+        #   %(upload_date>%Y-%m-%d - ,...|)s         ISO date + " - " separator
+        #                                             embedded so separator only
+        #                                             appears when a date exists;
+        #                                             falls back to empty string
+        #   %(title).100B                            title capped at 100 bytes
+        #   [%(id).12B]                              first 12 chars of video ID
+        #                                            (enough for uniqueness on
+        #                                            all platforms; avoids the
+        #                                            32+ char Facebook IDs)
         #
-        # BUG-CB root cause: Unicode/emoji in title or uploader fields caused
-        # ffmpeg to crash on Windows (exit code 0xCBAE0008) because Windows
-        # ffmpeg cannot open paths containing non-ASCII characters when the
-        # process codepage is not UTF-8.
+        # LIVE template uses a local recording timestamp instead of upload_date
+        # (which is unavailable mid-stream) and prefixes [LIVE] for clarity.
         #
-        # Fix: ASCII-only filename using yt-dlp's restrictfilenames-style
-        # template. Title/description metadata is preserved via writeinfojson
-        # so users can search for content by uploader or title using the
-        # sidecar .info.json file.
+        # windowsfilenames=True (set in opts below) replaces all characters
+        # illegal on NTFS/FAT32 (:, <, >, ", |, ?, *) so the file can be
+        # written on Windows without yt-dlp raising a PermissionError.
         #
-        # windowsfilenames=True (set in opts below) is KEPT to sanitise the
-        # expanded output path (temp files, part files also use this setting).
-        #
-        # trim_file_name=180 KEPT to stay under Windows MAX_PATH.
-        #
-        # For live streams: extract username from URL when uploader metadata
-        # is unavailable mid-stream.
-
-        from utils.helpers import _ascii_safe, _extract_url_username
-
-        _platform = _detect_platform(task.url)
-        _today = time.strftime("%Y%m%d")
+        # trim_file_name=180 hard-caps the stem at 180 bytes, keeping the
+        # total path safely under the Windows MAX_PATH limit of 260 chars
+        # even with a long download directory.
 
         if is_live:
-            # Live: uploader metadata often unavailable mid-stream; extract from URL
-            _url_user = _extract_url_username(task.url)
-            if _url_user:
-                _uname = _ascii_safe(_url_user, 32)
-            elif task.media_info and task.media_info.uploader:
-                _uname = _ascii_safe(task.media_info.uploader, 32)
-            else:
-                _uname = "unknown"
-            _plat = _ascii_safe(_platform, 16)
-            # Template: {username}_{Platform}_{YYYYMMDD}_{id10}_LIVE.ts
-            outtmpl = str(
-                output_dir
-                / f"{_uname}_{_plat}_{_today}_%(id).10B_LIVE.ts"
-            )
-        else:
-            # VOD: pre-resolve uploader to ASCII before building outtmpl.
-            # %(uploader,channel|unknown).32S only strips filesystem-unsafe
-            # chars (<>:"/\|?*) — it does NOT strip Unicode or emoji.
-            # On Windows, ffmpeg crashes (0xCBAE0008) when the expanded path
-            # contains non-ASCII characters (BUG-CB root cause applies here
-            # too, not just live streams).
-            _plat = _ascii_safe(_platform, 16)
-            _raw_uname = (
-                (task.media_info.uploader if task.media_info and task.media_info.uploader else None)
-                or (task.media_info.channel if task.media_info and task.media_info.channel else None)
-                or ""
-            )
-            _uname = _ascii_safe(_raw_uname, 32) if _raw_uname else "unknown"
+            rec_ts = time.strftime("%Y-%m-%d %H-%M")
             outtmpl = str(
                 output_dir
                 / (
-                    f"{_uname}"
-                    f"_{_plat}"
-                    f"_%(upload_date>%Y%m%d,release_date>%Y%m%d|{_today})s"
-                    f"_%(id).10B.%(ext)s"
+                    f"%(uploader,channel|Unknown).50B"
+                    f" - [LIVE] {rec_ts}"
+                    f" %(title).80B [%(id).12B].ts"
+                )
+            )
+        else:
+            outtmpl = str(
+                output_dir
+                / (
+                    "%(uploader,channel|Unknown).50B"
+                    " - %(upload_date>%Y-%m-%d - ,release_date>%Y-%m-%d - |)s"
+                    "%(title).100B [%(id).12B].%(ext)s"
                 )
             )
 
@@ -1069,10 +1048,6 @@ class YtDlpEngine:
             "writethumbnail": False,
             "embedthumbnail": False,
             "addmetadata": False if is_live else self._config.embed_metadata,
-            # BUG-CB: write .info.json sidecar so title/description are searchable
-            # even though the filename is now ASCII-only. Live streams skip this
-            # because metadata is incomplete mid-stream.
-            "writeinfojson": not is_live,
             "progress_hooks": [self._make_progress_hook(task, on_progress, is_live)],
             "postprocessor_hooks": [self._make_pp_hook(task, on_postprocess)],
             # noplaylist must match extract_info() — without it, pasting a

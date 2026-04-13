@@ -182,18 +182,12 @@ class InstagramLiveEngine:
         ).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # BUG-CB: use ASCII-safe filename schema
-        from utils.helpers import build_download_filename
-        _date_str = time.strftime("%Y%m%d")
-        short_id = (broadcast_id or "live")[:10]
-        raw_name = build_download_filename(
-            username=username,
-            platform="Instagram",
-            date_str=_date_str,
-            video_id=short_id,
-            ext="ts",
-            is_live=True,
-        )
+        rec_ts  = time.strftime("%Y-%m-%d %H-%M")
+        short_id = (broadcast_id or "live")[:12]
+        raw_name = f"{username} - [LIVE] {rec_ts} [{short_id}].ts"
+        # Sanitise characters illegal on NTFS
+        for ch in r'<>:"/\|?*':
+            raw_name = raw_name.replace(ch, "_")
         output_path = output_dir / raw_name
 
         with task._lock:
