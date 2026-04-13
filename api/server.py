@@ -1159,7 +1159,7 @@ def is_api_running() -> bool:
         return _active_thread is not None and _active_thread.is_alive()
 
 
-def stop_api_server(timeout: float = 4.0) -> None:
+def stop_api_server(timeout: float = 8.0) -> None:
     """Gracefully stop the running API server.
 
     Signals uvicorn to shut down, waits up to *timeout* seconds for the
@@ -1167,6 +1167,10 @@ def stop_api_server(timeout: float = 4.0) -> None:
 
     Safe to call when no server is running (no-op).
     """
+    # BUG-BX: timeout raised from 4.0 to 8.0 — IocpProactor on Windows can
+    # take >4s to drain its completion queue during shutdown, causing the
+    # socket to remain bound when restart_api_server() tries to rebind
+    # immediately after → [Errno 10048] address already in use.
     global _active_server, _active_thread
 
     with _server_lock:
@@ -1187,6 +1191,17 @@ def stop_api_server(timeout: float = 4.0) -> None:
     logger.info("OmniDL API server stopped.")
 
 
+def _stop_and_wait(timeout: float = 8.0) -> None:
+    """Stop the API server and add a brief OS socket-release pause.
+
+    BUG-BX: On Windows, even after the uvicorn thread exits, the TCP stack
+    can hold the port in TIME_WAIT for a short period.  A 0.5s sleep after
+    join lets the OS release the socket before the caller tries to rebind.
+    """
+    stop_api_server(timeout=timeout)
+    time.sleep(0.5)
+
+
 def restart_api_server(
     service: "DownloadService",
     config: "ConfigManager",
@@ -1197,7 +1212,7 @@ def restart_api_server(
     Used by the Settings tab when the user rotates the token or toggles
     the API back on.  Returns the new Thread (or None if api_enabled is False).
     """
-    stop_api_server()
+    _stop_and_wait()  # BUG-BX: includes 0.5s socket-release sleep
     return start_api_server(service=service, config=config, bus=bus)
 
 

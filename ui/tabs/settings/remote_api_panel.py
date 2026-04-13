@@ -302,9 +302,7 @@ class RemoteApiPanel(_BasePanel):
         cfg = self._app.config
         cfg.set_api_token(new_token)
 
-        lbl = getattr(self, "_api_token_lbl", None)
-        if lbl and lbl.winfo_exists():
-            lbl.configure(text=self._masked_token())
+        self._refresh_api_token_label()  # BUG-CA: also syncs _ts_https_token_lbl
 
         st = getattr(self, "_api_token_status", None)
         if st and st.winfo_exists():
@@ -343,6 +341,22 @@ class RemoteApiPanel(_BasePanel):
             self._app.toast("✅  Token mới đã tạo. Copy và cập nhật trên thiết bị.", "success")
 
     # ── Tailscale HTTPS Profile helpers ───────────────────────────────────
+
+    def _refresh_api_token_label(self) -> None:
+        """Sync both token labels to the current config token. UI thread only.
+
+        BUG-CA: both _api_token_lbl (Remote API section) and _ts_https_token_lbl
+        (Tailscale section) display the same cfg.api_token. Any code path that
+        rotates the token must refresh both labels — failing to do so leaves one
+        section showing a stale masked value until the app is restarted.
+        """
+        masked = self._masked_token()
+        lbl = getattr(self, "_api_token_lbl", None)
+        if lbl and lbl.winfo_exists():
+            lbl.configure(text=masked)
+        ts_lbl = getattr(self, "_ts_https_token_lbl", None)
+        if ts_lbl and ts_lbl.winfo_exists():
+            ts_lbl.configure(text=masked)
 
     def _refresh_ts_https_status(self) -> None:
         """Update Tailscale HTTPS section labels from current config. UI thread only."""
@@ -504,6 +518,7 @@ class RemoteApiPanel(_BasePanel):
         cfg.set_api_token(new_token)
         cfg.save()
         self._refresh_ts_https_status()
+        self._refresh_api_token_label()  # BUG-CA: sync Remote API token label immediately
 
         st = getattr(self, "_ts_https_reset_status", None)
         if st and st.winfo_exists():
@@ -520,6 +535,33 @@ class RemoteApiPanel(_BasePanel):
                 )
                 reset_tailscale_serve()
                 ok = start_tailscale_serve(new_port)
+                if not ok:
+                    # BUG-BY: tailscale serve failed during reset — roll back to
+                    # disabled state so API restarts in normal (0.0.0.0:port) mode,
+                    # not bound to an unreachable 127.0.0.1:new_port with no proxy rule.
+                    cfg.set("api_ts_https_enabled", False)
+                    cfg.set("api_ts_https_internal_port", 0)
+                    cfg.set("api_ts_https_dns_name", "")
+                    cfg.save()
+                    try:
+                        from api.server import restart_api_server
+                        from app.event_bus import bus as _bus
+                        svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                        if svc:
+                            restart_api_server(service=svc, config=cfg, bus=_bus)
+                    except Exception as exc:
+                        logger.exception("HTTPS Profile reset rollback: API restart failed: %s", exc)
+                    self._ui_queue.put(lambda: self._ts_https_var.set(False))
+                    self._ui_queue.put(self._refresh_ts_https_status)
+                    self._ui_queue.put(lambda: (
+                        getattr(self, "_ts_https_reset_status", None) and
+                        self._ts_https_reset_status.winfo_exists() and
+                        self._ts_https_reset_status.configure(text="")
+                    ))
+                    self._ui_queue.put(lambda: self._app.toast(
+                        "tailscale serve that bai khi reset. Kiem tra Tailscale da dang nhap.", "error"
+                    ))
+                    return
                 dns = get_tailscale_dns_name()
                 if dns:
                     cfg.set("api_ts_https_dns_name", dns)
@@ -538,13 +580,13 @@ class RemoteApiPanel(_BasePanel):
                     self._ts_https_reset_status.winfo_exists() and
                     self._ts_https_reset_status.configure(text="")
                 ))
-                if ok:
-                    self._ui_queue.put(lambda: self._app.toast(
-                        "Profile da reset. Token moi da tao — cap nhat tren thiet bi.", "success"
+                if dns:
+                    self._ui_queue.put(lambda d=dns: self._app.toast(
+                        f"Profile da reset: https://{d}. Token moi da tao — cap nhat tren thiet bi.", "success"
                     ))
                 else:
                     self._ui_queue.put(lambda: self._app.toast(
-                        "tailscale serve that bai khi reset. Kiem tra Tailscale da dang nhap.", "error"
+                        "Profile da reset. Token moi da tao — cap nhat tren thiet bi.", "success"
                     ))
             except Exception as exc:
                 logger.exception("HTTPS Profile reset error: %s", exc)
