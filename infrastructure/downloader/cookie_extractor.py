@@ -336,8 +336,15 @@ def _is_browser_running(browser: str) -> bool:
             ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/NH", "/FO", "CSV"],
             capture_output=True, timeout=5,
         )
-        # tasklist output contains the exe name when the process is found
-        return exe_name.lower() in result.stdout.decode(errors="replace").lower()
+        # Parse CSV output: each line is "name","pid","session",...
+        # Exact first-field match avoids false positives from similarly named
+        # processes (e.g. "unbrave.exe" would not match "brave.exe").
+        output = result.stdout.decode(errors="replace")
+        return any(
+            line.split(",")[0].strip().strip('"').lower() == exe_name.lower()
+            for line in output.splitlines()
+            if line.strip()
+        )
     except Exception:
         return False
 

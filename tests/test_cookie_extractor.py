@@ -160,6 +160,15 @@ class TestFriendlyExtractError:
 
 class TestExtractBrowserCookies:
 
+    @pytest.fixture(autouse=True)
+    def _no_encrypt(self, monkeypatch):
+        """Skip DPAPI/Fernet encryption — these tests verify cookie filtering,
+        not at-rest encryption. Encryption is covered by test_cookie_storage.py."""
+        monkeypatch.setattr(
+            "infrastructure.downloader.cookie_storage.encrypt_cookie_file",
+            lambda p: p,
+        )
+
     def _make_ydl_mock(self, tmp_path: Path, cookies: list[http.cookiejar.Cookie]):
         """Return a context manager mock that writes cookie file on __exit__."""
         mock_ydl = MagicMock()
@@ -348,6 +357,15 @@ class TestCdpHelpers:
 
 
 class TestExtractViaCdp:
+
+    @pytest.fixture(autouse=True)
+    def _no_encrypt(self, monkeypatch):
+        """Skip DPAPI/Fernet encryption — CDP tests verify cookie retrieval,
+        not at-rest encryption. Encryption is covered by test_cookie_storage.py."""
+        monkeypatch.setattr(
+            "infrastructure.downloader.cookie_storage.encrypt_cookie_file",
+            lambda p: p,
+        )
 
     def _mock_cdp(self, cookies: list, tmp_path: Path):
         """Return a context manager that patches all CDP internals."""

@@ -27,6 +27,20 @@ if TYPE_CHECKING:
 logger = __import__("logging").getLogger(__name__)
 
 
+def _is_netscape_cookie_file(path: "Path") -> bool:
+    """Return True if *path* looks like a Netscape cookie file.
+
+    Reads only the first line — fast and avoids loading large files.
+    False on any I/O error (caller will reject the file gracefully).
+    """
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            first = fh.readline()
+        return "Netscape HTTP Cookie File" in first
+    except OSError:
+        return False
+
+
 def _cookie_file_candidates(path_str: str) -> "list[Path]":
     """Return both the stored path and its .txt/.enc counterpart.
 
@@ -315,6 +329,13 @@ class NetworkPanel(_BasePanel):
         if not src.is_file():
             self._app.toast("File not found.", "error")
             return
+        if not _is_netscape_cookie_file(src):
+            self._app.toast(
+                "File không phải định dạng Netscape cookie.\n"
+                "Hãy chọn file cookies.txt được export từ trình duyệt hoặc tiện ích Cookie-Editor.",
+                "error",
+            )
+            return
         # Capture BEFORE writing so we can clean up the old file afterward.
         old_path_str = self._app.config.get("cookie_file", "")
         safe_dir = self._app.config.config_path.parent / "cookies"
@@ -520,6 +541,13 @@ class NetworkPanel(_BasePanel):
         src_path = Path(chosen)
         if not src_path.is_file():
             self._app.toast("File không tìm thấy.", "error")
+            return
+        if not _is_netscape_cookie_file(src_path):
+            self._app.toast(
+                f"File không phải định dạng Netscape cookie.\n"
+                f"Hãy chọn file cookies.txt được export từ trình duyệt hoặc tiện ích Cookie-Editor.",
+                "error",
+            )
             return
         # Capture BEFORE writing so we can clean up the old file afterward.
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)

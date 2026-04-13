@@ -56,6 +56,12 @@ _DEFAULTS: dict[str, Any] = {
     "api_host":    "0.0.0.0",   # listens on all LAN interfaces  # nosec B104
     "api_port":    7799,
     "api_token":   "",           # auto-populated by api/server.py
+    # ── Tailscale HTTPS Profile (optional HTTPS reverse proxy) ───────────
+    # When enabled, OmniDL runs `tailscale serve` to proxy HTTPS:443 to a
+    # random internal port, giving a clean https://<hostname>.ts.net URL.
+    "api_ts_https_enabled":       False,  # True = HTTPS profile active
+    "api_ts_https_internal_port": 0,      # random port 50000-65000; 0 = not yet assigned
+    "api_ts_https_dns_name":      "",     # cached MagicDNS FQDN, e.g. "my-laptop.tail1abc2.ts.net"
     # ── Taildrop — send completed files to iPhone via Tailscale ──────────
     # Requires: Tailscale installed on PC + Taildrop enabled on iPhone.
     # target_node: Tailscale node name or IP of the iPhone (e.g. "iphone").
@@ -437,6 +443,20 @@ class ConfigManager:
         self.set("api_token", token)
         self.save()
 
+    # ── Tailscale HTTPS Profile typed accessors ───────────────────────────
+
+    @property
+    def api_ts_https_enabled(self) -> bool:
+        return bool(self.get("api_ts_https_enabled", False))
+
+    @property
+    def api_ts_https_internal_port(self) -> int:
+        raw = int(self.get("api_ts_https_internal_port", 0))
+        return max(50000, min(65000, raw)) if raw else 0
+
+    @property
+    def api_ts_https_dns_name(self) -> str:
+        return str(self.get("api_ts_https_dns_name", "")).strip()
 
     # ── Taildrop typed accessors ──────────────────────────────────────────
 

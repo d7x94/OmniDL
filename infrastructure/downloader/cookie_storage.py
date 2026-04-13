@@ -220,6 +220,16 @@ def encrypt_cookie_file(txt_path: Path) -> Path:
         txt_path.unlink()
     except OSError as exc:
         logger.warning("encrypt_cookie_file: cannot delete plaintext %s — %s", txt_path, exc)
+        # Security: overwrite content even if the directory entry cannot be removed,
+        # so the plaintext data is erased even if the file persists on disk.
+        try:
+            txt_path.write_bytes(b"\x00" * len(plaintext))
+        except OSError as exc2:
+            logger.error(
+                "encrypt_cookie_file: plaintext cookie %s could not be deleted or zeroed"
+                " — session cookies may remain readable on disk (%s)",
+                txt_path.name, exc2,
+            )
 
     logger.info("Cookie file encrypted (%s): %s → %s", method, txt_path.name, enc_path.name)
     return enc_path
@@ -311,6 +321,30 @@ def cleanup_stale_cookies(safe_dir: Path, max_age_days: int = 30) -> int:
     if deleted:
         logger.info("Stale cookie cleanup: %d file(s) removed from %s", deleted, safe_dir)
     return deleted
+
+
+def encrypt_plaintext_cookies(safe_dir: Path) -> int:
+    """Encrypt any unencrypted .txt cookie files in *safe_dir*.
+
+    Skips omnidl_dec_* temp files (those are transient decrypted copies).
+    Returns count of files successfully encrypted.
+    Called at startup to migrate pre-BUG-BM plaintext cookies.
+    """
+    if not safe_dir.is_dir():
+        return 0
+    encrypted_count = 0
+    for f in safe_dir.glob("*.txt"):
+        if f.name.startswith(_TEMP_PREFIX):
+            continue
+        try:
+            result = encrypt_cookie_file(f)
+            if result != f:
+                encrypted_count += 1
+                logger.info("Startup: encrypted legacy plaintext cookie: %s -> %s",
+                            f.name, result.name)
+        except Exception as exc:
+            logger.warning("Startup: failed to encrypt %s - %s", f.name, exc)
+    return encrypted_count
 
 
 def cleanup_leftover_temp_files(safe_dir: Path) -> None:

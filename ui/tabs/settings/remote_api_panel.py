@@ -9,6 +9,9 @@ Dependencies on MainWindow:
 """
 from __future__ import annotations
 
+import random
+import secrets as _secrets
+import shutil
 import threading
 from typing import TYPE_CHECKING
 
@@ -120,6 +123,89 @@ class RemoteApiPanel(_BasePanel):
             font=ctk.CTkFont(size=11), text_color=T.text2,
         )
         self._api_token_status.pack(side="left", padx=(10, 0))
+
+        # ── Tailscale HTTPS Profile section ─────────────────────────────
+        self._section(p, "🔒   TAILSCALE HTTPS PROFILE")
+        self._card_ts_https = ts_card = self._card(p)
+
+        ctk.CTkLabel(
+            ts_card,
+            text=(
+                "Truy cap Remote API qua HTTPS tren mang Tailscale.\n"
+                "OmniDL tu dong chay tailscale serve — khong can mo port tuong lua.\n"
+                "Yeu cau: Tailscale da cai va dang nhap tren may nay."
+            ),
+            font=ctk.CTkFont(size=11), text_color=T.text3,
+            justify="left", anchor="w",
+        ).pack(fill="x", padx=16, pady=(12, 4))
+
+        # Toggle row
+        ts_toggle_row = ctk.CTkFrame(ts_card, fg_color="transparent")
+        ts_toggle_row.pack(fill="x", padx=16, pady=(4, 0))
+        ctk.CTkLabel(
+            ts_toggle_row, text="Bat Tailscale HTTPS Profile",
+            font=ctk.CTkFont(size=12), text_color=T.text2,
+        ).pack(side="left")
+        self._ts_https_var = ctk.BooleanVar(
+            value=bool(getattr(cfg, "api_ts_https_enabled", False))
+        )
+        self._ts_https_switch = ctk.CTkSwitch(
+            ts_toggle_row, variable=self._ts_https_var, text="",
+            command=self._on_ts_https_toggle, onvalue=True, offvalue=False,
+            progress_color=T.primary, button_color=T.primary_text,
+        )
+        self._ts_https_switch.pack(side="right")
+        self._switches.append(self._ts_https_switch)
+
+        # Status label
+        self._ts_https_status_lbl = ctk.CTkLabel(
+            ts_card, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text2,
+            anchor="w", justify="left",
+        )
+        self._ts_https_status_lbl.pack(fill="x", padx=16, pady=(4, 2))
+
+        # Internal port label
+        self._ts_https_port_lbl = ctk.CTkLabel(
+            ts_card, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text3,
+            anchor="w",
+        )
+        self._ts_https_port_lbl.pack(fill="x", padx=16, pady=(0, 4))
+
+        # Token row (shows the same token as the main API section)
+        ts_token_row = ctk.CTkFrame(ts_card, fg_color="transparent")
+        ts_token_row.pack(fill="x", padx=16, pady=(0, 4))
+        self._ts_https_token_lbl = ctk.CTkLabel(
+            ts_token_row, text=self._masked_token(),
+            font=ctk.CTkFont(size=11, family="Courier"),
+            text_color=T.primary_text, anchor="w",
+        )
+        self._ts_https_token_lbl.pack(side="left", fill="x", expand=True)
+        self._ts_https_copy_btn = ctk.CTkButton(
+            ts_token_row, text="Copy", width=70, height=28, corner_radius=6,
+            fg_color=T.surface3, hover_color=T.border2, text_color=T.text2,
+            font=ctk.CTkFont(size=11), command=self._on_api_copy_token,
+        )
+        self._ts_https_copy_btn.pack(side="right", padx=(6, 0))
+
+        # Reset Profile button (orange warning color)
+        ts_reset_row = ctk.CTkFrame(ts_card, fg_color="transparent")
+        ts_reset_row.pack(fill="x", padx=16, pady=(0, 14))
+        self._ts_https_reset_btn = ctk.CTkButton(
+            ts_reset_row, text="Reset Profile",
+            height=32, corner_radius=8,
+            fg_color="#d97706", hover_color="#b45309", text_color="#ffffff",
+            font=ctk.CTkFont(size=12), command=self._on_ts_https_reset,
+        )
+        self._ts_https_reset_btn.pack(side="left")
+        self._ts_https_reset_status = ctk.CTkLabel(
+            ts_reset_row, text="",
+            font=ctk.CTkFont(size=11), text_color=T.text2,
+        )
+        self._ts_https_reset_status.pack(side="left", padx=(10, 0))
+
+        self._refresh_ts_https_status()
 
     # ── Handlers ──────────────────────────────────────────────────────────
 
@@ -256,6 +342,198 @@ class RemoteApiPanel(_BasePanel):
         else:
             self._app.toast("✅  Token mới đã tạo. Copy và cập nhật trên thiết bị.", "success")
 
+    # ── Tailscale HTTPS Profile helpers ───────────────────────────────────
+
+    def _refresh_ts_https_status(self) -> None:
+        """Update Tailscale HTTPS section labels from current config. UI thread only."""
+        lbl = getattr(self, "_ts_https_status_lbl", None)
+        if lbl is None or not lbl.winfo_exists():
+            return
+        cfg = self._app.config
+        enabled  = getattr(cfg, "api_ts_https_enabled", False)
+        dns_name = getattr(cfg, "api_ts_https_dns_name", "") or ""
+        int_port = getattr(cfg, "api_ts_https_internal_port", 0) or 0
+        port_lbl = getattr(self, "_ts_https_port_lbl", None)
+
+        if enabled and dns_name:
+            lbl.configure(
+                text=f"Remote API dang chay tai:\nhttps://{dns_name}",
+                text_color="#22c55e",
+            )
+            if port_lbl and port_lbl.winfo_exists():
+                port_lbl.configure(text=f"Port noi bo (ngau nhien): {int_port}")
+        elif enabled and not dns_name:
+            lbl.configure(
+                text="Dang thiet lap... (kiem tra Tailscale da ket noi chua)",
+                text_color=T.text2,
+            )
+            if port_lbl and port_lbl.winfo_exists():
+                port_lbl.configure(text=f"Port noi bo: {int_port}" if int_port else "")
+        else:
+            lbl.configure(text="Da tat", text_color=T.text3)
+            if port_lbl and port_lbl.winfo_exists():
+                port_lbl.configure(text="")
+
+        tok_lbl = getattr(self, "_ts_https_token_lbl", None)
+        if tok_lbl and tok_lbl.winfo_exists():
+            tok_lbl.configure(text=self._masked_token())
+
+    def _on_ts_https_toggle(self) -> None:
+        enabled = self._ts_https_var.get()
+        cfg = self._app.config
+
+        if enabled:
+            if not getattr(cfg, "api_enabled", False):
+                self._ts_https_var.set(False)
+                self._app.toast("Bat Remote API truoc khi dung Tailscale HTTPS Profile.", "error")
+                return
+            if not shutil.which("tailscale"):
+                self._ts_https_var.set(False)
+                self._app.toast("Khong tim thay tailscale CLI — cai Tailscale tren may nay.", "error")
+                return
+
+            new_port = random.randint(50000, 65000)
+            cfg.set("api_ts_https_enabled", True)
+            cfg.set("api_ts_https_internal_port", new_port)
+            cfg.save()
+            self._refresh_ts_https_status()
+            self._app.toast("Dang thiet lap Tailscale HTTPS Profile...", "info")
+
+            def _enable_worker() -> None:
+                try:
+                    from api.tailscale_https import (
+                        get_tailscale_dns_name,
+                        start_tailscale_serve,
+                    )
+                    dns = get_tailscale_dns_name()
+                    if dns:
+                        cfg.set("api_ts_https_dns_name", dns)
+                        cfg.save()
+                    ok = start_tailscale_serve(new_port)
+                    try:
+                        from api.server import restart_api_server
+                        from app.event_bus import bus as _bus
+                        svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                        if svc:
+                            restart_api_server(service=svc, config=cfg, bus=_bus)
+                    except Exception as exc:
+                        logger.exception("HTTPS Profile: API restart failed: %s", exc)
+                        self._ui_queue.put(lambda e=exc: self._app.toast(
+                            f"Loi restart API: {e!s:.60}", "error"
+                        ))
+                        return
+                    self._ui_queue.put(self._refresh_ts_https_status)
+                    if ok and dns:
+                        self._ui_queue.put(lambda d=dns: self._app.toast(
+                            f"HTTPS Profile da bat: https://{d}", "success"
+                        ))
+                    elif ok and not dns:
+                        self._ui_queue.put(lambda: self._app.toast(
+                            "serve da bat nhung khong lay duoc DNS name. Kiem tra Tailscale da dang nhap.", "error"
+                        ))
+                    else:
+                        self._ui_queue.put(lambda: self._app.toast(
+                            "tailscale serve that bai. Xem log de biet chi tiet.", "error"
+                        ))
+                except Exception as exc:
+                    logger.exception("HTTPS Profile enable error: %s", exc)
+                    self._ui_queue.put(lambda e=exc: self._app.toast(
+                        f"Loi thiet lap HTTPS Profile: {e!s:.60}", "error"
+                    ))
+
+            threading.Thread(target=_enable_worker, daemon=True, name="omnidl-ts-https-enable").start()
+
+        else:
+            old_port = getattr(cfg, "api_ts_https_internal_port", 0) or 0
+            cfg.set("api_ts_https_enabled", False)
+            cfg.set("api_ts_https_dns_name", "")
+            cfg.save()
+            self._refresh_ts_https_status()
+            self._app.toast("Dang tat Tailscale HTTPS Profile...", "info")
+
+            def _disable_worker() -> None:
+                try:
+                    if old_port:
+                        from api.tailscale_https import stop_tailscale_serve
+                        stop_tailscale_serve(old_port)
+                    try:
+                        from api.server import restart_api_server
+                        from app.event_bus import bus as _bus
+                        svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                        if svc:
+                            restart_api_server(service=svc, config=cfg, bus=_bus)
+                    except Exception as exc:
+                        logger.exception("HTTPS Profile disable: API restart error: %s", exc)
+                    self._ui_queue.put(self._refresh_ts_https_status)
+                    self._ui_queue.put(lambda: self._app.toast("Tailscale HTTPS Profile da tat.", "info"))
+                except Exception as exc:
+                    logger.exception("HTTPS Profile disable error: %s", exc)
+                    self._ui_queue.put(lambda e=exc: self._app.toast(
+                        f"Loi tat HTTPS Profile: {e!s:.60}", "error"
+                    ))
+
+            threading.Thread(target=_disable_worker, daemon=True, name="omnidl-ts-https-disable").start()
+
+    def _on_ts_https_reset(self) -> None:
+        """Reset Profile: new random port + new token, tailscale serve reset, restart API."""
+        cfg = self._app.config
+        if not getattr(cfg, "api_ts_https_enabled", False):
+            self._app.toast("Hay bat HTTPS Profile truoc khi reset.", "error")
+            return
+
+        new_port  = random.randint(50000, 65000)
+        new_token = _secrets.token_urlsafe(24)
+
+        cfg.set("api_ts_https_internal_port", new_port)
+        cfg.set("api_ts_https_dns_name", "")
+        cfg.set_api_token(new_token)
+        cfg.save()
+        self._refresh_ts_https_status()
+
+        st = getattr(self, "_ts_https_reset_status", None)
+        if st and st.winfo_exists():
+            st.configure(text="Dang reset...", text_color=T.text2)
+
+        self._app.toast("Dang reset Tailscale HTTPS Profile...", "info")
+
+        def _reset_worker() -> None:
+            try:
+                from api.tailscale_https import (
+                    get_tailscale_dns_name,
+                    reset_tailscale_serve,
+                    start_tailscale_serve,
+                )
+                reset_tailscale_serve()
+                start_tailscale_serve(new_port)
+                dns = get_tailscale_dns_name()
+                if dns:
+                    cfg.set("api_ts_https_dns_name", dns)
+                    cfg.save()
+                try:
+                    from api.server import restart_api_server
+                    from app.event_bus import bus as _bus
+                    svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                    if svc:
+                        restart_api_server(service=svc, config=cfg, bus=_bus)
+                except Exception as exc:
+                    logger.exception("HTTPS Profile reset: API restart error: %s", exc)
+                self._ui_queue.put(self._refresh_ts_https_status)
+                self._ui_queue.put(lambda: (
+                    getattr(self, "_ts_https_reset_status", None) and
+                    self._ts_https_reset_status.winfo_exists() and
+                    self._ts_https_reset_status.configure(text="")
+                ))
+                self._ui_queue.put(lambda: self._app.toast(
+                    "Profile da reset. Token moi da tao — cap nhat tren thiet bi.", "success"
+                ))
+            except Exception as exc:
+                logger.exception("HTTPS Profile reset error: %s", exc)
+                self._ui_queue.put(lambda e=exc: self._app.toast(
+                    f"Loi reset Profile: {e!s:.60}", "error"
+                ))
+
+        threading.Thread(target=_reset_worker, daemon=True, name="omnidl-ts-https-reset").start()
+
     # ── Theme refresh ─────────────────────────────────────────────────────
 
     def _on_theme(self) -> None:
@@ -283,3 +561,18 @@ class RemoteApiPanel(_BasePanel):
             w = getattr(self, attr, None)
             if w and w.winfo_exists():
                 w.configure(fg_color=T.surface3, hover_color=T.border2, text_color=T.text2)
+        # Tailscale HTTPS Profile section
+        w = getattr(self, "_card_ts_https", None)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.surface, border_color=T.border)
+        w = getattr(self, "_ts_https_token_lbl", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.primary_text)
+        w = getattr(self, "_ts_https_copy_btn", None)
+        if w and w.winfo_exists():
+            w.configure(fg_color=T.surface3, hover_color=T.border2, text_color=T.text2)
+        w = getattr(self, "_ts_https_reset_status", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text2)
+        # Reset button keeps orange regardless of theme — intentional warning color
+        self._refresh_ts_https_status()

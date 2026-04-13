@@ -1259,10 +1259,21 @@ def start_api_server(
         )
         return None
 
+    # When the Tailscale HTTPS Profile is active, bind to 127.0.0.1 on the
+    # random internal port so only tailscale serve can reach the API from the
+    # network.  Otherwise use the user-configured host/port (default: 0.0.0.0:7799).
+    if getattr(config, "api_ts_https_enabled", False) and \
+            getattr(config, "api_ts_https_internal_port", 0):
+        _bind_host = "127.0.0.1"
+        _bind_port = config.api_ts_https_internal_port
+    else:
+        _bind_host = config.api_host
+        _bind_port = config.api_port
+
     uv_config = uvicorn.Config(
         app=app,
-        host=config.api_host,
-        port=config.api_port,
+        host=_bind_host,
+        port=_bind_port,
         log_level="warning",
         access_log=False,
         # BUG-BT: log_config=None disables uvicorn's default logging setup.
@@ -1282,8 +1293,8 @@ def start_api_server(
     def _run_server() -> None:
         logger.info(
             "OmniDL API server listening on http://%s:%d  (token: %s)",
-            config.api_host,
-            config.api_port,
+            _bind_host,
+            _bind_port,
             config.api_token[:8] + "...",   # show only prefix in logs
         )
         uv_server.run()

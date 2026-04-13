@@ -202,8 +202,12 @@ def main() -> None:
         from infrastructure.downloader.cookie_storage import (
             cleanup_leftover_temp_files,
             cleanup_stale_cookies,
+            encrypt_plaintext_cookies,
         )
         cleanup_leftover_temp_files(_cookie_dir)
+        n_encrypted = encrypt_plaintext_cookies(_cookie_dir)
+        if n_encrypted:
+            logger.info("Startup cookie migration: %d plaintext file(s) encrypted", n_encrypted)
         n_deleted = cleanup_stale_cookies(_cookie_dir, max_age_days=30)
         if n_deleted:
             logger.info("Startup cookie cleanup: %d stale file(s) removed", n_deleted)
