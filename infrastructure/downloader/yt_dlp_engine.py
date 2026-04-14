@@ -18,12 +18,23 @@ import yt_dlp
 # Sites like Kuaishou reject Python's default TLS fingerprint with
 # SSL RECORD_LAYER_FAILURE. Requires curl-cffi>=0.10.0,<0.15 (yt-dlp constraint).
 # opts["impersonate"] must be an ImpersonateTarget object, not a plain string.
+# BUG-CC FIX: log non-ImportError failures so curl_cffi load problems are visible
+# in debug log (previously silently fell back to _CURL_CFFI_AVAILABLE=False).
 try:
     import curl_cffi as _curl_cffi  # noqa: F401
     from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
     _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
     _CURL_CFFI_AVAILABLE = True
-except (ImportError, Exception):
+except ImportError:
+    _CURL_CFFI_AVAILABLE = False
+    _IMPERSONATE_TARGET = None
+except Exception as _curl_load_err:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "curl_cffi loaded but ImpersonateTarget init failed (%s) — "
+        "TLS impersonation disabled; Kuaishou and similar sites may fail",
+        _curl_load_err,
+    )
     _CURL_CFFI_AVAILABLE = False
     _IMPERSONATE_TARGET = None
 
@@ -295,6 +306,16 @@ def _friendly_error(msg: str) -> str:
             "Wait 5–10 minutes and try again. "
             "Enabling browser cookies in Settings may help."
         )
+    # TLS fingerprint rejection - Kuaishou and similar CDNs (BUG-CC)
+    if "ssl routines" in msg_l or "tls connect error" in msg_l or "curl: (35)" in msg_l:
+        return (
+            "Loi ket noi TLS - server tu choi TLS fingerprint mac dinh.\n"
+            "OmniDL dung curl_cffi (Chrome impersonation) de bypass loi nay.\n"
+            "Neu loi van xay ra:\n"
+            "  1. Kiem tra antivirus/proxy khong intercept HTTPS\n"
+            "  2. Thu bat proxy trong Settings -> Network -> Proxy URL\n"
+            "  3. Chay: pip install -U curl-cffi"
+        )
     # Facebook-specific errors
     if "content not available" in msg_l or "this content isn" in msg_l:
         return (
@@ -453,6 +474,52 @@ _MEDIA_EXTS: frozenset[str] = frozenset({
 # (where the native format is webm/opus) causes "Postprocessing: Conversion failed!".
 _AUDIO_ONLY_EXTS: frozenset[str] = frozenset({"mp3", "m4a", "aac", "flac", "opus", "wav", "ogg"})
 
+# BUG-CC FIX: Kuaishou short-link pre-resolver.
+# v.kuaishou.com/* and www.kuaishou.com/short-video/* are redirect chains.
+# yt-dlp's Generic extractor follows them with its own HTTP client, but the
+# Kuaishou CDN rejects the TLS connection (WRONG_VERSION_NUMBER) even when
+# curl_cffi impersonation is active — the CDN serves a non-TLS response at
+# a hop yt-dlp cannot skip.  Pre-resolving with curl_cffi directly (HEAD +
+# allow_redirects) gives us the final kwai.com/kuaishou.com canonical URL
+# which yt-dlp can then fetch without hitting the problematic redirect chain.
+_KUAISHOU_SHORT_RE = re.compile(r"v\.kuaishou\.com/|www\.kuaishou\.com/short-video/", re.I)
+
+
+def _resolve_kuaishou_url(url: str) -> str:
+    """Follow Kuaishou short-link redirects and return the final URL.
+
+    Uses curl_cffi with Chrome impersonation.  Falls back to original URL on
+    any failure — the caller (extract_info) will then let yt-dlp try as usual.
+    """
+    if not _CURL_CFFI_AVAILABLE:
+        return url
+    try:
+        from curl_cffi import requests as _cffi_req
+        resp = _cffi_req.head(
+            url,
+            impersonate="chrome",
+            allow_redirects=True,
+            timeout=15,
+        )
+        final = str(resp.url)
+        if final and final != url:
+            logger.debug("Kuaishou short URL resolved: %s -> %s", url, final)
+            return final
+        # HEAD may not follow all redirects on some CDNs — try GET if same URL
+        resp2 = _cffi_req.get(
+            url,
+            impersonate="chrome",
+            allow_redirects=True,
+            timeout=15,
+        )
+        final2 = str(resp2.url)
+        if final2 and final2 != url:
+            logger.debug("Kuaishou short URL resolved (GET): %s -> %s", url, final2)
+            return final2
+    except Exception as exc:
+        logger.debug("Kuaishou short URL pre-resolve failed (%s) — using original", exc)
+    return url
+
 
 class YtDlpEngine:
     """
@@ -484,6 +551,13 @@ class YtDlpEngine:
         early_msg = _check_unsupported_url(url, has_cookies=has_cookies)
         if early_msg:
             raise RuntimeError(early_msg)
+
+        # BUG-CC FIX: Pre-resolve Kuaishou short URLs before passing to yt-dlp.
+        # yt-dlp's Generic extractor fails with TLS WRONG_VERSION_NUMBER when
+        # following v.kuaishou.com redirect chains.  Resolving the final URL
+        # here via curl_cffi bypasses the problematic CDN hop entirely.
+        if _KUAISHOU_SHORT_RE.search(url):
+            url = _resolve_kuaishou_url(url)
 
         # ── Profile / channel / playlist fast-path ────────────────────────
         # When URL is a profile or channel page (TikTok @user, YouTube channel,
@@ -625,6 +699,9 @@ class YtDlpEngine:
                     "video does not exist",               # TikTok removed video
                     "this video is not available",        # TikTok region/deleted
                     "unavailable",                        # generic platform unavailable
+                    "ssl routines",                       # BUG-CC: TLS fingerprint rejection (Kuaishou)
+                    "tls connect error",                  # BUG-CC: curl TLS failure
+                    "curl: (35)",                         # BUG-CC: curl SSL connect error code
                 )
                 if any(k in msg_l for k in _hard):
                     raise RuntimeError(_friendly_error(msg)) from exc

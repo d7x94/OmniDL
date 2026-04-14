@@ -159,8 +159,11 @@ class TestCurlCffiExtractInfoOpts:
 
     def test_impersonate_present_when_curl_cffi_available(self):
         opts = self._captured_extract_opts(curl_available=True)
-        assert opts.get("impersonate") == "chrome", (
-            "impersonate must be 'chrome' when _CURL_CFFI_AVAILABLE=True"
+        imp = opts.get("impersonate")
+        assert imp is not None, "impersonate must be set when _CURL_CFFI_AVAILABLE=True"
+        # Value is an ImpersonateTarget object (not a plain string).
+        assert str(imp).lower().startswith("impersonatetarget") or getattr(imp, "client", None) == "chrome", (
+            f"impersonate must be ImpersonateTarget(client='chrome'), got {imp!r}"
         )
 
     def test_impersonate_absent_when_curl_cffi_unavailable(self):
@@ -204,7 +207,11 @@ class TestCurlCffiDownloadOpts:
 
     def test_impersonate_present_when_curl_cffi_available(self):
         opts = self._captured_download_opts(curl_available=True)
-        assert opts.get("impersonate") == "chrome"
+        imp = opts.get("impersonate")
+        assert imp is not None, "impersonate must be set when _CURL_CFFI_AVAILABLE=True"
+        assert getattr(imp, "client", None) == "chrome", (
+            f"impersonate must be ImpersonateTarget(client='chrome'), got {imp!r}"
+        )
 
     def test_impersonate_absent_when_curl_cffi_unavailable(self):
         opts = self._captured_download_opts(curl_available=False)
@@ -223,3 +230,175 @@ class TestCurlCffiDownloadOpts:
         rc = opts.get("remote_components")
         assert isinstance(rc, list), "remote_components must be a list"
         assert "ejs:github" in rc
+
+
+# ---------------------------------------------------------------------------
+# BUG-CC: TLS hard-stop and friendly error
+# ---------------------------------------------------------------------------
+
+class TestBugCcTlsHardStop:
+    """BUG-CC: TLS errors must not retry (hard-stop) and must produce a friendly message."""
+
+    def test_ssl_routines_is_hard_stop(self):
+        from unittest.mock import MagicMock, patch
+        import infrastructure.downloader.yt_dlp_engine as mod
+        import yt_dlp
+
+        cfg = _make_config()
+        engine = YtDlpEngine(cfg)
+
+        tls_exc = yt_dlp.utils.DownloadError(
+            "ERROR: [generic] Unable to download webpage: "
+            "curl: (35) TLS connect error: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER"
+        )
+
+        sleep_calls = []
+        with patch.object(mod.yt_dlp, "YoutubeDL") as FakeYDL, \
+             patch("infrastructure.downloader.yt_dlp_engine.time.sleep",
+                   side_effect=lambda s: sleep_calls.append(s)):
+            instance = MagicMock()
+            instance.__enter__ = lambda s: s
+            instance.__exit__ = MagicMock(return_value=False)
+            instance.extract_info.side_effect = tls_exc
+            FakeYDL.return_value = instance
+
+            with pytest.raises(RuntimeError):
+                engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
+
+        # hard-stop: no sleep means no retry
+        assert sleep_calls == [], "TLS error must not trigger retries"
+
+    def test_tls_connect_error_is_hard_stop(self):
+        from unittest.mock import MagicMock, patch
+        import infrastructure.downloader.yt_dlp_engine as mod
+        import yt_dlp
+
+        cfg = _make_config()
+        engine = YtDlpEngine(cfg)
+
+        tls_exc = yt_dlp.utils.DownloadError(
+            "Failed to perform, curl: (35) TLS connect error"
+        )
+
+        sleep_calls = []
+        with patch.object(mod.yt_dlp, "YoutubeDL") as FakeYDL, \
+             patch("infrastructure.downloader.yt_dlp_engine.time.sleep",
+                   side_effect=lambda s: sleep_calls.append(s)):
+            instance = MagicMock()
+            instance.__enter__ = lambda s: s
+            instance.__exit__ = MagicMock(return_value=False)
+            instance.extract_info.side_effect = tls_exc
+            FakeYDL.return_value = instance
+
+            with pytest.raises(RuntimeError):
+                engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
+
+        assert sleep_calls == [], "TLS error must not trigger retries"
+
+    def test_friendly_error_ssl_routines(self):
+        from infrastructure.downloader.yt_dlp_engine import _friendly_error
+        msg = ("ERROR: [generic] Unable to download webpage: curl: (35) TLS connect error: "
+               "error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER")
+        result = _friendly_error(msg)
+        assert "curl_cffi" in result or "TLS" in result or "curl-cffi" in result
+
+    def test_friendly_error_curl_35(self):
+        from infrastructure.downloader.yt_dlp_engine import _friendly_error
+        result = _friendly_error("curl: (35) SSL connect error")
+        assert "curl_cffi" in result or "TLS" in result or "curl-cffi" in result
+
+
+# ---------------------------------------------------------------------------
+# BUG-CC: Kuaishou short URL pre-resolver
+# ---------------------------------------------------------------------------
+
+class TestKuaishhouPreResolver:
+    """BUG-CC: _resolve_kuaishou_url and _KUAISHOU_SHORT_RE."""
+
+    def test_regex_matches_v_kuaishou(self):
+        from infrastructure.downloader.yt_dlp_engine import _KUAISHOU_SHORT_RE
+        assert _KUAISHOU_SHORT_RE.search("https://v.kuaishou.com/nsLRaZq3")
+
+    def test_regex_matches_www_short_video(self):
+        from infrastructure.downloader.yt_dlp_engine import _KUAISHOU_SHORT_RE
+        assert _KUAISHOU_SHORT_RE.search("https://www.kuaishou.com/short-video/abc123")
+
+    def test_regex_does_not_match_other(self):
+        from infrastructure.downloader.yt_dlp_engine import _KUAISHOU_SHORT_RE
+        assert not _KUAISHOU_SHORT_RE.search("https://www.youtube.com/watch?v=abc")
+        assert not _KUAISHOU_SHORT_RE.search("https://v.tiktok.com/abc")
+
+    def test_resolve_returns_final_url_on_success(self):
+        from unittest.mock import patch, MagicMock
+        import infrastructure.downloader.yt_dlp_engine as mod
+        import curl_cffi
+
+        fake_resp = MagicMock()
+        fake_resp.url = "https://www.kuaishou.com/short-video/abc123xyz"
+
+        fake_requests = MagicMock()
+        fake_requests.head.return_value = fake_resp
+        fake_requests.get.return_value = fake_resp
+
+        with patch.object(mod, "_CURL_CFFI_AVAILABLE", True), \
+             patch.object(curl_cffi, "requests", fake_requests):
+            result = mod._resolve_kuaishou_url("https://v.kuaishou.com/nsLRaZq3")
+
+        assert result == "https://www.kuaishou.com/short-video/abc123xyz"
+
+    def test_resolve_falls_back_on_exception(self):
+        from unittest.mock import patch, MagicMock
+        import infrastructure.downloader.yt_dlp_engine as mod
+        import sys
+
+        fake_cffi = MagicMock()
+        fake_cffi.head.side_effect = Exception("DNS failure")
+
+        with patch.object(mod, "_CURL_CFFI_AVAILABLE", True), \
+             patch.dict(sys.modules, {"curl_cffi.requests": fake_cffi}):
+            original = "https://v.kuaishou.com/nsLRaZq3"
+            result = mod._resolve_kuaishou_url(original)
+            assert result == original
+
+    def test_resolve_skipped_when_curl_cffi_unavailable(self):
+        from unittest.mock import patch
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        with patch.object(mod, "_CURL_CFFI_AVAILABLE", False):
+            original = "https://v.kuaishou.com/nsLRaZq3"
+            result = mod._resolve_kuaishou_url(original)
+            assert result == original
+
+    def test_extract_info_calls_resolver_for_kuaishou(self):
+        """extract_info must pre-resolve Kuaishou URLs before passing to yt-dlp."""
+        from unittest.mock import patch, MagicMock, call
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        resolved = "https://www.kuaishou.com/short-video/resolved123"
+        cfg = _make_config()
+        engine = mod.YtDlpEngine(cfg)
+
+        fake_info = {
+            "id": "resolved123", "title": "Test", "url": resolved,
+            "ext": "mp4", "duration": 30, "thumbnail": "",
+            "formats": [{"format_id": "best", "ext": "mp4", "url": resolved}],
+            "is_live": False, "was_live": False,
+        }
+        captured_urls = []
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, url, download=False):
+                captured_urls.append(url)
+                return fake_info
+
+        with patch.object(mod, "_KUAISHOU_SHORT_RE",
+                          mod.re.compile(r"v\.kuaishou\.com/", mod.re.I)), \
+             patch.object(mod, "_resolve_kuaishou_url", return_value=resolved) as mock_resolve, \
+             patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
+
+        mock_resolve.assert_called_once_with("https://v.kuaishou.com/nsLRaZq3")
+        assert captured_urls == [resolved]
