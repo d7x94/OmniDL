@@ -169,9 +169,15 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         return self._url_entry.get().strip()
 
     def _start_analyse(self) -> None:
-        url = self.get_url()
-        if not url or self._analysing:
+        raw = self.get_url()
+        if not raw or self._analysing:
             return
+        # BUG-CB: extract first URL from share text typed/pasted directly into
+        # the entry (e.g. Kuaishou: "video title https://v.kuaishou.com/...").
+        # _paste_clipboard() already does this for the Paste button path;
+        # this covers Ctrl+V, drag-drop, and Remote-triggered analyse calls.
+        _m = _CLIPBOARD_URL_RE.search(raw)
+        url = _m.group(0).rstrip("".join(_URL_TRAILING_JUNK)) if _m else raw
 
         self._analysing = True
         self._analyse_token += 1

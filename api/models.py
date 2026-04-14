@@ -6,11 +6,15 @@ iOS web client can build requests with a simple JSON.stringify().
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from pydantic import BaseModel, field_validator
 
 # ── Requests ──────────────────────────────────────────────────────────────────
+
+# Extract first URL from mixed clipboard/share text (e.g. Kuaishou share text).
+_URL_RE = re.compile(r"https?://\S+")
 
 class AnalyseRequest(BaseModel):
     """Analyse a URL and return metadata without starting a download."""
@@ -19,10 +23,13 @@ class AnalyseRequest(BaseModel):
     @field_validator("url")
     @classmethod
     def _url_must_be_http(cls, v: str) -> str:
-        v = v.strip()
-        if not v.startswith(("http://", "https://")):
+        m = _URL_RE.search(v)
+        if not m:
             raise ValueError("URL must start with http:// or https://")
-        return v
+        url = m.group(0)
+        # strip trailing punctuation that may follow URL in share text
+        url = url.rstrip(".,;\"')")
+        return url
 
 
 class DownloadRequest(BaseModel):
@@ -47,10 +54,13 @@ class DownloadRequest(BaseModel):
     @field_validator("url")
     @classmethod
     def _url_must_be_http(cls, v: str) -> str:
-        v = v.strip()
-        if not v.startswith(("http://", "https://")):
+        m = _URL_RE.search(v)
+        if not m:
             raise ValueError("URL must start with http:// or https://")
-        return v
+        url = m.group(0)
+        # strip trailing punctuation that may follow URL in share text
+        url = url.rstrip(".,;\"')")
+        return url
 
     @field_validator("source_engine")
     @classmethod

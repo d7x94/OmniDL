@@ -15,7 +15,7 @@ dependencies = [
     "keyring>=24.0.0",
     "cryptography>=41.0.0",
     "playwright>=1.40",
-    "curl-cffi>=0.7.0",
+    "curl-cffi>=0.10.0,<0.15",
 ]
 
 [project.optional-dependencies]

@@ -16,13 +16,16 @@ import yt_dlp
 
 # BUG-CB FIX: curl_cffi provides libcurl-impersonate TLS fingerprinting.
 # Sites like Kuaishou reject Python's default TLS fingerprint with
-# SSL RECORD_LAYER_FAILURE. When curl_cffi is installed, yt-dlp uses it
-# automatically via opts["impersonate"] to bypass this check.
+# SSL RECORD_LAYER_FAILURE. Requires curl-cffi>=0.10.0,<0.15 (yt-dlp constraint).
+# opts["impersonate"] must be an ImpersonateTarget object, not a plain string.
 try:
     import curl_cffi as _curl_cffi  # noqa: F401
+    from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
+    _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
     _CURL_CFFI_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
     _CURL_CFFI_AVAILABLE = False
+    _IMPERSONATE_TARGET = None
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
@@ -512,7 +515,7 @@ class YtDlpEngine:
         }
         # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
         if _CURL_CFFI_AVAILABLE:
-            opts["impersonate"] = "chrome"
+            opts["impersonate"] = _IMPERSONATE_TARGET
         # Deno PATH is injected once at startup (main.py) — not per-call.
         # os.environ.update() from worker threads is not thread-safe on CPython.
         _ffmpeg_dir = get_ffmpeg_path()
@@ -1045,7 +1048,7 @@ class YtDlpEngine:
             "no_warnings": True,
             # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
             # Required for sites that reject Python's default TLS fingerprint (e.g. Kuaishou).
-            **({"impersonate": "chrome"} if _CURL_CFFI_AVAILABLE else {}),
+            **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
             "logger": _YtDlpDiagLogger() if (_is_tiktok_vod and not is_live) else None,
             "ignoreerrors": False,
