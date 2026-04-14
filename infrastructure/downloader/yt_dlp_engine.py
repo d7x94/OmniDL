@@ -14,6 +14,16 @@ from typing import Any, Callable, Optional
 
 import yt_dlp
 
+# BUG-CB FIX: curl_cffi provides libcurl-impersonate TLS fingerprinting.
+# Sites like Kuaishou reject Python's default TLS fingerprint with
+# SSL RECORD_LAYER_FAILURE. When curl_cffi is installed, yt-dlp uses it
+# automatically via opts["impersonate"] to bypass this check.
+try:
+    import curl_cffi as _curl_cffi  # noqa: F401
+    _CURL_CFFI_AVAILABLE = True
+except ImportError:
+    _CURL_CFFI_AVAILABLE = False
+
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
@@ -500,6 +510,9 @@ class YtDlpEngine:
             # Must be a list — str causes yt-dlp to iterate characters (BUG-BQ).
             "remote_components": ["ejs:github"],
         }
+        # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
+        if _CURL_CFFI_AVAILABLE:
+            opts["impersonate"] = "chrome"
         # Deno PATH is injected once at startup (main.py) — not per-call.
         # os.environ.update() from worker threads is not thread-safe on CPython.
         _ffmpeg_dir = get_ffmpeg_path()
@@ -1030,6 +1043,9 @@ class YtDlpEngine:
             "outtmpl": outtmpl,
             "quiet": True,
             "no_warnings": True,
+            # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
+            # Required for sites that reject Python's default TLS fingerprint (e.g. Kuaishou).
+            **({"impersonate": "chrome"} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
             "logger": _YtDlpDiagLogger() if (_is_tiktok_vod and not is_live) else None,
             "ignoreerrors": False,

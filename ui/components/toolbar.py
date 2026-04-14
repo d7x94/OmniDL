@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 from typing import TYPE_CHECKING, Optional
 
 try:
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 # Spinner frames
 _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# BUG-CB FIX: extract first URL from clipboard text.
+# Apps like Kuaishou copy a mix of text + link (e.g. "video title https://v.kuaishou.com/...").
+# Match https:// or http:// URL, strip trailing punctuation that is not part of the URL.
+_CLIPBOARD_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+_URL_TRAILING_JUNK = frozenset(".,;)\"'>]")
 
 
 _BaseFrame = ctk.CTkFrame if ctk is not None else object
@@ -269,9 +276,11 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
     def _paste_clipboard(self) -> None:
         try:
             text = self.clipboard_get().strip()
-            if text.startswith(("http://", "https://")):
+            m = _CLIPBOARD_URL_RE.search(text)
+            if m:
+                url = m.group(0).rstrip("".join(_URL_TRAILING_JUNK))
                 self._url_entry.delete(0, "end")
-                self._url_entry.insert(0, text)
+                self._url_entry.insert(0, url)
                 self._set_status("URL pasted", T.text2)
         except Exception:
             pass

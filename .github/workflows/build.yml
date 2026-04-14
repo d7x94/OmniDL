@@ -332,6 +332,9 @@ jobs:
             --hidden-import keyring.backends.fail `
             --hidden-import win32ctypes `
             --hidden-import win32ctypes.core `
+            --hidden-import curl_cffi `
+            --hidden-import curl_cffi.requests `
+            --collect-all curl_cffi `
             --noupx `
             --distpath dist `
             main.py
@@ -547,6 +550,9 @@ jobs:
             --hidden-import keyring.backends \
             --hidden-import keyring.backends.macOS \
             --hidden-import keyring.backends.fail \
+            --hidden-import curl_cffi \
+            --hidden-import curl_cffi.requests \
+            --collect-all curl_cffi \
             --noupx \
             --distpath dist \
             main.py
@@ -788,6 +794,9 @@ jobs:
             --hidden-import keyring.backends \
             --hidden-import keyring.backends.SecretService \
             --hidden-import keyring.backends.fail \
+            --hidden-import curl_cffi \
+            --hidden-import curl_cffi.requests \
+            --collect-all curl_cffi \
             --noupx \
             --distpath dist \
             main.py
