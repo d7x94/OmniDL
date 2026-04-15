@@ -537,7 +537,7 @@ class ServiceFacade:
     def pause_download(self, task_id):   self._svc.pause_download(task_id)
     def resume_download(self, task_id):  self._svc.resume_download(task_id)
     def cancel_download(self, task_id):  self._svc.cancel_download(task_id)
-    def clear_finished(self):            self._svc.clear_finished()
+    def clear_finished(self, exclude_ids=None): self._svc.clear_finished(exclude_ids=exclude_ids)
     def get_all_tasks(self):             return self._svc.get_all_tasks()
     def get_task(self, tid):             return self._svc.get_task(tid)
     def get_history(self):               return self._svc.get_history()
