@@ -358,7 +358,8 @@ class ToolsPanel(_BasePanel):
                     import subprocess
                     r = subprocess.run(
                         _pip_install_cmd("yt-dlp"),
-                        capture_output=True, timeout=60)
+                        capture_output=True, timeout=60,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                     if r.returncode != 0:
                         raise RuntimeError(r.stderr.decode(errors="replace")[:200])
 
@@ -436,6 +437,7 @@ class ToolsPanel(_BasePanel):
                 r = subprocess.run(
                     _pip_install_cmd("keyring"),
                     capture_output=True, timeout=120,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 if r.returncode != 0:
                     raise RuntimeError(r.stderr.decode(errors="replace")[:200])
@@ -481,7 +483,8 @@ class ToolsPanel(_BasePanel):
                     import subprocess
                     r = subprocess.run(
                         _pip_install_cmd("gallery-dl"),
-                        capture_output=True, timeout=60)
+                        capture_output=True, timeout=60,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                     if r.returncode != 0:
                         raise RuntimeError(r.stderr.decode(errors="replace")[:200])
 

@@ -691,7 +691,8 @@ def _cdp_intercept(
         "--disable-backgrounding-occluded-windows",
     ]
     _prog(8, f"Đang khởi động {browser.title()}...")
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     logger.info("CDP: launching %s on port %d (pid=%d)", browser, port, proc.pid)
 
     video_url:      Optional[str] = None

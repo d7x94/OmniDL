@@ -79,6 +79,7 @@ _active_server: "uvicorn.Server | None" = None   # type: ignore[name-defined]
 _active_thread: threading.Thread | None = None
 _active_bus:    "EventBus | None" = None          # held to allow re-wiring on restart
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
+_bus_wired   = False              # BUG-CB: prevent duplicate subscriptions on restart
 
 
 def _broadcast(event_type: str, data: dict) -> None:
@@ -1241,14 +1242,16 @@ def start_api_server(
     if not config.api_token:
         new_token = secrets.token_urlsafe(24)
         config.set_api_token(new_token)
-        logger.info(
-            "OmniDL API: no token configured — generated new token: %s",
-            new_token,
-        )
+        logger.info("OmniDL API: no token configured -- generated new token [stored in keyring]")
 
     # Wire EventBus → SSE broadcaster before the server starts accepting
     # connections, so no events are missed.
-    _wire_event_bus(bus)
+    # BUG-CB: guard prevents duplicate subscriptions when restart_api_server()
+    # calls start_api_server() again (token rotate, port change, etc.).
+    global _bus_wired
+    if not _bus_wired:
+        _wire_event_bus(bus)
+        _bus_wired = True
 
     # Instantiate RemoteConvertService — shares the same EventBus so convert
     # progress events flow through the existing SSE broadcaster automatically.
@@ -1307,10 +1310,9 @@ def start_api_server(
 
     def _run_server() -> None:
         logger.info(
-            "OmniDL API server listening on http://%s:%d  (token: %s)",
+            "OmniDL API server listening on http://%s:%d  (token: [set])",
             _bind_host,
             _bind_port,
-            config.api_token[:8] + "...",   # show only prefix in logs
         )
         uv_server.run()
 
