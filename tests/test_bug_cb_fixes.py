@@ -148,7 +148,12 @@ class TestCurlCffiExtractInfoOpts:
         cfg = _make_config()
         engine = YtDlpEngine(cfg)
 
+        fake_target = MagicMock()
+        fake_target.client = "chrome"
+        fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"
+
         with patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available), \
+             patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None), \
              patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             try:
                 engine.extract_info("https://v.kuaishou.com/K9Zu4Iez")
@@ -199,7 +204,12 @@ class TestCurlCffiDownloadOpts:
         engine = YtDlpEngine(cfg)
         task = _make_task()
 
+        fake_target = MagicMock()
+        fake_target.client = "chrome"
+        fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"
+
         with patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available), \
+             patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None), \
              patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
 
