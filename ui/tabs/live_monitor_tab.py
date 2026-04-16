@@ -969,7 +969,7 @@ class LiveMonitorTab(ctk.CTkFrame):
         err_l = err.lower()
         hard = any(k in err_l for k in (
             "private", "not found", "404", "login", "checkpoint",
-            "unsupported url", "removed",
+            "unsupported url", "removed", "not available",  # BUG-CD: impersonate target missing in EXE
         ))
         if hard:
             item.state = _MonitorState.ERROR

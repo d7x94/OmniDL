@@ -20,10 +20,30 @@ import yt_dlp
 # opts["impersonate"] must be an ImpersonateTarget object, not a plain string.
 # BUG-CC FIX: log non-ImportError failures so curl_cffi load problems are visible
 # in debug log (previously silently fell back to _CURL_CFFI_AVAILABLE=False).
+# BUG-CD FIX: ImpersonateTarget.from_str("chrome") always succeeds — it just
+# constructs an object; it does NOT validate that the backend can serve "chrome".
+# In a frozen EXE (PyInstaller), curl_cffi imports OK but the CurlCFFIRH handler
+# may have no available targets if native DLLs are not loadable, causing every
+# yt-dlp call to fail with "Impersonate target 'chrome' is not available".
+# Fix: after creating the target, probe the handler's supported target map.
+# If "chrome" is absent, treat as unavailable and set _CURL_CFFI_AVAILABLE=False.
 try:
     import curl_cffi as _curl_cffi  # noqa: F401
     from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
     _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
+    # Runtime probe — no network, no I/O. Just checks the handler's static map.
+    try:
+        from yt_dlp.networking._curlcffi import CurlCFFIRH as _CurlCFFIRH  # type: ignore[import]
+        _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
+        if _IMPERSONATE_TARGET not in _supported_map:
+            raise RuntimeError(
+                f"CurlCFFIRH does not list 'chrome' as a supported target "
+                f"(available: {list(_supported_map.keys())[:5]})"
+            )
+    except ImportError:
+        # yt-dlp internal module path differs across versions — skip probe,
+        # trust the import succeeded.
+        pass
     _CURL_CFFI_AVAILABLE = True
 except ImportError:
     _CURL_CFFI_AVAILABLE = False
@@ -31,8 +51,8 @@ except ImportError:
 except Exception as _curl_load_err:
     import logging as _logging
     _logging.getLogger(__name__).warning(
-        "curl_cffi loaded but ImpersonateTarget init failed (%s) — "
-        "TLS impersonation disabled; Kuaishou and similar sites may fail",
+        "curl_cffi/impersonate unavailable (%s) — "
+        "TLS impersonation disabled; Kuaishou and TikTok live may fail",
         _curl_load_err,
     )
     _CURL_CFFI_AVAILABLE = False
@@ -702,6 +722,7 @@ class YtDlpEngine:
                     "ssl routines",                       # BUG-CC: TLS fingerprint rejection (Kuaishou)
                     "tls connect error",                  # BUG-CC: curl TLS failure
                     "curl: (35)",                         # BUG-CC: curl SSL connect error code
+                    "is not available",                   # BUG-CD: impersonate target missing in EXE
                 )
                 if any(k in msg_l for k in _hard):
                     raise RuntimeError(_friendly_error(msg)) from exc
