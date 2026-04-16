@@ -544,8 +544,8 @@ class NetworkPanel(_BasePanel):
             return
         if not _is_netscape_cookie_file(src_path):
             self._app.toast(
-                f"File không phải định dạng Netscape cookie.\n"
-                f"Hãy chọn file cookies.txt được export từ trình duyệt hoặc tiện ích Cookie-Editor.",
+                "File không phải định dạng Netscape cookie.\n"
+                "Hãy chọn file cookies.txt được export từ trình duyệt hoặc tiện ích Cookie-Editor.",
                 "error",
             )
             return

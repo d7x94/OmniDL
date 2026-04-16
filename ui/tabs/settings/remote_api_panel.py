@@ -436,7 +436,10 @@ class RemoteApiPanel(_BasePanel):
                                 restart_api_server(service=svc, config=cfg, bus=_bus)
                         except Exception as exc:
                             logger.exception("HTTPS Profile rollback: API restart failed: %s", exc)
-                        hint = " Tailscale chua dang nhap? Chay 'tailscale login' roi thu lai." if not dns else ""
+                        hint = (
+                            " Tailscale chua dang nhap? Chay 'tailscale login' roi thu lai."
+                            if not dns else ""
+                        )
                         self._ui_queue.put(lambda: self._ts_https_var.set(False))
                         self._ui_queue.put(self._refresh_ts_https_status)
                         self._ui_queue.put(lambda h=hint: self._app.toast(
@@ -462,7 +465,8 @@ class RemoteApiPanel(_BasePanel):
                         ))
                     else:
                         self._ui_queue.put(lambda: self._app.toast(
-                            "serve da bat nhung khong lay duoc DNS name. Kiem tra Tailscale da dang nhap.", "error"
+                            "serve da bat nhung khong lay duoc DNS name."
+                            " Kiem tra Tailscale da dang nhap.", "error"
                         ))
                 except Exception as exc:
                     logger.exception("HTTPS Profile enable error: %s", exc)
@@ -582,7 +586,8 @@ class RemoteApiPanel(_BasePanel):
                 ))
                 if dns:
                     self._ui_queue.put(lambda d=dns: self._app.toast(
-                        f"Profile da reset: https://{d}. Token moi da tao — cap nhat tren thiet bi.", "success"
+                        f"Profile da reset: https://{d}."
+                        " Token moi da tao \u2014 cap nhat tren thiet bi.", "success"
                     ))
                 else:
                     self._ui_queue.put(lambda: self._app.toast(
