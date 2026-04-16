@@ -27,11 +27,18 @@ import yt_dlp
 # yt-dlp call to fail with "Impersonate target 'chrome' is not available".
 # Fix: after creating the target, probe the handler's supported target map.
 # If "chrome" is absent, treat as unavailable and set _CURL_CFFI_AVAILABLE=False.
+# BUG-CE FIX: curl-cffi>=0.15 is rejected by yt-dlp with an ImportError whose
+# message contains "not supported" / "versions". The previous probe silently
+# swallowed ALL ImportErrors ("module path differs across versions — skip probe")
+# so _CURL_CFFI_AVAILABLE stayed True even though the handler cannot be loaded.
+# Fix: re-raise any ImportError whose message indicates a version incompatibility
+# so the outer except-Exception handler logs it and sets _CURL_CFFI_AVAILABLE=False.
 try:
     import curl_cffi as _curl_cffi  # noqa: F401
     from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
     _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
-    # Runtime probe — no network, no I/O. Just checks the handler's static map.
+    # Runtime probe — no network, no I/O. Checks that yt-dlp accepts this curl_cffi
+    # version and that the handler lists "chrome" as a supported target.
     try:
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _CurlCFFIRH  # type: ignore[import]
         _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
@@ -40,10 +47,14 @@ try:
                 f"CurlCFFIRH does not list 'chrome' as a supported target "
                 f"(available: {list(_supported_map.keys())[:5]})"
             )
-    except ImportError:
-        # yt-dlp internal module path differs across versions — skip probe,
-        # trust the import succeeded.
-        pass
+    except ImportError as _probe_err:
+        _probe_msg = str(_probe_err).lower()
+        if "not supported" in _probe_msg or "versions" in _probe_msg or "only curl" in _probe_msg:
+            # yt-dlp explicitly rejected this curl_cffi version — propagate so
+            # the outer handler disables impersonation.
+            raise
+        # yt-dlp internal module path differs across versions but import itself
+        # succeeded — skip map probe, trust the outer import succeeded.
     _CURL_CFFI_AVAILABLE = True
 except ImportError:
     _CURL_CFFI_AVAILABLE = False
