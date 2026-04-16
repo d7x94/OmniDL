@@ -813,3 +813,17 @@ class TestSetupLoggingOsError:
                 root.removeHandler(h)
             # Must not raise
             setup_logging(tmp_path / "logs_err")
+
+
+class TestIsValidUrlExceptionBranch:
+    def test_urlparse_exception_returns_false(self):
+        from unittest.mock import patch
+        from utils.helpers import is_valid_url
+        with patch("utils.helpers.urlparse", side_effect=Exception("boom")):
+            assert is_valid_url("https://example.com") is False
+
+
+class TestRegisterMainWindow:
+    def test_register_main_window_is_noop(self):
+        from utils.helpers import register_main_window
+        register_main_window(object())  # must not raise

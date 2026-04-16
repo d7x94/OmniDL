@@ -349,13 +349,13 @@ class TestKuaishhouPreResolver:
     def test_resolve_falls_back_on_exception(self):
         from unittest.mock import patch, MagicMock
         import infrastructure.downloader.yt_dlp_engine as mod
-        import sys
+        import curl_cffi
 
         fake_cffi = MagicMock()
         fake_cffi.head.side_effect = Exception("DNS failure")
 
         with patch.object(mod, "_CURL_CFFI_AVAILABLE", True), \
-             patch.dict(sys.modules, {"curl_cffi.requests": fake_cffi}):
+             patch.object(curl_cffi, "requests", fake_cffi):
             original = "https://v.kuaishou.com/nsLRaZq3"
             result = mod._resolve_kuaishou_url(original)
             assert result == original

@@ -328,3 +328,119 @@ class TestCancelBeforeFirstAttempt:
         finally:
             start_event.set()
             mgr.shutdown()
+
+
+class TestPauseResumeCancelGetAll:
+    """Cover lines 112-150: pause, resume, cancel, get_all_tasks, clear_terminal."""
+
+    def _make_mgr(self):
+        bus = make_bus()
+        mgr = DownloadManager(config=make_config(), engine=make_engine(), event_bus=bus)
+        mgr.start()
+        return mgr, bus
+
+    def test_pause_publishes_progress(self):
+        from app.event_bus import EventBus
+        mgr, bus = self._make_mgr()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            mgr.pause(task.id)
+            calls = [c for c in bus.publish.call_args_list if c[0][0] == EventBus.DOWNLOAD_PROGRESS]
+            assert any(c[1].get("task") is task for c in calls)
+        finally:
+            mgr.shutdown()
+
+    def test_pause_unknown_id_is_noop(self):
+        mgr, _ = self._make_mgr()
+        try:
+            mgr.pause("nonexistent-id")  # must not raise
+        finally:
+            mgr.shutdown()
+
+    def test_resume_publishes_progress(self):
+        from app.event_bus import EventBus
+        mgr, bus = self._make_mgr()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            mgr.resume(task.id)
+            calls = [c for c in bus.publish.call_args_list if c[0][0] == EventBus.DOWNLOAD_PROGRESS]
+            assert any(c[1].get("task") is task for c in calls)
+        finally:
+            mgr.shutdown()
+
+    def test_resume_unknown_id_is_noop(self):
+        mgr, _ = self._make_mgr()
+        try:
+            mgr.resume("nonexistent-id")  # must not raise
+        finally:
+            mgr.shutdown()
+
+    def test_cancel_sets_cancellation(self):
+        mgr, _ = self._make_mgr()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            mgr.cancel(task.id)
+            assert task.is_cancellation_requested
+        finally:
+            mgr.shutdown()
+
+    def test_cancel_unknown_id_is_noop(self):
+        mgr, _ = self._make_mgr()
+        try:
+            mgr.cancel("nonexistent-id")  # must not raise
+        finally:
+            mgr.shutdown()
+
+    def test_get_all_tasks_returns_enqueued(self):
+        mgr, _ = self._make_mgr()
+        try:
+            t1 = make_task()
+            t2 = make_task()
+            mgr.enqueue(t1)
+            mgr.enqueue(t2)
+            all_tasks = mgr.get_all_tasks()
+            ids = {t.id for t in all_tasks}
+            assert t1.id in ids and t2.id in ids
+        finally:
+            mgr.shutdown()
+
+    def test_clear_terminal_removes_completed(self):
+        import time
+        from domain.enums.download_status import DownloadStatus
+        engine = make_engine()
+        engine.download.return_value = None  # instant success
+        bus = make_bus()
+        mgr = DownloadManager(config=make_config(max_retries=0), engine=engine, event_bus=bus)
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            deadline = time.time() + 3.0
+            while time.time() < deadline and task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.02)
+            mgr.clear_terminal()
+            assert task.id not in {t.id for t in mgr.get_all_tasks()}
+        finally:
+            mgr.shutdown()
+
+    def test_clear_terminal_respects_exclude_ids(self):
+        import time
+        from domain.enums.download_status import DownloadStatus
+        engine = make_engine()
+        engine.download.return_value = None
+        bus = make_bus()
+        mgr = DownloadManager(config=make_config(max_retries=0), engine=engine, event_bus=bus)
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            deadline = time.time() + 3.0
+            while time.time() < deadline and task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.02)
+            mgr.clear_terminal(exclude_ids=frozenset({task.id}))
+            assert task.id in {t.id for t in mgr.get_all_tasks()}
+        finally:
+            mgr.shutdown()
