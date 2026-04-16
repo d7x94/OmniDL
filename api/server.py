@@ -371,7 +371,7 @@ def create_app(
                 if j.status in _ACTIVE
             )
         service.clear_finished(exclude_ids=exclude or None)
-        return {"status": "ok", "excluded_count": len(exclude)}
+        return {"status": "ok", "excluded_count": len(exclude), "excluded_ids": list(exclude)}
 
     # ── File actions (completed tasks only) ───────────────────────────────
 

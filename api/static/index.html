@@ -1341,14 +1341,18 @@ async function cancelTask(id) {
 }
 async function clearFinished() {
   try {
-    await api('DELETE', '/api/queue/finished');
-    // Remove terminal tasks from local state
+    const r = await api('DELETE', '/api/queue/finished');
+    const excluded = new Set(r.excluded_ids || []);
+    // Remove terminal tasks from local state, but keep tasks the server excluded
+    // (i.e. tasks with an active convert job still running on them).
     Object.keys(tasks).forEach(id => {
-      if (['COMPLETED','FAILED','CANCELLED'].includes(tasks[id].status)) delete tasks[id];
+      if (['COMPLETED','FAILED','CANCELLED'].includes(tasks[id].status) && !excluded.has(id))
+        delete tasks[id];
     });
     renderQueue();
     updateQueueBadge();
-    toast('Cleared finished tasks');
+    const kept = r.excluded_count || 0;
+    toast(kept ? `Cleared finished tasks (${kept} kept — convert in progress)` : 'Cleared finished tasks');
   } catch(e) { toast(e.message); }
 }
 
