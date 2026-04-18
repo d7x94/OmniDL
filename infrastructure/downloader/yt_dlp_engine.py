@@ -498,6 +498,32 @@ _MEDIA_EXTS: frozenset[str] = frozenset({
     ".ts",   # MPEG-TS live recordings — needed so pp_hook captures task.filename
 })
 
+# DEF-015: module-level constant — avoids re-allocating on every _apply_extra_args() call.
+# Allowlist for user-supplied extra yt-dlp args (CWE-78: OS Command Injection guard).
+# Options such as --exec, --exec-before-download, --postprocessor-args are intentionally
+# excluded — they allow arbitrary command execution from user-supplied config.
+# NOTE: "no_check_certificates" intentionally excluded —
+# disabling TLS verification exposes all downloads to MITM attacks.
+_SAFE_EXTRA_OPTS: frozenset[str] = frozenset({
+    "format",
+    "subtitleslangs",
+    "writesubtitles",
+    "writethumbnail",
+    "noplaylist",
+    "playliststart",
+    "playlistend",
+    "ratelimit",
+    "sleep_interval",
+    "max_sleep_interval",
+    "geo_bypass",
+    "geo_bypass_country",
+    "write_all_thumbnails",
+    "write_description",
+    "write_info_json",
+    "age_limit",
+    "user_agent",
+})
+
 # BUG-BT: Audio-only output formats that require FFmpegExtractAudio postprocessor
 # instead of merge_output_format.  merge_output_format is designed to pick the
 # container when MERGING separate video+audio streams; it cannot transcode audio
@@ -550,6 +576,28 @@ def _resolve_kuaishou_url(url: str) -> str:
     except Exception as exc:
         logger.debug("Kuaishou short URL pre-resolve failed (%s) — using original", exc)
     return url
+
+
+# BUG-BQ DIAGNOSTIC: yt-dlp logger bridge — captures format selection,
+# FFmpegMergerPP activity, and fallback events into omnidl_run.log.
+# Read-only: zero effect on download logic or output.
+_DIAG_KEYWORDS: tuple[str, ...] = (
+    "merging formats", "destination:", "requested format",
+    "ffmpeg", "format_id", "vcodec", "acodec", "sorted",
+    "selected", "tiktok", "downloading", "fallback", "not available",
+)
+
+
+class _DiagLogger:
+    def debug(self, msg: str) -> None:
+        if any(kw in msg.lower() for kw in _DIAG_KEYWORDS):
+            logger.debug("[yt-dlp diag] %s", msg.strip())
+    def info(self, msg: str) -> None:
+        pass  # progress bar lines — skip
+    def warning(self, msg: str) -> None:
+        logger.warning("[yt-dlp] %s", msg.strip())
+    def error(self, msg: str) -> None:
+        logger.error("[yt-dlp] %s", msg.strip())
 
 
 class YtDlpEngine:
@@ -1125,26 +1173,6 @@ class YtDlpEngine:
             else:
                 _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
 
-        # BUG-BQ DIAGNOSTIC: yt-dlp logger bridge — captures format selection,
-        # FFmpegMergerPP activity, and fallback events into omnidl_run.log.
-        # Read-only: zero effect on download logic or output.
-        _diag_keywords = (
-            "merging formats", "destination:", "requested format",
-            "ffmpeg", "format_id", "vcodec", "acodec", "sorted",
-            "selected", "tiktok", "downloading", "fallback", "not available",
-        )
-
-        class _YtDlpDiagLogger:
-            def debug(self, msg: str) -> None:
-                if any(kw in msg.lower() for kw in _diag_keywords):
-                    logger.debug("[yt-dlp diag] %s", msg.strip())
-            def info(self, msg: str) -> None:
-                pass  # progress bar lines — skip
-            def warning(self, msg: str) -> None:
-                logger.warning("[yt-dlp] %s", msg.strip())
-            def error(self, msg: str) -> None:
-                logger.error("[yt-dlp] %s", msg.strip())
-
         opts: dict[str, Any] = {
             "format": "best" if is_live else _format_id,
             # FIX-FINAL: JS challenge solver for YouTube n-challenge.
@@ -1159,7 +1187,7 @@ class YtDlpEngine:
             # Required for sites that reject Python's default TLS fingerprint (e.g. Kuaishou).
             **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
-            "logger": _YtDlpDiagLogger() if (_is_tiktok_vod and not is_live) else None,
+            "logger": _DiagLogger() if (_is_tiktok_vod and not is_live) else None,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
             # fragment_retries=0 for live streams so that a DownloadError raised
@@ -1610,32 +1638,6 @@ class YtDlpEngine:
         return hook
 
     def _apply_extra_args(self, opts: dict[str, Any]) -> None:
-        # Extra args are passed through a strict allowlist (CWE-78: OS Command
-        # Injection).  Without filtering, options such as --exec,
-        # --exec-before-download, and --postprocessor-args would allow arbitrary
-        # command execution from user-supplied config.
-        _SAFE_EXTRA_OPTS: frozenset[str] = frozenset({
-            "format",
-            "subtitleslangs",
-            "writesubtitles",
-            "writethumbnail",
-            "noplaylist",
-            "playliststart",
-            "playlistend",
-            "ratelimit",
-            "sleep_interval",
-            "max_sleep_interval",
-            "geo_bypass",
-            "geo_bypass_country",
-            # NOTE: "no_check_certificates" intentionally excluded —
-            # disabling TLS verification exposes all downloads to MITM attacks.
-            "write_all_thumbnails",
-            "write_description",
-            "write_info_json",
-            "age_limit",
-            "user_agent",
-        })
-
         raw = self._config.extra_args.strip()
         if not raw:
             return
