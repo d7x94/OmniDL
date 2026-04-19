@@ -752,8 +752,10 @@ class TestTikTokFourTierSelector:
 
 
 class TestTikTokShortUrlLiveDetection:
-    """BUG-BM — short-link TikTok URLs must not be falsely detected as live
-    in extract_info() even when yt-dlp returns is_live=True from TikTok API.
+    """BUG-CH — short-link TikTok URLs (vt/vm.tiktok.com) trust yt-dlp's
+    is_live signal from the resolved URL.  is_live=True means the short link
+    resolved to a live stream; is_live=False means it resolved to a VOD.
+    (Supersedes BUG-BM which forced is_live=False unconditionally for short links.)
     """
 
     def _make_engine(self):
@@ -784,24 +786,28 @@ class TestTikTokShortUrlLiveDetection:
                 }
         return FakeYDL
 
-    def test_vt_short_url_never_live_when_api_returns_true(self):
-        """vt.tiktok.com must be resolved as is_live=False even if API says True."""
+    def test_vt_short_url_is_live_true_when_api_returns_true(self):
+        """vt.tiktok.com short link trusts yt-dlp is_live (BUG-CH).
+        is_live=True from yt-dlp means the short link resolved to a live stream.
+        """
         import infrastructure.downloader.yt_dlp_engine as mod
         engine = self._make_engine()
         with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=True)):
             info = engine.extract_info("https://vt.tiktok.com/ZSHNx3n8Y/")
-        assert not info.is_live, (
-            "vt.tiktok.com short URL must never be flagged as livestream"
+        assert info.is_live, (
+            "vt.tiktok.com short URL must honour yt-dlp is_live=True (resolved to live stream)"
         )
 
-    def test_vm_short_url_never_live_when_api_returns_true(self):
-        """vm.tiktok.com must be resolved as is_live=False even if API says True."""
+    def test_vm_short_url_is_live_true_when_api_returns_true(self):
+        """vm.tiktok.com short link trusts yt-dlp is_live (BUG-CH).
+        is_live=True from yt-dlp means the short link resolved to a live stream.
+        """
         import infrastructure.downloader.yt_dlp_engine as mod
         engine = self._make_engine()
         with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=True)):
             info = engine.extract_info("https://vm.tiktok.com/ZMJxABCDE/")
-        assert not info.is_live, (
-            "vm.tiktok.com short URL must never be flagged as livestream"
+        assert info.is_live, (
+            "vm.tiktok.com short URL must honour yt-dlp is_live=True (resolved to live stream)"
         )
 
     def test_vt_short_url_is_live_false_stays_false(self):
