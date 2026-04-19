@@ -818,13 +818,26 @@ class YtDlpEngine:
         _ig_live_re = re.compile(
             r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
         )
-        # FIX-TK / BUG-BM: TikTok VOD URLs must never be treated as live.
-        # Uses module-level _TIKTOK_VOD_RE (canonical) and _TIKTOK_SHORT_RE
-        # (vt.tiktok.com/*, vm.tiktok.com/*) so short share-links are also
-        # correctly resolved to is_live=False.  Only /live/ path URLs are real
-        # TikTok livestreams.
-        if _TIKTOK_VOD_RE.search(url) or _TIKTOK_SHORT_RE.search(url):
+        # FIX-TK / BUG-BM: TikTok canonical VOD URLs (/video/<id>) must never
+        # be treated as live — force is_live=False regardless of what yt-dlp
+        # returns (race condition during stream preparation can flip is_live).
+        #
+        # BUG-CH FIX: Short links (vt/vm.tiktok.com/*) were previously also
+        # forced to is_live=False, which was correct for VOD short links but
+        # broke live stream short links (e.g. a user shares a live via short
+        # link).  yt-dlp resolves short links internally and sets is_live=True
+        # when the resolved URL is a live stream.  We must honour that signal.
+        # Guard: _TIKTOK_VOD_RE (canonical /video/<id>) is unambiguous — only
+        # canonical VOD URLs match, not short links or live paths.
+        if _TIKTOK_VOD_RE.search(url):
+            # BUG-CH invariant: canonical VOD URL => never live, even if
+            # yt-dlp race-returns is_live=True during stream preparation.
             is_live_resolved = False
+        elif _TIKTOK_SHORT_RE.search(url):
+            # BUG-CH FIX: short link — trust yt-dlp's is_live from the
+            # resolved URL.  is_live=True means the short link resolved to
+            # a live stream; is_live=False means it resolved to a VOD.
+            is_live_resolved = bool(info.get("is_live"))
         else:
             is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
 
