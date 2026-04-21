@@ -48,6 +48,8 @@ Security
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import logging
 import re
 import time
@@ -87,10 +89,7 @@ _GQL_URL = "https://www.kuaishou.com/graphql"
 _GQL_QUERY = (
     "query visionVideoDetail($photoId: String, $type: Int) {"
     "  visionVideoDetail(photoId: $photoId, type: $type) {"
-    "    photo { id caption duration coverUrl"
-    "      mainMvUrls { url }"
-    "      videoResource { h264 { adaptationSet { representation { url avgBitrate } } } }"
-    "    }"
+    "    photo { id caption duration coverUrl photoUrl videoResource }"
     "    author { name }"
     "    status"
     "  }"
@@ -275,6 +274,21 @@ def _strategy_html(session, photo_id: str, cookie_str: str = "") -> tuple | None
             pass
 
     logger.debug("Kuaishou strategy A: no usable data found in page HTML")
+
+    # CSR fallback: scan raw HTML for CDN video URLs directly embedded in JS
+    cdn_re = re.compile(
+        r'"(https://[^"]*\.(?:kuaishou|ksapisrv|ali-ec|bd-api)[^"]*\.mp4[^"]*)"',
+        re.I,
+    )
+    cdn_matches = cdn_re.findall(html)
+    if cdn_matches:
+        # Pick longest URL (likely highest quality)
+        best = max(cdn_matches, key=len)
+        logger.debug("Kuaishou strategy A: CDN URL found via HTML scan: %s", best[:80])
+        synthetic_photo = {"id": photo_id, "caption": "", "duration": 0, "coverUrl": "",
+                           "photoUrl": best}
+        return synthetic_photo, {}
+
     return None
 
 
@@ -432,30 +446,49 @@ def _strategy_mobile(session, photo_id: str, cookie_str: str = "") -> tuple | No
 
 
 def _pick_best_video_url(photo: dict) -> Optional[str]:
+    # photoUrl — direct MP4 (replaces deprecated mainMvUrls)
+    photo_url = (photo.get("photoUrl") or "").strip()
+    if photo_url.startswith("http"):
+        logger.debug("Kuaishou: photoUrl CDN: %s", photo_url[:80])
+        return photo_url
+
+    # mainMvUrls — kept for backward compatibility with cached/old responses
     for entry in (photo.get("mainMvUrls") or []):
         url = (entry.get("url") or "").strip()
         if url.startswith("http"):
             logger.debug("Kuaishou: mainMvUrls CDN: %s", url[:80])
             return url
 
+    # hlsPlayUrl — HLS stream fallback
+    hls_url = (photo.get("hlsPlayUrl") or "").strip()
+    if hls_url.startswith("http"):
+        logger.debug("Kuaishou: hlsPlayUrl: %s", hls_url[:80])
+        return hls_url
+
+    # videoResource — GQL returns this as opaque scalar JSON (dict or JSON string)
     try:
-        best_url: Optional[str] = None
-        best_bitrate = -1
-        h264 = photo["videoResource"]["h264"]
-        for adaptation in (h264.get("adaptationSet") or []):
-            for rep in (adaptation.get("representation") or []):
-                bitrate = rep.get("avgBitrate") or 0
-                url = (rep.get("url") or "").strip()
-                if url.startswith("http") and bitrate > best_bitrate:
-                    best_bitrate = bitrate
-                    best_url = url
-        if best_url:
-            logger.debug(
-                "Kuaishou: h264 representation (bitrate=%d): %s",
-                best_bitrate, best_url[:80],
-            )
-            return best_url
-    except (KeyError, TypeError):
+        vr = photo.get("videoResource")
+        if isinstance(vr, str):
+            import json as _json  # noqa: PLC0415
+            vr = _json.loads(vr)
+        if isinstance(vr, dict):
+            best_url: Optional[str] = None
+            best_bitrate = -1
+            h264 = vr.get("h264") or {}
+            for adaptation in (h264.get("adaptationSet") or []):
+                for rep in (adaptation.get("representation") or []):
+                    bitrate = rep.get("avgBitrate") or 0
+                    url = (rep.get("url") or "").strip()
+                    if url.startswith("http") and bitrate > best_bitrate:
+                        best_bitrate = bitrate
+                        best_url = url
+            if best_url:
+                logger.debug(
+                    "Kuaishou: videoResource h264 (bitrate=%d): %s",
+                    best_bitrate, best_url[:80],
+                )
+                return best_url
+    except (KeyError, TypeError, ValueError):
         pass
 
     return None
@@ -495,16 +528,312 @@ def _load_cookie_str(config: ConfigManager) -> str:
         return ""
 
 
+# ── Strategy E: Playwright CDP intercept ─────────────────────────────────────
+#
+# Root cause of strategies A-D failing:
+#   www.kuaishou.com serves a CSR shell page (no embedded data).
+#   All API endpoints (GQL, REST, kwai.com) are behind WAF or DNS-blocked from
+#   non-CN IPs, or have removed the queried fields from their schema.
+#   yt-dlp has no Kuaishou extractor in recent versions.
+#
+# This strategy opens the user's Brave/Chrome via CDP, navigates to the
+# Kuaishou video page, and intercepts the CDN MP4 URL from actual network
+# traffic — bypassing WAF, schema changes, and IP blocks entirely.
+#
+# Kuaishou CDN URL patterns (as of 2026):
+#   https://*.ksapisrv.com/.../*.mp4...
+#   https://*.kuaishou.com/.../*.mp4...
+#   https://ali*.ks-cdn.com/...
+#   https://tx*.ks-cdn.com/...
+#   https://*.kwaicdn.com/...
+#
+# The page JS player issues a plain XHR/fetch for the MP4 — page.on("request")
+# catches it reliably. No DASH, no Service Worker complexity.
+
+_KS_CDN_RE = re.compile(
+    r"(?:"
+    r"ksapisrv\.com/[^?#]*\.mp4"
+    r"|kuaishou\.com/[^?#]*\.mp4"
+    r"|ks-cdn\.com/[^?#]*\.mp4"
+    r"|kwaicdn\.com/[^?#]*\.mp4"
+    r"|alicdn\.com/[^?#]*\.mp4"
+    r")",
+    re.I,
+)
+
+_KS_PRE_PAGE_JS = (
+    "(function(){"
+    "if(window.__omni_ks_installed)return;"
+    "window.__omni_ks_installed=true;"
+    "window.__omni_ks_url=null;"
+    "function _cap(u){"
+    " if(!u||typeof u!=='string')return;"
+    " var l=u.toLowerCase();"
+    " if(window.__omni_ks_url)return;"
+    " if(l.indexOf('.mp4')===-1)return;"
+    " if(l.indexOf('ksapisrv')!==-1||l.indexOf('ks-cdn')!==-1"
+    "  ||l.indexOf('kwaicdn')!==-1||l.indexOf('kuaishou')!==-1){"
+    "  window.__omni_ks_url=u;"
+    " }"
+    "}"
+    "var _f=window.fetch;"
+    "window.fetch=function(i,o){_cap(typeof i==='string'?i:(i&&i.url));return _f.apply(this,arguments);};"
+    "var _x=XMLHttpRequest.prototype.open;"
+    "XMLHttpRequest.prototype.open=function(m,u){_cap(u);return _x.apply(this,arguments);};"
+    "})()"
+)
+
+_KS_POLL_JS = (
+    "(function(){"
+    "if(window.__omni_ks_url)return window.__omni_ks_url;"
+    "try{"
+    " var e=performance.getEntriesByType('resource');"
+    " for(var i=0;i<e.length;i++){"
+    "  var u=e[i].name,l=u.toLowerCase();"
+    "  if(l.indexOf('.mp4')!==-1&&("
+    "   l.indexOf('ksapisrv')!==-1||l.indexOf('ks-cdn')!==-1"
+    "   ||l.indexOf('kwaicdn')!==-1||l.indexOf('kuaishou')!==-1"
+    "  ))return u;"
+    " }"
+    "}catch(e){}"
+    "var vs=document.querySelectorAll('video');"
+    "for(var j=0;j<vs.length;j++){"
+    " var src=vs[j].currentSrc||vs[j].src||'';"
+    " if(src&&src.indexOf('http')===0)return src;"
+    "}"
+    "return '';"
+    "})()"
+)
+
+
+def _is_ks_cdn_url(url: str) -> bool:
+    return bool(_KS_CDN_RE.search(url))
+
+
+def _strategy_cdp(
+    page_url: str,
+    config: Optional[ConfigManager],
+    on_progress: Optional[Callable] = None,
+    timeout: float = 45.0,
+) -> tuple | None:
+    """Open user's browser via CDP, navigate to Kuaishou page, intercept MP4 CDN URL."""
+    try:
+        from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
+    except ImportError:
+        logger.debug("Kuaishou strategy E: playwright not installed — skip")
+        return None
+
+    import os
+    import socket as _socket_mod
+
+    def _prog(pct: int, msg: str) -> None:
+        if on_progress:
+            try:
+                on_progress(pct, "", msg)
+            except Exception:
+                pass
+
+    # ── Locate browser ────────────────────────────────────────────────────────
+    try:
+        from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+            _find_browser_exe,
+        )
+        exe = _find_browser_exe("brave")
+    except Exception:
+        try:
+            from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+                _find_browser_exe,
+            )
+            exe = _find_browser_exe("chrome")
+        except Exception as exc:
+            logger.debug("Kuaishou strategy E: no browser found (%s)", exc)
+            return None
+
+    # ── Free port ─────────────────────────────────────────────────────────────
+    with _socket_mod.socket() as _s:
+        _s.bind(("127.0.0.1", 0))
+        port = _s.getsockname()[1]
+
+    # ── Clear crash flag ──────────────────────────────────────────────────────
+    if sys.platform == "win32":
+        local_app = Path(os.environ.get("LOCALAPPDATA", ""))
+        profile_base = local_app / "BraveSoftware/Brave-Browser/User Data"
+    elif sys.platform == "darwin":
+        profile_base = Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser"
+    else:
+        profile_base = Path()
+
+    if profile_base.exists():
+        try:
+            from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+                _clear_crashed_flag,
+            )
+            _clear_crashed_flag(profile_base)
+        except Exception:
+            pass
+
+    cmd = [
+        exe,
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--restore-last-session=false",
+        "--no-session-crashed-bubble",
+        "--hide-crash-restore-bubble",
+        "--autoplay-policy=no-user-gesture-required",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+    ]
+
+    _prog(5, "Kuaishou: đang khởi động trình duyệt...")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    logger.debug("Kuaishou strategy E: browser pid=%d port=%d", proc.pid, port)
+
+    cdn_url: Optional[str] = None
+
+    try:
+        with sync_playwright() as pw:
+            _prog(8, "Kuaishou: đang kết nối CDP...")
+            cdp_browser = None
+            deadline = time.monotonic() + 30.0
+            last_exc = None
+            while time.monotonic() < deadline:
+                try:
+                    cdp_browser = pw.chromium.connect_over_cdp(
+                        f"http://127.0.0.1:{port}", timeout=3_000
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.8)
+
+            if cdp_browser is None:
+                logger.debug("Kuaishou strategy E: CDP connect failed: %s", last_exc)
+                return None
+
+            ctx  = cdp_browser.contexts[0]
+            page = ctx.new_page()
+
+            # Layer A: Playwright request intercept
+            def _on_request(request) -> None:
+                nonlocal cdn_url
+                if not cdn_url and _is_ks_cdn_url(request.url):
+                    logger.debug(
+                        "Kuaishou CDP[A]: caught %s", request.url[:80]
+                    )
+                    cdn_url = request.url
+            page.on("request", _on_request)
+
+            # Layer B: response MIME
+            def _on_response(response) -> None:
+                nonlocal cdn_url
+                if cdn_url:
+                    return
+                ct = response.headers.get("content-type", "").lower()
+                if ct.startswith("video/") and "mjpeg" not in ct:
+                    if _is_ks_cdn_url(response.url):
+                        logger.debug(
+                            "Kuaishou CDP[B]: video MIME=%s url=%s", ct, response.url[:80]
+                        )
+                        cdn_url = response.url
+            page.on("response", _on_response)
+
+            # Layer C: CDP Network domain (catches native player requests)
+            try:
+                cdp_session = ctx.new_cdp_session(page)
+                cdp_session.send("Network.enable")
+
+                def _on_cdp_request(params: dict) -> None:
+                    nonlocal cdn_url
+                    if cdn_url:
+                        return
+                    u = params.get("request", {}).get("url", "")
+                    if u and _is_ks_cdn_url(u):
+                        logger.debug("Kuaishou CDP[C]: Network domain caught %s", u[:80])
+                        cdn_url = u
+                cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
+            except Exception as exc:
+                logger.debug("Kuaishou CDP[C]: Network domain unavailable: %s", exc)
+
+            # Pre-page JS: intercept fetch/XHR before Kuaishou JS loads
+            page.add_init_script(_KS_PRE_PAGE_JS)
+
+            _prog(12, "Kuaishou: đang mở trang video...")
+            try:
+                page.goto(page_url, wait_until="domcontentloaded",
+                          timeout=min(timeout, 20) * 1_000)
+            except PWTimeout:
+                pass
+            except Exception as exc:
+                logger.debug("Kuaishou CDP: goto warning (non-fatal): %s", exc)
+
+            # Poll loop
+            loop_deadline = time.monotonic() + timeout
+            last_poll = 0.0
+            while time.monotonic() < loop_deadline:
+                if cdn_url:
+                    break
+                now = time.monotonic()
+                if now - last_poll >= 1.5:
+                    last_poll = now
+                    try:
+                        val = page.evaluate(_KS_POLL_JS)
+                        if val and val.startswith("http") and _is_ks_cdn_url(val):
+                            logger.debug(
+                                "Kuaishou CDP[JS]: poll caught %s", val[:80]
+                            )
+                            cdn_url = val
+                    except Exception:
+                        pass
+                time.sleep(0.4)
+
+            page.close()
+            cdp_browser.close()
+
+    except Exception as exc:
+        logger.debug("Kuaishou strategy E: CDP session error: %s", exc)
+        return None
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+    if not cdn_url:
+        logger.debug("Kuaishou strategy E: no CDN URL captured within %.0fs", timeout)
+        return None
+
+    # Build synthetic photo dict so extract_info_kuaishou can construct MediaInfo
+    photo = {
+        "id": "",
+        "caption": "",
+        "duration": 0,
+        "coverUrl": "",
+        "photoUrl": cdn_url,
+    }
+    author: dict = {}
+    logger.info("Kuaishou strategy E (CDP): captured CDN URL %s", cdn_url[:80])
+    return photo, author
+
+
 # ── Public extraction entry point ─────────────────────────────────────────────
 
 
 def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> MediaInfo:
     """Extract Kuaishou video metadata. Raises RuntimeError on failure.
 
-    Tries three strategies in order:
-      A. HTML __NEXT_DATA__ scrape (no auth required)
-      B. GraphQL with user cookie (requires cookie file configured)
-      C. kwai.com international API
+    Tries strategies in order:
+      A. HTML __NEXT_DATA__ scrape + CDN URL regex scan (no auth required)
+      B. GraphQL visionVideoDetail with cookie (photoUrl / hlsPlayUrl fields)
+      C. kwai.com international feed API
+      D. kuaishou.com REST info API
+      E. yt-dlp built-in extractor (last resort)
     """
     cookie_str = _load_cookie_str(config) if config else ""
     session = _make_session(cookie_str)
@@ -535,6 +864,10 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
         if result is None:
             logger.debug("Kuaishou: trying strategy D (m.kuaishou.com mobile API)")
             result = _strategy_mobile(session, photo_id, cookie_str)
+
+        if result is None:
+            logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
+            result = _strategy_cdp(resolved, config)
 
         if result is None:
             raise RuntimeError(
