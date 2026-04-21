@@ -684,10 +684,11 @@ def _strategy_cdp(
     on_progress: Optional[Callable] = None,
     timeout: float = 45.0,
 ) -> tuple | None:
-    """Open user's browser via CDP, navigate to Kuaishou page, intercept MP4 CDN URL.
+    """Open user's Brave/Chrome via CDP, navigate to Kuaishou page, intercept CDN URL.
 
-    Uses an isolated --user-data-dir per session so each run starts with a blank
-    browser — no stale tabs carried over from previous calls.
+    Uses the real browser profile (not isolated) so the browser has its actual
+    version string and passes Kuaishou's UA check. Only the one new tab created
+    here is closed after capture — other existing tabs are left untouched.
     """
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
@@ -696,9 +697,7 @@ def _strategy_cdp(
         return None
 
     import os
-    import shutil
     import socket as _socket_mod
-    import tempfile
 
     def _prog(pct: int, msg: str) -> None:
         if on_progress:
@@ -707,34 +706,56 @@ def _strategy_cdp(
             except Exception:
                 pass
 
-    # ── Locate browser ────────────────────────────────────────────────────────
+    # ── Locate browser + real profile dir ────────────────────────────────────
     try:
         from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
             _find_browser_exe,
         )
         exe = _find_browser_exe("brave")
+        browser_name = "brave"
     except Exception:
         try:
             from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
                 _find_browser_exe,
             )
             exe = _find_browser_exe("chrome")
+            browser_name = "chrome"
         except Exception as exc:
             logger.debug("Kuaishou strategy E: no browser found (%s)", exc)
             return None
+
+    # ── Resolve real profile base dir ─────────────────────────────────────────
+    if sys.platform == "win32":
+        local_app = Path(os.environ.get("LOCALAPPDATA", ""))
+        if browser_name == "brave":
+            profile_base = local_app / "BraveSoftware/Brave-Browser/User Data"
+        else:
+            profile_base = local_app / "Google/Chrome/User Data"
+    elif sys.platform == "darwin":
+        if browser_name == "brave":
+            profile_base = Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser"
+        else:
+            profile_base = Path.home() / "Library/Application Support/Google/Chrome"
+    else:
+        profile_base = Path()
+
+    if profile_base.exists():
+        try:
+            from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+                _clear_crashed_flag,
+            )
+            _clear_crashed_flag(profile_base)
+        except Exception:
+            pass
 
     # ── Free port ─────────────────────────────────────────────────────────────
     with _socket_mod.socket() as _s:
         _s.bind(("127.0.0.1", 0))
         port = _s.getsockname()[1]
 
-    # ── Isolated temp profile — prevents stale tabs from previous sessions ────
-    tmp_profile = Path(tempfile.mkdtemp(prefix="omnidl_ks_"))
-
     cmd = [
         exe,
         f"--remote-debugging-port={port}",
-        f"--user-data-dir={tmp_profile}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate",
@@ -745,6 +766,8 @@ def _strategy_cdp(
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
     ]
+    if profile_base.exists():
+        cmd.append(f"--user-data-dir={profile_base}")
 
     _prog(5, "Kuaishou: đang khởi động trình duyệt...")
     proc = subprocess.Popen(
@@ -777,22 +800,16 @@ def _strategy_cdp(
                 logger.debug("Kuaishou strategy E: CDP connect failed: %s", last_exc)
                 return None
 
-            ctx  = cdp_browser.contexts[0]
+            ctx = cdp_browser.contexts[0]
 
-            # Inject Kuaishou cookies into browser context so video autoplays.
-            # Isolated profile has no cookies — without them the player shows a
-            # login wall and never issues the CDN request.
-            _inject_cookies_cdp(ctx, config)
-
+            # Open exactly one new tab — track it so we close only this tab later.
             page = ctx.new_page()
 
             # Layer A: Playwright request intercept
             def _on_request(request) -> None:
                 nonlocal cdn_url
                 if not cdn_url and _is_ks_cdn_url(request.url):
-                    logger.debug(
-                        "Kuaishou CDP[A]: caught %s", request.url[:80]
-                    )
+                    logger.debug("Kuaishou CDP[A]: caught %s", request.url[:80])
                     cdn_url = request.url
             page.on("request", _on_request)
 
@@ -810,7 +827,7 @@ def _strategy_cdp(
                         cdn_url = response.url
             page.on("response", _on_response)
 
-            # Layer C: CDP Network domain (catches native player requests)
+            # Layer C: CDP Network domain
             try:
                 cdp_session = ctx.new_cdp_session(page)
                 cdp_session.send("Network.enable")
@@ -831,8 +848,17 @@ def _strategy_cdp(
             page.add_init_script(_KS_PRE_PAGE_JS)
 
             _prog(12, "Kuaishou: đang mở trang video...")
+
+            # Navigate to canonical URL directly — avoids extra redirect hop.
+            _nav_url = page_url
+            if "v.kuaishou.com" in page_url:
+                _short_m = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", page_url)
+                if _short_m:
+                    _nav_url = f"https://www.kuaishou.com/short-video/{_short_m.group(1)}"
+                    logger.debug("Kuaishou CDP: navigating to canonical %s", _nav_url)
+
             try:
-                page.goto(page_url, wait_until="domcontentloaded",
+                page.goto(_nav_url, wait_until="domcontentloaded",
                           timeout=min(timeout, 20) * 1_000)
             except PWTimeout:
                 pass
@@ -851,15 +877,17 @@ def _strategy_cdp(
                     try:
                         val = page.evaluate(_KS_POLL_JS)
                         if val and val.startswith("http") and _is_ks_cdn_url(val):
-                            logger.debug(
-                                "Kuaishou CDP[JS]: poll caught %s", val[:80]
-                            )
+                            logger.debug("Kuaishou CDP[JS]: poll caught %s", val[:80])
                             cdn_url = val
                     except Exception:
                         pass
                 time.sleep(0.4)
 
-            page.close()
+            # Close only the tab we opened — leave other tabs untouched.
+            try:
+                page.close()
+            except Exception:
+                pass
             cdp_browser.close()
 
     except Exception as exc:
@@ -868,10 +896,12 @@ def _strategy_cdp(
     finally:
         try:
             proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
         except Exception:
             pass
-        shutil.rmtree(tmp_profile, ignore_errors=True)
 
     if not cdn_url:
         logger.debug("Kuaishou strategy E: no CDN URL captured within %.0fs", timeout)
@@ -1017,9 +1047,30 @@ class KuaishouEngine:
             raise RuntimeError("KuaishouEngine.download: task.media_info is None")
 
         cdn_url = media_info.url
-        if not cdn_url or not cdn_url.startswith("http"):
-            logger.info("Kuaishou: CDN URL missing, re-extracting for task %s", task.id)
-            media_info = extract_info_kuaishou(task.url, self._config)
+
+        # CDN URLs (kwaicdn.com, ksapisrv.com, etc.) expire within minutes.
+        # Desktop flow: task.url = kuaishou.com page URL → CDN URL in media_info
+        # is still fresh at download time → use it directly.
+        # Remote API flow: analyse returns CDN URL → iPhone echoes it back as
+        # body.url → by download time the CDN URL has expired → must re-extract.
+        _task_is_cdn = bool(
+            task.url.startswith("http")
+            and not re.search(
+                r"(?:v\.kuaishou\.com|(?:www|m)\.kuaishou\.com)", task.url, re.I
+            )
+        )
+        if not cdn_url or not cdn_url.startswith("http") or _task_is_cdn:
+            if media_info.video_id:
+                _reextract_url = (
+                    f"https://www.kuaishou.com/short-video/{media_info.video_id}"
+                )
+            else:
+                _reextract_url = task.url
+            logger.info(
+                "Kuaishou: re-extracting fresh CDN URL for task %s via %s",
+                task.id, _reextract_url[:80],
+            )
+            media_info = extract_info_kuaishou(_reextract_url, self._config)
             cdn_url = media_info.url
 
         # ── Output path ───────────────────────────────────────────────────
@@ -1042,15 +1093,26 @@ class KuaishouEngine:
             task.filename = str(filename)
 
         # ── Stream download with progress ─────────────────────────────────
+        _CDN_HEADERS = {
+            "User-Agent": _PAGE_HEADERS["User-Agent"],
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Referer": "https://www.kuaishou.com/",
+        }
         session = _make_session()
         try:
             resp = session.get(
                 cdn_url,
-                headers={**_API_HEADERS, "Accept": "*/*"},
+                headers=_CDN_HEADERS,
                 stream=True,
                 timeout=_DL_TIMEOUT,
             )
             if resp.status_code != 200:
+                ct = resp.headers.get("content-type", "")
+                logger.debug(
+                    "Kuaishou CDN: HTTP %d content-type=%r url=%s",
+                    resp.status_code, ct, cdn_url[:100],
+                )
                 raise RuntimeError(
                     f"Kuaishou CDN trả về HTTP {resp.status_code}. "
                     "URL CDN có thể đã hết hạn — thử lại."
@@ -1105,7 +1167,74 @@ class KuaishouEngine:
             return
 
         if not _is_valid_mp4(part_path):
+            # Log first 200 bytes to diagnose what CDN actually returned
+            try:
+                with open(part_path, "rb") as _f:
+                    _head = _f.read(200)
+                logger.debug(
+                    "Kuaishou: invalid MP4 — first bytes: %r (size=%d)",
+                    _head[:80], part_path.stat().st_size,
+                )
+            except Exception:
+                pass
             part_path.unlink(missing_ok=True)
+
+            # CDN URLs expire quickly (~minutes). If video_id is known, rebuild
+            # the canonical URL and re-extract a fresh CDN URL, then retry once.
+            vid_id = media_info.video_id if media_info else ""
+            if vid_id and vid_id != task.url:
+                logger.info(
+                    "Kuaishou: CDN URL expired, re-extracting via video_id=%s", vid_id
+                )
+                try:
+                    canonical = f"https://www.kuaishou.com/short-video/{vid_id}"
+                    media_info = extract_info_kuaishou(canonical, self._config)
+                    cdn_url = media_info.url
+                    if not cdn_url or not cdn_url.startswith("http"):
+                        raise RuntimeError("re-extract returned no CDN URL")
+
+                    resp2 = _make_session().get(
+                        cdn_url,
+                        headers={**_API_HEADERS, "Accept": "*/*"},
+                        stream=True,
+                        timeout=_DL_TIMEOUT,
+                    )
+                    if resp2.status_code == 200:
+                        with open(part_path, "wb") as fh2:
+                            for chunk in resp2.iter_content(1024 * 256):
+                                fh2.write(chunk)
+                        resp2.close()
+                        if _is_valid_mp4(part_path):
+                            # Update filename based on fresh title
+                            safe_title2 = _sanitise_filename(
+                                media_info.title or media_info.video_id or "video"
+                            )
+                            filename = output_dir / f"{safe_title2}.mp4"
+                            stem2 = filename.stem
+                            counter2 = 1
+                            while filename.exists():
+                                filename = output_dir / f"{stem2} ({counter2}).mp4"
+                                counter2 += 1
+                            part_path.rename(filename)
+                            with task._lock:
+                                task.status = DownloadStatus.COMPLETED
+                                task.progress = 100.0
+                                task.filename = str(filename)
+                            logger.info(
+                                "Kuaishou: download complete (re-extracted) — %s (%.1f MB)",
+                                filename.name,
+                                filename.stat().st_size / 1_048_576,
+                            )
+                            if on_progress:
+                                on_progress(task)
+                            return
+                        part_path.unlink(missing_ok=True)
+                    else:
+                        resp2.close()
+                except Exception as exc:
+                    logger.debug("Kuaishou: re-extract retry failed: %s", exc)
+                    part_path.unlink(missing_ok=True)
+
             raise RuntimeError(
                 "File tải về không hợp lệ (không phải MP4 hoặc quá nhỏ). "
                 "URL CDN có thể đã hết hạn — thử lại."

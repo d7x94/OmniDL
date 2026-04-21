@@ -268,11 +268,18 @@ class DownloadManager:
                 # ── Route: Kuaishou → KuaishouEngine (bypasses yt-dlp) ───
                 # Must be checked FIRST — v.kuaishou.com short-links are not
                 # supported by yt-dlp and would be rejected immediately.
+                # Also route when source_engine=="kuaishou" so Remote API calls
+                # that pass the CDN URL directly (not the original short URL)
+                # are still handled by KuaishouEngine, not yt-dlp.
                 if self._kuaishou_engine is not None:
                     from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
                         is_kuaishou_url,
                     )
-                    if is_kuaishou_url(task.url):
+                    _is_ks = is_kuaishou_url(task.url) or (
+                        task.media_info is not None
+                        and task.media_info.source_engine == "kuaishou"
+                    )
+                    if _is_ks:
                         self._kuaishou_engine.download(
                             task,
                             on_progress=self._on_progress,
