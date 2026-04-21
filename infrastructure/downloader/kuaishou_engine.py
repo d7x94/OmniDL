@@ -80,7 +80,7 @@ _PHOTO_ID_RE = re.compile(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_RESOLVE_TIMEOUT = 30   # seconds — increased from 20 to handle slow CN redirects
+_RESOLVE_TIMEOUT = 15   # seconds — HEAD almost always fails from non-CN; 15s is enough
 _API_TIMEOUT     = 25   # seconds — GraphQL / page fetch
 _DL_TIMEOUT      = 30   # seconds — CDN connect timeout
 
@@ -610,13 +610,85 @@ def _is_ks_cdn_url(url: str) -> bool:
     return bool(_KS_CDN_RE.search(url))
 
 
+def _inject_cookies_cdp(ctx, config: Optional[ConfigManager]) -> None:
+    """Inject Kuaishou cookies from the .enc cookie file into a Playwright browser context.
+
+    Without cookies the player shows a login wall and never fires the CDN request.
+    Silently skips if config is None, no cookie file configured, or any error occurs.
+    """
+    if not config:
+        return
+    try:
+        from http.cookiejar import MozillaCookieJar  # noqa: PLC0415
+        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+            _prepare_cookie_for_use,
+            _resolve_cookie,
+        )
+
+        cookie_path = _resolve_cookie("https://www.kuaishou.com/", config)
+        if not cookie_path:
+            return
+
+        usable, is_temp = _prepare_cookie_for_use(cookie_path)
+        jar = MozillaCookieJar()
+        try:
+            jar.load(usable, ignore_discard=True, ignore_expires=True)
+        finally:
+            if is_temp:
+                Path(usable).unlink(missing_ok=True)
+
+        cdp_cookies = []
+        for c in jar:
+            if "kuaishou" not in (c.domain or "") and "kwai" not in (c.domain or ""):
+                continue
+            entry: dict = {
+                "name": c.name,
+                "value": c.value or "",
+                "domain": c.domain or ".kuaishou.com",
+                "path": c.path or "/",
+            }
+            # expires: 0 means session cookie in CDP
+            if c.expires:
+                entry["expires"] = float(c.expires)
+            if c.secure:
+                entry["secure"] = True
+            cdp_cookies.append(entry)
+
+        if cdp_cookies:
+            ctx.add_cookies(cdp_cookies)
+            logger.debug("Kuaishou CDP: injected %d cookies into browser context", len(cdp_cookies))
+        else:
+            logger.debug("Kuaishou CDP: cookie file loaded but no kuaishou/kwai cookies found")
+    except Exception as exc:
+        logger.debug("Kuaishou CDP: cookie inject failed (non-fatal): %s", exc)
+
+
+def _cdp_caption_from_url(cdn_url: str, page_url: str) -> str:
+    """Build a human-readable title from what CDP gives us (no caption from API)."""
+    # Extract date from CDN path: .../upic/YYYY/MM/DD/HH/...
+    dm = re.search(r"/upic/(\d{4})/(\d{2})/(\d{2})/", cdn_url)
+    date_str = f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}" if dm else ""
+
+    # Prefer real photo_id from resolved URL, fall back to short code from original
+    pm = re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", page_url)
+    if not pm:
+        pm = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", page_url)
+    code = pm.group(1) if pm else "video"
+
+    return f"kuaishou_{code}_{date_str}" if date_str else f"kuaishou_{code}"
+
+
 def _strategy_cdp(
     page_url: str,
     config: Optional[ConfigManager],
     on_progress: Optional[Callable] = None,
     timeout: float = 45.0,
 ) -> tuple | None:
-    """Open user's browser via CDP, navigate to Kuaishou page, intercept MP4 CDN URL."""
+    """Open user's browser via CDP, navigate to Kuaishou page, intercept MP4 CDN URL.
+
+    Uses an isolated --user-data-dir per session so each run starts with a blank
+    browser — no stale tabs carried over from previous calls.
+    """
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
     except ImportError:
@@ -624,7 +696,9 @@ def _strategy_cdp(
         return None
 
     import os
+    import shutil
     import socket as _socket_mod
+    import tempfile
 
     def _prog(pct: int, msg: str) -> None:
         if on_progress:
@@ -654,27 +728,13 @@ def _strategy_cdp(
         _s.bind(("127.0.0.1", 0))
         port = _s.getsockname()[1]
 
-    # ── Clear crash flag ──────────────────────────────────────────────────────
-    if sys.platform == "win32":
-        local_app = Path(os.environ.get("LOCALAPPDATA", ""))
-        profile_base = local_app / "BraveSoftware/Brave-Browser/User Data"
-    elif sys.platform == "darwin":
-        profile_base = Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser"
-    else:
-        profile_base = Path()
-
-    if profile_base.exists():
-        try:
-            from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
-                _clear_crashed_flag,
-            )
-            _clear_crashed_flag(profile_base)
-        except Exception:
-            pass
+    # ── Isolated temp profile — prevents stale tabs from previous sessions ────
+    tmp_profile = Path(tempfile.mkdtemp(prefix="omnidl_ks_"))
 
     cmd = [
         exe,
         f"--remote-debugging-port={port}",
+        f"--user-data-dir={tmp_profile}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate",
@@ -718,6 +778,12 @@ def _strategy_cdp(
                 return None
 
             ctx  = cdp_browser.contexts[0]
+
+            # Inject Kuaishou cookies into browser context so video autoplays.
+            # Isolated profile has no cookies — without them the player shows a
+            # login wall and never issues the CDN request.
+            _inject_cookies_cdp(ctx, config)
+
             page = ctx.new_page()
 
             # Layer A: Playwright request intercept
@@ -802,17 +868,20 @@ def _strategy_cdp(
     finally:
         try:
             proc.terminate()
+            proc.wait(timeout=5)
         except Exception:
             pass
+        shutil.rmtree(tmp_profile, ignore_errors=True)
 
     if not cdn_url:
         logger.debug("Kuaishou strategy E: no CDN URL captured within %.0fs", timeout)
         return None
 
-    # Build synthetic photo dict so extract_info_kuaishou can construct MediaInfo
+    caption = _cdp_caption_from_url(cdn_url, page_url)
+
     photo = {
         "id": "",
-        "caption": "",
+        "caption": caption,
         "duration": 0,
         "coverUrl": "",
         "photoUrl": cdn_url,

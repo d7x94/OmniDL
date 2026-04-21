@@ -260,7 +260,8 @@ def create_app(
         Extract metadata for a URL.
         Bridges the callback-based DownloadService.analyse_url() to a
         synchronous HTTP response via threading.Event.
-        Timeout: 60 seconds (consistent with yt-dlp's own network timeout).
+        Timeout: 120 seconds — Kuaishou CDP strategy needs up to ~90s
+        (short-URL resolution + strategies A-D + CDP intercept).
         """
         result: dict = {}
         done = threading.Event()
@@ -274,12 +275,12 @@ def create_app(
             done.set()
 
         service.analyse_url(body.url, on_done=on_done, on_error=on_error)
-        done.wait(timeout=60)
+        done.wait(timeout=120)
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         if "info" not in result:
-            raise HTTPException(status_code=408, detail="Analysis timed out after 60 s")
+            raise HTTPException(status_code=408, detail="Analysis timed out after 120 s")
 
         info: MediaInfo = result["info"]
         return AnalyseResponse(
