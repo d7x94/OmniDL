@@ -63,6 +63,12 @@ from infrastructure.config.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
+# Serialize CDP browser launches — only one Brave instance at a time.
+# Two concurrent requests (desktop + remote API) launching Brave simultaneously
+# causes ECONNREFUSED on the second instance because the first holds the profile lock.
+import threading as _threading
+_CDP_LOCK = _threading.Lock()
+
 # ── URL patterns ──────────────────────────────────────────────────────────────
 
 _KUAISHOU_RE = re.compile(
@@ -557,7 +563,16 @@ _KS_CDN_RE = re.compile(
     r"|ks-cdn\.com/[^?#]*\.mp4"
     r"|kwaicdn\.com/[^?#]*\.mp4"
     r"|alicdn\.com/[^?#]*\.mp4"
+    r"|txmov2\.a\.yximgs\.com/[^?#]*\.mp4"
+    r"|ali-safety-video\.acfun\.cn/[^?#]*\.mp4"
     r")",
+    re.I,
+)
+
+# Broader CDN pattern for response MIME intercept (no .mp4 extension required)
+_KS_CDN_HOST_RE = re.compile(
+    r"(?:ksapisrv|ks-cdn|kwaicdn|yximgs|alicdn)"
+    r"\.(?:com|cn)/",
     re.I,
 )
 
@@ -689,12 +704,33 @@ def _strategy_cdp(
     Uses the real browser profile (not isolated) so the browser has its actual
     version string and passes Kuaishou's UA check. Only the one new tab created
     here is closed after capture — other existing tabs are left untouched.
+
+    Serialized via _CDP_LOCK: only one Brave instance at a time. Concurrent calls
+    queue here rather than launching two browsers simultaneously (which causes
+    ECONNREFUSED on the second instance due to the profile directory lock).
     """
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
     except ImportError:
         logger.debug("Kuaishou strategy E: playwright not installed — skip")
         return None
+
+    logger.debug("Kuaishou strategy E: waiting for CDP lock...")
+    with _CDP_LOCK:
+        logger.debug("Kuaishou strategy E: CDP lock acquired")
+        return _strategy_cdp_locked(page_url, config, on_progress, timeout)
+
+
+def _strategy_cdp_locked(
+    page_url: str,
+    config: Optional[ConfigManager],
+    on_progress: Optional[Callable] = None,
+    timeout: float = 45.0,
+) -> tuple | None:
+    """Inner implementation — called only while _CDP_LOCK is held."""
+    from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
+
+    _final_page_url = page_url  # updated to real URL after browser redirect
 
     import os
     import socket as _socket_mod
@@ -844,29 +880,84 @@ def _strategy_cdp(
             except Exception as exc:
                 logger.debug("Kuaishou CDP[C]: Network domain unavailable: %s", exc)
 
+            # Layer D: responseReceived — catches video/* MIME even without .mp4 in URL
+            try:
+                def _on_cdp_response(params: dict) -> None:
+                    nonlocal cdn_url
+                    if cdn_url:
+                        return
+                    mime = params.get("response", {}).get("mimeType", "")
+                    u = params.get("response", {}).get("url", "")
+                    if mime.startswith("video/") and "mjpeg" not in mime:
+                        if _is_ks_cdn_url(u) or _KS_CDN_HOST_RE.search(u):
+                            logger.debug(
+                                "Kuaishou CDP[D]: responseReceived MIME=%s url=%s",
+                                mime, u[:80],
+                            )
+                            cdn_url = u
+                cdp_session.on("Network.responseReceived", _on_cdp_response)
+            except Exception:
+                pass
+
             # Pre-page JS: intercept fetch/XHR before Kuaishou JS loads
             page.add_init_script(_KS_PRE_PAGE_JS)
 
             _prog(12, "Kuaishou: đang mở trang video...")
 
-            # Navigate to canonical URL directly — avoids extra redirect hop.
-            _nav_url = page_url
-            if "v.kuaishou.com" in page_url:
-                _short_m = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", page_url)
-                if _short_m:
-                    _nav_url = f"https://www.kuaishou.com/short-video/{_short_m.group(1)}"
-                    logger.debug("Kuaishou CDP: navigating to canonical %s", _nav_url)
+            # Build a clean canonical URL — strip all query params.
+            # Share URLs (shareToken, shareMode=APP, etc.) cause Kuaishou server to
+            # redirect the browser to a random feed video instead of the target video.
+            # v.kuaishou.com short links: browser follows the real redirect itself
+            # (bypassing the non-CN IP block that prevents server-side resolution).
+            # Resolved URLs: use only path, no query string.
+            _pid = _extract_photo_id(page_url)
+            if _pid and "v.kuaishou.com" not in page_url.lower():
+                _nav_url = f"https://www.kuaishou.com/short-video/{_pid}"
+            else:
+                _nav_url = page_url.split("?")[0]
+            logger.debug("Kuaishou CDP: navigating to %s", _nav_url)
 
             try:
                 page.goto(_nav_url, wait_until="domcontentloaded",
-                          timeout=min(timeout, 20) * 1_000)
+                          timeout=min(timeout * 0.4, 20) * 1_000)
             except PWTimeout:
                 pass
             except Exception as exc:
                 logger.debug("Kuaishou CDP: goto warning (non-fatal): %s", exc)
 
-            # Poll loop
-            loop_deadline = time.monotonic() + timeout
+            # photo_id of the video we actually want — used to detect auto-advance.
+            _target_pid = _extract_photo_id(_nav_url) or ""
+
+            # Click video element to trigger play — Kuaishou player needs a gesture.
+            _CLICK_JS = (
+                "(function(){"
+                "var v=document.querySelector('video');"
+                "if(v){try{v.play();}catch(e){}try{v.click();}catch(e){}}"
+                "var p=document.querySelector('.player-container,.video-player,.ksPlayerWrapper');"
+                "if(p){try{p.click();}catch(e){}}"
+                "})()"
+            )
+            _click_deadline = time.monotonic() + min(timeout * 0.5, 25.0)
+            _clicked = False
+            while time.monotonic() < _click_deadline and not cdn_url:
+                if not _clicked:
+                    try:
+                        page.evaluate(_CLICK_JS)
+                        _clicked = True
+                        logger.debug("Kuaishou CDP: click gesture sent")
+                    except Exception:
+                        pass
+                time.sleep(1.0)
+                if cdn_url:
+                    break
+                # re-click every 5s in case player reloaded
+                try:
+                    page.evaluate(_CLICK_JS)
+                except Exception:
+                    pass
+
+            # Poll loop — remaining timeout budget
+            loop_deadline = time.monotonic() + max(timeout * 0.5, 20.0)
             last_poll = 0.0
             while time.monotonic() < loop_deadline:
                 if cdn_url:
@@ -876,48 +967,99 @@ def _strategy_cdp(
                     last_poll = now
                     try:
                         val = page.evaluate(_KS_POLL_JS)
-                        if val and val.startswith("http") and _is_ks_cdn_url(val):
+                        if val and val.startswith("http") and (
+                            _is_ks_cdn_url(val) or _KS_CDN_HOST_RE.search(val)
+                        ):
                             logger.debug("Kuaishou CDP[JS]: poll caught %s", val[:80])
                             cdn_url = val
                     except Exception:
                         pass
+                    # Check if Kuaishou auto-advanced to a different video (feed
+                    # swipe behavior). If so, navigate back to the target video.
+                    # Do NOT follow the new URL — it is a different video.
+                    if not cdn_url:
+                        try:
+                            cur_url = page.url
+                            if "kuaishou.com/short-video/" in cur_url:
+                                _cur_pid = _extract_photo_id(cur_url)
+                                if _cur_pid and _cur_pid != _target_pid:
+                                    logger.debug(
+                                        "Kuaishou CDP: auto-advance to %s detected — "
+                                        "navigating back to target %s",
+                                        _cur_pid, _target_pid,
+                                    )
+                                    try:
+                                        page.goto(
+                                            _nav_url,
+                                            wait_until="domcontentloaded",
+                                            timeout=15_000,
+                                        )
+                                        page.evaluate(_CLICK_JS)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                 time.sleep(0.4)
+
+            # Capture final page URL — after browser redirect this contains
+            # the real photo_id, even when short URL resolution failed server-side.
+            try:
+                _final_page_url = page.url
+            except Exception:
+                _final_page_url = page_url
 
             # Close only the tab we opened — leave other tabs untouched.
             try:
                 page.close()
             except Exception:
                 pass
-            cdp_browser.close()
+            try:
+                cdp_browser.close()
+            except Exception:
+                pass
 
     except Exception as exc:
         logger.debug("Kuaishou strategy E: CDP session error: %s", exc)
         return None
     finally:
+        # Kill Brave and wait for full process exit before releasing _CDP_LOCK.
+        # terminate() alone is not enough — the profile directory lock may persist
+        # for hundreds of ms after SIGTERM, causing ECONNREFUSED on the next launch.
         try:
             proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
         except Exception:
             pass
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+        time.sleep(0.5)  # extra buffer for profile lock release on Windows
 
     if not cdn_url:
         logger.debug("Kuaishou strategy E: no CDN URL captured within %.0fs", timeout)
         return None
 
-    caption = _cdp_caption_from_url(cdn_url, page_url)
+    # Prefer real photo_id from the final browser URL (after redirect) over
+    # the short code that was used to navigate (when server-side resolve failed).
+    _real_pid = _extract_photo_id(_final_page_url) or _extract_photo_id(page_url) or ""
+    caption = _cdp_caption_from_url(cdn_url, _final_page_url)
 
     photo = {
-        "id": "",
+        "id": _real_pid,
         "caption": caption,
         "duration": 0,
         "coverUrl": "",
         "photoUrl": cdn_url,
     }
     author: dict = {}
-    logger.info("Kuaishou strategy E (CDP): captured CDN URL %s", cdn_url[:80])
+    logger.info(
+        "Kuaishou strategy E (CDP): captured CDN URL %s (real_pid=%s)",
+        cdn_url[:80], _real_pid,
+    )
     return photo, author
 
 
@@ -966,7 +1108,7 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
 
         if result is None:
             logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
-            result = _strategy_cdp(resolved, config)
+            result = _strategy_cdp(resolved, config, timeout=90.0)
 
         if result is None:
             raise RuntimeError(
@@ -1048,30 +1190,70 @@ class KuaishouEngine:
 
         cdn_url = media_info.url
 
-        # CDN URLs (kwaicdn.com, ksapisrv.com, etc.) expire within minutes.
-        # Desktop flow: task.url = kuaishou.com page URL → CDN URL in media_info
-        # is still fresh at download time → use it directly.
-        # Remote API flow: analyse returns CDN URL → iPhone echoes it back as
-        # body.url → by download time the CDN URL has expired → must re-extract.
-        _task_is_cdn = bool(
-            task.url.startswith("http")
-            and not re.search(
-                r"(?:v\.kuaishou\.com|(?:www|m)\.kuaishou\.com)", task.url, re.I
-            )
-        )
-        if not cdn_url or not cdn_url.startswith("http") or _task_is_cdn:
+        # CDN URLs expire within minutes. Decide whether to re-extract:
+        # - Desktop flow: task.url is a kuaishou.com page URL; CDN URL in
+        #   media_info is fresh → skip re-extract, probe first.
+        # - Remote API flow: iPhone echoes back the CDN URL as body.url
+        #   (task.url = CDN URL, not page URL). By download time the URL may
+        #   have expired → probe first; re-extract only if probe fails.
+        # Probe with a HEAD request (cheap, avoids opening Brave unnecessarily).
+        _need_reextract = not cdn_url or not cdn_url.startswith("http")
+        if cdn_url and cdn_url.startswith("http") and not _need_reextract:
+            # Probe with Range GET bytes=0-11 to check MP4 magic bytes.
+            # HEAD is unreliable — Kuaishou CDN returns HTTP 200 with an HTML
+            # error page body when the signed URL has expired.
+            try:
+                _probe_sess = _make_session()
+                _probe_resp = _probe_sess.get(
+                    cdn_url,
+                    headers={
+                        **_PAGE_HEADERS,
+                        "Referer": "https://www.kuaishou.com/",
+                        "Range": "bytes=0-11",
+                    },
+                    timeout=8,
+                    allow_redirects=True,
+                )
+                _probe_sess.close()
+                _probe_bytes = _probe_resp.content[:12]
+                _probe_is_mp4 = (
+                    len(_probe_bytes) >= 8
+                    and _probe_bytes[4:8] in (b"ftyp", b"moov", b"mdat", b"wide")
+                )
+                if _probe_resp.status_code not in (200, 206) or not _probe_is_mp4:
+                    logger.debug(
+                        "Kuaishou CDN probe: HTTP %d mp4=%s — CDN URL expired, re-extracting",
+                        _probe_resp.status_code, _probe_is_mp4,
+                    )
+                    _need_reextract = True
+                else:
+                    logger.debug(
+                        "Kuaishou CDN probe: HTTP %d mp4=%s — CDN URL still valid",
+                        _probe_resp.status_code, _probe_is_mp4,
+                    )
+            except Exception as exc:
+                logger.debug("Kuaishou CDN probe failed (%s) — re-extracting", exc)
+                _need_reextract = True
+
+        if _need_reextract:
             if media_info.video_id:
                 _reextract_url = (
                     f"https://www.kuaishou.com/short-video/{media_info.video_id}"
                 )
             else:
-                _reextract_url = task.url
+                # task.url may be CDN URL (remote API) — fall back to original url field
+                _ks_m = re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I)
+                _reextract_url = (
+                    f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
+                    if _ks_m else task.url
+                )
             logger.info(
                 "Kuaishou: re-extracting fresh CDN URL for task %s via %s",
                 task.id, _reextract_url[:80],
             )
             media_info = extract_info_kuaishou(_reextract_url, self._config)
             cdn_url = media_info.url
+
 
         # ── Output path ───────────────────────────────────────────────────
         output_dir = (
