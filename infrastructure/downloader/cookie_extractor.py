@@ -50,6 +50,7 @@ _PLATFORM_DOMAINS: dict[str, tuple[str, ...]] = {
     "facebook":  ("facebook.com", "fb.com"),
     "twitter":   ("twitter.com", "x.com"),
     "threads":   ("threads.net", "threads.com", "instagram.com"),   # threads.com = new domain
+    "kuaishou":  ("kuaishou.com", "kwai.com"),
 }
 
 

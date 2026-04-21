@@ -161,6 +161,9 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("x.com",         "twitter"),
     ("threads.net",   "threads"),
     ("threads.com",   "threads"),   # new domain (2024+)
+    ("kuaishou.com",  "kuaishou"),
+    ("kwai.com",      "kuaishou"),
+    ("v.kuaishou.com","kuaishou"),
 ]
 
 

@@ -65,6 +65,7 @@ _PC_PLATFORMS = [
     ("facebook",  "Facebook"),
     ("twitter",   "Twitter / X"),
     ("threads",   "Threads"),
+    ("kuaishou",  "Kuaishou"),
 ]
 
 
@@ -531,6 +532,7 @@ class NetworkPanel(_BasePanel):
         platform_name = {
             "tiktok": "TikTok", "instagram": "Instagram",
             "facebook": "Facebook", "twitter": "Twitter/X", "threads": "Threads",
+            "kuaishou": "Kuaishou",
         }.get(platform_key, platform_key.title())
         chosen = fd.askopenfilename(
             title=f"Chọn cookie file cho {platform_name} (Netscape format)",
@@ -577,7 +579,7 @@ class NetworkPanel(_BasePanel):
         browser       = self._browser_var.get()
         platform_name = {
             "tiktok": "TikTok", "instagram": "Instagram",
-            "facebook": "Facebook", "twitter": "Twitter/X", "threads": "Threads",
+            "facebook": "Facebook", "twitter": "Twitter/X", "threads": "Threads", "kuaishou": "Kuaishou",
         }.get(platform_key, platform_key.title())
         safe_dir    = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cookies.txt"
@@ -640,7 +642,7 @@ class NetworkPanel(_BasePanel):
             return
         platform_name = {
             "tiktok": "TikTok", "instagram": "Instagram",
-            "facebook": "Facebook", "twitter": "Twitter/X", "threads": "Threads",
+            "facebook": "Facebook", "twitter": "Twitter/X", "threads": "Threads", "kuaishou": "Kuaishou",
         }.get(platform_key, platform_key.title())
         safe_dir    = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"

@@ -106,7 +106,7 @@ _PAGE_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": "https://www.kuaishou.com/",
 }
 
@@ -117,10 +117,11 @@ _API_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     "Content-Type": "application/json",
     "Origin": "https://www.kuaishou.com",
     "Referer": "https://www.kuaishou.com/",
+    "X-Kpf": "PC_WEB",
 }
 
 _NEXT_DATA_RE = re.compile(
@@ -208,10 +209,13 @@ def _extract_photo_id(url: str) -> Optional[str]:
 # ── Strategy A: HTML __NEXT_DATA__ scrape ────────────────────────────────────
 
 
-def _strategy_html(session, photo_id: str) -> tuple | None:
+def _strategy_html(session, photo_id: str, cookie_str: str = "") -> tuple | None:
     page_url = f"https://www.kuaishou.com/short-video/{photo_id}"
+    headers = dict(_PAGE_HEADERS)
+    if cookie_str:
+        headers["Cookie"] = cookie_str
     try:
-        resp = session.get(page_url, headers=_PAGE_HEADERS, timeout=_API_TIMEOUT)
+        resp = session.get(page_url, headers=headers, timeout=_API_TIMEOUT)
     except Exception as exc:
         logger.debug("Kuaishou strategy A: GET failed (%s)", exc)
         return None
@@ -221,6 +225,7 @@ def _strategy_html(session, photo_id: str) -> tuple | None:
         return None
 
     html = resp.text
+    logger.debug("Kuaishou strategy A: HTML len=%d", len(html))
     m = _NEXT_DATA_RE.search(html)
     if m:
         try:
@@ -243,9 +248,13 @@ def _strategy_html(session, photo_id: str) -> tuple | None:
             return photo, author
 
         logger.debug(
-            "Kuaishou strategy A: photo not in __NEXT_DATA__; pageProps keys: %s",
-            list(pp.keys())[:10],
+            "Kuaishou strategy A: photo not in __NEXT_DATA__; pageProps keys: %s; "
+            "initialState keys: %s",
+            list(pp.keys()),
+            list((pp.get("initialState") or {}).keys())[:10],
         )
+    else:
+        logger.debug("Kuaishou strategy A: __NEXT_DATA__ tag not found in HTML")
 
     # Fallback: window.__INITIAL_STATE__
     m2 = re.search(
@@ -272,22 +281,45 @@ def _strategy_html(session, photo_id: str) -> tuple | None:
 # ── Strategy B: GraphQL with cookie ──────────────────────────────────────────
 
 
-def _strategy_gql(session, photo_id: str) -> tuple | None:
+def _warmup_session(session) -> None:
+    """GET kuaishou.com homepage to receive did/userId Set-Cookie headers.
+    Silently ignores failures — warm up is best-effort.
+    """
+    try:
+        session.get(
+            "https://www.kuaishou.com/",
+            headers=_PAGE_HEADERS,
+            timeout=10,
+            allow_redirects=True,
+        )
+        logger.debug("Kuaishou: session warm-up complete")
+    except Exception as exc:
+        logger.debug("Kuaishou: session warm-up failed (non-fatal): %s", exc)
+
+
+def _strategy_gql(session, photo_id: str, cookie_str: str = "") -> tuple | None:
+    _warmup_session(session)
     payload = {
         "operationName": "visionVideoDetail",
         "variables": {"photoId": photo_id, "type": 0},
         "query": _GQL_QUERY,
     }
+    headers = dict(_API_HEADERS)
+    if cookie_str:
+        headers["Cookie"] = cookie_str
     try:
         resp = session.post(
-            _GQL_URL, json=payload, headers=_API_HEADERS, timeout=_API_TIMEOUT
+            _GQL_URL, json=payload, headers=headers, timeout=_API_TIMEOUT
         )
     except Exception as exc:
         logger.debug("Kuaishou strategy B: POST failed (%s)", exc)
         return None
 
     if resp.status_code != 200:
-        logger.debug("Kuaishou strategy B: HTTP %d", resp.status_code)
+        logger.debug(
+            "Kuaishou strategy B: HTTP %d body=%s",
+            resp.status_code, resp.text[:120],
+        )
         return None
 
     try:
@@ -299,7 +331,10 @@ def _strategy_gql(session, photo_id: str) -> tuple | None:
     photo = vvd.get("photo")
     if not photo:
         logger.debug(
-            "Kuaishou strategy B: photo=null (session missing valid did cookie)"
+            "Kuaishou strategy B: photo=null (did cookie missing or invalid); "
+            "status=%s errors=%s",
+            vvd.get("status"),
+            data.get("errors"),
         )
         return None
 
@@ -342,7 +377,58 @@ def _strategy_kwai(session, photo_id: str) -> tuple | None:
     return photo, author
 
 
-# ── Video URL extraction ──────────────────────────────────────────────────────
+# ── Strategy D: www.kuaishou.com REST info API ───────────────────────────────
+
+_SHORT_VIDEO_API_URL = "https://www.kuaishou.com/api/short-video/info"
+
+
+def _strategy_mobile(session, photo_id: str, cookie_str: str = "") -> tuple | None:
+    """kuaishou.com REST info API — GET-based, separate from GraphQL WAF rules."""
+    headers = {
+        **_API_HEADERS,
+        "Referer": f"https://www.kuaishou.com/short-video/{photo_id}",
+    }
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    try:
+        resp = session.get(
+            _SHORT_VIDEO_API_URL,
+            params={"photoId": photo_id},
+            headers=headers,
+            timeout=_API_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.debug("Kuaishou strategy D: GET failed (%s)", exc)
+        return None
+
+    if resp.status_code != 200:
+        logger.debug("Kuaishou strategy D: HTTP %d", resp.status_code)
+        return None
+
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    photo = (
+        data.get("photo")
+        or data.get("data", {}).get("photo")
+        or data.get("result", {}).get("photo")
+    )
+    if not photo:
+        logger.debug("Kuaishou strategy D: photo not in response; keys=%s", list(data.keys())[:8])
+        return None
+
+    author = (
+        data.get("author")
+        or data.get("data", {}).get("author")
+        or data.get("result", {}).get("author")
+        or {}
+    )
+    return photo, author
+
+
+
 
 
 def _pick_best_video_url(photo: dict) -> Optional[str]:
@@ -436,15 +522,19 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
         result: tuple | None = None
 
         logger.debug("Kuaishou: trying strategy A (HTML __NEXT_DATA__)")
-        result = _strategy_html(session, photo_id)
+        result = _strategy_html(session, photo_id, cookie_str)
 
-        if result is None and cookie_str:
+        if result is None:
             logger.debug("Kuaishou: trying strategy B (GraphQL + cookie)")
-            result = _strategy_gql(session, photo_id)
+            result = _strategy_gql(session, photo_id, cookie_str)
 
         if result is None:
             logger.debug("Kuaishou: trying strategy C (kwai.com API)")
             result = _strategy_kwai(session, photo_id)
+
+        if result is None:
+            logger.debug("Kuaishou: trying strategy D (m.kuaishou.com mobile API)")
+            result = _strategy_mobile(session, photo_id, cookie_str)
 
         if result is None:
             raise RuntimeError(
