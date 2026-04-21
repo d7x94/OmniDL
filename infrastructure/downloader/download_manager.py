@@ -22,6 +22,7 @@ from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
     from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+    from infrastructure.downloader.kuaishou_engine import KuaishouEngine
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class DownloadManager:
         gallery_engine: Optional[GalleryDlEngine] = None,
         story_engine_enabled: bool = False,
         instagram_live_engine: Optional[InstagramLiveEngine] = None,
+        kuaishou_engine: Optional[KuaishouEngine] = None,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
@@ -59,6 +61,9 @@ class DownloadManager:
         # Optional Instagram Live engine — direct HLS recording via FFmpeg.
         # When present, Instagram live URLs are routed here instead of yt-dlp.
         self._instagram_live_engine = instagram_live_engine
+        # Optional Kuaishou engine — direct API download, bypasses yt-dlp.
+        # Injected from main.py; None in tests (yt-dlp fallback).
+        self._kuaishou_engine = kuaishou_engine
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
@@ -260,6 +265,22 @@ class DownloadManager:
                     break
 
             try:
+                # ── Route: Kuaishou → KuaishouEngine (bypasses yt-dlp) ───
+                # Must be checked FIRST — v.kuaishou.com short-links are not
+                # supported by yt-dlp and would be rejected immediately.
+                if self._kuaishou_engine is not None:
+                    from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
+                        is_kuaishou_url,
+                    )
+                    if is_kuaishou_url(task.url):
+                        self._kuaishou_engine.download(
+                            task,
+                            on_progress=self._on_progress,
+                            on_postprocess=self._on_progress,
+                        )
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
                 # ── Route: Facebook Story → CDP engine (Playwright) ───────
                 # Must be checked BEFORE gallery/yt-dlp routing because Story
                 # URLs also match the generic facebook.com domain used below.

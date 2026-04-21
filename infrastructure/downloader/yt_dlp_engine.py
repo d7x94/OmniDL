@@ -617,6 +617,16 @@ class YtDlpEngine:
         Fetch video metadata without downloading.
         Raises RuntimeError on failure.
         """
+        # Route Kuaishou URLs to KuaishouEngine before any yt-dlp processing.
+        # yt-dlp has no extractor for v.kuaishou.com and fails with
+        # "This platform is not supported" for all Kuaishou short-links.
+        from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
+            extract_info_kuaishou,
+            is_kuaishou_url,
+        )
+        if is_kuaishou_url(url):
+            return extract_info_kuaishou(url, self._config)
+
         # Reject known-unsupported URL patterns before calling yt-dlp so the
         # user gets an actionable message rather than a generic yt-dlp error.
         # has_cookies allows Stories and Live URLs through when cookies are

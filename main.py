@@ -220,6 +220,9 @@ def main() -> None:
     from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
     instagram_live_engine = InstagramLiveEngine(config)
 
+    from infrastructure.downloader.kuaishou_engine import KuaishouEngine
+    kuaishou_engine = KuaishouEngine(config)
+
     # Inject bundled Deno into PATH once on the main thread before any worker
     # thread starts.  os.environ.update() is not thread-safe on CPython — calling
     # it from ThreadPoolExecutor workers (the old approach) was a latent race.
@@ -236,6 +239,7 @@ def main() -> None:
     manager = DownloadManager(
         config, engine=engine, gallery_engine=gallery_engine,
         story_engine_enabled=True, instagram_live_engine=instagram_live_engine,
+        kuaishou_engine=kuaishou_engine,
     )
     manager.start()
 
