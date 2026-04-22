@@ -827,3 +827,142 @@ class TestRegisterMainWindow:
     def test_register_main_window_is_noop(self):
         from utils.helpers import register_main_window
         register_main_window(object())  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# open_file — Windows ctypes branch (lines 257-314)
+# These tests mock sys.platform="win32" and ctypes.windll to exercise the
+# ShellExecuteExW branches on Linux CI.
+# ---------------------------------------------------------------------------
+
+class TestOpenFileWindowsBranches:
+    """Cover lines 257-314: the Windows ShellExecuteExW + watcher-thread path."""
+
+    def _make_shell32(self, ok: bool, hproc):
+        """Return a mock shell32 whose ShellExecuteExW sets sei.hProcess=hproc."""
+        import ctypes as _ct
+
+        shell32 = MagicMock()
+
+        def _shex(byref_sei):
+            # byref wraps the actual _SEI struct - set hProcess on it
+            try:
+                byref_sei._obj.hProcess = hproc
+            except Exception:
+                pass
+            return ok
+
+        shell32.ShellExecuteExW.side_effect = _shex
+        return shell32
+
+    def test_windows_branch_ok_hproc_spawns_thread(self, tmp_path):
+        """Branch A: _ok=True, hProcess!=0 → watcher thread started, queue gets sentinel."""
+        import ctypes as _ct
+        import utils.helpers as _h
+
+        fake_file = tmp_path / "video.mp4"
+        fake_file.touch()
+
+        fake_shell32 = self._make_shell32(ok=True, hproc=1234)
+        fake_kernel32 = MagicMock()
+        # WaitForSingleObject returns immediately (WAIT_OBJECT_0 = 0)
+        fake_kernel32.WaitForSingleObject.return_value = 0
+
+        # Drain queue before test
+        while not _h._focus_queue.empty():
+            _h._focus_queue.get_nowait()
+
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch.object(_ct, "windll", create=True) as fake_windll:
+            mock_sys.platform = "win32"
+            fake_windll.shell32 = fake_shell32
+            fake_windll.kernel32 = fake_kernel32
+
+            open_file(fake_file)
+
+        # Watcher thread should eventually put True into _focus_queue
+        import time
+        for _ in range(20):
+            if not _h._focus_queue.empty():
+                break
+            time.sleep(0.05)
+        assert not _h._focus_queue.empty(), "watcher thread must signal _focus_queue"
+        assert _h._focus_queue.get_nowait() is True
+
+    def test_windows_branch_ok_no_hproc_no_thread_no_startfile(self, tmp_path):
+        """Branch B: _ok=True, hProcess=NULL → no thread, no startfile."""
+        import ctypes as _ct
+        import utils.helpers as _h
+
+        fake_file = tmp_path / "video.mp4"
+        fake_file.touch()
+
+        fake_shell32 = self._make_shell32(ok=True, hproc=0)
+
+        startfile_calls = []
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch.object(_ct, "windll", create=True) as fake_windll, \
+             patch("os.startfile", side_effect=lambda p: startfile_calls.append(p), create=True):
+            mock_sys.platform = "win32"
+            fake_windll.shell32 = fake_shell32
+            fake_windll.kernel32 = MagicMock()
+
+            open_file(fake_file)
+
+        assert not startfile_calls, "Branch B must not call os.startfile"
+
+    def test_windows_branch_fail_calls_startfile(self, tmp_path):
+        """Branch C: _ok=False → os.startfile fallback."""
+        import ctypes as _ct
+        import utils.helpers as _h
+
+        fake_file = tmp_path / "video.mp4"
+        fake_file.touch()
+
+        fake_shell32 = self._make_shell32(ok=False, hproc=0)
+
+        startfile_calls = []
+        with patch("utils.helpers.sys") as mock_sys, \
+             patch.object(_ct, "windll", create=True) as fake_windll, \
+             patch("os.startfile", side_effect=lambda p: startfile_calls.append(p), create=True):
+            mock_sys.platform = "win32"
+            fake_windll.shell32 = fake_shell32
+            fake_windll.kernel32 = MagicMock()
+
+            open_file(fake_file)
+
+        assert len(startfile_calls) == 1, "Branch C must call os.startfile once"
+
+    def test_windows_duplicate_hproc_skips_second_thread(self, tmp_path):
+        """Guard: same hproc already in _watch_set → no duplicate thread."""
+        import ctypes as _ct
+        import utils.helpers as _h
+
+        fake_file = tmp_path / "video.mp4"
+        fake_file.touch()
+
+        hproc_val = 5678
+        fake_shell32 = self._make_shell32(ok=True, hproc=hproc_val)
+        fake_kernel32 = MagicMock()
+        fake_kernel32.WaitForSingleObject.return_value = 0
+
+        # Pre-populate _watch_set so duplicate guard triggers
+        with _h._watch_set_lock:
+            _h._watch_set.add(hproc_val)
+
+        try:
+            threads_before = [t.name for t in __import__("threading").enumerate()]
+            with patch("utils.helpers.sys") as mock_sys, \
+                 patch.object(_ct, "windll", create=True) as fake_windll:
+                mock_sys.platform = "win32"
+                fake_windll.shell32 = fake_shell32
+                fake_windll.kernel32 = fake_kernel32
+                open_file(fake_file)
+
+            threads_after = [t.name for t in __import__("threading").enumerate()]
+            new_watch = [t for t in threads_after
+                         if t == "omnidl-player-watch" and t not in threads_before]
+            assert not new_watch, "duplicate hproc must not spawn second watcher thread"
+        finally:
+            with _h._watch_set_lock:
+                _h._watch_set.discard(hproc_val)
