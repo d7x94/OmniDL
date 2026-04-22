@@ -48,10 +48,11 @@ Security
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import logging
 import re
+import subprocess
+import sys
+import threading as _threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -66,7 +67,6 @@ logger = logging.getLogger(__name__)
 # Serialize CDP browser launches — only one Brave instance at a time.
 # Two concurrent requests (desktop + remote API) launching Brave simultaneously
 # causes ECONNREFUSED on the second instance because the first holds the profile lock.
-import threading as _threading
 _CDP_LOCK = _threading.Lock()
 
 # ── URL patterns ──────────────────────────────────────────────────────────────
@@ -505,11 +505,12 @@ def _pick_best_video_url(photo: dict) -> Optional[str]:
 
 def _load_cookie_str(config: ConfigManager) -> str:
     try:
+        from http.cookiejar import MozillaCookieJar  # noqa: PLC0415
+
         from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
             _prepare_cookie_for_use,
             _resolve_cookie,
         )
-        from http.cookiejar import MozillaCookieJar  # noqa: PLC0415
 
         cookie_path = _resolve_cookie("https://www.kuaishou.com/", config)
         if not cookie_path:
@@ -635,6 +636,7 @@ def _inject_cookies_cdp(ctx, config: Optional[ConfigManager]) -> None:
         return
     try:
         from http.cookiejar import MozillaCookieJar  # noqa: PLC0415
+
         from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
             _prepare_cookie_for_use,
             _resolve_cookie,
@@ -710,7 +712,7 @@ def _strategy_cdp(
     ECONNREFUSED on the second instance due to the profile directory lock).
     """
     try:
-        from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415, F401
     except ImportError:
         logger.debug("Kuaishou strategy E: playwright not installed — skip")
         return None
@@ -728,9 +730,11 @@ def _strategy_cdp_locked(
     timeout: float = 45.0,
 ) -> tuple | None:
     """Inner implementation — called only while _CDP_LOCK is held."""
+    from playwright.sync_api import TimeoutError as PWTimeout  # noqa: PLC0415
+    from playwright.sync_api import sync_playwright
+
     # Single absolute deadline used by every phase below.
     _abs_deadline = time.monotonic() + timeout
-    from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
 
     _final_page_url = page_url  # updated to real URL after browser redirect
 

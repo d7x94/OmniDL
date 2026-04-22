@@ -348,8 +348,9 @@ def create_app(
         try:
             req = AnalyseRequest(url=url)
         except Exception as exc:
+            _exc_msg = str(exc)
             def _invalid() -> Generator[str, None, None]:
-                payload = json.dumps({"detail": str(exc)})
+                payload = json.dumps({"detail": _exc_msg})
                 yield f"event: error_result\ndata: {payload}\n\n"
             return StreamingResponse(
                 _invalid(),
