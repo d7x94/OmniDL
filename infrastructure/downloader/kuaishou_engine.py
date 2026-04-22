@@ -56,7 +56,7 @@ import threading as _threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
@@ -144,10 +144,10 @@ def is_kuaishou_url(url: str) -> bool:
 # ── Session factory ───────────────────────────────────────────────────────────
 
 
-def _make_session(cookie_str: str = ""):
+def _make_session(cookie_str: str = "") -> Any:
     try:
         from curl_cffi import requests as cffi_req  # noqa: PLC0415
-        session = cffi_req.Session(impersonate="chrome")
+        session: Any = cffi_req.Session(impersonate="chrome")
         if cookie_str:
             for part in cookie_str.split(";"):
                 part = part.strip()
