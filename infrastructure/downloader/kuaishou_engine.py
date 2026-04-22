@@ -728,6 +728,8 @@ def _strategy_cdp_locked(
     timeout: float = 45.0,
 ) -> tuple | None:
     """Inner implementation — called only while _CDP_LOCK is held."""
+    # Single absolute deadline used by every phase below.
+    _abs_deadline = time.monotonic() + timeout
     from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: PLC0415
 
     _final_page_url = page_url  # updated to real URL after browser redirect
@@ -801,6 +803,10 @@ def _strategy_cdp_locked(
         "--autoplay-policy=no-user-gesture-required",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
+        # Avoid GPU pipeline stall on low-end iGPU (e.g. Intel HD 620).
+        # CDP sessions do not need hardware rendering.
+        "--disable-gpu-sandbox",
+        "--disable-software-rasterizer",
     ]
     if profile_base.exists():
         cmd.append(f"--user-data-dir={profile_base}")
@@ -820,9 +826,14 @@ def _strategy_cdp_locked(
         with sync_playwright() as pw:
             _prog(8, "Kuaishou: đang kết nối CDP...")
             cdp_browser = None
-            deadline = time.monotonic() + 30.0
+            # Allow up to 30s for CDP connect but never past the absolute deadline
+            # minus 30s buffer for navigation + intercept on slow machines.
+            _cdp_connect_deadline = min(
+                time.monotonic() + 30.0,
+                _abs_deadline - 30.0,
+            )
             last_exc = None
-            while time.monotonic() < deadline:
+            while time.monotonic() < _cdp_connect_deadline:
                 try:
                     cdp_browser = pw.chromium.connect_over_cdp(
                         f"http://127.0.0.1:{port}", timeout=3_000
@@ -918,8 +929,9 @@ def _strategy_cdp_locked(
             logger.debug("Kuaishou CDP: navigating to %s", _nav_url)
 
             try:
+                _remaining = _abs_deadline - time.monotonic()
                 page.goto(_nav_url, wait_until="domcontentloaded",
-                          timeout=min(timeout * 0.4, 20) * 1_000)
+                          timeout=min(max(_remaining * 0.35, 8.0), 25.0) * 1_000)
             except PWTimeout:
                 pass
             except Exception as exc:
@@ -937,7 +949,11 @@ def _strategy_cdp_locked(
                 "if(p){try{p.click();}catch(e){}}"
                 "})()"
             )
-            _click_deadline = time.monotonic() + min(timeout * 0.5, 25.0)
+            # Click phase: at most 20s but must leave >=15s for poll before deadline.
+            _click_deadline = min(
+                time.monotonic() + 20.0,
+                _abs_deadline - 15.0,
+            )
             _clicked = False
             while time.monotonic() < _click_deadline and not cdn_url:
                 if not _clicked:
@@ -956,8 +972,8 @@ def _strategy_cdp_locked(
                 except Exception:
                     pass
 
-            # Poll loop — remaining timeout budget
-            loop_deadline = time.monotonic() + max(timeout * 0.5, 20.0)
+            # Poll loop — runs until absolute deadline minus 5s cleanup buffer.
+            loop_deadline = _abs_deadline - 5.0
             last_poll = 0.0
             while time.monotonic() < loop_deadline:
                 if cdn_url:
@@ -1141,7 +1157,7 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
 
         if result is None:
             logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
-            result = _strategy_cdp(resolved, config, timeout=90.0)
+            result = _strategy_cdp(resolved, config, timeout=120.0)
 
         if result is None:
             raise RuntimeError(
@@ -1244,7 +1260,7 @@ class KuaishouEngine:
                         "Referer": "https://www.kuaishou.com/",
                         "Range": "bytes=0-11",
                     },
-                    timeout=8,
+                    timeout=15,
                     allow_redirects=True,
                 )
                 _probe_sess.close()
@@ -1269,13 +1285,19 @@ class KuaishouEngine:
                 _need_reextract = True
 
         if _need_reextract:
-            if media_info.video_id:
+            # Always prefer canonical URL so _resolve_short_url is skipped entirely.
+            # Short URL HEAD+GET each timeout at 15 s on non-CN IP — if video_id
+            # is already known from the analyse step, constructing the canonical
+            # URL directly avoids 30+ s of pointless timeout churn.
+            if media_info.video_id and re.match(r"^3[A-Za-z0-9_-]{10,}$", media_info.video_id):
                 _reextract_url = (
                     f"https://www.kuaishou.com/short-video/{media_info.video_id}"
                 )
             else:
-                # task.url may be CDN URL (remote API) — fall back to original url field
-                _ks_m = re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I)
+                _ks_m = re.search(
+                    r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)",
+                    task.url, re.I,
+                )
                 _reextract_url = (
                     f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
                     if _ks_m else task.url

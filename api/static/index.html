@@ -1027,16 +1027,9 @@ async function doAnalyse() {
   if (!url) { toast('Enter a URL first'); return; }
   if (!connected) { toast('Not connected'); return; }
 
-  // Abort any in-flight analyse request before starting a new one
+  // Cancel any in-flight analyse
   if (_analyseAbortCtrl) { _analyseAbortCtrl.abort(); }
   _analyseAbortCtrl = new AbortController();
-
-  // Client-side timeout: abort after 65 s (server times out at 60 s,
-  // so the server error message reaches the client rather than a
-  // generic network error on iOS).
-  const _timeoutId = setTimeout(() => {
-    if (_analyseAbortCtrl) { _analyseAbortCtrl.abort(); }
-  }, 65_000);
 
   const btn      = document.getElementById('analyse-btn');
   const cancelBt = document.getElementById('analyse-cancel-btn');
@@ -1044,14 +1037,95 @@ async function doAnalyse() {
 
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Analysing…';
-  cancelBt.style.display = 'inline-flex';   // show Cancel button
+  cancelBt.style.display = 'inline-flex';
   stat.textContent = '';
   stat.style.color = '';
   document.getElementById('meta-card').style.display = 'none';
   analysedInfo = null;
 
+  // Use SSE streaming endpoint so iOS background suspend does not kill the
+  // request. The server sends ": keepalive" comments every 10 s while the
+  // Kuaishou CDP engine runs (~120 s max), then a single "result" or
+  // "error_result" event. If iOS drops the EventSource (background suspend),
+  // we reconnect transparently and wait for the same server job to finish —
+  // the server continues running regardless of client connectivity.
+  const _cancelled = _analyseAbortCtrl.signal;
+
+  function _buildStreamUrl() {
+    const base = cfg.host.replace(/\/+$/, '');
+    const tok  = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+    return base + '/api/analyse/stream?url=' + encodeURIComponent(url) + tok;
+  }
+
+  // Hard deadline: server times out at 180 s, add 15 s margin.
+  const _hardDeadline = Date.now() + 195_000;
+
   try {
-    const info = await api('POST', '/api/analyse', { url }, _analyseAbortCtrl.signal);
+    const info = await new Promise((resolve, reject) => {
+      if (_cancelled.aborted) { reject(new DOMException('', 'AbortError')); return; }
+
+      let _es = null;
+      let _reconnectTimer = null;
+      let _done = false;
+
+      function _cleanup() {
+        if (_es) { try { _es.close(); } catch(_) {} _es = null; }
+        if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      }
+
+      function _fail(msg) {
+        if (_done) return;
+        _done = true;
+        _cleanup();
+        reject(new Error(msg));
+      }
+
+      function _succeed(data) {
+        if (_done) return;
+        _done = true;
+        _cleanup();
+        resolve(data);
+      }
+
+      function _connect() {
+        if (_done || _cancelled.aborted) return;
+        if (Date.now() > _hardDeadline) { _fail('Analysis timed out'); return; }
+
+        _es = new EventSource(_buildStreamUrl());
+
+        _es.addEventListener('result', e => {
+          try { _succeed(JSON.parse(e.data)); }
+          catch(_) { _fail('Invalid response from server'); }
+        });
+
+        _es.addEventListener('error_result', e => {
+          try { _fail(JSON.parse(e.data).detail || 'Analysis failed'); }
+          catch(_) { _fail('Analysis failed'); }
+        });
+
+        // EventSource onerror fires on any connection drop (iOS background,
+        // network blip, etc.). Reconnect after 2 s while deadline not passed.
+        _es.onerror = () => {
+          if (_done) return;
+          _cleanup();
+          if (_cancelled.aborted) { reject(new DOMException('', 'AbortError')); return; }
+          if (Date.now() > _hardDeadline) { _fail('Analysis timed out'); return; }
+          stat.textContent = 'Reconnecting…';
+          stat.style.color = 'var(--text-sub, #888)';
+          _reconnectTimer = setTimeout(_connect, 2_000);
+        };
+      }
+
+      _cancelled.addEventListener('abort', () => {
+        _done = true;
+        _cleanup();
+        reject(new DOMException('', 'AbortError'));
+      });
+
+      _connect();
+    });
+
+    // Promise resolved — display result
     analysedInfo = info;
 
     document.getElementById('meta-title').textContent = info.title;
@@ -1068,7 +1142,6 @@ async function doAnalyse() {
     }
     document.getElementById('meta-card').style.display = 'block';
 
-    // Live stream: hide format/quality pickers, show live banner
     const formatRow  = document.getElementById('format-row');
     const liveBanner = document.getElementById('live-banner');
     if (info.is_live) {
@@ -1087,28 +1160,28 @@ async function doAnalyse() {
       stat.style.color = 'var(--success)';
     }
     document.getElementById('dl-btn').disabled = false;
+
   } catch(err) {
     if (err.name === 'AbortError') {
       stat.textContent = 'Analysis cancelled';
       stat.style.color = 'var(--text-sub, #888)';
     } else {
-      stat.textContent = '✗ ' + err.message;
+      stat.textContent = '✗ ' + (err.message || 'Load failed');
       stat.style.color = 'var(--danger)';
     }
   } finally {
-    clearTimeout(_timeoutId);
     _analyseAbortCtrl = null;
     btn.disabled = false;
     btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Analyse URL';
-    cancelBt.style.display = 'none';   // hide Cancel button
-    // If analyse was aborted/failed, analysedInfo is still null —
-    // restore format-row and hide live-banner so the UI is not stuck.
+    cancelBt.style.display = 'none';
     if (!analysedInfo) {
       document.getElementById('format-row').style.display  = '';
       document.getElementById('live-banner').style.display = 'none';
     }
   }
 }
+
+
 
 async function doDownload() {
   const url = document.getElementById('url-input').value.trim();

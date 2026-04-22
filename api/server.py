@@ -74,6 +74,35 @@ _sse_clients: list[queue.Queue] = []
 _sse_lock    = threading.Lock()
 _PING_INTERVAL = 15  # seconds — keeps iOS Safari connections alive
 
+# ── Analyse job cache ─────────────────────────────────────────────────────────
+# Deduplicates concurrent SSE analyse requests for the same URL.
+# When a client reconnects (iOS background suspend), the new EventSource
+# attaches to the in-flight job instead of spawning a second extract run.
+# Entry lifecycle: created when job starts, removed 30 s after job completes
+# (gives the client time to reconnect and read the cached result).
+#
+# Per entry:
+#   "done"   threading.Event  — set when result/error is ready
+#   "result" dict             — {"info": MediaInfo} or {"error": str}
+#   "ts"     float            — monotonic time when done was set
+#   "refs"   int              — number of active SSE streams on this job
+
+_analyse_cache: dict[str, dict] = {}
+_analyse_cache_lock = threading.Lock()
+_ANALYSE_CACHE_TTL  = 30.0  # seconds to keep result after completion
+
+
+def _analyse_cache_cleanup() -> None:
+    """Remove completed entries older than TTL. Must be called under _analyse_cache_lock."""
+    now = time.monotonic()
+    stale = [
+        k for k, v in _analyse_cache.items()
+        if v["done"].is_set() and v.get("refs", 0) == 0
+        and now - v.get("ts", now) > _ANALYSE_CACHE_TTL
+    ]
+    for k in stale:
+        del _analyse_cache[k]
+
 # ── Runtime server state (module-level so stop/restart can reach it) ─────────
 _active_server: "uvicorn.Server | None" = None   # type: ignore[name-defined]
 _active_thread: threading.Thread | None = None
@@ -275,12 +304,12 @@ def create_app(
             done.set()
 
         service.analyse_url(body.url, on_done=on_done, on_error=on_error)
-        done.wait(timeout=120)
+        done.wait(timeout=180)
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         if "info" not in result:
-            raise HTTPException(status_code=408, detail="Analysis timed out after 120 s")
+            raise HTTPException(status_code=408, detail="Analysis timed out after 180 s")
 
         info: MediaInfo = result["info"]
         return AnalyseResponse(
@@ -298,18 +327,12 @@ def create_app(
 
     # ── URL analysis — SSE streaming variant ─────────────────────────────
     #
-    # Identical to POST /api/analyse but delivered as Server-Sent Events so
-    # that iOS URLSession (60 s hard timeout) does not cancel long Kuaishou
-    # CDP extractions (~75 s).  The client opens an EventSource on this
-    # endpoint; the server sends ": keepalive" comments every 10 s and a
-    # final "event: result" or "event: error" frame when done.
-    #
-    # Usage (iOS JS):
-    #   const es = new EventSource(
-    #     `/api/analyse/stream?url=<encoded>&token=<token>`
-    #   );
-    #   es.addEventListener("result", e => { ... JSON.parse(e.data) ... });
-    #   es.addEventListener("error_result", e => { ... });
+    # Uses _analyse_cache to deduplicate concurrent requests for the same URL.
+    # If a job is already running (e.g. previous EventSource from before iOS
+    # background suspend), the new connection attaches to the existing job's
+    # threading.Event and waits — no second extract is spawned.
+    # If the job completed within the last 30 s, the cached result is returned
+    # immediately without touching the download service at all.
 
     @app.get("/api/analyse/stream")
     async def analyse_stream(
@@ -317,14 +340,11 @@ def create_app(
         _: None = Depends(_require_auth),
     ):
         """
-        SSE streaming analyse — workaround for iOS URLSession 60 s timeout.
+        SSE streaming analyse — deduplicates concurrent requests for same URL.
         Sends keepalive comments every 10 s while the background worker runs,
         then sends a single "result" or "error_result" event and closes.
         """
-        result: dict = {}
-        done = threading.Event()
-
-        # Validate URL using the same Pydantic model as the blocking endpoint.
+        # Validate + normalise URL (strips share text, trailing punctuation).
         try:
             req = AnalyseRequest(url=url)
         except Exception as exc:
@@ -339,53 +359,83 @@ def create_app(
 
         clean_url = req.url
 
-        def on_done(info: MediaInfo) -> None:
-            result["info"] = info
-            done.set()
+        with _analyse_cache_lock:
+            _analyse_cache_cleanup()
+            entry = _analyse_cache.get(clean_url)
+            if entry is None:
+                # First request for this URL — create job and start extract.
+                entry = {
+                    "done":   threading.Event(),
+                    "result": {},
+                    "ts":     0.0,
+                    "refs":   0,
+                }
+                _analyse_cache[clean_url] = entry
 
-        def on_error(err: str) -> None:
-            result["error"] = err
-            done.set()
+                def on_done(info: MediaInfo) -> None:
+                    entry["result"]["info"] = info
+                    entry["ts"] = time.monotonic()
+                    entry["done"].set()
 
-        service.analyse_url(clean_url, on_done=on_done, on_error=on_error)
+                def on_error(err: str) -> None:
+                    entry["result"]["error"] = err
+                    entry["ts"] = time.monotonic()
+                    entry["done"].set()
+
+                service.analyse_url(clean_url, on_done=on_done, on_error=on_error)
+                logger.debug("Analyse cache: new job for %s", clean_url[:80])
+            else:
+                logger.debug(
+                    "Analyse cache: attaching to existing job for %s (done=%s)",
+                    clean_url[:80], entry["done"].is_set(),
+                )
+            entry["refs"] += 1
 
         def _stream() -> Generator[str, None, None]:
-            deadline = time.monotonic() + 120.0
-            keepalive_interval = 10.0
-            last_ka = time.monotonic()
+            try:
+                done   = entry["done"]
+                result = entry["result"]
 
-            while not done.is_set():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                wait_s = min(keepalive_interval, remaining)
-                done.wait(timeout=wait_s)
-                now = time.monotonic()
-                if not done.is_set() and now - last_ka >= keepalive_interval:
-                    yield ": keepalive\n\n"
-                    last_ka = now
+                deadline = time.monotonic() + 180.0
+                keepalive_interval = 10.0
+                last_ka = time.monotonic()
 
-            if "error" in result:
-                payload = json.dumps({"detail": result["error"]})
-                yield f"event: error_result\ndata: {payload}\n\n"
-            elif "info" in result:
-                info: MediaInfo = result["info"]
-                payload = json.dumps({
-                    "url":            info.url,
-                    "title":          info.title,
-                    "uploader":       info.uploader,
-                    "duration":       info.duration,
-                    "thumbnail":      info.thumbnail,
-                    "platform":       info.platform,
-                    "formats":        info.formats,
-                    "is_live":        info.is_live,
-                    "playlist_count": len(info.playlist_entries),
-                    "source_engine":  info.source_engine,
-                })
-                yield f"event: result\ndata: {payload}\n\n"
-            else:
-                payload = json.dumps({"detail": "Analysis timed out after 120 s"})
-                yield f"event: error_result\ndata: {payload}\n\n"
+                while not done.is_set():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    wait_s = min(keepalive_interval, remaining)
+                    done.wait(timeout=wait_s)
+                    now = time.monotonic()
+                    if not done.is_set() and now - last_ka >= keepalive_interval:
+                        yield ": keepalive\n\n"
+                        last_ka = now
+
+                if "error" in result:
+                    payload = json.dumps({"detail": result["error"]})
+                    yield f"event: error_result\ndata: {payload}\n\n"
+                elif "info" in result:
+                    info: MediaInfo = result["info"]
+                    payload = json.dumps({
+                        "url":            info.url,
+                        "title":          info.title,
+                        "uploader":       info.uploader,
+                        "duration":       info.duration,
+                        "thumbnail":      info.thumbnail,
+                        "platform":       info.platform,
+                        "formats":        info.formats,
+                        "is_live":        info.is_live,
+                        "playlist_count": len(info.playlist_entries),
+                        "source_engine":  info.source_engine,
+                    })
+                    yield f"event: result\ndata: {payload}\n\n"
+                else:
+                    payload = json.dumps({"detail": "Analysis timed out after 180 s"})
+                    yield f"event: error_result\ndata: {payload}\n\n"
+            finally:
+                # Decrement ref count so TTL cleanup can remove the entry.
+                with _analyse_cache_lock:
+                    entry["refs"] = max(0, entry["refs"] - 1)
 
         return StreamingResponse(
             _stream(),
