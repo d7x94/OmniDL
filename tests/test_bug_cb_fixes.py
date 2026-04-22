@@ -152,11 +152,15 @@ class TestCurlCffiExtractInfoOpts:
         fake_target.client = "chrome"
         fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"
 
+        # Use a non-Kuaishou URL so extract_info does NOT route to kuaishou_engine
+        # (which never constructs YoutubeDL and would leave `captured` empty).
+        test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         with patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available), \
              patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None), \
+             patch.object(mod, "_check_unsupported_url", return_value=None), \
              patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             try:
-                engine.extract_info("https://v.kuaishou.com/K9Zu4Iez")
+                engine.extract_info(test_url)
             except Exception:
                 pass  # we only need captured opts
 
@@ -404,9 +408,12 @@ class TestKuaishhouPreResolver:
                 captured_urls.append(url)
                 return fake_info
 
+        import re as _re
+        import infrastructure.downloader.kuaishou_engine as ks_mod
         with patch.object(mod, "_KUAISHOU_SHORT_RE",
                           mod.re.compile(r"v\.kuaishou\.com/", mod.re.I)), \
              patch.object(mod, "_resolve_kuaishou_url", return_value=resolved) as mock_resolve, \
+             patch.object(ks_mod, "_KUAISHOU_RE", _re.compile(r"(?!)")), \
              patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
 
