@@ -296,6 +296,106 @@ def create_app(
             source_engine=info.source_engine,  # BUG-BT fix: forward engine choice to client
         )
 
+    # ── URL analysis — SSE streaming variant ─────────────────────────────
+    #
+    # Identical to POST /api/analyse but delivered as Server-Sent Events so
+    # that iOS URLSession (60 s hard timeout) does not cancel long Kuaishou
+    # CDP extractions (~75 s).  The client opens an EventSource on this
+    # endpoint; the server sends ": keepalive" comments every 10 s and a
+    # final "event: result" or "event: error" frame when done.
+    #
+    # Usage (iOS JS):
+    #   const es = new EventSource(
+    #     `/api/analyse/stream?url=<encoded>&token=<token>`
+    #   );
+    #   es.addEventListener("result", e => { ... JSON.parse(e.data) ... });
+    #   es.addEventListener("error_result", e => { ... });
+
+    @app.get("/api/analyse/stream")
+    async def analyse_stream(
+        url: str = Query(...),
+        _: None = Depends(_require_auth),
+    ):
+        """
+        SSE streaming analyse — workaround for iOS URLSession 60 s timeout.
+        Sends keepalive comments every 10 s while the background worker runs,
+        then sends a single "result" or "error_result" event and closes.
+        """
+        result: dict = {}
+        done = threading.Event()
+
+        # Validate URL using the same Pydantic model as the blocking endpoint.
+        try:
+            req = AnalyseRequest(url=url)
+        except Exception as exc:
+            def _invalid() -> Generator[str, None, None]:
+                payload = json.dumps({"detail": str(exc)})
+                yield f"event: error_result\ndata: {payload}\n\n"
+            return StreamingResponse(
+                _invalid(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        clean_url = req.url
+
+        def on_done(info: MediaInfo) -> None:
+            result["info"] = info
+            done.set()
+
+        def on_error(err: str) -> None:
+            result["error"] = err
+            done.set()
+
+        service.analyse_url(clean_url, on_done=on_done, on_error=on_error)
+
+        def _stream() -> Generator[str, None, None]:
+            deadline = time.monotonic() + 120.0
+            keepalive_interval = 10.0
+            last_ka = time.monotonic()
+
+            while not done.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                wait_s = min(keepalive_interval, remaining)
+                done.wait(timeout=wait_s)
+                now = time.monotonic()
+                if not done.is_set() and now - last_ka >= keepalive_interval:
+                    yield ": keepalive\n\n"
+                    last_ka = now
+
+            if "error" in result:
+                payload = json.dumps({"detail": result["error"]})
+                yield f"event: error_result\ndata: {payload}\n\n"
+            elif "info" in result:
+                info: MediaInfo = result["info"]
+                payload = json.dumps({
+                    "url":            info.url,
+                    "title":          info.title,
+                    "uploader":       info.uploader,
+                    "duration":       info.duration,
+                    "thumbnail":      info.thumbnail,
+                    "platform":       info.platform,
+                    "formats":        info.formats,
+                    "is_live":        info.is_live,
+                    "playlist_count": len(info.playlist_entries),
+                    "source_engine":  info.source_engine,
+                })
+                yield f"event: result\ndata: {payload}\n\n"
+            else:
+                payload = json.dumps({"detail": "Analysis timed out after 120 s"})
+                yield f"event: error_result\ndata: {payload}\n\n"
+
+        return StreamingResponse(
+            _stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control":     "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     # ── Download ──────────────────────────────────────────────────────────
 
     @app.post("/api/download", response_model=TaskResponse)

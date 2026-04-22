@@ -1008,11 +1008,34 @@ def _strategy_cdp_locked(
             except Exception:
                 _final_page_url = page_url
 
-            # Close only the tab we opened — leave other tabs untouched.
+            # Close the tab we opened. close() sends CDP Target.closeTarget which
+            # is reliable; we also sweep any remaining kuaishou tabs in case the
+            # player auto-opened a second one or a previous run leaked a tab.
             try:
                 page.close()
+                page.wait_for_event("close", timeout=3_000)
             except Exception:
                 pass
+
+            # Sweep: close any leftover kuaishou tabs (leaked from previous runs
+            # or auto-opened by the player). Only touch tabs whose URL contains
+            # kuaishou.com — never close the user's own tabs.
+            try:
+                for _p in list(ctx.pages):
+                    try:
+                        _u = _p.url
+                    except Exception:
+                        continue
+                    if "kuaishou.com" in _u.lower() or "kwai.com" in _u.lower():
+                        try:
+                            _p.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Disconnect from CDP without closing the browser — the browser
+            # belongs to the user. connect_over_cdp().close() disconnects only.
             try:
                 cdp_browser.close()
             except Exception:
@@ -1022,22 +1045,32 @@ def _strategy_cdp_locked(
         logger.debug("Kuaishou strategy E: CDP session error: %s", exc)
         return None
     finally:
-        # Kill Brave and wait for full process exit before releasing _CDP_LOCK.
-        # terminate() alone is not enough — the profile directory lock may persist
-        # for hundreds of ms after SIGTERM, causing ECONNREFUSED on the next launch.
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=3)
-        except Exception:
+        # proc is the launcher Popen'd above. When Brave was already running,
+        # Chromium's single-instance IPC forwards the new-tab request to the
+        # existing instance and the launcher exits immediately (returncode != 0).
+        # In that case terminate()/kill() are no-ops on a dead pid, which is fine.
+        # When Brave was NOT running, proc IS the browser — terminate it so the
+        # next invocation gets a fresh instance without a stale profile lock.
+        _already_exited = proc.poll() is not None
+        if not _already_exited:
+            # Browser was freshly spawned by us — shut it down.
             try:
-                proc.kill()
-                proc.wait(timeout=3)
+                proc.terminate()
             except Exception:
                 pass
-        time.sleep(0.5)  # extra buffer for profile lock release on Windows
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                except Exception:
+                    pass
+            time.sleep(0.5)  # extra buffer for profile lock release on Windows
+        else:
+            # Launcher already exited (existing Brave instance reused).
+            # The browser stays alive — tabs were closed via CDP above.
+            logger.debug("Kuaishou strategy E: launcher already exited (existing browser reused)")
 
     if not cdn_url:
         logger.debug("Kuaishou strategy E: no CDN URL captured within %.0fs", timeout)
