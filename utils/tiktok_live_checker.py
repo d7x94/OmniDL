@@ -50,21 +50,75 @@ _LIVE_URL_RE = re.compile(
     re.I,
 )
 
+# BUG-CH FIX: TikTok short-link domains (vt.tiktok.com, vm.tiktok.com).
+# User pastes a share link like https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/
+# which redirects to the canonical /@username URL.
+# is_tiktok_profile_url / extract_tiktok_username must resolve these first
+# so Live Monitor recognises them as profile URLs instead of falling through
+# to analyse_url() which then fails with "not currently live".
+_SHORT_LINK_RE = re.compile(
+    r"^https?://(?:vt|vm)\.tiktok\.com/",
+    re.I,
+)
 
-def is_tiktok_profile_url(url: str) -> bool:
-    """Return True if *url* is a TikTok profile page (not a live/video URL)."""
+
+def _resolve_short_link(url: str, proxy: str = "") -> str:
+    """Follow HTTP redirects on a TikTok short link and return the final URL.
+
+    Returns *url* unchanged if the redirect does not land on a tiktok.com URL,
+    or on any network error (fail-safe: caller still gets the original URL).
+    Uses HEAD to avoid downloading the page body.
+    """
+    import requests
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
+    try:
+        resp = requests.head(
+            url,
+            headers=headers,
+            proxies=proxies,
+            timeout=_REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        final = resp.url
+        if "tiktok.com" in final:
+            logger.debug("tiktok_live_checker: resolved %s -> %s", url, final)
+            return final
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tiktok_live_checker: short-link resolve failed for %s: %s", url, exc)
+    return url
+
+
+def is_tiktok_profile_url(url: str, proxy: str = "") -> bool:
+    """Return True if *url* is a TikTok profile page (not a live/video URL).
+
+    Automatically resolves vt/vm.tiktok.com short links before matching.
+    """
     stripped = url.strip()
+    if _SHORT_LINK_RE.match(stripped):
+        stripped = _resolve_short_link(stripped, proxy=proxy)
     if _LIVE_URL_RE.match(stripped):
         return False
     return bool(_PROFILE_RE.match(stripped))
 
 
-def extract_tiktok_username(url: str) -> Optional[str]:
+def extract_tiktok_username(url: str, proxy: str = "") -> Optional[str]:
     """Extract the username from a TikTok profile URL.
 
+    Automatically resolves vt/vm.tiktok.com short links before matching.
     Returns None if the URL is not a recognisable profile URL.
     """
-    m = _PROFILE_RE.match(url.strip())
+    stripped = url.strip()
+    if _SHORT_LINK_RE.match(stripped):
+        stripped = _resolve_short_link(stripped, proxy=proxy)
+    m = _PROFILE_RE.match(stripped)
     return m.group(1).lower() if m else None
 
 

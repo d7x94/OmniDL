@@ -1068,8 +1068,25 @@ class YtDlpEngine:
 
         if is_live:
             rec_ts = time.strftime("%Y-%m-%d %H-%M")
+            # BUG-BW FIX: On Windows, yt-dlp derives the named pipe path from
+            # outtmpl.  If outtmpl expands to a Unicode string (Vietnamese
+            # uploader name, emoji in title), Windows cannot create the pipe
+            # and ffmpeg exits with STATUS_PIPE_NOT_AVAILABLE (0xCBAE0008).
+            # restrictfilenames=True sanitises file-system-illegal chars only —
+            # it does NOT transliterate Unicode to ASCII, so the crash persists.
+            #
+            # Fix: on Windows, build outtmpl against the ASCII-safe system temp
+            # dir instead of output_dir.  After the download completes the .ts
+            # file is moved to output_dir by the post-download block below.
+            # Non-Windows paths are unchanged — named pipes are not used there.
+            import sys as _sys_outtmpl
+            if _sys_outtmpl.platform == "win32":
+                _live_outtmpl_dir = Path(tempfile.gettempdir()) / "omnidl_live"
+                _live_outtmpl_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                _live_outtmpl_dir = output_dir
             outtmpl = str(
-                output_dir
+                _live_outtmpl_dir
                 / (
                     f"%(uploader,channel|Unknown).50B"
                     f" - [LIVE] {rec_ts}"
@@ -1302,22 +1319,11 @@ class YtDlpEngine:
             _live_tmp = Path(tempfile.gettempdir()) / "omnidl_live"
             _live_tmp.mkdir(parents=True, exist_ok=True)
             opts["paths"] = {"temp": str(_live_tmp)}
-            # BUG-BV FIX: ffmpeg exit code 3419392776 (0xCBAE0008,
-            # STATUS_PIPE_NOT_AVAILABLE) on Windows when the live stream
-            # title contains Unicode/emoji characters.  yt-dlp passes the
-            # final output path to ffmpeg as a command-line argument; Windows
-            # ffmpeg cannot open a path with non-ASCII characters when the
-            # process codepage is not UTF-8.
-            # paths["temp"] only redirects fragment/temp files — the final
-            # output path is still derived from outtmpl and may contain emoji.
-            # restrictfilenames=True causes yt-dlp to sanitise the filename
-            # to ASCII-safe characters before constructing the ffmpeg command,
-            # eliminating the crash.  Applied only for live streams because
-            # VOD downloads are not affected (ffmpeg is not called for HLS
-            # muxing in that path).
-            import sys as _sys
-            if _sys.platform == "win32":
-                opts["restrictfilenames"] = True
+            # BUG-BW FIX: restrictfilenames removed — superseded by redirecting
+            # outtmpl to the ASCII temp dir above.  restrictfilenames only
+            # replaced file-system-illegal chars, not Unicode, so the named
+            # pipe path could still contain Vietnamese/emoji and crash ffmpeg
+            # with STATUS_PIPE_NOT_AVAILABLE (0xCBAE0008).
 
         # merge_output_format tells yt-dlp to invoke ffmpeg to remux/merge the
         # downloaded streams.  For livestreams the HLS segments are already a
@@ -1579,6 +1585,25 @@ class YtDlpEngine:
                     logger.warning("No media file found in %s", output_dir)
             except Exception as e:
                 logger.warning("Size scan failed: %s", e)
+
+        # BUG-BW FIX: Move live recording from ASCII temp dir to output_dir.
+        # On Windows, outtmpl was redirected to tempdir to avoid Unicode named
+        # pipe paths.  Now that ffmpeg has finished writing, move the .ts file
+        # to where the user expects it (output_dir).
+        import sys as _sys_mv
+        if is_live and _sys_mv.platform == "win32" and task.filename:
+            _src = Path(task.filename)
+            if _src.is_file() and _src.parent.resolve() != output_dir.resolve():
+                try:
+                    import shutil as _shutil
+                    _dst = output_dir / _src.name
+                    _shutil.move(str(_src), str(_dst))
+                    task.filename = str(_dst)
+                    logger.info("Live recording moved to output dir: %s", task.filename)
+                except Exception as _mv_exc:
+                    logger.warning(
+                        "Failed to move live recording to output dir: %s", _mv_exc
+                    )
 
         # Always clean up the decrypted temp cookie file, even on error
         if _cookie_temp_dl:

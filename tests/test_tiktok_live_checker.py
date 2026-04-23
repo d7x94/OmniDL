@@ -974,3 +974,79 @@ class TestServiceFacadeTiktok:
             on_done=on_done,
             on_error=on_error,
         )
+
+
+# ---------------------------------------------------------------------------
+# 22-26. Short-link resolution (BUG-CH FIX)
+# ---------------------------------------------------------------------------
+
+class TestShortLinkResolution:
+    """vt.tiktok.com and vm.tiktok.com short links must be resolved before
+    the profile regex is applied — otherwise Live Monitor ignores them."""
+
+    def _head_resp(self, final_url: str) -> MagicMock:
+        resp = MagicMock()
+        resp.url = final_url
+        return resp
+
+    def test_vt_short_link_recognised_as_profile(self):
+        """vt.tiktok.com link that resolves to /@username -> True."""
+        from utils.tiktok_live_checker import is_tiktok_profile_url
+        resolved = "https://www.tiktok.com/@q_kiet2212"
+        with patch("requests.head", return_value=self._head_resp(resolved)):
+            assert is_tiktok_profile_url("https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/") is True
+
+    def test_vm_short_link_recognised_as_profile(self):
+        """vm.tiktok.com link that resolves to /@username -> True."""
+        from utils.tiktok_live_checker import is_tiktok_profile_url
+        resolved = "https://www.tiktok.com/@someuser"
+        with patch("requests.head", return_value=self._head_resp(resolved)):
+            assert is_tiktok_profile_url("https://vm.tiktok.com/ABCDEF/") is True
+
+    def test_vt_short_link_extract_username(self):
+        """extract_tiktok_username resolves short link and returns username."""
+        from utils.tiktok_live_checker import extract_tiktok_username
+        resolved = "https://www.tiktok.com/@q_kiet2212"
+        with patch("requests.head", return_value=self._head_resp(resolved)):
+            assert extract_tiktok_username("https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/") == "q_kiet2212"
+
+    def test_short_link_resolving_to_video_returns_false(self):
+        """Short link that resolves to a video URL -> False (not a profile)."""
+        from utils.tiktok_live_checker import is_tiktok_profile_url
+        resolved = "https://www.tiktok.com/@user/video/123456789"
+        with patch("requests.head", return_value=self._head_resp(resolved)):
+            assert is_tiktok_profile_url("https://vt.tiktok.com/ZZZZ/") is False
+
+    def test_short_link_resolve_network_error_returns_false(self):
+        """If HEAD request fails, short link is not mistaken for a profile."""
+        import requests as req
+        from utils.tiktok_live_checker import is_tiktok_profile_url
+        with patch("requests.head", side_effect=req.exceptions.ConnectionError("fail")):
+            # Falls back to original URL which doesn't match _PROFILE_RE -> False
+            assert is_tiktok_profile_url("https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/") is False
+
+    def test_canonical_url_does_not_call_head(self):
+        """Non-short-link URLs must NOT trigger a HEAD request."""
+        from utils.tiktok_live_checker import is_tiktok_profile_url
+        with patch("requests.head") as mock_head:
+            result = is_tiktok_profile_url("https://www.tiktok.com/@someuser")
+        mock_head.assert_not_called()
+        assert result is True
+
+    def test_extract_username_canonical_no_head(self):
+        """extract_tiktok_username on canonical URL must NOT trigger HEAD."""
+        from utils.tiktok_live_checker import extract_tiktok_username
+        with patch("requests.head") as mock_head:
+            result = extract_tiktok_username("https://www.tiktok.com/@q_kiet2212")
+        mock_head.assert_not_called()
+        assert result == "q_kiet2212"
+
+    def test_proxy_forwarded_to_head_request(self):
+        """proxy param is forwarded to requests.head during short-link resolve."""
+        from utils.tiktok_live_checker import is_tiktok_profile_url
+        resolved = "https://www.tiktok.com/@user"
+        resp = self._head_resp(resolved)
+        with patch("requests.head", return_value=resp) as mock_head:
+            is_tiktok_profile_url("https://vt.tiktok.com/ABCD/", proxy="http://127.0.0.1:8080")
+        _, kwargs = mock_head.call_args
+        assert kwargs.get("proxies", {}).get("http") == "http://127.0.0.1:8080"

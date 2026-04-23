@@ -338,12 +338,11 @@ class DownloadService:
             extract_tiktok_username,
         )
 
-        username = extract_tiktok_username(url)
+        proxy = self._config.proxy
+        username = extract_tiktok_username(url, proxy=proxy)
         if not username:
             on_error("Không thể lấy username từ URL TikTok.")
             return
-
-        proxy = self._config.proxy
 
         def _worker() -> None:
             try:

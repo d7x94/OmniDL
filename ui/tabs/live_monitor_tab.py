@@ -294,15 +294,19 @@ class LiveMonitorTab(ctk.CTkFrame):
             return
 
         # Detect profile URL — supports Instagram and TikTok
+        # BUG-CH FIX: pass proxy so vt/vm.tiktok.com short links are resolved
+        # before the regex match; without this, short links return False and
+        # fall through to analyse_url() which fails with "not currently live".
+        _proxy            = self._app.config.proxy
         is_ig_profile     = is_instagram_profile_url(url)
-        is_tiktok_profile = is_tiktok_profile_url(url)
+        is_tiktok_profile = is_tiktok_profile_url(url, proxy=_proxy)
         is_profile        = is_ig_profile or is_tiktok_profile
 
         if is_ig_profile:
             username         = extract_instagram_username(url) or ""
             profile_platform = "instagram"
         elif is_tiktok_profile:
-            username         = extract_tiktok_username(url) or ""
+            username         = extract_tiktok_username(url, proxy=_proxy) or ""
             profile_platform = "tiktok"
         else:
             username         = ""
