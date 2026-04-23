@@ -395,6 +395,23 @@ class DownloadManager:
                     )
                     break  # stop yt-dlp retries; gallery-dl attempt follows below
 
+                # BUG-CI FIX: ffmpeg exit error on a livestream task is a hard
+                # error — HLS URLs from TikTok expire ~1-2 minutes after
+                # extract_info().  Retrying the same expired URL always fails.
+                # Only treat as hard error for live tasks; VOD ffmpeg failures
+                # (e.g. merge codec mismatch) remain retryable.
+                _is_live_task = bool(
+                    task.media_info is not None and task.media_info.is_live
+                )
+                if _is_live_task and "ffmpeg exited with code" in msg:
+                    logger.warning(
+                        "Hard error for live task %s (no retry — HLS URL expired "
+                        "or stream unavailable): %s",
+                        task.id, exc,
+                    )
+                    last_exc = exc
+                    break
+
                 # Hard errors: stop immediately, no retry.
                 if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
                     logger.warning(

@@ -362,6 +362,19 @@ def _friendly_error(msg: str) -> str:
             "This content is geo-restricted and not available in your region.\n"
             "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
         )
+    # ffmpeg exit code on livestream — HLS URL expired or stream ended/unavailable.
+    # 3419392776 = 0xCBAE0008 = STATUS_PIPE_NOT_AVAILABLE (Windows named pipe).
+    # Also covers non-Windows ffmpeg failures (any non-zero exit from ffmpeg).
+    if "ffmpeg exited with code" in msg_l:
+        return (
+            "Không thể ghi livestream — ffmpeg báo lỗi.\n"
+            "Nguyên nhân thường gặp:\n"
+            "  • Link livestream đã hết hạn (URL TikTok expire sau ~1–2 phút)\n"
+            "    → Sao chép lại link và thử tải ngay lập tức\n"
+            "  • Livestream đã kết thúc hoặc bị tạm dừng\n"
+            "  • Kết nối mạng không ổn định trong quá trình ghi\n"
+            "Nếu lỗi vẫn xảy ra: thử tải lại link hoặc đợi livestream ổn định."
+        )
     if "your ip" in msg_l and "blocked" in msg_l:
         return (
             "IP của bạn bị TikTok/nền tảng chặn truy cập bài đăng này.\n"
