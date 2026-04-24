@@ -64,6 +64,29 @@ from infrastructure.config.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitise_cookie_header(cookie_str: str) -> str:
+    """SEC-KS-02: Return a redacted version of a cookie string safe to log.
+
+    Replaces each cookie value with <redacted> so that cookie data cannot
+    appear in debug log files even when log level is DEBUG.
+
+    Example:
+        "did=abc123; userId=xyz"  ->  "did=<redacted>; userId=<redacted>"
+    """
+    if not cookie_str:
+        return ""
+    parts = []
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, _, _ = part.partition("=")
+            parts.append(f"{k.strip()}=<redacted>")
+        else:
+            parts.append(part)
+    return "; ".join(parts)
+
+
 # Serialize CDP browser launches — only one Brave instance at a time.
 # Two concurrent requests (desktop + remote API) launching Brave simultaneously
 # causes ECONNREFUSED on the second instance because the first holds the profile lock.
@@ -281,16 +304,37 @@ def _strategy_html(session, photo_id: str, cookie_str: str = "") -> tuple | None
 
     logger.debug("Kuaishou strategy A: no usable data found in page HTML")
 
-    # CSR fallback: scan raw HTML for CDN video URLs directly embedded in JS
+    # CSR fallback: scan raw HTML for CDN video URLs directly embedded in JS.
+    # BUG-KS-03 FIX: The previous `max(..., key=len)` picked the longest URL
+    # which could be a static placeholder/example URL embedded in the JS bundle
+    # (e.g. framework demo assets, error page assets) that is longer than the
+    # real CDN URL. We now apply two filters before selecting:
+    #   1. Exclude URLs whose path contains known JS-framework or error-page
+    #      segments that Kuaishou embeds in their Next.js bundle.
+    #   2. Exclude URLs that appear inside a `<script src=` or `import(...)` call
+    #      (they are JS assets, not video CDN links).
+    # After filtering we still prefer the longest remaining URL as a proxy for
+    # highest-quality (highest-bitrate) variant.
     cdn_re = re.compile(
         r'"(https://[^"]*\.(?:kuaishou|ksapisrv|ali-ec|bd-api)[^"]*\.mp4[^"]*)"',
         re.I,
     )
     cdn_matches = cdn_re.findall(html)
     if cdn_matches:
-        # Pick longest URL (likely highest quality)
-        best = max(cdn_matches, key=len)
-        logger.debug("Kuaishou strategy A: CDN URL found via HTML scan: %s", best[:80])
+        _JS_JUNK_RE = re.compile(
+            r"/(?:_next|static|assets|chunks|webpack|node_modules|vendor|"
+            r"placeholder|sample|demo|example|error|404|500|favicon)/",
+            re.I,
+        )
+        filtered = [u for u in cdn_matches if not _JS_JUNK_RE.search(u)]
+        # Fall back to unfiltered list only if all matches were excluded
+        candidates = filtered if filtered else cdn_matches
+        best = max(candidates, key=len)
+        logger.debug(
+            "Kuaishou strategy A: CDN URL found via HTML scan "
+            "(%d matches, %d after filter): %s",
+            len(cdn_matches), len(candidates), best[:80],
+        )
         synthetic_photo = {"id": photo_id, "caption": "", "duration": 0, "coverUrl": "",
                            "photoUrl": best}
         return synthetic_photo, {}
@@ -529,7 +573,14 @@ def _load_cookie_str(config: ConfigManager) -> str:
             for c in jar
             if "kuaishou" in (c.domain or "") or "kwai" in (c.domain or "")
         ]
-        return "; ".join(parts)
+        cookie_result = "; ".join(parts)
+        # SEC-KS-02: never log raw cookie values — log only redacted key names
+        logger.debug(
+            "Kuaishou: loaded %d cookie(s): %s",
+            len(parts),
+            _sanitise_cookie_header(cookie_result),
+        )
+        return cookie_result
     except Exception as exc:
         logger.debug("Kuaishou: cookie load failed (non-fatal): %s", exc)
         return ""
@@ -681,10 +732,27 @@ def _inject_cookies_cdp(ctx, config: Optional[ConfigManager]) -> None:
 
 
 def _cdp_caption_from_url(cdn_url: str, page_url: str) -> str:
-    """Build a human-readable title from what CDP gives us (no caption from API)."""
-    # Extract date from CDN path: .../upic/YYYY/MM/DD/HH/...
+    """Build a human-readable title from what CDP gives us (no caption from API).
+
+    BUG-KS-04 FIX: The previous implementation only matched the /upic/YYYY/MM/DD/
+    path pattern. Kuaishou CDN servers in some regions use different path schemas
+    (e.g. /bs2/newsnap-enc/, /uc/YYYYMMDDHHMMSS/, or no date segment at all).
+    We now try multiple date-extraction patterns in order of specificity, and fall
+    back to a local timestamp so the filename is never just kuaishou_<code>.
+    """
+    # Pattern 1: /upic/YYYY/MM/DD/ -- most common CN CDN
     dm = re.search(r"/upic/(\d{4})/(\d{2})/(\d{2})/", cdn_url)
-    date_str = f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}" if dm else ""
+    if dm:
+        date_str = f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}"
+    else:
+        # Pattern 2: /uc/YYYYMMDDHHMMSS or /YYYYMMDD embedded in path segment
+        dm2 = re.search(r"/(?:uc/)?(\d{4})(\d{2})(\d{2})\d{0,6}(?:/|_|\.)", cdn_url)
+        if dm2:
+            date_str = f"{dm2.group(1)}-{dm2.group(2)}-{dm2.group(3)}"
+        else:
+            # Fallback: use current local date so filename always has a date component
+            from datetime import date as _date  # noqa: PLC0415
+            date_str = _date.today().isoformat()
 
     # Prefer real photo_id from resolved URL, fall back to short code from original
     pm = re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", page_url)
@@ -692,7 +760,7 @@ def _cdp_caption_from_url(cdn_url: str, page_url: str) -> str:
         pm = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", page_url)
     code = pm.group(1) if pm else "video"
 
-    return f"kuaishou_{code}_{date_str}" if date_str else f"kuaishou_{code}"
+    return f"kuaishou_{code}_{date_str}"
 
 
 def _strategy_cdp(
@@ -763,8 +831,18 @@ def _strategy_cdp_locked(
             exe = _find_browser_exe("chrome")
             browser_name = "chrome"
         except Exception as exc:
+            # BUG-KS-02 FIX: surface a user-readable error instead of silently
+            # returning None. When strategies A-D all fail, the user sees the
+            # generic "all methods failed" message with no hint about installing
+            # a browser. Raise RuntimeError so the caller can display it.
             logger.debug("Kuaishou strategy E: no browser found (%s)", exc)
-            return None
+            raise RuntimeError(
+                "Kuaishou: không tìm thấy Brave hoặc Chrome trên máy.\n\n"
+                "Phương thức dự phòng cuối cùng (Strategy E) cần một trong hai trình duyệt này "
+                "để mở trang Kuaishou và chặn link CDN thật.\n\n"
+                "Hãy cài Brave (https://brave.com) hoặc Google Chrome rồi thử lại.\n"
+                "Sau khi cài xong, không cần cấu hình gì thêm — OmniDL tự tìm."
+            ) from exc
 
     # ── Resolve real profile base dir ─────────────────────────────────────────
     if sys.platform == "win32":
@@ -1293,19 +1371,50 @@ class KuaishouEngine:
             # Short URL HEAD+GET each timeout at 15 s on non-CN IP — if video_id
             # is already known from the analyse step, constructing the canonical
             # URL directly avoids 30+ s of pointless timeout churn.
-            if media_info.video_id and re.match(r"^3[A-Za-z0-9_-]{10,}$", media_info.video_id):
+            #
+            # BUG-KS-01 FIX: The previous check `^3[A-Za-z0-9_-]{10,}$` only
+            # accepted IDs starting with '3', which is a historical accident of
+            # Kuaishou's current ID generation, not a schema guarantee. A broader
+            # validity check (alphanumeric + _ + -, length >= 6) is used instead,
+            # with task.url as a second source so short codes in CDN URLs don't
+            # accidentally become the reextract target.
+            _vid_id = media_info.video_id or ""
+            _is_valid_id = bool(
+                _vid_id
+                and re.match(r"^[A-Za-z0-9_-]{6,}$", _vid_id)
+                # Exclude raw CDN URLs that may have been stored as video_id
+                and "kuaishou.com" not in _vid_id
+                and "ksapisrv.com" not in _vid_id
+                and "kwaicdn.com" not in _vid_id
+            )
+            if _is_valid_id:
                 _reextract_url = (
-                    f"https://www.kuaishou.com/short-video/{media_info.video_id}"
+                    f"https://www.kuaishou.com/short-video/{_vid_id}"
                 )
             else:
+                # Prefer photo_id extracted from the original task URL (page URL)
+                # over any CDN URL that might be stored in task.url (Remote API flow).
                 _ks_m = re.search(
                     r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)",
                     task.url, re.I,
                 )
-                _reextract_url = (
-                    f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
-                    if _ks_m else task.url
-                )
+                if _ks_m:
+                    _reextract_url = (
+                        f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
+                    )
+                elif "v.kuaishou.com" in task.url:
+                    # Short URL — let extract_info_kuaishou resolve it
+                    _reextract_url = task.url
+                else:
+                    # task.url is a CDN URL (Remote API flow with no page URL);
+                    # we cannot build a canonical URL — re-extract will likely
+                    # fail, but there is no better option.
+                    logger.warning(
+                        "BUG-KS-01: cannot build canonical Kuaishou URL — "
+                        "video_id=%r task.url=%s; using task.url as fallback",
+                        _vid_id, task.url[:80],
+                    )
+                    _reextract_url = task.url
             logger.info(
                 "Kuaishou: re-extracting fresh CDN URL for task %s via %s",
                 task.id, _reextract_url[:80],
@@ -1434,44 +1543,52 @@ class KuaishouEngine:
                     if not cdn_url or not cdn_url.startswith("http"):
                         raise RuntimeError("re-extract returned no CDN URL")
 
-                    resp2 = _make_session().get(
-                        cdn_url,
-                        headers={**_API_HEADERS, "Accept": "*/*"},
-                        stream=True,
-                        timeout=_DL_TIMEOUT,
-                    )
-                    if resp2.status_code == 200:
-                        with open(part_path, "wb") as fh2:
-                            for chunk in resp2.iter_content(1024 * 256):
-                                fh2.write(chunk)
-                        resp2.close()
-                        if _is_valid_mp4(part_path):
-                            # Update filename based on fresh title
-                            safe_title2 = _sanitise_filename(
-                                media_info.title or media_info.video_id or "video"
-                            )
-                            filename = output_dir / f"{safe_title2}.mp4"
-                            stem2 = filename.stem
-                            counter2 = 1
-                            while filename.exists():
-                                filename = output_dir / f"{stem2} ({counter2}).mp4"
-                                counter2 += 1
-                            part_path.rename(filename)
-                            with task._lock:
-                                task.status = DownloadStatus.COMPLETED
-                                task.progress = 100.0
-                                task.filename = str(filename)
-                            logger.info(
-                                "Kuaishou: download complete (re-extracted) — %s (%.1f MB)",
-                                filename.name,
-                                filename.stat().st_size / 1_048_576,
-                            )
-                            if on_progress:
-                                on_progress(task)
-                            return
-                        part_path.unlink(missing_ok=True)
-                    else:
-                        resp2.close()
+                    # SEC-KS-01 FIX: use context manager so the session is
+                    # always closed — previously a _make_session() call was
+                    # left open when _is_valid_mp4() returned False, leaking
+                    # a native TLS socket until GC collected it.
+                    _retry_sess = _make_session()
+                    try:
+                        resp2 = _retry_sess.get(
+                            cdn_url,
+                            headers={**_API_HEADERS, "Accept": "*/*"},
+                            stream=True,
+                            timeout=_DL_TIMEOUT,
+                        )
+                        if resp2.status_code == 200:
+                            with open(part_path, "wb") as fh2:
+                                for chunk in resp2.iter_content(1024 * 256):
+                                    fh2.write(chunk)
+                            resp2.close()
+                            if _is_valid_mp4(part_path):
+                                # Update filename based on fresh title
+                                safe_title2 = _sanitise_filename(
+                                    media_info.title or media_info.video_id or "video"
+                                )
+                                filename = output_dir / f"{safe_title2}.mp4"
+                                stem2 = filename.stem
+                                counter2 = 1
+                                while filename.exists():
+                                    filename = output_dir / f"{stem2} ({counter2}).mp4"
+                                    counter2 += 1
+                                part_path.rename(filename)
+                                with task._lock:
+                                    task.status = DownloadStatus.COMPLETED
+                                    task.progress = 100.0
+                                    task.filename = str(filename)
+                                logger.info(
+                                    "Kuaishou: download complete (re-extracted) — %s (%.1f MB)",
+                                    filename.name,
+                                    filename.stat().st_size / 1_048_576,
+                                )
+                                if on_progress:
+                                    on_progress(task)
+                                return
+                            part_path.unlink(missing_ok=True)
+                        else:
+                            resp2.close()
+                    finally:
+                        _retry_sess.close()
                 except Exception as exc:
                     logger.debug("Kuaishou: re-extract retry failed: %s", exc)
                     part_path.unlink(missing_ok=True)

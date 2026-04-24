@@ -47,8 +47,11 @@ _PROFILE_RE = re.compile(
 # Known live URL patterns.
 # Capture group 1 = username so extract_tiktok_username_from_live_url() can
 # extract it without a second regex.
+# BUG-TT-05 FIX: added (?:/|\?|#|$) terminator so URLs with query strings
+# (e.g. @user/live?lang=vi) and fragment anchors are correctly recognised as
+# live URLs instead of falling through to _PROFILE_RE which doesn't match /live.
 _LIVE_URL_RE = re.compile(
-    r"^https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live",
+    r"^https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live(?:/|\?|#|$)",
     re.I,
 )
 
@@ -351,20 +354,15 @@ def _extract_live_status(data: dict, username: str) -> bool:
     except (AttributeError, TypeError):
         pass
 
-    # Path 3: flat search for roomId + status=2 anywhere in the blob
-    # (covers future schema changes at the cost of a full JSON string scan)
-    try:
-        raw = str(data)
-        if '"status": 2' in raw or "'status': 2" in raw:
-            # Confirm there's also a roomId nearby to avoid false positives
-            if "roomId" in raw or "room_id" in raw:
-                logger.debug(
-                    "tiktok_live_checker: @%s live via path3 (fallback scan)",
-                    username,
-                )
-                return True
-    except Exception:
-        pass
+    # Path 3 (REMOVED — BUG-TT-01):
+    # The previous flat str(data) scan for 'status: 2' + 'roomId' produced
+    # false-positives because those keys appear in unrelated TikTok JSON blobs
+    # (video player state, comment system, settings). A false-positive caused
+    # yt-dlp to be called against a user who is NOT live, returning "not
+    # currently live" errors on every polling cycle.
+    # Paths 1 and 2 cover all known TikTok page schemas. When both fail it
+    # means the user is not live (or the page structure has changed in a way
+    # we cannot reliably detect) — returning False is the safe default.
 
     logger.debug(
         "tiktok_live_checker: @%s — checked all paths, not live",

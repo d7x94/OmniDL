@@ -1249,11 +1249,12 @@ class YtDlpEngine:
             "logger": _DiagLogger() if (_is_tiktok_vod and not is_live) else None,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
-            # fragment_retries=0 for live streams so that a DownloadError raised
-            # inside the progress hook propagates immediately.  With max_retries,
-            # yt-dlp retried each HLS fragment individually, making Stop/Cancel
-            # take 90+ seconds on some streams.
-            "fragment_retries": 0 if is_live else self._config.max_retries,
+            # BUG-TT-03 FIX: fragment_retries=0 caused entire live recordings to
+            # abort on a single transient network glitch (Wi-Fi blip, DNS hiccup).
+            # Set to 3 for live streams — enough to survive brief interruptions
+            # without making Stop/Cancel unresponsive. yt-dlp's per-fragment
+            # backoff (sleep_interval) keeps retry churn low.
+            "fragment_retries": 3 if is_live else self._config.max_retries,
             # Exponential backoff between retries (sleep_interval doubles up to
             # max_sleep_interval) prevents hammering CDNs on HTTP 429 / 503.
             "sleep_interval": 2,
@@ -1565,7 +1566,51 @@ class YtDlpEngine:
                 except OSError as cleanup_exc:
                     logger.warning("Part-file cleanup failed: %s", cleanup_exc)
                 raise  # let _run_task handle the CANCELLED transition
-            raise RuntimeError(_friendly_error(str(exc))) from exc
+
+            # BUG-TT-02 FIX: TikTok HLS tokens expire after ~1-2 minutes.
+            # When ffmpeg exits with an error on a live stream, re-extract a
+            # fresh HLS URL and retry the download exactly once. This handles
+            # the case where the user paused/reconnected and the original URL
+            # is now stale. Only applies to TikTok live streams (the platform
+            # with the shortest-lived HLS tokens); other platforms already
+            # handle reconnection internally via yt-dlp's own retry logic.
+            _exc_str = str(exc)
+            _is_hls_expired = (
+                is_live
+                and _TIKTOK_LIVE_RE.search(task.url)
+                and "ffmpeg exited with code" in _exc_str.lower()
+                and not task.is_cancellation_requested
+            )
+            if _is_hls_expired:
+                logger.info(
+                    "BUG-TT-02: TikTok live HLS expired for task %s — re-extracting",
+                    task.id,
+                )
+                try:
+                    _fresh_info = self.extract_info(task.url)
+                    if _fresh_info and _fresh_info.is_live:
+                        task.media_info = _fresh_info
+                        logger.info(
+                            "BUG-TT-02: fresh HLS URL obtained, retrying download"
+                        )
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            ydl.download([task.url])
+                        # If retry succeeded fall through to filename resolution
+                    else:
+                        raise RuntimeError(
+                            "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\n"
+                            "Thêm lại link để theo dõi lần phát tiếp theo."
+                        ) from exc
+                except yt_dlp.utils.DownloadError as retry_exc:
+                    if task.is_cancellation_requested:
+                        raise
+                    raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                except RuntimeError:
+                    raise
+                except Exception as retry_exc:
+                    raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+            else:
+                raise RuntimeError(_friendly_error(_exc_str)) from exc
         except Exception as exc:
             if task.is_cancellation_requested:
                 raise yt_dlp.utils.DownloadError("Cancelled by user") from exc

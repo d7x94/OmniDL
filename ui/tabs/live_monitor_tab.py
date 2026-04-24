@@ -112,6 +112,11 @@ class _MonitorItem:
     # to break the infinite WAITING loop caused by persistent transient errors.
     consecutive_failures: int = 0
 
+    # BUG-TT-04 FIX: timestamp until which this item must not be checked again
+    # due to a 429 rate-limit response. Set to time.time() + backoff_seconds.
+    # _enqueue_next_check skips items where time.time() < rate_limited_until.
+    rate_limited_until: float = 0.0
+
     # UI widgets — assigned after row is built
     row_frame:        Optional[ctk.CTkFrame]  = field(default=None, repr=False)
     state_lbl:        Optional[ctk.CTkLabel]  = field(default=None, repr=False)
@@ -792,6 +797,9 @@ class LiveMonitorTab(ctk.CTkFrame):
         for item in self._items:
             if item.state != _MonitorState.WAITING:
                 continue
+            # BUG-TT-04 FIX: skip items that are in a rate-limit backoff window.
+            if now < item.rate_limited_until:
+                continue
             due = item.last_check + interval
             if now >= due and item.last_check < oldest_check:
                 oldest_check = item.last_check
@@ -993,6 +1001,25 @@ class LiveMonitorTab(ctk.CTkFrame):
             item.state = _MonitorState.WAITING
             self._refresh_item_ui(item)
             return
+
+        # BUG-TT-04 FIX: TikTok 429 rate-limit — apply exponential backoff
+        # instead of immediately retrying on the next poll cycle (which re-hits
+        # the 429 and creates an infinite error loop).
+        # Backoff: 5 min * 2^(failures-1), capped at 30 min.
+        if "blocked" in err_l and ("rate" in err_l or "429" in err_l):
+            _failures = item.consecutive_failures + 1
+            _backoff_s = min(300 * (2 ** (_failures - 1)), 1800)
+            item.rate_limited_until = time.time() + _backoff_s
+            item.consecutive_failures = _failures
+            item.state = _MonitorState.WAITING
+            item.error_msg = ""
+            logger.warning(
+                "LiveMonitor: TikTok 429 for @%s — backoff %.0fs (failure #%d)",
+                item.username or item.url[:40], _backoff_s, _failures,
+            )
+            self._refresh_item_ui(item)
+            return
+
         hard = any(k in err_l for k in (
             "private", "not found", "404", "login", "checkpoint",
             "unsupported url", "removed", "not available",  # BUG-CD: impersonate target missing in EXE
