@@ -116,7 +116,11 @@ _DL_TIMEOUT      = 30   # seconds — CDN connect timeout
 _GQL_URL = "https://www.kuaishou.com/graphql"
 
 _GQL_QUERY = (
-    "query visionVideoDetail($photoId: String, $type: Int) {"
+    # BUG-KS-05 FIX: API schema declares $type as String, not Int.
+    # Passing Int literal caused HTTP 400 "Variable '$type' of type 'Int' used
+    # in position expecting type 'String'" on every call, making strategy B
+    # permanently dead. Fix: declare as String and pass string value "0".
+    "query visionVideoDetail($photoId: String, $type: String) {"
     "  visionVideoDetail(photoId: $photoId, type: $type) {"
     "    photo { id caption duration coverUrl photoUrl videoResource }"
     "    author { name }"
@@ -365,7 +369,7 @@ def _strategy_gql(session, photo_id: str, cookie_str: str = "") -> tuple | None:
     _warmup_session(session)
     payload = {
         "operationName": "visionVideoDetail",
-        "variables": {"photoId": photo_id, "type": 0},
+        "variables": {"photoId": photo_id, "type": "0"},
         "query": _GQL_QUERY,
     }
     headers = dict(_API_HEADERS)
@@ -997,14 +1001,20 @@ def _strategy_cdp_locked(
 
             _prog(12, "Kuaishou: đang mở trang video...")
 
-            # Build a clean canonical URL — strip all query params.
-            # Share URLs (shareToken, shareMode=APP, etc.) cause Kuaishou server to
-            # redirect the browser to a random feed video instead of the target video.
-            # v.kuaishou.com short links: browser follows the real redirect itself
-            # (bypassing the non-CN IP block that prevents server-side resolution).
-            # Resolved URLs: use only path, no query string.
+            # Build canonical URL for navigation.
+            # BUG-KS-06 FIX: When server-side short URL resolution fails (non-CN IP
+            # timeout), _resolve_short_url returns the original v.kuaishou.com URL
+            # unchanged, so "v.kuaishou.com" is still in page_url. The old else
+            # branch passed the short URL directly to CDP -> browser navigated to
+            # https://v.kuaishou.com/<code> which works but wastes ~90s on extra
+            # redirect + auto-advance recovery. The browser CAN follow v.kuaishou.com
+            # redirects natively (unlike server-side curl_cffi on non-CN IP), so we
+            # always build a canonical URL from the extracted photo_id regardless of
+            # whether the short URL was resolved. If photo_id IS the short code (real
+            # ID unknown), https://www.kuaishou.com/short-video/<code> is still valid
+            # -- kuaishou.com redirects it to the real video page.
             _pid = _extract_photo_id(page_url)
-            if _pid and "v.kuaishou.com" not in page_url.lower():
+            if _pid:
                 _nav_url = f"https://www.kuaishou.com/short-video/{_pid}"
             else:
                 _nav_url = page_url.split("?")[0]
@@ -1018,6 +1028,30 @@ def _strategy_cdp_locked(
                 pass
             except Exception as exc:
                 logger.debug("Kuaishou CDP: goto warning (non-fatal): %s", exc)
+
+            # BUG-KS-08 FIX: When page_url contains a short code (server-side
+            # resolution failed), _nav_url is https://www.kuaishou.com/short-video/<code>.
+            # The browser follows the redirect to the real video URL, so page.url
+            # now contains the real photo_id. Using _nav_url as the source for
+            # _target_pid meant the short code was used for auto-advance detection,
+            # causing every real-id URL seen in the poll loop to be misidentified as
+            # auto-advance, triggering an infinite re-navigate loop that prevented
+            # the video from ever playing within the 120s timeout.
+            # Fix: read the post-redirect URL from the browser and use that for
+            # both _target_pid and _nav_url (so re-navigate after real auto-advance
+            # also goes to the correct canonical URL).
+            try:
+                _redirected_url = page.url
+                _redirected_pid = _extract_photo_id(_redirected_url)
+                if _redirected_pid and _redirected_pid != _pid:
+                    logger.debug(
+                        "Kuaishou CDP: short URL redirected %s -> real pid=%s",
+                        _pid, _redirected_pid,
+                    )
+                    _nav_url = f"https://www.kuaishou.com/short-video/{_redirected_pid}"
+                    _pid = _redirected_pid
+            except Exception:
+                pass
 
             # photo_id of the video we actually want — used to detect auto-advance.
             _target_pid = _extract_photo_id(_nav_url) or ""
@@ -1254,7 +1288,6 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
 
         photo, author = result
 
-        title     = (photo.get("caption") or "").strip() or f"kuaishou_{photo_id}"
         uploader  = (author.get("name") or "").strip()
         duration  = int(photo.get("duration") or 0) // 1000  # ms -> s
         thumbnail = photo.get("coverUrl") or ""
@@ -1265,6 +1298,14 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
                 "Kuaishou: không tìm thấy URL video trong dữ liệu trang.\n"
                 "Video có thể bị giới hạn khu vực hoặc API đã thay đổi."
             )
+
+        # Pass video_url so _clean_caption can extract upload date from CDN path.
+        title = _clean_caption(
+            (photo.get("caption") or "").strip(),
+            photo_id=photo_id,
+            uploader=uploader,
+            cdn_url=video_url,
+        )
 
         logger.info(
             "Kuaishou: extracted — title=%r uploader=%r duration=%ds",
@@ -1616,6 +1657,91 @@ class KuaishouEngine:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _extract_upload_date(cdn_url: str) -> str:
+    """Extract upload date string from CDN URL, e.g. /upic/2026/02/25/ -> '2026-02-25'."""
+    dm = re.search(r"/upic/(\d{4})/(\d{2})/(\d{2})/", cdn_url)
+    if dm:
+        return f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}"
+    dm2 = re.search(r"/(?:uc/)?(\d{4})(\d{2})(\d{2})\d{0,6}(?:/|_|\.)", cdn_url)
+    if dm2:
+        return f"{dm2.group(1)}-{dm2.group(2)}-{dm2.group(3)}"
+    return ""
+
+
+def _clean_caption(
+    caption: str,
+    photo_id: str = "",
+    uploader: str = "",
+    cdn_url: str = "",
+) -> str:
+    """Turn a raw Kuaishou caption into a usable filename stem.
+
+    BUG-KS-07 FIX: Raw captions contain hashtags (#tag), @mentions with
+    internal user-ID suffixes (@name(O3xID)), and can be arbitrarily long
+    (full caption text). After _sanitise_filename these produce filenames like:
+      '???? ??????? @???????(O3xrgtux2ehryffe) @????(O3xddgkd5fav5if9).mp4'
+    which Taildrop then strips to just '(O3xrgtux2ehryffe)_(O3xddgkd5fav5if9).mp4'.
+
+    Strategy:
+    1. Strip @mention(...) parenthesised ID suffixes, keep the display name.
+    2. Strip standalone hashtags (#word).
+    3. Collapse runs of whitespace / punctuation.
+    4. Truncate to 60 chars so paths stay short on Windows (MAX_PATH = 260).
+    5. If the remaining text has no ASCII content (pure Arabic/CJK/etc.), fall
+       back to kuaishou_<uploader>_<date> immediately — Taildrop's NFKD+ascii
+       encode would reduce it to empty anyway, producing 'file.mp4' on iOS.
+    6. Fall back to kuaishou_<uploader>_<date> if nothing meaningful remains.
+    """
+    if not caption:
+        return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
+
+    # Remove @name(InternalID) -> keep display name only
+    text = re.sub(r"@([^(\s#@]+)\([^)]*\)", r"\1", caption)
+    # Remove bare @mentions with no parens
+    text = re.sub(r"@\S+", "", text)
+    # Remove hashtags
+    text = re.sub(r"#\S+", "", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    # Truncate
+    text = text[:60].strip()
+
+    if not text:
+        return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
+
+    # If the cleaned text contains no ASCII at all, Taildrop will strip the
+    # entire stem (NFKD + ascii encode/ignore yields empty string) and rename
+    # the file to 'file.mp4' on iOS. Detect this early and use the fallback
+    # name so the transferred file is identifiable on the receiving device.
+    import unicodedata as _ud
+    _ascii_preview = _ud.normalize("NFKD", text).encode("ascii", errors="ignore").decode("ascii").strip("-_ ")
+    if not _ascii_preview:
+        return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
+
+    return text
+
+
+def _kuaishou_fallback_name(photo_id: str, uploader: str, cdn_url: str) -> str:
+    """Build a meaningful ASCII fallback stem: kuaishou_<uploader>_<date>.
+
+    Used when caption is empty or entirely non-ASCII. uploader and date are
+    extracted from available metadata; whichever parts are missing are omitted.
+    Result is always ASCII-safe (uploader encoded with errors=ignore).
+    """
+    parts = ["kuaishou"]
+    if uploader:
+        safe_up = uploader.encode("ascii", errors="ignore").decode("ascii").strip()
+        safe_up = re.sub(r"[^A-Za-z0-9_-]+", "_", safe_up).strip("_")
+        if safe_up:
+            parts.append(safe_up)
+    date_str = _extract_upload_date(cdn_url) if cdn_url else ""
+    if date_str:
+        parts.append(date_str)
+    elif photo_id:
+        parts.append(photo_id)
+    return "_".join(parts) or "kuaishou_video"
 
 
 def _sanitise_filename(name: str) -> str:
