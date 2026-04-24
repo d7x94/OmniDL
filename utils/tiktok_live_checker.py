@@ -44,11 +44,23 @@ _PROFILE_RE = re.compile(
     re.I,
 )
 
-# Known live URL patterns — these go directly to yt-dlp, not profile checker.
+# Known live URL patterns.
+# Capture group 1 = username so extract_tiktok_username_from_live_url() can
+# extract it without a second regex.
 _LIVE_URL_RE = re.compile(
-    r"^https?://(?:www\.)?tiktok\.com/@[A-Za-z0-9_.]+/live",
+    r"^https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live",
     re.I,
 )
+
+
+def extract_tiktok_username_from_live_url(url: str) -> Optional[str]:
+    """Extract the username from a canonical TikTok /live URL.
+
+    Returns None if the URL is not a recognised /live URL.
+    Does NOT resolve short links — call _resolve_short_link first if needed.
+    """
+    m = _LIVE_URL_RE.match(url.strip())
+    return m.group(1).lower() if m else None
 
 # BUG-CH FIX: TikTok short-link domains (vt.tiktok.com, vm.tiktok.com).
 # User pastes a share link like https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/
@@ -67,7 +79,9 @@ def _resolve_short_link(url: str, proxy: str = "") -> str:
 
     Returns *url* unchanged if the redirect does not land on a tiktok.com URL,
     or on any network error (fail-safe: caller still gets the original URL).
-    Uses HEAD to avoid downloading the page body.
+    Tries HEAD first (cheap); falls back to GET with stream=True if HEAD
+    resolves to a non-canonical URL (e.g. /?_r=1) because TikTok drops
+    HEAD redirect chains for some short-live-link paths.
     """
     import requests
 
@@ -79,6 +93,11 @@ def _resolve_short_link(url: str, proxy: str = "") -> str:
             "Chrome/124.0.0.0 Safari/537.36"
         ),
     }
+
+    def _is_canonical(resolved: str) -> bool:
+        """True if resolved URL looks like a proper TikTok content URL."""
+        return "tiktok.com/@" in resolved
+
     try:
         resp = requests.head(
             url,
@@ -88,11 +107,35 @@ def _resolve_short_link(url: str, proxy: str = "") -> str:
             allow_redirects=True,
         )
         final = resp.url
-        if "tiktok.com" in final:
+        if _is_canonical(final):
             logger.debug("tiktok_live_checker: resolved %s -> %s", url, final)
             return final
+        # HEAD gave a non-canonical result (e.g. /?_r=1) — retry with GET.
+        logger.debug(
+            "tiktok_live_checker: HEAD resolved to non-canonical %s, retrying with GET",
+            final,
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("tiktok_live_checker: short-link resolve failed for %s: %s", url, exc)
+        logger.debug("tiktok_live_checker: HEAD failed for %s: %s", url, exc)
+
+    # GET fallback — stream=True so we don't download the body.
+    try:
+        resp = requests.get(
+            url,
+            headers=headers,
+            proxies=proxies,
+            timeout=_REQUEST_TIMEOUT,
+            allow_redirects=True,
+            stream=True,
+        )
+        resp.close()
+        final = resp.url
+        if "tiktok.com" in final:
+            logger.debug("tiktok_live_checker: GET resolved %s -> %s", url, final)
+            return final
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tiktok_live_checker: GET resolve failed for %s: %s", url, exc)
+
     return url
 
 

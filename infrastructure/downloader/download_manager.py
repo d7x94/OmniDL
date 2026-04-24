@@ -202,6 +202,9 @@ class DownloadManager:
         # yt-dlp internal bugs — retrying the same broken extractor path
         # never helps; user must update yt-dlp to fix these.
         "extractor error",  # yt-dlp extractor crash (e.g. KeyError on shortcode)
+        # Live stream offline — retrying cannot start a stream that is offline.
+        "not currently live",       # TikTok: The channel is not currently live
+        "channel is not currently live",  # normalised by _friendly_error
     )
 
     def _run_task(self, task: DownloadTask) -> None:

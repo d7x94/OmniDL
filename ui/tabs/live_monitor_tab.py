@@ -42,6 +42,7 @@ from utils.instagram_live_checker import (
 )
 from utils.tiktok_live_checker import (
     extract_tiktok_username,
+    extract_tiktok_username_from_live_url,
     is_tiktok_profile_url,
 )
 
@@ -300,13 +301,25 @@ class LiveMonitorTab(ctk.CTkFrame):
         _proxy            = self._app.config.proxy
         is_ig_profile     = is_instagram_profile_url(url)
         is_tiktok_profile = is_tiktok_profile_url(url, proxy=_proxy)
-        is_profile        = is_ig_profile or is_tiktok_profile
+
+        # Route tiktok.com/@user/live URLs through the profile-watch path.
+        # yt-dlp's TikTok live extractor calls webcast.tiktok.com which requires
+        # a signed device-ID request — it returns "not currently live" even when
+        # the stream IS live.  The profile-watch path fetches the profile page and
+        # parses __NEXT_DATA__ JSON which is reliable and does not need signing.
+        _tiktok_live_username: str = ""
+        if not is_tiktok_profile:
+            _tiktok_live_username = extract_tiktok_username_from_live_url(url) or ""
+            if _tiktok_live_username:
+                is_tiktok_profile = True
+
+        is_profile = is_ig_profile or is_tiktok_profile
 
         if is_ig_profile:
             username         = extract_instagram_username(url) or ""
             profile_platform = "instagram"
         elif is_tiktok_profile:
-            username         = extract_tiktok_username(url, proxy=_proxy) or ""
+            username         = _tiktok_live_username or extract_tiktok_username(url, proxy=_proxy) or ""
             profile_platform = "tiktok"
         else:
             username         = ""
@@ -971,6 +984,15 @@ class LiveMonitorTab(ctk.CTkFrame):
 
         # Distinguish hard errors (auth, removed) from transient (network, rate limit)
         err_l = err.lower()
+        # "not currently live" means the channel is simply offline — not an error.
+        # Reset consecutive_failures so a channel that goes offline doesn't
+        # accumulate failures and eventually escalate to ERROR state.
+        if "not currently live" in err_l:
+            item.consecutive_failures = 0
+            item.error_msg = ""
+            item.state = _MonitorState.WAITING
+            self._refresh_item_ui(item)
+            return
         hard = any(k in err_l for k in (
             "private", "not found", "404", "login", "checkpoint",
             "unsupported url", "removed", "not available",  # BUG-CD: impersonate target missing in EXE

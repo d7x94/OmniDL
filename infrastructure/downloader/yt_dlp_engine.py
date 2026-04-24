@@ -307,6 +307,8 @@ def _friendly_error(msg: str) -> str:
         return "This platform is not supported by yt-dlp."
     if "not start" in msg_l and "live" in msg_l:
         return "Live stream has not started yet."
+    if "not currently live" in msg_l or "channel is not currently live" in msg_l:
+        return "channel is not currently live"
     if "ended" in msg_l and "live" in msg_l:
         return "Live stream has ended."
     # Instagram photo — no video stream in post
@@ -808,6 +810,7 @@ class YtDlpEngine:
                     "tls connect error",                  # BUG-CC: curl TLS failure
                     "curl: (35)",                         # BUG-CC: curl SSL connect error code
                     "is not available",                   # BUG-CD: impersonate target missing in EXE
+                    "not currently live",                 # TikTok/IG channel is offline — not an error
                 )
                 if any(k in msg_l for k in _hard):
                     raise RuntimeError(_friendly_error(msg)) from exc

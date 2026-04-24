@@ -229,6 +229,27 @@ class TestRetryBehavior:
         finally:
             mgr.shutdown(wait=False)
 
+    def test_tiktok_not_currently_live_not_retried(self):
+        """TikTok 'not currently live' must fail immediately — no retry."""
+        cfg = make_config(max_retries=3)
+        engine = MagicMock()
+        engine.download.side_effect = RuntimeError(
+            "ERROR: [tiktok:live] gwh2026: The channel is not currently live"
+        )
+        mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            deadline = time.time() + 5
+            while task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.05)
+                assert time.time() < deadline, "Timed out"
+            assert task.status == DownloadStatus.FAILED
+            assert engine.download.call_count == 1   # never retried
+        finally:
+            mgr.shutdown(wait=False)
+
     def test_cancelled_during_backoff_stops_cleanly(self):
         """Cancelling while waiting between retries → CANCELLED, not FAILED."""
         cfg = make_config(max_retries=3)
