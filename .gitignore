@@ -43,6 +43,7 @@ coverage.xml
 # Logs
 *.log
 report.txt
+report250426.txt
 
 # Temporary files
 *.tmp
