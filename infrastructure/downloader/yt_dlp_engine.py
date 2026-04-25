@@ -8,6 +8,7 @@ import logging
 import re
 import shlex
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -1257,8 +1258,15 @@ class YtDlpEngine:
             "fragment_retries": 3 if is_live else self._config.max_retries,
             # Exponential backoff between retries (sleep_interval doubles up to
             # max_sleep_interval) prevents hammering CDNs on HTTP 429 / 503.
+            # BUG-CJ FIX: For live streams, cap max_sleep_interval at 5 s so
+            # yt-dlp's inter-fragment retry sleeps never block the progress hook
+            # for more than 5 s.  Without this cap, when a TikTok live ends
+            # without EXT-X-ENDLIST the CDN keeps returning expired segment URLs;
+            # yt-dlp retries each with exponential backoff up to 30 s per retry,
+            # sleeping inside yt-dlp without calling our hook — cancel/pause
+            # signals set during those sleeps are never processed.
             "sleep_interval": 2,
-            "max_sleep_interval": 30,
+            "max_sleep_interval": 5 if is_live else 30,
             "sleep_interval_requests": 1,
             "concurrent_fragment_downloads": 4,
             "writethumbnail": False,
@@ -1549,6 +1557,42 @@ class YtDlpEngine:
                     "(extract_info may not have returned format list)"
                 )
 
+        # BUG-CJ FIX: Stale-bytes watchdog for live streams.
+        # When a TikTok live ends without EXT-X-ENDLIST, the CDN keeps serving
+        # expired segment URLs.  yt-dlp retries each segment with inter-retry
+        # sleeps (up to max_sleep_interval seconds) during which our progress
+        # hook is NOT called — cancel/pause signals are never checked.
+        # The watchdog runs as a daemon thread and calls task.cancel() after
+        # _LIVE_STALE_TIMEOUT seconds of no new bytes, which ensures the hook
+        # processes the cancel signal on the next hook invocation (≤5 s away
+        # after the max_sleep_interval fix above).
+        _LIVE_STALE_TIMEOUT = 60  # seconds with no new downloaded_bytes
+        _watchdog_stop = threading.Event()
+
+        def _live_watchdog() -> None:
+            last_bytes = task.downloaded_bytes
+            last_change = time.time()
+            while not _watchdog_stop.wait(timeout=5.0):
+                if task.is_cancellation_requested:
+                    return
+                cur = task.downloaded_bytes
+                if cur != last_bytes:
+                    last_bytes = cur
+                    last_change = time.time()
+                elif time.time() - last_change >= _LIVE_STALE_TIMEOUT:
+                    logger.warning(
+                        "BUG-CJ: live task %s stale for %ds — auto-cancelling",
+                        task.id, _LIVE_STALE_TIMEOUT,
+                    )
+                    task.cancel()
+                    return
+
+        if is_live:
+            _wd = threading.Thread(
+                target=_live_watchdog, daemon=True, name=f"omnidl-wd-{task.id}"
+            )
+            _wd.start()
+
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([task.url])
@@ -1615,6 +1659,10 @@ class YtDlpEngine:
             if task.is_cancellation_requested:
                 raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
             raise RuntimeError(str(exc)) from exc
+        finally:
+            # BUG-CJ: stop watchdog so it never fires after a clean completion.
+            if is_live:
+                _watchdog_stop.set()
 
         # ── Resolve final filename ─────────────────────────────────────────
         if _final_filepath:

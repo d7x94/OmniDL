@@ -163,7 +163,7 @@ class InstagramLiveEngine:
         )
 
         # ── Step 2: extract username ─────────────────────────────────────────
-        username = self._extract_username(url)
+        username = self._extract_username(url, task)
 
         # ── Step 3: get broadcast_id + HLS URL from Instagram API ───────────
         broadcast_id, hls_url = self._get_broadcast_info(
@@ -325,11 +325,15 @@ class InstagramLiveEngine:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _extract_username(self, url: str) -> str:
-        """Extract username from /username/live/ URL format."""
+    def _extract_username(self, url: str, task: "Optional[DownloadTask]" = None) -> str:
         m = _USER_LIVE_RE.search(url)
         if m:
             return m.group(1).lower()
+        # /live/shortcode/ format — fallback to uploader stored in task.media_info
+        if task is not None and task.media_info:
+            uploader = (task.media_info.uploader or "").strip()
+            if uploader:
+                return uploader.lower().lstrip("@")
         raise RuntimeError(
             "Không thể trích xuất username từ URL Instagram Live.\n"
             "Dùng định dạng: https://www.instagram.com/username/live/"

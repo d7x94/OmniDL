@@ -331,7 +331,11 @@ class DownloadManager:
                     from infrastructure.downloader.instagram_live_engine import (  # noqa: PLC0415
                         is_instagram_live_url,
                     )
-                    if is_instagram_live_url(task.url):
+                    _is_ig_live = is_instagram_live_url(task.url) or (
+                        task.media_info is not None
+                        and getattr(task.media_info, "source_engine", "") == "instagram_live"
+                    )
+                    if _is_ig_live:
                         self._instagram_live_engine.download(
                             task,
                             on_progress=self._on_progress,

@@ -114,6 +114,26 @@ class DownloadService:
 
         def _worker() -> None:
             try:
+                # Instagram live URLs cannot be resolved by yt-dlp or gallery-dl.
+                # Short-circuit: build synthetic MediaInfo immediately.
+                from infrastructure.downloader.instagram_live_engine import (  # noqa: PLC0415
+                    is_instagram_live_url,
+                )
+                if is_instagram_live_url(url):
+                    import re as _re  # noqa: PLC0415
+                    _m = _re.search(r"instagram\.com/([A-Za-z0-9._]+)/live", url, _re.I)
+                    _username = _m.group(1) if _m else ""
+                    info = MediaInfo(
+                        url=url,
+                        title=f"@{_username} \u2014 Instagram Live" if _username else "Instagram Live",
+                        uploader=_username,
+                        platform="instagram",
+                        source_engine="instagram_live",
+                        is_live=True,
+                    )
+                    self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                    on_done(info)
+                    return
                 info = self._engine.extract_info(url)
                 self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
                 on_done(info)
