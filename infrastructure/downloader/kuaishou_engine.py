@@ -1470,7 +1470,17 @@ class KuaishouEngine:
         )
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_title = _sanitise_filename(media_info.title or media_info.video_id or "video")
+        # BUG-KS-09 FIX: filename pattern unified with yt-dlp platforms:
+        #   <title> [<photo_id[:12]>].mp4
+        # ID bracket makes every file uniquely identifiable regardless of
+        # CDN host, and matches the [%(id).12B] convention used by yt-dlp
+        # for TikTok, YouTube, etc. photo_id[:12] is sufficient for uniqueness.
+        _photo_id = media_info.video_id or ""
+        _id_bracket = f" [{_photo_id[:12]}]" if _photo_id else ""
+        _title_part = _sanitise_filename(media_info.title or "kuaishou")
+        # Mirror yt-dlp trim_file_name=180: cap stem so total path < MAX_PATH.
+        _title_part = _title_part[:180 - len(_id_bracket)]
+        safe_title = f"{_title_part}{_id_bracket}"
         filename = output_dir / f"{safe_title}.mp4"
         stem = filename.stem
         counter = 1
@@ -1711,37 +1721,33 @@ def _clean_caption(
     if not text:
         return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
 
-    # If the cleaned text contains no ASCII at all, Taildrop will strip the
-    # entire stem (NFKD + ascii encode/ignore yields empty string) and rename
-    # the file to 'file.mp4' on iOS. Detect this early and use the fallback
-    # name so the transferred file is identifiable on the receiving device.
+    # BUG-KS-08 FIX: Taildrop strips all non-ASCII chars via NFKD+ascii encode.
+    # If the caption is pure CJK/non-ASCII with only punctuation surviving
+    # (e.g. a comma or parenthesis), the previous .strip("-_ ") check left those
+    # punctuation chars in _ascii_preview, making it truthy and bypassing the
+    # fallback — the file was saved as "??????????.mp4" which Taildrop reduced to
+    # ",.mp4" on iOS.  Fix: require at least one alphanumeric ASCII character.
     import unicodedata as _ud
-    _ascii_preview = _ud.normalize("NFKD", text).encode("ascii", errors="ignore").decode("ascii").strip("-_ ")
-    if not _ascii_preview:
+    _ascii_preview = _ud.normalize("NFKD", text).encode("ascii", errors="ignore").decode("ascii")
+    if not re.search(r"[A-Za-z0-9]", _ascii_preview):
         return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
 
     return text
 
 
 def _kuaishou_fallback_name(photo_id: str, uploader: str, cdn_url: str) -> str:
-    """Build a meaningful ASCII fallback stem: kuaishou_<uploader>_<date>.
+    """Return the title-part of the fallback stem when caption is unusable.
 
-    Used when caption is empty or entirely non-ASCII. uploader and date are
-    extracted from available metadata; whichever parts are missing are omitted.
-    Result is always ASCII-safe (uploader encoded with errors=ignore).
+    Returns "kuaishou" — the ID bracket is appended by the output-path builder
+    so the final filename follows the same pattern as yt-dlp platforms:
+      <title> [<photo_id[:12]>].mp4
+
+    Uploader and date are excluded:
+      - Uploader is always CJK for CN content; ascii/ignore encode yields empty.
+      - Date from CDN path (/upic/YYYY/MM/DD/) is absent on oskwai.com CDN,
+        making names non-deterministic across re-extracts (BUG-KS-09).
     """
-    parts = ["kuaishou"]
-    if uploader:
-        safe_up = uploader.encode("ascii", errors="ignore").decode("ascii").strip()
-        safe_up = re.sub(r"[^A-Za-z0-9_-]+", "_", safe_up).strip("_")
-        if safe_up:
-            parts.append(safe_up)
-    date_str = _extract_upload_date(cdn_url) if cdn_url else ""
-    if date_str:
-        parts.append(date_str)
-    elif photo_id:
-        parts.append(photo_id)
-    return "_".join(parts) or "kuaishou_video"
+    return "kuaishou"
 
 
 def _sanitise_filename(name: str) -> str:
