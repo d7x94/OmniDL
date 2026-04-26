@@ -354,18 +354,28 @@ def _extract_live_status(data: dict, username: str) -> bool:
     except (AttributeError, TypeError):
         pass
 
-    # Path 3 (REMOVED — BUG-TT-01):
-    # The previous flat str(data) scan for 'status: 2' + 'roomId' produced
-    # false-positives because those keys appear in unrelated TikTok JSON blobs
-    # (video player state, comment system, settings). A false-positive caused
-    # yt-dlp to be called against a user who is NOT live, returning "not
-    # currently live" errors on every polling cycle.
-    # Paths 1 and 2 cover all known TikTok page schemas. When both fail it
-    # means the user is not live (or the page structure has changed in a way
-    # we cannot reliably detect) — returning False is the safe default.
+    # Path 3: deep-walk all dict nodes for status==2 AND roomId in same node.
+    # Replaces the removed BUG-TT-01 str(data) scan. Safe because we compare
+    # actual dict values, not serialised strings, so unrelated blobs cannot
+    # trigger this unless both fields coexist with status exactly int 2.
+    try:
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            if node.get("status") == 2 and node.get("roomId"):
+                logger.debug(
+                    "tiktok_live_checker: @%s live via path3 -- roomId=%s",
+                    username, node["roomId"],
+                )
+                return True
+            stack.extend(node.values())
+    except (AttributeError, TypeError, RecursionError):
+        pass
 
     logger.debug(
-        "tiktok_live_checker: @%s — checked all paths, not live",
+        "tiktok_live_checker: @%s -- checked all paths, not live",
         username,
     )
     return False
