@@ -149,30 +149,71 @@ class DownloadService:
                 # download attempt proceeds — yt-dlp will re-check during download
                 # and the stream may be accessible by then.
                 err_l = err.lower()
+                # BUG-TT-06 FIX: yt-dlp's TikTokLiveIE scrapes the profile page
+                # to obtain room_id, then calls webcast API to verify live status.
+                # TikTok now frequently returns profile pages without room_id even
+                # during active streams (bot-detection / schema change), causing
+                # UserNotLive. This was originally only triggered for vt/vm short
+                # links, but the same failure now occurs with canonical /live URLs.
+                #
+                # Fix: when "not currently live" is returned for any TikTok live
+                # URL, use our own profile scraper (_check_tiktok_live_with_room_id)
+                # which uses different headers / parsing. If we find room_id, build
+                # the mobile share URL m.tiktok.com/share/live/<room_id> — yt-dlp's
+                # TikTokLiveIE accepts this pattern and uses room_id directly,
+                # bypassing the profile-page scrape entirely.
+                import re as _re  # noqa: PLC0415
+                _tiktok_any_live_re = _re.compile(
+                    r"(?:(?:vt|vm)\.tiktok\.com/|tiktok\.com/@[A-Za-z0-9_.]+/live)",
+                    _re.I,
+                )
                 if (
                     ("not currently live" in err_l or "channel is not currently live" in err_l)
-                    and ("vt.tiktok.com" in url or "vm.tiktok.com" in url)
+                    and _tiktok_any_live_re.search(url)
                 ):
                     try:
                         from utils.tiktok_live_checker import (  # noqa: PLC0415
+                            _check_tiktok_live_with_room_id,
                             _resolve_short_link,
                         )
                         proxy = getattr(self._config, "proxy", "") or ""
-                        resolved = _resolve_short_link(url, proxy=proxy)
-                        import re as _re  # noqa: PLC0415
+                        # Resolve short link first if needed
+                        resolved = url
+                        if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
+                            resolved = _resolve_short_link(url, proxy=proxy)
+
                         _tiktok_live_re = _re.compile(
                             r"tiktok\.com/@([A-Za-z0-9_.]+)/live", _re.I
                         )
                         m = _tiktok_live_re.search(resolved)
                         if m:
                             _username = m.group(1)
-                            logger.info(
-                                "TikTok short-link resolved to live URL for @%s"
-                                " — using synthetic MediaInfo to bypass API race",
-                                _username,
+                            # Try to get room_id via our scraper so yt-dlp can
+                            # use m.tiktok.com/share/live/<room_id> and bypass
+                            # the profile-page scrape that TikTok is now blocking.
+                            _room_result = _check_tiktok_live_with_room_id(
+                                _username, proxy=proxy
                             )
+                            if _room_result:
+                                _live_url, _room_id = _room_result
+                                _download_url = (
+                                    f"https://m.tiktok.com/share/live/{_room_id}"
+                                )
+                                logger.info(
+                                    "BUG-TT-06: TikTok live @%s roomId=%s"
+                                    " — using mobile share URL to bypass profile scrape",
+                                    _username, _room_id,
+                                )
+                            else:
+                                # Not live or scraper also failed — use canonical URL
+                                _download_url = resolved
+                                logger.info(
+                                    "TikTok short-link resolved to live URL for @%s"
+                                    " — using synthetic MediaInfo to bypass API race",
+                                    _username,
+                                )
                             info = MediaInfo(
-                                url=resolved,
+                                url=_download_url,
                                 title=f"@{_username} — TikTok Live",
                                 uploader=_username,
                                 platform="TikTok",

@@ -274,7 +274,11 @@ def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str 
 # TikTok does not publish vt.tiktok.com/… for livestreams.
 _TIKTOK_VOD_RE   = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
 _TIKTOK_SHORT_RE = re.compile(r"(?:vt|vm)\.tiktok\.com/", re.I)
-_TIKTOK_LIVE_RE  = re.compile(r"tiktok\.com/@[^/]+/live", re.I)
+# BUG-TT-06 FIX: also match m.tiktok.com/share/live/<room_id> — the mobile
+# share URL form that yt-dlp accepts directly without a profile-page scrape.
+_TIKTOK_LIVE_RE  = re.compile(
+    r"(?:tiktok\.com/@[^/]+/live|m\.tiktok\.com/share/live/\d+)", re.I
+)
 
 # Map URL patterns to friendly platform names
 _PLATFORM_MAP: list[tuple[re.Pattern, str]] = [
