@@ -148,8 +148,6 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
             "Thieu thu vien Playwright.\nChay: pip install playwright"
         ) from err
 
-    import os
-
     exe  = _find_browser_exe(browser)
     port = _free_port()
 
