@@ -177,6 +177,22 @@ class DownloadService:
                             _resolve_short_link,
                         )
                         proxy = getattr(self._config, "proxy", "") or ""
+                        # BUG-TT-07 FIX: resolve TikTok cookie and pass it to
+                        # _check_tiktok_live_with_room_id so the profile page
+                        # fetch carries a valid session cookie.  TikTok now
+                        # strips liveRoomInfo for unauthenticated requests.
+                        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+                            _resolve_cookie, _prepare_cookie_for_use,
+                        )
+                        _tt_cookie_raw = _resolve_cookie(
+                            "https://www.tiktok.com/", self._config
+                        ) or ""
+                        _tt_cookie_txt = ""
+                        _tt_cookie_is_temp = False
+                        if _tt_cookie_raw:
+                            _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(
+                                _tt_cookie_raw
+                            )
                         # Resolve short link first if needed
                         resolved = url
                         if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
@@ -192,7 +208,7 @@ class DownloadService:
                             # use m.tiktok.com/share/live/<room_id> and bypass
                             # the profile-page scrape that TikTok is now blocking.
                             _room_result = _check_tiktok_live_with_room_id(
-                                _username, proxy=proxy
+                                _username, proxy=proxy, cookie_file=_tt_cookie_txt
                             )
                             if _room_result:
                                 _live_url, _room_id = _room_result
@@ -201,32 +217,46 @@ class DownloadService:
                                 )
                                 logger.info(
                                     "BUG-TT-06: TikTok live @%s roomId=%s"
-                                    " — using mobile share URL to bypass profile scrape",
+                                    " -- using mobile share URL to bypass profile scrape",
                                     _username, _room_id,
                                 )
+                                info = MediaInfo(
+                                    url=_download_url,
+                                    title=f"@{_username} -- TikTok Live",
+                                    uploader=_username,
+                                    platform="TikTok",
+                                    source_engine="yt_dlp",
+                                    is_live=True,
+                                )
+                                self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                                on_done(info)
+                                return
                             else:
-                                # Not live or scraper also failed — use canonical URL
-                                _download_url = resolved
+                                # BUG-TT-08 FIX: checker confirmed not live (or
+                                # could not obtain roomId after impersonated fetch).
+                                # Do NOT retry with canonical URL -- yt-dlp already
+                                # failed with it and would fail again identically.
+                                # Propagate the original yt-dlp error so the user
+                                # sees a real failure instead of 4 wasted retries.
                                 logger.info(
-                                    "TikTok short-link resolved to live URL for @%s"
-                                    " — using synthetic MediaInfo to bypass API race",
+                                    "TikTok live checker: @%s -- roomId not found"
+                                    " after full 2-pass scrape; stream may have ended"
+                                    " or TikTok blocked the check.",
                                     _username,
                                 )
-                            info = MediaInfo(
-                                url=_download_url,
-                                title=f"@{_username} — TikTok Live",
-                                uploader=_username,
-                                platform="TikTok",
-                                source_engine="yt_dlp",
-                                is_live=True,
-                            )
-                            self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
-                            on_done(info)
-                            return
+                                # fall through to on_error() below
                     except Exception as _tt_exc:
                         logger.debug(
                             "TikTok live short-link resolve failed: %s", _tt_exc
                         )
+                    finally:
+                        # BUG-TT-07: clean up decrypted temp cookie file
+                        if _tt_cookie_is_temp and _tt_cookie_txt:
+                            try:
+                                import os as _os  # noqa: PLC0415
+                                _os.unlink(_tt_cookie_txt)
+                            except OSError:
+                                pass
                 # Auto-routing: when yt-dlp finds no video formats on a
                 # supported image platform, retry silently with gallery-dl.
                 # The user never sees this fallback happen — they just get
@@ -465,15 +495,34 @@ class DownloadService:
             on_error("Không thể lấy username từ URL TikTok.")
             return
 
+        # BUG-TT-07 FIX: resolve and decrypt TikTok cookie so check_tiktok_live
+        # can authenticate the profile page fetch.
+        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+            _resolve_cookie, _prepare_cookie_for_use,
+        )
+        _tt_cookie_raw = _resolve_cookie("https://www.tiktok.com/", self._config) or ""
+        _tt_cookie_txt = ""
+        _tt_cookie_is_temp = False
+        if _tt_cookie_raw:
+            _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(_tt_cookie_raw)
+
         def _worker() -> None:
             try:
                 live_url = check_tiktok_live(
                     username=username,
                     proxy=proxy,
+                    cookie_file=_tt_cookie_txt,
                 )
                 on_done(live_url)
             except Exception as exc:
                 on_error(str(exc))
+            finally:
+                if _tt_cookie_is_temp and _tt_cookie_txt:
+                    try:
+                        import os as _os  # noqa: PLC0415
+                        _os.unlink(_tt_cookie_txt)
+                    except OSError:
+                        pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
