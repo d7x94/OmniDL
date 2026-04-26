@@ -420,6 +420,17 @@ class DownloadManager:
                     break
 
                 # Hard errors: stop immediately, no retry.
+                # Exception: "not currently live" on a confirmed-live task is a
+                # transient TikTok API check failure — the stream IS live but
+                # yt-dlp re-checks at download time and gets a stale response.
+                # Allow retries so yt-dlp gets another chance to fetch the HLS URL.
+                _is_not_live_err = (
+                    "not currently live" in msg
+                    or "channel is not currently live" in msg
+                )
+                if _is_not_live_err and _is_live_task:
+                    last_exc = exc
+                    continue  # retry — transient TikTok live API race
                 if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
                     logger.warning(
                         "Hard error for task %s (no retry): %s", task.id, exc

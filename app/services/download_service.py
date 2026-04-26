@@ -139,6 +139,53 @@ class DownloadService:
                 on_done(info)
             except Exception as exc:
                 err = str(exc)
+                # TikTok live short-link fallback: yt-dlp's tiktok:live extractor
+                # does a fresh API check at extract_info time and may return
+                # "not currently live" even when the stream is active (TikTok
+                # API race / stale CDN response).  When the URL is a short link
+                # (vt/vm.tiktok.com) and the error is "not currently live",
+                # resolve the redirect and check if it lands on a /live path.
+                # If it does, return a synthetic MediaInfo(is_live=True) so the
+                # download attempt proceeds — yt-dlp will re-check during download
+                # and the stream may be accessible by then.
+                err_l = err.lower()
+                if (
+                    ("not currently live" in err_l or "channel is not currently live" in err_l)
+                    and ("vt.tiktok.com" in url or "vm.tiktok.com" in url)
+                ):
+                    try:
+                        from utils.tiktok_live_checker import (  # noqa: PLC0415
+                            _resolve_short_link,
+                        )
+                        proxy = getattr(self._config, "proxy", "") or ""
+                        resolved = _resolve_short_link(url, proxy=proxy)
+                        import re as _re  # noqa: PLC0415
+                        _tiktok_live_re = _re.compile(
+                            r"tiktok\.com/@([A-Za-z0-9_.]+)/live", _re.I
+                        )
+                        m = _tiktok_live_re.search(resolved)
+                        if m:
+                            _username = m.group(1)
+                            logger.info(
+                                "TikTok short-link resolved to live URL for @%s"
+                                " — using synthetic MediaInfo to bypass API race",
+                                _username,
+                            )
+                            info = MediaInfo(
+                                url=resolved,
+                                title=f"@{_username} — TikTok Live",
+                                uploader=_username,
+                                platform="TikTok",
+                                source_engine="yt_dlp",
+                                is_live=True,
+                            )
+                            self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                            on_done(info)
+                            return
+                    except Exception as _tt_exc:
+                        logger.debug(
+                            "TikTok live short-link resolve failed: %s", _tt_exc
+                        )
                 # Auto-routing: when yt-dlp finds no video formats on a
                 # supported image platform, retry silently with gallery-dl.
                 # The user never sees this fallback happen — they just get
@@ -190,8 +237,21 @@ class DownloadService:
         resolved_dir = output_dir or self._config.download_dir
         resolved_dir.mkdir(parents=True, exist_ok=True)
 
+        # If media_info carries a resolved canonical URL (e.g. TikTok short-link
+        # resolved to /@user/live during analyse), use it as task.url so yt-dlp
+        # receives the canonical URL directly instead of re-resolving the short
+        # link and potentially hitting the same "not currently live" API race.
+        task_url = url
+        if (
+            media_info is not None
+            and media_info.url
+            and media_info.url != url
+            and media_info.url.startswith("http")
+        ):
+            task_url = media_info.url
+
         task = DownloadTask(
-            url=url,
+            url=task_url,
             media_info=media_info,
             format_id=format_id,
             output_ext=output_ext,

@@ -291,7 +291,54 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                 except Exception as exc:
                     logger.debug("page.goto warning (non-fatal): %s", exc)
 
-                # Poll loop - deadline starts now (after navigation)
+                # Dismiss the Instagram "tap to play" interstitial.
+                # The live page renders a black overlay requiring a user gesture
+                # before the video player starts and HLS segments are fetched.
+                # Inject synthetic mouse events on the overlay and video element
+                # to satisfy the autoplay policy (same pattern as facebook_story_engine).
+                time.sleep(1.5)
+                try:
+                    page.evaluate(
+                        "(function(){"
+                        "var overlaySelectors=['[data-visualcompletion=\"media-vc-image\"]',"
+                        "'[role=\"button\"]','._aatk','._aatn','._ab8w'];"
+                        "for(var s=0;s<overlaySelectors.length;s++){"
+                        " var ov=document.querySelector(overlaySelectors[s]);"
+                        " if(ov){try{"
+                        "  var oe={bubbles:true,cancelable:true,view:window};"
+                        "  ov.dispatchEvent(new MouseEvent('mousedown',oe));"
+                        "  ov.dispatchEvent(new MouseEvent('mouseup',oe));"
+                        "  ov.dispatchEvent(new MouseEvent('click',oe));"
+                        " }catch(e){} break;}"
+                        "}"
+                        "var vs=document.querySelectorAll('video');"
+                        "for(var i=0;i<vs.length;i++){"
+                        " (function(v){"
+                        "  try{"
+                        "   var opts={bubbles:true,cancelable:true,view:window};"
+                        "   v.dispatchEvent(new MouseEvent('mousedown',opts));"
+                        "   v.dispatchEvent(new MouseEvent('mouseup',opts));"
+                        "   v.dispatchEvent(new MouseEvent('click',opts));"
+                        "  }catch(e){}"
+                        "  v.muted=false;"
+                        "  var p=v.paused?v.play():Promise.resolve();"
+                        "  if(p&&p.then){"
+                        "   p.catch(function(){"
+                        "    v.muted=true;"
+                        "    var p2=v.play();"
+                        "    if(p2&&p2.then){p2.then(function(){"
+                        "    setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
+                        "   });"
+                        "  }"
+                        " })(vs[i]);"
+                        "}"
+                        "})()"
+                    )
+                    logger.debug("CDP: injected tap-to-play gesture")
+                except Exception as exc:
+                    logger.debug("CDP: tap-to-play inject failed (non-fatal): %s", exc)
+
+                # Poll loop - deadline starts now (after navigation + gesture)
                 loop_deadline = time.monotonic() + timeout
                 while time.monotonic() < loop_deadline:
                     if hls_url:
@@ -328,12 +375,19 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
         finally:
             try:
                 proc.terminate()
-                proc.wait(timeout=4)
-            except Exception:
                 try:
-                    proc.kill()
+                    proc.wait(timeout=8)
                 except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # Give OS time to release the debug port before next retry attempts
+            # to bind a new Brave instance (prevents ECONNREFUSED on reuse).
+            time.sleep(1.5)
 
     return hls_url
 
