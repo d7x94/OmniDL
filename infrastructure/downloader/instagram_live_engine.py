@@ -153,23 +153,6 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
     exe  = _find_browser_exe(browser)
     port = _free_port()
 
-    if sys.platform == "win32":
-        local_app    = Path(os.environ.get("LOCALAPPDATA", ""))
-        profile_base = local_app / (
-            "BraveSoftware/Brave-Browser/User Data"
-            if browser.lower() == "brave"
-            else "Google/Chrome/User Data"
-        )
-    elif sys.platform == "darwin":
-        home = Path.home()
-        profile_base = home / (
-            "Library/Application Support/BraveSoftware/Brave-Browser"
-            if browser.lower() == "brave"
-            else "Library/Application Support/Google/Chrome"
-        )
-    else:
-        profile_base = Path()
-
     cmd = [
         exe,
         f"--remote-debugging-port={port}",
