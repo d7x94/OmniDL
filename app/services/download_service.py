@@ -20,7 +20,11 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
 from infrastructure.downloader.download_manager import DownloadManager
-from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
+from infrastructure.downloader.yt_dlp_engine import (
+    YtDlpEngine,
+    _prepare_cookie_for_use,
+    _resolve_cookie,
+)
 from infrastructure.storage.history_repository import HistoryRepository
 from utils.helpers import is_valid_url
 
@@ -181,9 +185,6 @@ class DownloadService:
                         # _check_tiktok_live_with_room_id so the profile page
                         # fetch carries a valid session cookie.  TikTok now
                         # strips liveRoomInfo for unauthenticated requests.
-                        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
-                            _resolve_cookie, _prepare_cookie_for_use,
-                        )
                         _tt_cookie_raw = _resolve_cookie(
                             "https://www.tiktok.com/", self._config
                         ) or ""
@@ -497,9 +498,6 @@ class DownloadService:
 
         # BUG-TT-07 FIX: resolve and decrypt TikTok cookie so check_tiktok_live
         # can authenticate the profile page fetch.
-        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
-            _resolve_cookie, _prepare_cookie_for_use,
-        )
         _tt_cookie_raw = _resolve_cookie("https://www.tiktok.com/", self._config) or ""
         _tt_cookie_txt = ""
         _tt_cookie_is_temp = False
