@@ -85,17 +85,17 @@ def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":
     """
     try:
         from curl_cffi import requests as _cffi_req  # noqa: PLC0415
-        session = _cffi_req.Session(impersonate="chrome124")
+        cffi_session = _cffi_req.Session(impersonate="chrome124")
         if jar:
-            session.cookies.update(jar)
-        return session
+            cffi_session.cookies.update(jar)
+        return cffi_session
     except Exception as exc:  # noqa: BLE001
         logger.debug("tiktok_live_checker: curl_cffi unavailable (%s), using requests", exc)
         import requests as _req  # noqa: PLC0415
-        session = _req.Session()
+        req_session = _req.Session()
         if jar:
-            session.cookies.update(jar)
-        return session
+            req_session.cookies.update(jar)
+        return req_session
 
 
 def extract_tiktok_username_from_live_url(url: str) -> Optional[str]:
