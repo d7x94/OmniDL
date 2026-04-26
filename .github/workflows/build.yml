@@ -494,17 +494,9 @@ jobs:
           set -euo pipefail
           mkdir -p resources/gallery-dl
           echo "Downloading gallery-dl ..."
-          # Walk releases API to find newest tag that ships gallery-dl.bin
           url=$(curl -fsSL "https://api.github.com/repos/mikf/gallery-dl/releases?per_page=10" \
-            | python3 -c "
-import json,sys
-releases=json.load(sys.stdin)
-for r in releases:
-    for a in r.get('assets',[]):
-        if a['name']=='gallery-dl.bin':
-            print(a['browser_download_url']); exit()
-exit(1)
-")
+            | jq -r '[.[].assets[] | select(.name == "gallery-dl.bin")] | first | .browser_download_url')
+          if [ -z "$url" ] || [ "$url" = "null" ]; then echo "ERROR: gallery-dl.bin not found"; exit 1; fi
           curl -fsSL --retry 3 --retry-delay 5 "$url" -o resources/gallery-dl/gallery-dl
           chmod +x resources/gallery-dl/gallery-dl
           echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
@@ -758,17 +750,9 @@ exit(1)
           set -euo pipefail
           mkdir -p resources/gallery-dl
           echo "Downloading gallery-dl ..."
-          # Walk releases API to find newest tag that ships gallery-dl.bin
           url=$(curl -fsSL "https://api.github.com/repos/mikf/gallery-dl/releases?per_page=10" \
-            | python3 -c "
-import json,sys
-releases=json.load(sys.stdin)
-for r in releases:
-    for a in r.get('assets',[]):
-        if a['name']=='gallery-dl.bin':
-            print(a['browser_download_url']); exit()
-exit(1)
-")
+            | jq -r '[.[].assets[] | select(.name == "gallery-dl.bin")] | first | .browser_download_url')
+          if [ -z "$url" ] || [ "$url" = "null" ]; then echo "ERROR: gallery-dl.bin not found"; exit 1; fi
           curl -fsSL --retry 3 --retry-delay 5 "$url" -o resources/gallery-dl/gallery-dl
           chmod +x resources/gallery-dl/gallery-dl
           echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
