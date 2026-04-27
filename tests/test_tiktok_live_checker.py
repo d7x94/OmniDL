@@ -468,7 +468,7 @@ class TestExtractLiveStatusPath3:
     def test_path3_fires_on_status2_with_room_id(self):
         """Path3 fallback: raw string contains 'status': 2 AND roomId."""
         from utils.tiktok_live_checker import _extract_live_status
-        data = {"other": {"nested": {"status": 2, "roomId": "abc123"}}}
+        data = {"other": {"nested": {"status": 2, "roomId": "1234567890"}}}
         assert _extract_live_status(data, "user") is True
 
     def test_path3_does_not_fire_without_room_id(self):

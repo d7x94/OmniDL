@@ -98,8 +98,8 @@ def _get_chrome_impersonate_target() -> "Any":
     3. Fall back to "chrome" if map lookup fails or module not available.
     """
     try:
-        from yt_dlp.networking._curlcffi import CurlCFFIRH as _RH  # noqa: PLC0415
         from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
+        from yt_dlp.networking._curlcffi import CurlCFFIRH as _RH  # noqa: PLC0415
         _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
         # Find the ImpersonateTarget key with client=='chrome'
         chrome_key = next(
@@ -358,10 +358,10 @@ def _fetch_tiktok_profile_page(
     except Exception as exc:
         exc_s = str(exc)
         if "connection" in exc_s.lower() or "connect" in exc_s.lower():
-            raise RuntimeError(f"Loi ket noi mang: {exc}") from exc
+            raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
         if "timeout" in exc_s.lower():
-            raise RuntimeError("TikTok API het thoi gian cho. Thu lai sau.") from None
-        raise RuntimeError(f"Loi HTTP: {exc}") from exc
+            raise RuntimeError("TikTok API hết thời gian chờ. Thử lại sau.") from None
+        raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
 
     if resp.status_code == 404:
         raise RuntimeError(
@@ -457,6 +457,7 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
 
     # Primary: __UNIVERSAL_DATA_FOR_REHYDRATION__ (current TikTok, mirrors yt-dlp pass 1)
     data = _extract_json_blob(page_text, "__UNIVERSAL_DATA_FOR_REHYDRATION__")
+    _status_ended = False  # True if we parsed liveRoomInfo with status 4/5
     if data:
         scope = data.get("__DEFAULT_SCOPE__", {})
         user_info = scope.get("webapp.user-detail", {}).get("userInfo", {})
@@ -478,6 +479,8 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                     " status=%s roomId=%s", username, status, room_id,
                 )
                 return room_id
+            if room_id and status in (4, 5):
+                _status_ended = True
 
     # Fallback: __NEXT_DATA__ (older TikTok page format, still used in some regions)
     data = _extract_json_blob(page_text, "__NEXT_DATA__")
@@ -502,18 +505,22 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                     " status=%s roomId=%s", username, status, room_id,
                 )
                 return room_id
+            if room_id and status in (4, 5):
+                _status_ended = True
 
     # BUG-TT-08 FIX pass-3: raw regex scan on entire page HTML.
     # When TikTok changes the script tag structure, JSON path parsing fails but
     # the raw "roomId":"<digits>" pattern is still present in the HTML source.
-    for m in _ROOM_ID_RE.finditer(page_text):
-        room_id = _valid_room_id(m.group(1))
-        if room_id:
-            logger.debug(
-                "tiktok_live_checker: @%s roomId via raw HTML scan: %s",
-                username, room_id,
-            )
-            return room_id
+    # Skip if we already parsed a valid liveRoomInfo with status=4/5 (stream ended).
+    if not _status_ended:
+        for m in _ROOM_ID_RE.finditer(page_text):
+            room_id = _valid_room_id(m.group(1))
+            if room_id:
+                logger.debug(
+                    "tiktok_live_checker: @%s roomId via raw HTML scan: %s",
+                    username, room_id,
+                )
+                return room_id
 
     return None
 
