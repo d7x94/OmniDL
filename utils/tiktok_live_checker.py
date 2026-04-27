@@ -98,8 +98,8 @@ def _get_chrome_impersonate_target() -> "Any":
     3. Fall back to "chrome" if map lookup fails or module not available.
     """
     try:
-        from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _RH  # noqa: PLC0415
+        from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
         _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
         # Find the ImpersonateTarget key with client=='chrome'
         chrome_key = next(
