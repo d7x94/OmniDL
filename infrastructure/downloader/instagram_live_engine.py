@@ -57,19 +57,23 @@ _BROADCAST_ID_FROM_URL_RE = re.compile(
     r"instagram\.com/[^/]+/live/(\d+)", re.I
 )
 
-# Instagram Live HLS URLs come from cdninstagram.com or Instagram's edge CDN
-# and always end in .m3u8
+# Instagram Live streams come from cdninstagram.com or Instagram's edge CDN.
+# 2025+: Instagram migrated from HLS-only to DASH (MPD) for some live streams.
+# We capture both HLS (.m3u8) and DASH (.mpd) and pass the URL to FFmpeg.
+# FFmpeg handles both formats via -i <url> -c copy.
 _IG_HLS_RE = re.compile(
     r"(?:cdninstagram\.com|scontent[^/]*\.instagram\.com|live-upload\.instagram\.com)"
-    r".*?\.m3u8",
+    r".*?\.(?:m3u8|mpd)",
     re.I,
 )
 _IG_HLS_PATH_RE = re.compile(
-    r"instagram\.com/.*?\.m3u8",
+    r"instagram\.com/.*?\.(?:m3u8|mpd)",
     re.I,
 )
 
-_CDP_HLS_WAIT_S = 30.0
+# 2025+: Instagram live streams may take longer to initialize in CDP mode.
+# Increased from 30s to 60s to accommodate slower stream initialization.
+_CDP_HLS_WAIT_S = 60.0
 # Serialize CDP browser launches to prevent profile lock conflicts
 _CDP_LOCK: "threading.Lock | None" = None
 
@@ -204,13 +208,37 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                 ctx  = cdp_browser.contexts[0]
                 page = ctx.new_page()
 
-                # Layer A: Playwright request intercept
+                # Context-level route: catches ALL requests including those
+                # from Service Workers (which page.on("request") misses).
+                # Instagram 2025+ may load live streams via Service Worker.
+                def _on_ctx_route(route) -> None:
+                    nonlocal hls_url
+                    u = route.request.url
+                    if not hls_url and (
+                        ".m3u8" in u or ".mpd" in u
+                    ) and any(
+                        d in u for d in ("cdninstagram.com", "instagram.com", "fbcdn.net")
+                    ):
+                        logger.info("CDP[SW]: stream URL via context route: %.120s", u)
+                        hls_url = u
+                    try:
+                        route.continue_()
+                    except Exception:
+                        pass
+
+                try:
+                    ctx.route("**/*", _on_ctx_route)
+                    logger.debug("CDP[SW]: context-level route installed")
+                except Exception as exc:
+                    logger.debug("CDP[SW]: context route failed (%s)", exc)
+
+                # Layer A: Playwright request intercept (page-level)
                 # Log ALL instagram/cdninstagram requests to help diagnose
                 def _on_request(request) -> None:
                     nonlocal hls_url
                     u = request.url
-                    if ".m3u8" in u:
-                        logger.info("CDP[A]: .m3u8 request: %.120s", u)
+                    if ".m3u8" in u or ".mpd" in u:
+                        logger.info("CDP[A]: stream URL request: %.120s", u)
                         if not hls_url:
                             hls_url = u
                     elif "instagram.com" in u and any(
@@ -230,11 +258,14 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                     if (
                         "application/vnd.apple.mpegurl" in ct
                         or "application/x-mpegurl" in ct
+                        or "application/dash+xml" in ct
                     ):
-                        logger.info("CDP[B]: HLS via MIME (%s): %.120s", ct, u)
+                        logger.info("CDP[B]: stream via MIME (%s): %.120s", ct, u)
                         hls_url = u
-                    elif ".m3u8" in u and "instagram.com" in u:
-                        logger.info("CDP[B]: HLS via URL pattern: %.120s", u)
+                    elif (".m3u8" in u or ".mpd" in u) and (
+                        "instagram.com" in u or "cdninstagram.com" in u or "fbcdn.net" in u
+                    ):
+                        logger.info("CDP[B]: stream via URL pattern: %.120s", u)
                         hls_url = u
 
                 page.on("response", _on_response)
@@ -249,8 +280,8 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                         u = params.get("request", {}).get("url", "")
                         if not u:
                             return
-                        if ".m3u8" in u:
-                            logger.info("CDP[C]: .m3u8 via Network domain: %.120s", u)
+                        if ".m3u8" in u or ".mpd" in u:
+                            logger.info("CDP[C]: stream URL via Network domain: %.120s", u)
                             if not hls_url:
                                 hls_url = u
                         elif "instagram.com" in u and any(
@@ -258,7 +289,30 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                         ):
                             logger.debug("CDP[C]: IG live-related: %.120s", u)
 
+                    def _on_cdp_response(params: dict) -> None:
+                        nonlocal hls_url
+                        if hls_url:
+                            return
+                        headers = params.get("response", {}).get("headers", {})
+                        ct = (
+                            headers.get("content-type")
+                            or headers.get("Content-Type")
+                            or ""
+                        ).lower()
+                        u = params.get("response", {}).get("url", "")
+                        if (
+                            "application/dash+xml" in ct
+                            or "application/vnd.apple.mpegurl" in ct
+                            or "application/x-mpegurl" in ct
+                        ):
+                            logger.info(
+                                "CDP[C]: stream via responseReceived MIME (%s): %.120s",
+                                ct, u,
+                            )
+                            hls_url = u
+
                     cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
+                    cdp_session.on("Network.responseReceived", _on_cdp_response)
                     logger.debug("CDP[C]: Network domain enabled")
                 except Exception as exc:
                     logger.debug("CDP[C]: Network domain unavailable (%s)", exc)
@@ -331,15 +385,15 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                             "var e=performance.getEntriesByType('resource');"
                             "for(var i=0;i<e.length;i++){"
                             "var u=e[i].name;"
-                            "if(u&&u.indexOf('.m3u8')!==-1)"
+                            "if(u&&(u.indexOf('.m3u8')!==-1||u.indexOf('.mpd')!==-1))"
                             "return u;"
                             "}"
                             "}catch(ex){}"
                             "return '';"
                             "})()"
                         )
-                        if val and ".m3u8" in val:
-                            logger.info("CDP[D]: HLS via performance API: %.120s", val)
+                        if val and (".m3u8" in val or ".mpd" in val):
+                            logger.info("CDP[D]: stream URL via performance API: %.120s", val)
                             hls_url = val
                             break
                     except Exception:
@@ -348,7 +402,7 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
 
                 if not hls_url:
                     logger.warning(
-                        "CDP: no .m3u8 URL captured in %.0fs after navigation. "
+                        "CDP: no stream URL captured in %.0fs after navigation. "
                         "Instagram may require login or is showing app-only wall.",
                         timeout,
                     )
@@ -445,8 +499,21 @@ class InstagramLiveEngine:
             )
         ffmpeg_bin = str(Path(loc.ffmpeg_bin))
 
-        # Build headers for FFmpeg HLS segment auth
+        # Build headers for FFmpeg HLS/DASH segment auth
         headers_arg = self._build_ffmpeg_headers(url)
+
+        # DASH MPD requires different container than HLS.
+        # HLS -> mpegts (.ts), DASH -> matroska (.mkv) since .ts doesn't support
+        # all codecs that DASH may use. Use extension to detect format.
+        is_dash = hls_url and ".mpd" in hls_url.lower()
+        if is_dash:
+            raw_name = raw_name.replace(".ts", ".mkv")
+            output_path = output_dir / raw_name
+            with task._lock:
+                task.filename = str(output_path)
+            container_args = ["-f", "matroska"]
+        else:
+            container_args = ["-f", "mpegts"]
 
         cmd = [
             ffmpeg_bin,
@@ -454,7 +521,7 @@ class InstagramLiveEngine:
             "-headers", headers_arg,
             "-i", hls_url,
             "-c", "copy",
-            "-f", "mpegts",
+            *container_args,
             str(output_path),
         ]
         logger.info(

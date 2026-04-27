@@ -194,7 +194,10 @@ class DownloadService:
                             _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(
                                 _tt_cookie_raw
                             )
-                        # Resolve short link first if needed
+                        # Resolve short link first if needed.
+                        # BUG-TT-09: keep the resolved URL (which contains
+                        # sec_user_id in its query string) so pass-0 webcast
+                        # API can extract sec_user_id without page scraping.
                         resolved = url
                         if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
                             resolved = _resolve_short_link(url, proxy=proxy)
@@ -205,11 +208,13 @@ class DownloadService:
                         m = _tiktok_live_re.search(resolved)
                         if m:
                             _username = m.group(1)
-                            # Try to get room_id via our scraper so yt-dlp can
-                            # use m.tiktok.com/share/live/<room_id> and bypass
-                            # the profile-page scrape that TikTok is now blocking.
+                            # BUG-TT-09: pass resolved URL as share_url so
+                            # pass-0 can extract sec_user_id from query params.
                             _room_result = _check_tiktok_live_with_room_id(
-                                _username, proxy=proxy, cookie_file=_tt_cookie_txt
+                                _username,
+                                proxy=proxy,
+                                cookie_file=_tt_cookie_txt,
+                                share_url=resolved,
                             )
                             if _room_result:
                                 _live_url, _room_id = _room_result

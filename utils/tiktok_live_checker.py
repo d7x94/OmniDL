@@ -64,6 +64,17 @@ _LIVE_URL_RE = re.compile(
 # for any numeric roomId pattern. TikTok room IDs are always 10+ digit integers.
 _ROOM_ID_RE = re.compile(r'"roomId"\s*:\s*"(\d{10,})"')
 
+# BUG-TT-09 FIX: pass-0 webcast API using sec_user_id from share URL query string.
+# TikTok share links embed sec_user_id which can be used to call the webcast API
+# directly, bypassing page scraping entirely. This is more reliable than HTML parsing
+# because it doesn't depend on TikTok's bot-detection-influenced page rendering.
+_WEBCAST_ROOM_LIST_API = "https://webcast.tiktok.com/webcast/room/list/"
+_SEC_USER_ID_RE = re.compile(r"[?&]sec_user_id=([A-Za-z0-9_~%-]+)", re.I)
+
+# BUG-TT-09: TikTok app API for user live status - lighter than page scrape.
+# Uses the same aid=1988 (TikTok web) parameter.
+_TIKTOK_USER_LIVE_API = "https://www.tiktok.com/api/live/detail/"
+
 # BUG-TT-08 FIX: impersonation UA -- mirrors yt-dlp TikTokLiveIE impersonate=True.
 # curl_cffi is already in pyproject.toml (curl-cffi>=0.15.0).
 _CHROME_UA = (
@@ -593,6 +604,7 @@ def _check_tiktok_live_with_room_id(
     username: str,
     proxy: str = "",
     cookie_file: str = "",
+    share_url: str = "",
 ) -> "Optional[tuple[str, str]]":
     """Internal: returns (live_url, room_id) if live, None if not live.
 
@@ -609,8 +621,73 @@ def _check_tiktok_live_with_room_id(
     (reject "0"/empty), raw HTML regex scan as pass-3, and webcast
     check_alive verification after finding a room_id.
 
+    BUG-TT-09 FIX: added pass-0 — extract sec_user_id from share_url query
+    params and call webcast room/list API directly, bypassing page scraping.
+    This works when TikTok bot-detection strips roomId from the rendered HTML.
+
     Raises RuntimeError on network errors (propagated from _fetch_tiktok_profile_page).
     """
+    import json as _json  # noqa: PLC0415
+
+    def _valid_room_id_inner(v: "Any") -> "Optional[str]":
+        if not v:
+            return None
+        s = str(v).strip()
+        if not s.isdigit() or int(s) == 0:
+            return None
+        return s
+
+    # Pass 0: webcast API via sec_user_id from share URL query params.
+    # Share links embed sec_user_id — use it to call the webcast room/list API
+    # which returns roomId directly without page scraping.
+    # BUG-TT-09: This is the most reliable path when TikTok blocks page scraping.
+    if share_url:
+        _sec_m = _SEC_USER_ID_RE.search(share_url)
+        if _sec_m:
+            import urllib.parse as _urlparse  # noqa: PLC0415
+            sec_user_id = _urlparse.unquote_plus(_sec_m.group(1))
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            headers = {
+                "User-Agent": _CHROME_UA,
+                "Accept": "application/json, */*",
+                "Referer": "https://www.tiktok.com/",
+                "Origin": "https://www.tiktok.com",
+            }
+            jar = _load_cookie_jar(cookie_file)
+            session = _get_impersonate_session(jar)
+            try:
+                resp = session.get(
+                    _WEBCAST_ROOM_LIST_API,
+                    params={"aid": "1988", "sec_user_id": sec_user_id},
+                    headers=headers,
+                    proxies=proxies,
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    data = _json.loads(resp.text)
+                    room_list = data.get("data", {}).get("room_list") or []
+                    for room in room_list:
+                        r_id = _valid_room_id_inner(room.get("id_str") or room.get("id"))
+                        status = room.get("status")
+                        if r_id and status == 2:
+                            live_url = f"https://www.tiktok.com/@{username}/live"
+                            logger.info(
+                                "tiktok_live_checker: @%s LIVE via webcast room/list"
+                                " (pass-0) roomId=%s",
+                                username, r_id,
+                            )
+                            return live_url, r_id
+                    logger.debug(
+                        "tiktok_live_checker: @%s webcast room/list: no active room"
+                        " (rooms=%d)",
+                        username, len(room_list),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "tiktok_live_checker: @%s webcast room/list (pass-0) failed: %s",
+                    username, exc,
+                )
+
     # Pass 1: profile page /@username -> __UNIVERSAL_DATA_FOR_REHYDRATION__
     page_text = _fetch_tiktok_profile_page(username, proxy=proxy, cookie_file=cookie_file)
     if page_text is None:

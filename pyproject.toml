@@ -5,7 +5,7 @@ description = "Ultimate Media Downloader"
 requires-python = ">=3.11"
 dependencies = [
     "customtkinter>=5.2.2",
-    "yt-dlp>=2025.1.1",
+    "yt-dlp[default,curl-cffi] @ git+https://github.com/yt-dlp/yt-dlp.git",
     "gallery-dl>=1.32.0",
     "Pillow>=10.3.0",
     "requests>=2.31.0",
