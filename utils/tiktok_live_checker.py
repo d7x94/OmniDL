@@ -85,23 +85,40 @@ _CHROME_UA = (
 
 
 def _get_chrome_impersonate_target() -> "Any":
-    """Return the best available Chrome ImpersonateTarget for curl_cffi, or None.
+    """Return the curl_cffi-native impersonate string for Chrome.
 
-    curl_cffi < 0.15 accepts plain string "chrome124".
-    curl_cffi >= 0.15 uses versioned ImpersonateTarget objects.
-    Mirrors the same probe logic as yt_dlp_engine._IMPERSONATE_TARGET selection.
+    curl_cffi.requests.Session/head/get(impersonate=...) requires a plain
+    string like "chrome" or "chrome131" -- NOT an ImpersonateTarget object.
+    ImpersonateTarget is yt-dlp's internal type; passing it to curl_cffi
+    causes 'ImpersonateTarget' object has no attribute 'encode' at request time.
+
+    Strategy:
+    1. Probe CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP for any chrome key.
+    2. Return the map VALUE (curl_cffi string, e.g. "chrome131").
+    3. Fall back to "chrome" if map lookup fails or module not available.
     """
     try:
         from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _RH  # noqa: PLC0415
         _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
-        bare = _IT.from_str("chrome")
-        if bare in _map:
-            return bare
-        # curl_cffi >= 0.15: find any versioned chrome target
-        return next((k for k in _map if getattr(k, "client", None) == "chrome"), bare)
+        # Find the ImpersonateTarget key with client=='chrome'
+        chrome_key = next(
+            (k for k in _map if getattr(k, "client", None) == "chrome"),
+            None,
+        )
+        if chrome_key is None:
+            # Try bare unversioned key (curl_cffi < 0.15)
+            bare = _IT.from_str("chrome")
+            if bare in _map:
+                chrome_key = bare
+        if chrome_key is not None:
+            # Return the curl_cffi-native string value from the map
+            val = _map.get(chrome_key)
+            if isinstance(val, str) and val:
+                return val
     except Exception:  # noqa: BLE001
-        return "chrome124"  # fallback for old curl_cffi without yt_dlp integration
+        pass
+    return "chrome"  # safe fallback for curl_cffi without yt_dlp integration
 
 
 def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":

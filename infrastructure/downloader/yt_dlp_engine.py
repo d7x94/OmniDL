@@ -37,6 +37,11 @@ try:
     import curl_cffi as _curl_cffi  # noqa: F401
     from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
     _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
+    # _IMPERSONATE_STRING: the curl_cffi-native string (e.g. "chrome131") used
+    # when calling curl_cffi.requests.Session/head/get directly.
+    # curl_cffi expects its own string format, NOT ImpersonateTarget objects.
+    # _IMPERSONATE_TARGET (ImpersonateTarget object) is for yt-dlp opts only.
+    _IMPERSONATE_STRING = "chrome"  # safe default for curl_cffi < 0.15
     # Runtime probe — no network, no I/O. Checks that yt-dlp accepts this curl_cffi
     # version and that the handler lists at least one "chrome" target.
     # BUG-CE2 FIX: curl_cffi >= 0.15 uses versioned ImpersonateTarget keys
@@ -45,6 +50,7 @@ try:
     # appear in the map, causing a false "not in map" miss and disabling
     # impersonation even though curl_cffi is fully functional.
     # Fix: scan the map for any key with client='chrome' and use it directly.
+    # Also extract the map VALUE (curl_cffi string) for direct curl_cffi API calls.
     try:
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _CurlCFFIRH  # type: ignore[import]
         _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
@@ -61,6 +67,13 @@ try:
                     f"(available: {list(_supported_map.keys())[:5]})"
                 )
             _IMPERSONATE_TARGET = _chrome_target
+        # BUG-TT-10 FIX: extract the curl_cffi-native string from map value.
+        # curl_cffi.requests.Session/head/get(impersonate=...) requires a string
+        # like "chrome131", NOT an ImpersonateTarget object. The map value is
+        # the correct curl_cffi string; the key is the yt-dlp ImpersonateTarget.
+        _map_val = _supported_map.get(_IMPERSONATE_TARGET)
+        if isinstance(_map_val, str) and _map_val:
+            _IMPERSONATE_STRING = _map_val
     except ImportError as _probe_err:
         _probe_msg = str(_probe_err).lower()
         if "not supported" in _probe_msg or "versions" in _probe_msg or "only curl" in _probe_msg:
@@ -73,6 +86,7 @@ try:
 except ImportError:
     _CURL_CFFI_AVAILABLE = False
     _IMPERSONATE_TARGET = None
+    _IMPERSONATE_STRING = None
 except Exception as _curl_load_err:
     import logging as _logging
     _logging.getLogger(__name__).warning(
@@ -82,6 +96,7 @@ except Exception as _curl_load_err:
     )
     _CURL_CFFI_AVAILABLE = False
     _IMPERSONATE_TARGET = None
+    _IMPERSONATE_STRING = None
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
@@ -588,9 +603,11 @@ def _resolve_kuaishou_url(url: str) -> str:
         return url
     try:
         from curl_cffi import requests as _cffi_req
+        # BUG-TT-10 FIX: curl_cffi API requires a string (e.g. "chrome131"),
+        # NOT an ImpersonateTarget object. Use _IMPERSONATE_STRING here.
         resp = _cffi_req.head(
             url,
-            impersonate=_IMPERSONATE_TARGET,
+            impersonate=_IMPERSONATE_STRING,
             allow_redirects=True,
             timeout=15,
         )
@@ -601,7 +618,7 @@ def _resolve_kuaishou_url(url: str) -> str:
         # HEAD may not follow all redirects on some CDNs — try GET if same URL
         resp2 = _cffi_req.get(
             url,
-            impersonate=_IMPERSONATE_TARGET,
+            impersonate=_IMPERSONATE_STRING,
             allow_redirects=True,
             timeout=15,
         )
