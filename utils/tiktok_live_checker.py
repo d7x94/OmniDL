@@ -84,6 +84,26 @@ _CHROME_UA = (
 )
 
 
+def _get_chrome_impersonate_target() -> "Any":
+    """Return the best available Chrome ImpersonateTarget for curl_cffi, or None.
+
+    curl_cffi < 0.15 accepts plain string "chrome124".
+    curl_cffi >= 0.15 uses versioned ImpersonateTarget objects.
+    Mirrors the same probe logic as yt_dlp_engine._IMPERSONATE_TARGET selection.
+    """
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
+        from yt_dlp.networking._curlcffi import CurlCFFIRH as _RH  # noqa: PLC0415
+        _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
+        bare = _IT.from_str("chrome")
+        if bare in _map:
+            return bare
+        # curl_cffi >= 0.15: find any versioned chrome target
+        return next((k for k in _map if getattr(k, "client", None) == "chrome"), bare)
+    except Exception:  # noqa: BLE001
+        return "chrome124"  # fallback for old curl_cffi without yt_dlp integration
+
+
 def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":
     """Return a curl_cffi Session with Chrome TLS impersonation if available,
     else fall back to a plain requests.Session.
@@ -91,12 +111,13 @@ def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":
     BUG-TT-08 FIX: TikTok bot-detection uses TLS fingerprinting in addition to
     IP/cookie checks. Using a plain requests.Session triggers bot-detection even
     with valid cookies, causing TikTok to omit roomId from the page JSON.
-    curl_cffi with impersonate='chrome124' bypasses TLS fingerprinting,
-    mirroring exactly what yt-dlp does (impersonate=True on _download_webpage).
+    BUG-TT-10 FIX: curl_cffi >= 0.15 uses ImpersonateTarget objects, not plain
+    strings. Use _get_chrome_impersonate_target() to select the right form.
     """
     try:
         from curl_cffi import requests as _cffi_req  # noqa: PLC0415
-        cffi_session = _cffi_req.Session(impersonate="chrome124")
+        _target = _get_chrome_impersonate_target()
+        cffi_session = _cffi_req.Session(impersonate=_target)
         if jar:
             cffi_session.cookies.update(jar)
         return cffi_session

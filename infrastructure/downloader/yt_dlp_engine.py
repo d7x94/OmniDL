@@ -38,15 +38,29 @@ try:
     from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
     _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
     # Runtime probe — no network, no I/O. Checks that yt-dlp accepts this curl_cffi
-    # version and that the handler lists "chrome" as a supported target.
+    # version and that the handler lists at least one "chrome" target.
+    # BUG-CE2 FIX: curl_cffi >= 0.15 uses versioned ImpersonateTarget keys
+    # (e.g. ImpersonateTarget(client='chrome', version='124', os='macos')).
+    # The bare ImpersonateTarget.from_str("chrome") (no version/os) does NOT
+    # appear in the map, causing a false "not in map" miss and disabling
+    # impersonation even though curl_cffi is fully functional.
+    # Fix: scan the map for any key with client='chrome' and use it directly.
     try:
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _CurlCFFIRH  # type: ignore[import]
         _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
+        # First try exact match (curl_cffi < 0.15 — unversioned keys)
         if _IMPERSONATE_TARGET not in _supported_map:
-            raise RuntimeError(
-                f"CurlCFFIRH does not list 'chrome' as a supported target "
-                f"(available: {list(_supported_map.keys())[:5]})"
+            # curl_cffi >= 0.15: scan for any chrome target in the map
+            _chrome_target = next(
+                (k for k in _supported_map if getattr(k, "client", None) == "chrome"),
+                None,
             )
+            if _chrome_target is None:
+                raise RuntimeError(
+                    f"CurlCFFIRH does not list 'chrome' as a supported target "
+                    f"(available: {list(_supported_map.keys())[:5]})"
+                )
+            _IMPERSONATE_TARGET = _chrome_target
     except ImportError as _probe_err:
         _probe_msg = str(_probe_err).lower()
         if "not supported" in _probe_msg or "versions" in _probe_msg or "only curl" in _probe_msg:
@@ -576,7 +590,7 @@ def _resolve_kuaishou_url(url: str) -> str:
         from curl_cffi import requests as _cffi_req
         resp = _cffi_req.head(
             url,
-            impersonate="chrome",
+            impersonate=_IMPERSONATE_TARGET,
             allow_redirects=True,
             timeout=15,
         )
@@ -587,7 +601,7 @@ def _resolve_kuaishou_url(url: str) -> str:
         # HEAD may not follow all redirects on some CDNs — try GET if same URL
         resp2 = _cffi_req.get(
             url,
-            impersonate="chrome",
+            impersonate=_IMPERSONATE_TARGET,
             allow_redirects=True,
             timeout=15,
         )
