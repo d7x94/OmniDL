@@ -171,10 +171,35 @@ def is_kuaishou_url(url: str) -> bool:
 # ── Session factory ───────────────────────────────────────────────────────────
 
 
+def _get_impersonate_string() -> str:
+    """Return the curl_cffi impersonate string (map VALUE, e.g. 'chrome131').
+
+    BUG-TT-10 pattern: curl_cffi >= 0.15 requires the string VALUE from the
+    BrowserTypeLiteral map, not the ImpersonateTarget enum key.
+    Falls back to "chrome" if the map is unavailable.
+    """
+    try:
+        from curl_cffi import requests as cffi_req  # noqa: PLC0415
+        target_map = getattr(cffi_req, "BrowserTypeLiteral", None) or getattr(
+            cffi_req, "_BROWSER_TYPE_LITERAL_MAP", None
+        )
+        if target_map and isinstance(target_map, dict):
+            for key in target_map:
+                key_name = getattr(key, "name", None) or str(key)
+                if key_name.lower() == "chrome":
+                    val = target_map[key]
+                    if isinstance(val, str):
+                        return val
+    except Exception:
+        pass
+    return "chrome"
+
+
 def _make_session(cookie_str: str = "") -> Any:
     try:
         from curl_cffi import requests as cffi_req  # noqa: PLC0415
-        session: Any = cffi_req.Session(impersonate="chrome")
+        _imp = _get_impersonate_string()
+        session: Any = cffi_req.Session(impersonate=_imp)
         if cookie_str:
             for part in cookie_str.split(";"):
                 part = part.strip()
@@ -913,10 +938,11 @@ def _strategy_cdp_locked(
             _prog(8, "Kuaishou: đang kết nối CDP...")
             cdp_browser = None
             # Allow up to 30s for CDP connect but never past the absolute deadline
-            # minus 30s buffer for navigation + intercept on slow machines.
+            # minus 20s buffer for navigation + intercept (was 30s — too tight
+            # on slow machines where login redirect + player init takes 60-90s).
             _cdp_connect_deadline = min(
                 time.monotonic() + 30.0,
-                _abs_deadline - 30.0,
+                _abs_deadline - 20.0,
             )
             last_exc = None
             while time.monotonic() < _cdp_connect_deadline:
@@ -934,6 +960,12 @@ def _strategy_cdp_locked(
                 return None
 
             ctx = cdp_browser.contexts[0]
+
+            # BUG-KS-CDP-01 FIX: _inject_cookies_cdp was defined but never
+            # called. Without cookies the Kuaishou player shows a login wall
+            # and never fires the CDN request, causing strategy E to always
+            # time out on accounts that require auth to view content.
+            _inject_cookies_cdp(ctx, config)
 
             # Open exactly one new tab — track it so we close only this tab later.
             page = ctx.new_page()
@@ -1023,7 +1055,7 @@ def _strategy_cdp_locked(
             try:
                 _remaining = _abs_deadline - time.monotonic()
                 page.goto(_nav_url, wait_until="domcontentloaded",
-                          timeout=min(max(_remaining * 0.35, 8.0), 25.0) * 1_000)
+                          timeout=min(max(_remaining * 0.35, 8.0), 40.0) * 1_000)
             except PWTimeout:
                 pass
             except Exception as exc:
@@ -1273,7 +1305,7 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
 
         if result is None:
             logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
-            result = _strategy_cdp(resolved, config, timeout=120.0)
+            result = _strategy_cdp(resolved, config, timeout=150.0)
 
         if result is None:
             raise RuntimeError(
@@ -1361,6 +1393,7 @@ class KuaishouEngine:
             raise RuntimeError("KuaishouEngine.download: task.media_info is None")
 
         cdn_url = media_info.url
+        cookie_str = _load_cookie_str(self._config)
 
         # CDN URLs expire within minutes. Decide whether to re-extract:
         # - Desktop flow: task.url is a kuaishou.com page URL; CDN URL in
@@ -1368,14 +1401,27 @@ class KuaishouEngine:
         # - Remote API flow: iPhone echoes back the CDN URL as body.url
         #   (task.url = CDN URL, not page URL). By download time the URL may
         #   have expired → probe first; re-extract only if probe fails.
-        # Probe with a HEAD request (cheap, avoids opening Brave unnecessarily).
+        #
+        # BUG-KS-PROBE FIX: A network timeout during probe does NOT mean the
+        # CDN URL has expired — it means the probe itself timed out (e.g. CN CDN
+        # reachability from non-CN IP is intermittent). Triggering re-extract on
+        # timeout caused a cascading failure: re-extract → short URL resolve
+        # timeout (15s×2) → strategy B photo=null → strategy E CDP 150s timeout
+        # → total failure even though the original CDN URL was still valid.
+        #
+        # Rule: re-extract ONLY when the server explicitly rejects the URL
+        # (HTTP 403/404/410 or body is not MP4 magic bytes). Network errors and
+        # timeouts → proceed with the existing CDN URL and let the full download
+        # attempt fail naturally (which gives a user-visible retry option).
         _need_reextract = not cdn_url or not cdn_url.startswith("http")
         if cdn_url and cdn_url.startswith("http") and not _need_reextract:
             # Probe with Range GET bytes=0-11 to check MP4 magic bytes.
             # HEAD is unreliable — Kuaishou CDN returns HTTP 200 with an HTML
             # error page body when the signed URL has expired.
+            # Short timeout (8s): if CDN is unreachable we skip re-extract and
+            # attempt the download directly — better than 150s CDP fallback.
             try:
-                _probe_sess = _make_session()
+                _probe_sess = _make_session(cookie_str)
                 _probe_resp = _probe_sess.get(
                     cdn_url,
                     headers={
@@ -1383,7 +1429,7 @@ class KuaishouEngine:
                         "Referer": "https://www.kuaishou.com/",
                         "Range": "bytes=0-11",
                     },
-                    timeout=15,
+                    timeout=8,
                     allow_redirects=True,
                 )
                 _probe_sess.close()
@@ -1404,8 +1450,12 @@ class KuaishouEngine:
                         _probe_resp.status_code, _probe_is_mp4,
                     )
             except Exception as exc:
-                logger.debug("Kuaishou CDN probe failed (%s) — re-extracting", exc)
-                _need_reextract = True
+                # Network timeout or connection error — NOT a URL expiry signal.
+                # Proceed with the existing CDN URL; do not trigger re-extract.
+                logger.debug(
+                    "Kuaishou CDN probe failed (%s) — skipping probe, attempting download with existing URL",
+                    exc,
+                )
 
         if _need_reextract:
             # Always prefer canonical URL so _resolve_short_url is skipped entirely.
@@ -1444,8 +1494,16 @@ class KuaishouEngine:
                         f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
                     )
                 elif "v.kuaishou.com" in task.url:
-                    # Short URL — let extract_info_kuaishou resolve it
-                    _reextract_url = task.url
+                    # Short URL — avoid server-side resolution (times out on non-CN IP).
+                    # Extract the short code and build a kuaishou.com canonical URL
+                    # so _resolve_short_url is skipped (it HEAD+GET timeouts 15s each).
+                    _short_code_m = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", task.url, re.I)
+                    if _short_code_m:
+                        _reextract_url = (
+                            f"https://www.kuaishou.com/short-video/{_short_code_m.group(1)}"
+                        )
+                    else:
+                        _reextract_url = task.url
                 else:
                     # task.url is a CDN URL (Remote API flow with no page URL);
                     # we cannot build a canonical URL — re-extract will likely
@@ -1500,7 +1558,11 @@ class KuaishouEngine:
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Referer": "https://www.kuaishou.com/",
         }
-        session = _make_session()
+        # Pass cookie_str so CDN requests carry the kuaishou session cookies.
+        # kwaicdn.com signed URLs are tied to the session that issued them;
+        # downloading without the same cookies causes the CDN to return an
+        # HTML error page (HTTP 200 with <!DOCTYPE html> body) instead of the MP4.
+        session = _make_session(cookie_str)
         try:
             resp = session.get(
                 cdn_url,
@@ -1518,6 +1580,52 @@ class KuaishouEngine:
                     f"Kuaishou CDN trả về HTTP {resp.status_code}. "
                     "URL CDN có thể đã hết hạn — thử lại."
                 )
+
+            # Early content-type check: if CDN returns text/html the URL has
+            # expired (signed URL invalidated). Re-extract immediately and
+            # restart the download with the fresh CDN URL — do not raise here,
+            # as the retry loop in download_manager would reuse the same stale
+            # task.media_info on the next attempt anyway.
+            _resp_ct = resp.headers.get("content-type", "").lower()
+            if "text/html" in _resp_ct or "application/xhtml" in _resp_ct:
+                logger.debug(
+                    "Kuaishou CDN: content-type=%r — URL expired, re-extracting inline",
+                    _resp_ct,
+                )
+                resp.close()
+                session.close()
+                _vid_id = media_info.video_id or ""
+                _reextract_inline_url = (
+                    f"https://www.kuaishou.com/short-video/{_vid_id}"
+                    if _vid_id and re.match(r"^[A-Za-z0-9_-]{6,}$", _vid_id)
+                    else task.url
+                )
+                logger.info(
+                    "Kuaishou: inline re-extract via %s", _reextract_inline_url[:80]
+                )
+                media_info = extract_info_kuaishou(_reextract_inline_url, self._config)
+                cdn_url = media_info.url
+                with task._lock:
+                    task.media_info = media_info
+                cookie_str = _load_cookie_str(self._config)
+                session = _make_session(cookie_str)
+                resp = session.get(
+                    cdn_url,
+                    headers=_CDN_HEADERS,
+                    stream=True,
+                    timeout=_DL_TIMEOUT,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(
+                        f"Kuaishou CDN trả về HTTP {resp.status_code} sau re-extract. "
+                        "URL CDN có thể đã hết hạn — thử lại."
+                    )
+                _resp_ct = resp.headers.get("content-type", "").lower()
+                if "text/html" in _resp_ct or "application/xhtml" in _resp_ct:
+                    raise RuntimeError(
+                        "Kuaishou CDN vẫn trả về HTML sau re-extract — "
+                        "IP bị chặn hoặc video không còn khả dụng."
+                    )
 
             total_bytes = int(resp.headers.get("Content-Length", 0) or 0)
             downloaded = 0
@@ -1594,15 +1702,12 @@ class KuaishouEngine:
                     if not cdn_url or not cdn_url.startswith("http"):
                         raise RuntimeError("re-extract returned no CDN URL")
 
-                    # SEC-KS-01 FIX: use context manager so the session is
-                    # always closed — previously a _make_session() call was
-                    # left open when _is_valid_mp4() returned False, leaking
-                    # a native TLS socket until GC collected it.
-                    _retry_sess = _make_session()
+                    # Pass cookie_str so the retry download also carries session cookies.
+                    _retry_sess = _make_session(cookie_str)
                     try:
                         resp2 = _retry_sess.get(
                             cdn_url,
-                            headers={**_API_HEADERS, "Accept": "*/*"},
+                            headers={**_CDN_HEADERS, "Accept": "*/*"},
                             stream=True,
                             timeout=_DL_TIMEOUT,
                         )
