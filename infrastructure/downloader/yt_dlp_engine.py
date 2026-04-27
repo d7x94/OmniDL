@@ -607,7 +607,7 @@ def _resolve_kuaishou_url(url: str) -> str:
         # NOT an ImpersonateTarget object. Use _IMPERSONATE_STRING here.
         resp = _cffi_req.head(
             url,
-            impersonate=_IMPERSONATE_STRING,
+            impersonate=_IMPERSONATE_STRING,  # type: ignore[arg-type]
             allow_redirects=True,
             timeout=15,
         )
@@ -618,7 +618,7 @@ def _resolve_kuaishou_url(url: str) -> str:
         # HEAD may not follow all redirects on some CDNs — try GET if same URL
         resp2 = _cffi_req.get(
             url,
-            impersonate=_IMPERSONATE_STRING,
+            impersonate=_IMPERSONATE_STRING,  # type: ignore[arg-type]
             allow_redirects=True,
             timeout=15,
         )

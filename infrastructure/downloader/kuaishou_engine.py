@@ -199,7 +199,7 @@ def _make_session(cookie_str: str = "") -> Any:
     try:
         from curl_cffi import requests as cffi_req  # noqa: PLC0415
         _imp = _get_impersonate_string()
-        session: Any = cffi_req.Session(impersonate=_imp)
+        session: Any = cffi_req.Session(impersonate=_imp)  # type: ignore[arg-type]
         if cookie_str:
             for part in cookie_str.split(";"):
                 part = part.strip()
