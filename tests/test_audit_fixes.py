@@ -21,15 +21,13 @@ Covers:
 """
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-import sys
-import importlib
-
-import pytest
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Helpers used across multiple test classes
@@ -175,7 +173,6 @@ class TestCookieFileAllowlist:
                           new_callable=lambda: property(lambda s: str(cookie))), \
              patch("infrastructure.downloader.yt_dlp_engine.Path.home",
                    return_value=tmp_path):
-            opts: dict = {}
             # Simulate the allowlist check inline as the engine does it
             cp = cookie.resolve()
             safe_roots = (tmp_path, cfg.config_path.parent)
@@ -338,6 +335,7 @@ class TestAnalyzeButtonRace:
         # _safe_done, _safe_error, and _reset_btn live in the Toolbar component,
         # not in HomeTab — inspect the correct module.
         import inspect
+
         import ui.components.toolbar as toolbar_module
 
         # We can't instantiate the real CTk widget without a display.
@@ -355,11 +353,16 @@ class TestAnalyzeButtonRace:
         # Assert that the forbidden pattern is GONE (0 occurrences).
         reset_count = src.count("after(0, self._reset_btn)")
         assert reset_count == 0, (
-            f"after(0, self._reset_btn) is a Tkinter call from a background "            f"thread — illegal on Python 3.14. Must be replaced with "            f"_ui_queue.put(self._reset_btn). Found {reset_count} occurrence(s)."        )
+            f"after(0, self._reset_btn) is a Tkinter call from a background "
+            f"thread — illegal on Python 3.14. Must be replaced with "
+            f"_ui_queue.put(self._reset_btn). Found {reset_count} occurrence(s)."
+        )
         # Verify the fix is actually present: _ui_queue.put(self._reset_btn)
         queue_count = src.count("_ui_queue.put(self._reset_btn)")
         assert queue_count >= 2, (
-            f"Expected _ui_queue.put(self._reset_btn) in both _safe_done and "            f"_safe_error, found {queue_count} occurrence(s)."        )
+            f"Expected _ui_queue.put(self._reset_btn) in both _safe_done and "
+            f"_safe_error, found {queue_count} occurrence(s)."
+        )
 
 
 # ===========================================================================
@@ -431,10 +434,11 @@ class TestSEC1PathTraversalFix:
     def _make_engine_with_cookie(self, cookie_path: str, tmp_path, monkeypatch):
         """Return (engine, captured_opts) after calling extract_info
         with given cookie."""
+        import json
+
+        import infrastructure.downloader.yt_dlp_engine as mod
         from infrastructure.config.config_manager import ConfigManager
         from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
-        import infrastructure.downloader.yt_dlp_engine as mod
-        import json
 
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({}))
@@ -487,10 +491,11 @@ class TestSEC1PathTraversalFix:
 
         monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
 
+        import json
+
+        import infrastructure.downloader.yt_dlp_engine as mod
         from infrastructure.config.config_manager import ConfigManager
         from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
-        import infrastructure.downloader.yt_dlp_engine as mod
-        import json
 
         config_path = config_dir / "config.json"
         config_path.write_text(json.dumps({}))
@@ -534,10 +539,11 @@ class TestSEC1PathTraversalFix:
 
         monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
 
+        import json
+
+        import infrastructure.downloader.yt_dlp_engine as mod
         from infrastructure.config.config_manager import ConfigManager
         from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
-        import infrastructure.downloader.yt_dlp_engine as mod
-        import json
 
         config_path = config_dir / "config.json"
         config_path.write_text(json.dumps({}))
@@ -574,16 +580,18 @@ class TestSEC5BrowserAllowlist:
     """SEC-5: cookies_browser must be validated against the allowlist."""
 
     def test_valid_browser_passes_through(self, tmp_path):
-        from infrastructure.config.config_manager import ConfigManager
         import json
+
+        from infrastructure.config.config_manager import ConfigManager
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"cookies_browser": "firefox"}))
         config = ConfigManager(config_path)
         assert config.cookies_browser == "firefox"
 
     def test_invalid_browser_defaults_to_chrome(self, tmp_path):
-        from infrastructure.config.config_manager import ConfigManager
         import json
+
+        from infrastructure.config.config_manager import ConfigManager
         config_path = tmp_path / "config.json"
         _evil = {"cookies_browser": "evil_browser; rm -rf /"}
         config_path.write_text(json.dumps(_evil))
@@ -591,8 +599,9 @@ class TestSEC5BrowserAllowlist:
         assert config.cookies_browser == "chrome"
 
     def test_empty_string_defaults_to_chrome(self, tmp_path):
-        from infrastructure.config.config_manager import ConfigManager
         import json
+
+        from infrastructure.config.config_manager import ConfigManager
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"cookies_browser": ""}))
         config = ConfigManager(config_path)
@@ -617,6 +626,7 @@ class TestSEC2RevealInExplorer:
           - subprocess.Popen is NOT called on Windows
         """
         import ctypes as _r
+
         from utils.helpers import reveal_in_explorer
 
         test_file = tmp_path / "video.mp4"

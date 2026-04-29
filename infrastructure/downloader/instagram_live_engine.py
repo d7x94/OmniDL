@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.cookiejar import MozillaCookieJar
@@ -155,9 +157,16 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
     exe  = _find_browser_exe(browser)
     port = _free_port()
 
+    # Use a temp user-data-dir so the browser always spawns as a fresh process
+    # with the CDP port active. Without this, if Brave is already running it
+    # forwards the launch to the existing instance (which has no debug port) and
+    # the new process exits immediately -> ECONNREFUSED on every attempt.
+    tmp_profile = tempfile.mkdtemp(prefix="omnidl_cdp_")
+
     cmd = [
         exe,
         f"--remote-debugging-port={port}",
+        f"--user-data-dir={tmp_profile}",
         "--no-first-run", "--no-default-browser-check",
         "--disable-features=Translate",
         "--restore-last-session=false",
@@ -166,6 +175,8 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
         "--autoplay-policy=no-user-gesture-required",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
+        "--disable-sync",
+        "--no-sandbox",
     ]
 
     with _get_cdp_lock():
@@ -206,6 +217,55 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                 logger.info("CDP: connected on port %d", port)
 
                 ctx  = cdp_browser.contexts[0]
+
+                # Inject Instagram cookies from the saved cookie file into the
+                # fresh temp profile. Without this the browser has no session and
+                # Instagram serves the login wall instead of the live stream.
+                try:
+                    from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+                        _prepare_cookie_for_use,
+                    )
+                    # _config is not accessible here; we import it via a module-level
+                    # sentinel set by the engine before calling this function.
+                    _cookie_file_for_inject = getattr(
+                        _cdp_intercept_hls, "_cookie_file", None
+                    )
+                    if _cookie_file_for_inject:
+                        usable_ck, is_temp_ck = _prepare_cookie_for_use(
+                            _cookie_file_for_inject
+                        )
+                        try:
+                            jar = MozillaCookieJar()
+                            jar.load(usable_ck, ignore_discard=True, ignore_expires=True)
+                            playwright_cookies = [
+                                {
+                                    "name": c.name,
+                                    "value": c.value or "",
+                                    "domain": c.domain.lstrip(".") if c.domain else "instagram.com",
+                                    "path": c.path or "/",
+                                    "secure": bool(c.secure),
+                                    "httpOnly": False,
+                                }
+                                for c in jar
+                                if "instagram.com" in (c.domain or "")
+                            ]
+                            if playwright_cookies:
+                                ctx.add_cookies(playwright_cookies)
+                                logger.info(
+                                    "CDP: injected %d Instagram cookies into browser context",
+                                    len(playwright_cookies),
+                                )
+                        except Exception as _ck_exc:
+                            logger.debug("CDP: cookie inject failed (non-fatal): %s", _ck_exc)
+                        finally:
+                            if is_temp_ck:
+                                try:
+                                    Path(usable_ck).unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                except Exception as _ci_exc:
+                    logger.debug("CDP: cookie inject skipped: %s", _ci_exc)
+
                 page = ctx.new_page()
 
                 # Context-level route: catches ALL requests including those
@@ -408,16 +468,34 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                     )
 
         finally:
+            # Kill the browser process tree. On Windows, proc.terminate() only
+            # signals the parent; GPU/renderer child processes keep running and
+            # hold the debug port, causing ECONNREFUSED on the next launch.
+            # taskkill /F /T kills the entire process tree.
             try:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=8)
-                except Exception:
+                if sys.platform == "win32":
+                    subprocess.run(  # noqa: S603
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_WIN_NO_WINDOW,
+                        check=False,
+                    )
+                else:
+                    proc.terminate()
                     try:
-                        proc.kill()
-                        proc.wait(timeout=3)
+                        proc.wait(timeout=8)
                     except Exception:
-                        pass
+                        try:
+                            proc.kill()
+                            proc.wait(timeout=3)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Clean up temp profile dir
+            try:
+                shutil.rmtree(tmp_profile, ignore_errors=True)
             except Exception:
                 pass
             # Give OS time to release the debug port before next retry attempts
@@ -452,11 +530,19 @@ class InstagramLiveEngine:
         if sys.platform in ("win32", "darwin"):
             browser = getattr(self._config, "browser", "brave") or "brave"
             try:
+                from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+                    _resolve_cookie,
+                )
+                # Pass cookie file path to _cdp_intercept_hls via function attribute
+                # so it can inject Instagram session cookies into the fresh temp profile.
+                _cdp_intercept_hls._cookie_file = _resolve_cookie(url, self._config)  # type: ignore[attr-defined]
                 hls_url = _cdp_intercept_hls(url, browser, _CDP_HLS_WAIT_S)
             except RuntimeError as exc:
                 logger.warning("CDP HLS intercept failed: %s -- trying API fallback", exc)
             except Exception as exc:
                 logger.warning("CDP HLS intercept error: %s -- trying API fallback", exc)
+            finally:
+                _cdp_intercept_hls._cookie_file = None  # type: ignore[attr-defined]
 
         # Fallback: API
         if not hls_url:
@@ -467,9 +553,9 @@ class InstagramLiveEngine:
                 f"@{username} hien khong co live stream nao dang phat, "
                 "hoac khong the lay duoc HLS URL.\n\n"
                 "Hay dam bao:\n"
-                "- Da dang nhap Instagram trong Brave/Chrome\n"
+                "- Da dang nhap Instagram trong Brave/Chrome va luu cookies\n"
                 "- Stream dang phat tai thoi diem tai\n"
-                "- Dong hoan toan Brave/Chrome truoc khi thu lai"
+                "- Da trich xuat cookies Instagram trong Settings"
             )
 
         # Build output path

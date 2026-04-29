@@ -86,7 +86,7 @@ try:
 except ImportError:
     _CURL_CFFI_AVAILABLE = False
     _IMPERSONATE_TARGET = None
-    _IMPERSONATE_STRING = None
+    _IMPERSONATE_STRING = None  # type: ignore[assignment]
 except Exception as _curl_load_err:
     import logging as _logging
     _logging.getLogger(__name__).warning(
@@ -96,7 +96,7 @@ except Exception as _curl_load_err:
     )
     _CURL_CFFI_AVAILABLE = False
     _IMPERSONATE_TARGET = None
-    _IMPERSONATE_STRING = None
+    _IMPERSONATE_STRING = None  # type: ignore[assignment]
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo

@@ -54,9 +54,10 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
     log_file_abs = str(log_file.resolve())
 
     # Add console handler only if none exists yet.
+    _fh_type = logging.FileHandler if isinstance(logging.FileHandler, type) else type(None)
     has_console = any(
         isinstance(h, logging.StreamHandler)
-        and not isinstance(h, logging.FileHandler)
+        and not isinstance(h, _fh_type)
         for h in root.handlers
     )
     if not has_console:

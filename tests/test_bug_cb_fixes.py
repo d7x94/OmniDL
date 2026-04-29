@@ -10,15 +10,13 @@ Covers:
 - no impersonate key when curl_cffi unavailable
 - allow_unplayable_formats not regressed (was dropped in a prior edit)
 """
-import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 from domain.models.download_task import DownloadTask, MediaInfo
-
+from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors make_config / make_task from test_yt_dlp_engine.py)
@@ -52,7 +50,7 @@ def _make_task(url="https://v.kuaishou.com/K9Zu4Iez") -> DownloadTask:
 
 # Import regex and junk set directly from the module under test so we don't
 # duplicate the definition in the test.
-from ui.components.toolbar import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK  # type: ignore[import]
+from ui.components.toolbar import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK  # type: ignore[import]  # noqa: E402
 
 
 def _extract(text: str) -> str | None:
@@ -255,8 +253,10 @@ class TestBugCcTlsHardStop:
 
     def test_ssl_routines_is_hard_stop(self):
         from unittest.mock import MagicMock, patch
-        import infrastructure.downloader.yt_dlp_engine as mod
+
         import yt_dlp
+
+        import infrastructure.downloader.yt_dlp_engine as mod
 
         cfg = _make_config()
         engine = YtDlpEngine(cfg)
@@ -284,8 +284,10 @@ class TestBugCcTlsHardStop:
 
     def test_tls_connect_error_is_hard_stop(self):
         from unittest.mock import MagicMock, patch
-        import infrastructure.downloader.yt_dlp_engine as mod
+
         import yt_dlp
+
+        import infrastructure.downloader.yt_dlp_engine as mod
 
         cfg = _make_config()
         engine = YtDlpEngine(cfg)
@@ -343,9 +345,11 @@ class TestKuaishhouPreResolver:
         assert not _KUAISHOU_SHORT_RE.search("https://v.tiktok.com/abc")
 
     def test_resolve_returns_final_url_on_success(self):
-        from unittest.mock import patch, MagicMock
-        import infrastructure.downloader.yt_dlp_engine as mod
+        from unittest.mock import MagicMock, patch
+
         import curl_cffi
+
+        import infrastructure.downloader.yt_dlp_engine as mod
 
         fake_resp = MagicMock()
         fake_resp.url = "https://www.kuaishou.com/short-video/abc123xyz"
@@ -361,9 +365,11 @@ class TestKuaishhouPreResolver:
         assert result == "https://www.kuaishou.com/short-video/abc123xyz"
 
     def test_resolve_falls_back_on_exception(self):
-        from unittest.mock import patch, MagicMock
-        import infrastructure.downloader.yt_dlp_engine as mod
+        from unittest.mock import MagicMock, patch
+
         import curl_cffi
+
+        import infrastructure.downloader.yt_dlp_engine as mod
 
         fake_cffi = MagicMock()
         fake_cffi.head.side_effect = Exception("DNS failure")
@@ -376,6 +382,7 @@ class TestKuaishhouPreResolver:
 
     def test_resolve_skipped_when_curl_cffi_unavailable(self):
         from unittest.mock import patch
+
         import infrastructure.downloader.yt_dlp_engine as mod
 
         with patch.object(mod, "_CURL_CFFI_AVAILABLE", False):
@@ -385,7 +392,8 @@ class TestKuaishhouPreResolver:
 
     def test_extract_info_calls_resolver_for_kuaishou(self):
         """extract_info must pre-resolve Kuaishou URLs before passing to yt-dlp."""
-        from unittest.mock import patch, MagicMock, call
+        from unittest.mock import patch
+
         import infrastructure.downloader.yt_dlp_engine as mod
 
         resolved = "https://www.kuaishou.com/short-video/resolved123"
@@ -409,6 +417,7 @@ class TestKuaishhouPreResolver:
                 return fake_info
 
         import re as _re
+
         import infrastructure.downloader.kuaishou_engine as ks_mod
         with patch.object(mod, "_KUAISHOU_SHORT_RE",
                           mod.re.compile(r"v\.kuaishou\.com/", mod.re.I)), \

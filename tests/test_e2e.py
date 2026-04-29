@@ -17,12 +17,11 @@ Các test này mô phỏng đúng luồng người dùng:
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
-import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-from typing import Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -35,7 +34,6 @@ from infrastructure.config.config_manager import ConfigManager
 from infrastructure.downloader.download_manager import DownloadManager
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 from infrastructure.storage.history_repository import HistoryRepository
-
 
 # ---------------------------------------------------------------------------
 # Fixture: wires toàn bộ stack thật như main.py, chỉ mock yt-dlp network
@@ -567,7 +565,7 @@ class TestSecurity:
         Thumbnail URL trỏ về LAN (192.168.x.x) → bị chặn, không fetch.
         (Fix S1 — SSRF)
         """
-        from ui.tabs.home_tab import _is_safe_thumbnail_url
+        from app.services.thumbnail_service import _is_safe_thumbnail_url
         assert _is_safe_thumbnail_url("http://192.168.1.1/admin") is False
         assert _is_safe_thumbnail_url("http://10.0.0.1/secret") is False
         assert _is_safe_thumbnail_url("http://169.254.169.254/meta-data") is False
@@ -577,52 +575,59 @@ class TestSecurity:
         """
         Thumbnail URL hợp lệ từ CDN công khai → được phép.
         """
-        from ui.tabs.home_tab import _is_safe_thumbnail_url
-        assert _is_safe_thumbnail_url("https://i.ytimg.com/vi/test/default.jpg") is True
-        _tiktok = "https://p16-sign.tiktokcdn.com/thumb.jpg"
-        assert _is_safe_thumbnail_url(_tiktok) is True
+        import socket
+
+        from app.services.thumbnail_service import _is_safe_thumbnail_url
+        # Mock DNS to return a real public IP (1.2.3.4) - DNS unavailable in CI
+        fake_result = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("1.2.3.4", 0))]
+        with patch("socket.getaddrinfo", return_value=fake_result):
+            assert _is_safe_thumbnail_url("https://i.ytimg.com/vi/test/default.jpg") is True
+            _tiktok = "https://p16-sign.tiktokcdn.com/thumb.jpg"
+            assert _is_safe_thumbnail_url(_tiktok) is True
 
     def test_cookie_file_outside_home_rejected(self, app, tmp_path, monkeypatch):
         """
-        cookie_file trỏ ra ngoài home dir → bị từ chối, không truyền vào yt-dlp.
+        cookie_file trỏ ra ngoài config dir → bị từ chối, không truyền vào yt-dlp.
         (Fix S3 — Path Traversal)
         """
+        import tempfile
         engine = app["engine"]
-        outside = tmp_path / "evil_cookies.txt"
-        outside.write_text("# cookies\n")
+        # config_path is tmp_path/config.json -> safe_root = tmp_path
+        # evil file must be outside tmp_path entirely
+        with tempfile.TemporaryDirectory() as other_dir:
+            outside = Path(other_dir) / "evil_cookies.txt"
+            outside.write_text("# cookies\n")
 
-        fake_home = tmp_path / "home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        app["config"].set("cookie_file", str(outside))
+            app["config"].set("cookie_file", str(outside))
 
-        captured = {}
+            captured = {}
 
-        class FakeYDL:
-            def __init__(self, opts): captured.update(opts)
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def extract_info(self, url, download=False):
-                return {
-                    "title": "T", "uploader": "U", "duration": 1,
-                    "thumbnail": "", "formats": [],
-                    "is_live": False, "was_live": False,
-                }
+            class FakeYDL:
+                def __init__(self, opts): captured.update(opts)
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def extract_info(self, url, download=False):
+                    return {
+                        "title": "T", "uploader": "U", "duration": 1,
+                        "thumbnail": "", "formats": [],
+                        "is_live": False, "was_live": False,
+                    }
 
-        import infrastructure.downloader.yt_dlp_engine as mod
-        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
-            engine.extract_info("https://youtube.com/watch?v=test")
+            import infrastructure.downloader.yt_dlp_engine as mod
+            with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+                engine.extract_info("https://youtube.com/watch?v=test")
 
         assert "cookiefile" not in captured, \
-            "cookie_file ngoài home dir không được truyền vào yt-dlp"
+            "cookie_file ngoài config dir không được truyền vào yt-dlp"
 
     def test_path_traversal_in_safe_path_rejected(self):
         """
         Tên file chứa ../ → safe_path() ném ValueError.
         (Ngăn path traversal khi đặt tên file tải về)
         """
-        from utils.helpers import safe_path
         import tempfile
+
+        from utils.helpers import safe_path
         with tempfile.TemporaryDirectory() as base:
             with pytest.raises(ValueError, match="traversal"):
                 safe_path(Path(base), "../../etc/passwd")

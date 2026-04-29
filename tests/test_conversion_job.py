@@ -15,10 +15,7 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
-
 from domain.models.conversion_job import ConversionJob, ConversionStatus
-
 
 # ===========================================================================
 # ConversionStatus
@@ -253,6 +250,8 @@ class TestThreadSafety:
 
         t1 = threading.Thread(target=canceller)
         t2 = threading.Thread(target=reader)
-        t1.start(); t2.start()
-        t1.join(timeout=5); t2.join(timeout=5)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
         assert not errors

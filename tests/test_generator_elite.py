@@ -52,13 +52,12 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -292,9 +291,10 @@ class TestSetupLogging:
     def test_duplicate_handlers_not_added_on_second_call(self, tmp_path):
         """Calling setup_logging twice must not add duplicate handlers."""
         import logging
+
         from utils.logger import setup_logging
         root = logging.getLogger()
-        before = len(root.handlers)
+        len(root.handlers)
         setup_logging(tmp_path / "logs1")
         after_first = len(root.handlers)
         setup_logging(tmp_path / "logs1")
@@ -305,6 +305,7 @@ class TestSetupLogging:
 
     def test_noisy_loggers_set_to_warning(self, tmp_path):
         import logging
+
         from utils.logger import setup_logging
         setup_logging(tmp_path / "logs2")
         for name in ("PIL", "urllib3", "requests", "yt_dlp"):
@@ -312,6 +313,7 @@ class TestSetupLogging:
 
     def test_root_logger_level_applied(self, tmp_path):
         import logging
+
         from utils.logger import setup_logging
         setup_logging(tmp_path / "logs3", level=logging.DEBUG)
         assert logging.getLogger().level == logging.DEBUG
@@ -325,6 +327,7 @@ class TestSetupLogging:
     def test_rotating_handler_present(self, tmp_path):
         import logging
         from logging.handlers import RotatingFileHandler
+
         from utils.logger import setup_logging
         root = logging.getLogger()
         # Remove any existing file handler for this path
@@ -640,6 +643,7 @@ class TestThumbnailServiceFetch:
 class TestParseSeconds:
     def _call(self, h, m, s, cs):
         import re as _re
+
         from app.services.ffmpeg_convert_service import _parse_seconds
         pattern = _re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
         m_ = pattern.match(f"time={h:02d}:{m:02d}:{s:02d}.{cs:02d}")
@@ -701,7 +705,8 @@ class TestProbeDuration:
 class TestLocateFfmpegBin:
     def test_raises_conversion_error_when_not_found(self, monkeypatch):
         from app.services.ffmpeg_convert_service import (
-            ConversionError, FfmpegConvertService,
+            ConversionError,
+            FfmpegConvertService,
         )
         monkeypatch.setattr(
             "app.services.ffmpeg_convert_service.locate_ffmpeg",
@@ -723,7 +728,8 @@ class TestConvertSync:
 
     def test_raises_if_source_not_a_file(self, tmp_path):
         from app.services.ffmpeg_convert_service import (
-            ConversionError, FfmpegConvertService,
+            ConversionError,
+            FfmpegConvertService,
         )
         svc = FfmpegConvertService()
         with pytest.raises(ConversionError, match="không tồn tại"):
@@ -774,7 +780,8 @@ class TestConvertSync:
 
     def test_raises_on_nonzero_returncode(self, tmp_path, fake_ffmpeg, monkeypatch):
         from app.services.ffmpeg_convert_service import (
-            ConversionError, FfmpegConvertService,
+            ConversionError,
+            FfmpegConvertService,
         )
         src = tmp_path / "video.webm"
         src.write_bytes(b"\x1aE\xdf\xa3")
@@ -864,13 +871,13 @@ class TestConvertSync:
 
             _current_quality = quality
 
-            def fake_popen(cmd, **kw):
-                p = tmp_path / f"video_iPhone{'_2' if _current_quality != 'high' else ''}.mp4"
+            def fake_popen(cmd, _q=quality, _out=out_files, _cap=captured_cmd, _pm=proc_mock, **kw):  # noqa: B023
+                p = tmp_path / f"video_iPhone{'_2' if _q != 'high' else ''}.mp4"
                 p.write_bytes(b"x" * 5000)
-                out_files.append(p)
-                captured_cmd.clear()
-                captured_cmd.extend(cmd)
-                return proc_mock
+                _out.append(p)
+                _cap.clear()
+                _cap.extend(cmd)
+                return _pm
 
             monkeypatch.setattr(subprocess, "Popen", fake_popen)
             # Clean up previous output file
@@ -902,8 +909,8 @@ class TestDownloadTaskToDict:
 
     def test_to_dict_consistent_under_concurrency(self):
         """to_dict() must never return status=COMPLETED with empty filename."""
-        from domain.models.download_task import DownloadTask
         from domain.enums.download_status import DownloadStatus
+        from domain.models.download_task import DownloadTask
 
         task = DownloadTask(url="https://example.com/v")
         inconsistent = []
@@ -925,13 +932,15 @@ class TestDownloadTaskToDict:
 
         t1 = threading.Thread(target=_writer)
         t2 = threading.Thread(target=_reader)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
         assert not inconsistent, f"{len(inconsistent)} torn reads in to_dict()"
 
     def test_status_serialised_as_name_string(self):
-        from domain.models.download_task import DownloadTask
         from domain.enums.download_status import DownloadStatus
+        from domain.models.download_task import DownloadTask
         t = DownloadTask(url="https://example.com/v")
         t.status = DownloadStatus.FAILED
         assert t.to_dict()["status"] == "FAILED"
@@ -990,8 +999,8 @@ class TestDownloadTaskProperties:
 class TestWaitIfPausedWithCancel:
     def test_cancel_unblocks_wait_immediately(self):
         """A paused task must unblock within 2 s when cancel() is called."""
-        from domain.models.download_task import DownloadTask
         from domain.enums.download_status import DownloadStatus
+        from domain.models.download_task import DownloadTask
 
         task = DownloadTask(url="https://example.com/v")
         task.status = DownloadStatus.DOWNLOADING
@@ -1213,6 +1222,7 @@ class TestProgressHook:
 
     def test_hook_raises_on_cancel(self, tmp_path):
         import yt_dlp
+
         from domain.models.download_task import DownloadTask
         engine = self._make_engine(tmp_path)
         task = DownloadTask(url="https://example.com/v")
@@ -1382,7 +1392,6 @@ class TestDownloadServiceClose:
         svc.close()
 
     def test_convert_to_mp4_delegates_to_converter(self, tmp_path):
-        from app.services.download_service import DownloadService
         svc, mgr = self._make_service(tmp_path)
         called = []
         svc._converter = MagicMock(convert=lambda **kw: called.append(kw))
@@ -1397,7 +1406,6 @@ class TestDownloadServiceClose:
         """BUG BK regression: ServiceFacade.convert_to_mp4 must forward target_ext
         and encode_settings to DownloadService — omitting them silently discards
         the user's custom encoder/quality selection."""
-        from app.services.download_service import DownloadService
         from app.services.ffmpeg_convert_service import EncodeSettings
         svc, mgr = self._make_service(tmp_path)
         captured = []
@@ -1429,8 +1437,8 @@ class TestValidateEncoderCodecYuv420p:
     excluded when lavfi testsrc outputs rgb24 by default."""
 
     def test_yuv420p_in_validate_command(self, tmp_path):
+
         from app.services.ffmpeg_convert_service import _validate_encoder_codec
-        import subprocess
 
         fake_ffmpeg = tmp_path / "ffmpeg"
         fake_ffmpeg.write_bytes(b"")
@@ -1467,8 +1475,8 @@ class TestValidateEncoderCodecYuv420p:
 
 class TestHistoryRepositoryEdgeCases:
     def _make_task(self, task_id="t1", url="https://example.com/v"):
-        from domain.models.download_task import DownloadTask, MediaInfo
         from domain.enums.download_status import DownloadStatus
+        from domain.models.download_task import DownloadTask, MediaInfo
         t = DownloadTask(url=url, media_info=MediaInfo(url=url, title="Test"))
         t.id = task_id
         t.status = DownloadStatus.COMPLETED
@@ -1564,7 +1572,8 @@ class TestEventBusAdditional:
         from app.event_bus import EventBus
         bus = EventBus()
         called = []
-        h = lambda **kw: called.append(kw)
+        def h(**kw):
+            return called.append(kw)
         bus.subscribe("ev", h)
         bus.unsubscribe("ev", h)
         bus.publish("ev", z=99)

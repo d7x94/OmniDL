@@ -35,12 +35,23 @@ class TestSetupLogging:
 
     def test_oserror_on_log_file_does_not_crash(self, tmp_path, monkeypatch):
         """If the log file can't be created, setup_logging should not raise."""
+        root = logging.getLogger()
+        handlers_before = list(root.handlers)
 
         def bad_file_handler(*args, **kwargs):
             raise OSError("read-only filesystem")
 
         monkeypatch.setattr(logging, "FileHandler", bad_file_handler)
         setup_logging(tmp_path)  # should not raise
+
+        # Remove any handlers added during this test to avoid polluting other tests
+        for h in list(root.handlers):
+            if h not in handlers_before:
+                root.removeHandler(h)
+                try:
+                    h.close()
+                except Exception:
+                    pass
 
 
 """
@@ -53,12 +64,7 @@ Fills coverage gaps:
 - pause() / resume() publish events
 - cancel() sets cancellation on task
 """
-import time
-from unittest.mock import MagicMock
 
-from domain.enums.download_status import DownloadStatus
-from domain.models.download_task import DownloadTask, MediaInfo
-from infrastructure.downloader.download_manager import DownloadManager
 
 
 # ---------------------------------------------------------------------------

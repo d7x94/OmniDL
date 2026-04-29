@@ -134,7 +134,7 @@ def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":
     try:
         from curl_cffi import requests as _cffi_req  # noqa: PLC0415
         _target = _get_chrome_impersonate_target()
-        cffi_session = _cffi_req.Session(impersonate=_target)
+        cffi_session: Any = _cffi_req.Session(impersonate=_target)  # type: ignore[assignment]
         if jar:
             cffi_session.cookies.update(jar)
         return cffi_session
@@ -435,7 +435,7 @@ def _extract_json_blob(page_text: str, script_id: str) -> "Optional[dict]":
         return None
 
 
-def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]":
+def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional[str], bool]":
     """Extract room_id from a TikTok profile page (/@username).
 
     BUG-TT-07 FIX: mirrors yt-dlp TikTokLiveIE pass-1 exactly.
@@ -445,6 +445,10 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
     BUG-TT-08 FIX: validate roomId is a non-zero integer string (TikTok returns
     "0" or "" for users who are not live -- these are not valid room IDs).
     Also add raw-HTML regex scan as final fallback.
+
+    Returns (room_id, status_ended).
+    status_ended=True means stream is confirmed ended (status 4/5) -- caller
+    should NOT fall through to pass-2 live page scraping.
     """
     def _valid_room_id(v: Any) -> Optional[str]:
         """Return room_id string if v is a valid non-zero numeric room ID."""
@@ -467,7 +471,7 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                 "tiktok_live_checker: @%s roomId via UNIVERSAL_DATA_FOR_REHYDRATION: %s",
                 username, room_id,
             )
-            return room_id
+            return room_id, False
         # Also check liveRoomInfo path (legacy / some regions)
         live_room = user_info.get("liveRoomInfo")
         if live_room:
@@ -478,7 +482,7 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                     "tiktok_live_checker: @%s liveRoomInfo via UNIVERSAL_DATA_FOR_REHYDRATION"
                     " status=%s roomId=%s", username, status, room_id,
                 )
-                return room_id
+                return room_id, False
             if room_id and status in (4, 5):
                 _status_ended = True
 
@@ -494,7 +498,7 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                 "tiktok_live_checker: @%s roomId via __NEXT_DATA__ user.roomId: %s",
                 username, room_id,
             )
-            return room_id
+            return room_id, False
         live_room = user_info.get("liveRoomInfo")
         if live_room:
             room_id = _valid_room_id(live_room.get("roomId") or live_room.get("id"))
@@ -504,7 +508,7 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                     "tiktok_live_checker: @%s liveRoomInfo via __NEXT_DATA__"
                     " status=%s roomId=%s", username, status, room_id,
                 )
-                return room_id
+                return room_id, False
             if room_id and status in (4, 5):
                 _status_ended = True
 
@@ -520,9 +524,9 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "Optional[str]"
                     "tiktok_live_checker: @%s roomId via raw HTML scan: %s",
                     username, room_id,
                 )
-                return room_id
+                return room_id, False
 
-    return None
+    return None, _status_ended
 
 
 def _room_id_from_live_page(page_text: str, username: str) -> "Optional[str]":
@@ -738,10 +742,11 @@ def _check_tiktok_live_with_room_id(
     if page_text is None:
         return None
 
-    room_id = _room_id_from_profile_page(page_text, username)
+    room_id, _profile_status_ended = _room_id_from_profile_page(page_text, username)
 
     # Pass 2: live page /@username/live -> SIGI_STATE (mirrors yt-dlp pass 2)
-    if not room_id:
+    # Skip if profile page already confirmed stream ended (status 4/5).
+    if not room_id and not _profile_status_ended:
         live_page_text = _fetch_tiktok_live_page(username, proxy=proxy, cookie_file=cookie_file)
         if live_page_text:
             room_id = _room_id_from_live_page(live_page_text, username)

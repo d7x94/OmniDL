@@ -35,20 +35,19 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services.ffmpeg_convert_service import (
+    SUPPORTED_EXTS,
     ConversionError,
     ConvertQueue,
     FfmpegConvertService,
-    FfmpegMediaInfo,
-    SUPPORTED_EXTS,
     probe_media_info,
     scan_folder_for_media,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SUPPORTED_EXTS
@@ -307,7 +306,10 @@ class TestConvertSync:
         fresh_calls: list = []
 
         with patch.object(svc, "_probe_duration", return_value=120.0):
-            with patch.object(svc, "_fresh_encode", side_effect=lambda *a, **kw: fresh_calls.append(1) or (tmp_path / "out.mp4")):
+            def _fresh_side(*a, **kw):
+                fresh_calls.append(1)
+                return tmp_path / "out.mp4"
+            with patch.object(svc, "_fresh_encode", side_effect=_fresh_side):
                 with patch.object(svc.__class__, "_locate_ffmpeg_bin",
                                   staticmethod(lambda: tmp_path / "ffmpeg")):
                     try:
@@ -510,11 +512,11 @@ class TestConvertQueue:
 # NEW: EncodeSettings dataclass
 # ─────────────────────────────────────────────────────────────────────────────
 
-from app.services.ffmpeg_convert_service import (
-    EncodeSettings,
+from app.services.ffmpeg_convert_service import (  # noqa: E402
     _HW_ENCODER_CATALOG,
     ENCODER_OPTIONS,
     SPEED_OPTIONS,
+    EncodeSettings,
     _validate_encoder_codec,
     detect_available_encoders,
 )
@@ -956,7 +958,7 @@ class TestGpuFallback:
                     staticmethod(lambda: tmp_path / "ffmpeg")
                 ):
                     try:
-                        result = svc._convert_sync(
+                        svc._convert_sync(
                             source, "high", tmp_path, None, gpu_settings
                         )
                     except ConversionError:
@@ -1347,13 +1349,13 @@ class TestDetectWithValidation:
 # NEW: Encoder detection cache
 # ─────────────────────────────────────────────────────────────────────────────
 
-import time as _time_mod
-import app.services.ffmpeg_convert_service as _svc_mod
+import time as _time_mod  # noqa: E402
 
-from app.services.ffmpeg_convert_service import (
+import app.services.ffmpeg_convert_service as _svc_mod  # noqa: E402
+from app.services.ffmpeg_convert_service import (  # noqa: E402
+    _ENCODER_CACHE_TTL_S,
     _encoder_cache_get,
     _encoder_cache_set,
-    _ENCODER_CACHE_TTL_S,
     get_available_encoder_options,
 )
 
@@ -1525,7 +1527,7 @@ class TestGetAvailableEncoderOptions:
         """Labels returned must be the same as in ENCODER_OPTIONS."""
         from app.services.ffmpeg_convert_service import ENCODER_OPTIONS
         opts = self._run({"cpu", "nvenc"})
-        label_map = {k: l for k, l in ENCODER_OPTIONS}
+        label_map = {k: lbl for k, lbl in ENCODER_OPTIONS}
         for key, label in opts:
             assert label == label_map[key]
 
@@ -1552,14 +1554,14 @@ class TestSpeedOptionLabels:
     def test_quality_label_not_ambiguously_named_quality(self):
         """'quality' speed preset label must not just say 'Chất lượng'/'Chat luong'
         which users confuse with the output quality level."""
-        quality_label = next(l for k, l in SPEED_OPTIONS if k == "quality")
+        quality_label = next(lbl for k, lbl in SPEED_OPTIONS if k == "quality")
         # The old ambiguous label was "Chat luong" — must be changed
         assert quality_label.lower() not in ("chat luong", "chất lượng"), (
             f"Label {quality_label!r} is too ambiguous — must clarify it means slower"
         )
 
     def test_all_labels_are_non_empty_strings(self):
-        for key, label in SPEED_OPTIONS:
+        for _key, label in SPEED_OPTIONS:
             assert isinstance(label, str) and label.strip()
 
 
@@ -1567,7 +1569,7 @@ class TestSpeedOptionLabels:
 # NEW: Command builder helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
-from app.services.ffmpeg_convert_service import (
+from app.services.ffmpeg_convert_service import (  # noqa: E402
     _HW_ENCODER_CATALOG as _CATALOG,
 )
 
@@ -1702,7 +1704,7 @@ class TestBuildGpuFlags:
 # NEW: Progress watchdog
 # ─────────────────────────────────────────────────────────────────────────────
 
-import io as _io_mod
+import io as _io_mod  # noqa: E402
 
 
 class _HealthyProc:
@@ -1957,7 +1959,7 @@ class TestScanFolderForMediaErrors:
 # FfmpegConvertService._find_output_path - collision branches
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestFindOutputPath:
+class TestFindOutputPathCollisions:
     def test_no_collision_returns_base(self, tmp_path: Path):
         src = tmp_path / "clip.mkv"
         result = FfmpegConvertService._find_output_path(tmp_path, src, "mp4")
@@ -2008,7 +2010,6 @@ class TestValidateOutputStatic:
 # detect_available_encoders - returncode != 0 branch (lines 385-387)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from app.services.ffmpeg_convert_service import detect_available_encoders
 
 
 class TestDetectAvailableEncodersErrorBranch:

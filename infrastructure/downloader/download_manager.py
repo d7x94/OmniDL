@@ -364,7 +364,7 @@ class DownloadManager:
                 )
                 active_engine = self._gallery_engine if use_gallery else self._engine
 
-                active_engine.download(
+                active_engine.download(  # type: ignore[union-attr]
                     task,
                     on_progress=self._on_progress,
                     on_postprocess=self._on_progress,

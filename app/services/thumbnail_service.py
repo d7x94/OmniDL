@@ -214,16 +214,16 @@ class ThumbnailService:
                     continue
                 break  # non-redirect — proceed with this response
 
-            resp.raise_for_status()
+            resp.raise_for_status()  # type: ignore[union-attr]
 
-            content_type = resp.headers.get("content-type", "")
+            content_type = resp.headers.get("content-type", "")  # type: ignore[union-attr]
             if not content_type.startswith("image/"):
                 on_error(f"Unexpected content-type: {content_type!r}")
                 return
 
             # Cap download at _MAX_BYTES to prevent memory exhaustion.
             data = b"".join(
-                itertools.islice(resp.iter_content(8192), _MAX_BYTES // 8192)
+                itertools.islice(resp.iter_content(8192), _MAX_BYTES // 8192)  # type: ignore[union-attr]
             )
             img = Image.open(io.BytesIO(data)).resize(
                 (width, height), Image.Resampling.LANCZOS
