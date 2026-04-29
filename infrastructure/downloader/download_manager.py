@@ -171,8 +171,18 @@ class DownloadManager:
         "login",
         "unsupported url",
         "cancelled by user",
-        "age",              # age-restricted without login
-        "unavailable",      # "this video is unavailable"
+        # BUG-TT-11 FIX: bare "age" matched "webpage" in every network error
+        # "Unable to download webpage: ..." causing timeouts/transport errors to
+        # be classified as hard errors (no retry). Use specific yt-dlp patterns.
+        "age-restrict",     # "age-restricted content" / "age-restricted video"
+        "age gate",         # "age gate" check required
+        "confirm your age", # "Sign in to confirm your age"
+        "age verification", # "age verification required"
+        # BUG-TT-11 FIX: bare "unavailable" matched HTTP 503 "Service Temporarily
+        # Unavailable" (transient server error that SHOULD be retried).
+        # Use precise yt-dlp patterns instead.
+        "video unavailable",    # "This video is unavailable"
+        "this video is unavailable",
         # TikTok / platform-specific deleted/unavailable video errors
         "currently not available",  # TikTok deleted video
         "video does not exist",     # TikTok removed video
