@@ -149,6 +149,7 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
     """
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: I001
+        from playwright._impl._api_structures import SetCookieParam  # noqa: PLC0415
     except ImportError as err:
         raise RuntimeError(
             "Thieu thu vien Playwright.\nChay: pip install playwright"
@@ -237,7 +238,7 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                         try:
                             jar = MozillaCookieJar()
                             jar.load(usable_ck, ignore_discard=True, ignore_expires=True)
-                            playwright_cookies = [
+                            playwright_cookies: list[SetCookieParam] = [
                                 {
                                     "name": c.name,
                                     "value": c.value or "",
