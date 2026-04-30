@@ -259,6 +259,13 @@ def _encoder_cache_set(result: set[str]) -> None:
         _encoder_cache_ts = time.monotonic()
 
 
+def _encoder_cache_invalidate() -> None:
+    """Expire the encoder cache so the next call to detect_available_encoders() re-runs."""
+    global _encoder_cache_ts   # noqa: PLW0603
+    with _encoder_cache_lock:
+        _encoder_cache_ts = 0.0
+
+
 def get_available_encoder_options(
     ffmpeg_bin: Optional[Path] = None,
 ) -> list[tuple[str, str]]:
@@ -741,6 +748,7 @@ class FfmpegConvertService:
                 encode_settings.encoder_key,  # type: ignore[union-attr]
                 exc,
             )
+            _encoder_cache_invalidate()
             cpu_settings = EncodeSettings(
                 encoder_key="cpu",
                 quality=encode_settings.quality,  # type: ignore[union-attr]

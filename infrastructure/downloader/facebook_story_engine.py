@@ -55,6 +55,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_WIN_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _FB_VIDEO_RE = re.compile(
@@ -1139,7 +1141,8 @@ def _ffmpeg_download(
     logger.debug("ffmpeg: %s ... %s", loc.ffmpeg_bin, full_url[:60])
 
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120,
+                                creationflags=_WIN_NO_WINDOW)
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg timeout")
         dest.unlink(missing_ok=True)
@@ -1207,7 +1210,8 @@ def _ffmpeg_mux(
     logger.debug("ffmpeg mux: video=%.60s… audio=%.60s…", v_url, a_url)
 
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120,
+                                creationflags=_WIN_NO_WINDOW)
     except subprocess.TimeoutExpired:
         logger.warning("_ffmpeg_mux: timeout")
         dest.unlink(missing_ok=True)
@@ -1239,6 +1243,7 @@ def _has_audio_stream(ffmpeg_bin: str, path: Path) -> bool:
              "-of", "csv=p=0",
              str(path)],
             capture_output=True, timeout=10,
+            creationflags=_WIN_NO_WINDOW,
         )
         return b"audio" in result.stdout
     except Exception:
@@ -1329,7 +1334,8 @@ def _ffmpeg_download_with_audio(
     logger.debug("ffmpeg dash-all: %.80s…", full_url)
 
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120,
+                                creationflags=_WIN_NO_WINDOW)
     except subprocess.TimeoutExpired:
         logger.warning("_ffmpeg_download_with_audio: timeout")
         dest.unlink(missing_ok=True)
