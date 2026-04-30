@@ -7,6 +7,112 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## v18.0.0 — 2026-04-30
+
+### Added
+
+- **`utils/__version__.py`** — single source of truth for the application version string.
+  All code that previously read `_APP_VERSION` from `main.py` now imports from here.
+
+- **`infrastructure/downloader/instagram_live_engine.py`** — CDP-based Instagram Live
+  recorder. Intercepts HLS (`.m3u8`) and DASH (`.mpd`) streams via Playwright
+  `connect_over_cdp`. Windows/macOS only; Linux raises `RuntimeError` immediately.
+  Supports DASH adaptive streaming introduced by Instagram in 2025 (BUG-IG-01):
+  `_IG_HLS_RE` matches both `.m3u8` and `.mpd`; DASH streams muxed to `.mkv`
+  via `-f matroska`; timeout raised from 30 s to 60 s; `ctx.route` registered for
+  Service Worker intercept; `Network.responseReceived` listener added for
+  `application/dash+xml` MIME type.
+
+- **`api/tailscale_https.py`** — Tailscale HTTPS reverse-proxy helpers for the
+  Remote API. Allows the PWA to be served over HTTPS via Tailscale funnel.
+
+- **`ui/tabs/settings/remote_api_panel.py`** — extended with a Tailscale HTTPS
+  Profile section backed by `tailscale_https.py`.
+
+- **`utils/tiktok_live_checker.py`** — TikTok profile live-status checker.
+  `check_tiktok_live(username, proxy)` returns the HLS URL when the profile is
+  live, `None` otherwise. `LiveMonitorTab` now supports TikTok profile watch
+  (`@username` URLs) alongside Instagram. No cookie required.
+
+### Fixed
+
+- **BUG-TT-08 — TikTok Live false "not currently live"** (`utils/tiktok_live_checker.py`,
+  `app/services/download_service.py`) — Three compounded issues: (1) plain
+  `requests.Session` used — TikTok TLS fingerprinting stripped `roomId` from JSON
+  for non-Chrome TLS. Fixed: `curl_cffi` with Chrome impersonation via
+  `_get_impersonate_session()`. (2) `roomId="0"` not rejected — TikTok returns
+  `"0"` for non-live users. Fixed: `_valid_room_id()` rejects `"0"`, `""`, and
+  non-numeric strings. (3) Checker failure still built `MediaInfo(is_live=True)`
+  causing 4 useless yt-dlp retries. Fixed: `download_service.py` calls `on_error()`
+  when checker returns `None`.
+
+- **BUG-TT-09 — TikTok Live `roomId` omitted from HTML via bot-detection**
+  (`utils/tiktok_live_checker.py`) — TikTok 2025+ omits `roomId` from rendered
+  HTML for server/residential IPs even with valid cookies and Chrome TLS. Fixed:
+  pass-0 added to `_check_tiktok_live_with_room_id()` — extracts `sec_user_id`
+  from the share URL query params, calls the `webcast/room/list/` API directly.
+  Pass-0 failure is non-fatal; falls through to HTML-scrape passes 1/2/3.
+
+- **BUG-TT-10 — `curl_cffi >= 0.15` `ImpersonateTarget` API mismatch**
+  (`infrastructure/downloader/yt_dlp_engine.py`, `utils/tiktok_live_checker.py`) —
+  `_get_chrome_impersonate_target()` returned a map KEY (`ImpersonateTarget` object);
+  `curl_cffi` internally calls `target.encode()` which fails on `ImpersonateTarget`.
+  Fixed: TWO separate module-level vars — `_IMPERSONATE_TARGET` (`ImpersonateTarget`
+  object, for yt-dlp `opts["impersonate"]` only) and `_IMPERSONATE_STRING` (string
+  from map VALUE e.g. `"chrome131"`, fallback `"chrome"`, for all `curl_cffi`
+  `Session/head/get` calls only). `tiktok_live_checker._get_chrome_impersonate_target()`
+  returns map VALUE string.
+
+- **BUG-IG-01 — Instagram Live DASH/MPD + Service Worker + timeout**
+  (`infrastructure/downloader/instagram_live_engine.py`) — Instagram Live migrated
+  to DASH adaptive streaming in 2025. All regex patterns matched `.m3u8` only;
+  30 s timeout insufficient; Service Worker requests not interceptable via
+  `page.on("request")`. Fixed: `_IG_HLS_RE` matches `.m3u8` + `.mpd`;
+  `_CDP_HLS_WAIT_S = 60.0`; `ctx.route("**/*", ...)` for Service Worker;
+  `Network.responseReceived` for `application/dash+xml`; DASH streams use
+  `-f matroska` (`.mkv` output).
+
+- **BUG-KS-01 — Kuaishou CDN probe timeout incorrectly triggered re-extract**
+  (`infrastructure/downloader/kuaishou_engine.py`) — `except Exception` in the CDN
+  probe block set `_need_reextract = True` on network timeout. A timeout is not URL
+  expiry. Fixed: re-extract triggered only on HTTP 403/404/410 or non-MP4 magic
+  bytes. Probe timeout reduced 15 s to 8 s. Short URL re-extract now builds
+  `kuaishou.com/short-video/<code>` directly, skipping `_resolve_short_url`
+  (30 s timeout on non-CN IP).
+
+- **BUG-KS-02 — Kuaishou download sessions missing `cookie_str` + HTML response
+  not early-detected** (`infrastructure/downloader/kuaishou_engine.py`) —
+  `_make_session()` was called without `cookie_str`; `kwaicdn.com` returned HTTP 200
+  with HTML body (~92 KB). Fixed: `cookie_str` loaded at top of `download()` and
+  passed to all `_make_session()` calls (probe, download, retry). `Content-Type`
+  check added immediately after `session.get()`: `text/html` triggers inline
+  re-extract that updates `task.media_info` in-place without raising.
+
+- **GPU encoder stall: cache not invalidated after stall**
+  (`app/services/ffmpeg_convert_service.py`) — after the watchdog killed a stalled
+  GPU encoder process, the 5-minute detection cache still listed the encoder as
+  valid; the next conversion would stall again. Fixed: `_encoder_cache_invalidate()`
+  added; called in `_try_encode_with_fallback()` on any GPU `ConversionError` before
+  the CPU fallback. Resets `_encoder_cache_ts = 0.0` so the next call to
+  `detect_available_encoders()` re-runs full 2-phase validation.
+
+- **CMD window flash on ffmpeg/ffprobe calls in `facebook_story_engine.py` (Windows)**
+  — four `subprocess.run()` calls (ffmpeg download, `_ffmpeg_mux`, ffprobe in
+  `_has_audio_stream`, `_ffmpeg_download_with_audio`) were missing `creationflags`.
+  Fixed: `_WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)` added at
+  module level; `creationflags=_WIN_NO_WINDOW` applied to all 4 calls. All 5
+  subprocess calls in the file now carry the flag (browser `Popen` was already
+  fixed in BUG CB).
+
+### Coverage
+
+- `infrastructure/downloader/instagram_live_engine.py` added to `[tool.coverage.run] omit`
+  (Playwright CDP cannot run headlessly in CI).
+- `infrastructure/downloader/cookie_extractor.py` and `cookie_storage.py` added to omit.
+- Test count: 37 files, 1376+ functions (up from 36 files / 1352+).
+
+---
+
 ## v16.3.1 — 2026-03-22
 
 ### Fixed

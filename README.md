@@ -1,4 +1,4 @@
-# OmniDL v17.1.0 (post-release)
+# OmniDL v18.0.0
 
 A desktop media downloader supporting YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, CustomTkinter, yt-dlp, and gallery-dl.
 
@@ -290,7 +290,16 @@ PyInstaller (Python 3.13) → GitHub Release
 
 ## Changelog Highlights
 
-### Post-v17.1.0 (current)
+### v18.0.0 (current — 2026-04-30)
+- **BUG-TT-08/09/10**: TikTok Live false negative fixed — `curl_cffi` Chrome impersonation, `roomId="0"` rejection, pass-0 `webcast/room/list/` API, `ImpersonateTarget` vs string split for yt-dlp vs `curl_cffi` APIs
+- **BUG-IG-01**: Instagram Live DASH/MPD support — `.mpd` regex, `ctx.route` Service Worker intercept, `Network.responseReceived`, 60 s timeout, `-f matroska` container
+- **BUG-KS-01/02**: Kuaishou CDN probe timeout no longer triggers re-extract; probe timeout 15 s → 8 s; `cookie_str` passed to all sessions; `Content-Type: text/html` triggers inline re-extract without raise
+- **GPU encoder stall**: `_encoder_cache_invalidate()` added — cache evicted immediately on GPU `ConversionError` so stalled encoder is re-validated on next convert
+- **CMD window flash** (`facebook_story_engine.py`): `_WIN_NO_WINDOW` module constant added; all 4 remaining `subprocess.run()` calls (ffmpeg download, `_ffmpeg_mux`, ffprobe, `_ffmpeg_download_with_audio`) now carry `creationflags`
+- **New**: `instagram_live_engine.py` (CDP Instagram Live recorder); `tiktok_live_checker.py` (TikTok profile live check); `api/tailscale_https.py` (HTTPS reverse-proxy for Remote API)
+- **New**: `utils/__version__.py` — single version source of truth
+
+### Post-v17.1.0
 - **BUG BV**: TikTok live stream với tên chứa emoji không còn crash ffmpeg trên Windows (`0xCBAE0008`) — `restrictfilenames=True` được áp dụng cho live downloads trên Windows
 - **BUG BW**: FAILED và CANCELLED tasks không còn hiển thị nút pause/cancel bị disabled — các nút này được ẩn hoàn toàn khi task đạt terminal state
 - **BUG BT**: Pause/cancel buttons unconditionally hidden on COMPLETED status regardless of `task.filename`
