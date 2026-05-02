@@ -20,6 +20,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import sys
+import threading as _threading
 import tkinter as tk
 import tkinter.messagebox as mb
 from pathlib import Path
@@ -33,6 +34,7 @@ from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
 from ui.themes.tokens import T
 from utils.__version__ import __version__
+from utils.clipboard_monitor import ClipboardMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -490,9 +492,6 @@ class MainWindow(ctk.CTk):
         """Start (or restart) the clipboard monitor. Safe to call multiple times."""
         if self._clipboard_monitor is not None:
             self._clipboard_monitor.stop()
-
-        import threading as _threading
-        from utils.clipboard_monitor import ClipboardMonitor
 
         def _safe_get_clipboard() -> str:
             # clipboard_get() is a Tkinter call -- must run on main thread.
