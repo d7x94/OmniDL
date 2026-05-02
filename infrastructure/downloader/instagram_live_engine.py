@@ -522,7 +522,8 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                             "(function(){"
                             "try{"
                             # Search multiple IG data globals for stream URLs
-                            "var globs=['__additionalData','__initialData','__reactData','__initialDataLoaded','__bbox'];"
+                            "var globs=['__additionalData','__initialData',"
+                            "'__reactData','__initialDataLoaded','__bbox'];"
                             "for(var gi=0;gi<globs.length;gi++){"
                             " try{"
                             "  var src=JSON.stringify(window[globs[gi]]||{});"
@@ -534,7 +535,8 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                             "var scripts=document.querySelectorAll('script[type=\"application/json\"]');"
                             "for(var si=0;si<scripts.length;si++){"
                             " try{"
-                            "  var m2=scripts[si].textContent.match(/\"(https:[^\"]+\\.(?:m3u8|mpd)[^\"]*)\"/i);"
+                            "  var re2=/\"(https:[^\"]+\\.(?:m3u8|mpd)[^\"]*)\"/i;"
+                            "  var m2=scripts[si].textContent.match(re2);"
                             "  if(m2)return decodeURIComponent(m2[1].replace(/\\\\\\\\/g,'/'));"
                             " }catch(ex3){}"
                             "}"
@@ -542,7 +544,8 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                             "var v=document.querySelector('video');"
                             "if(v&&v.src&&(v.src.indexOf('.m3u8')!==-1||v.src.indexOf('.mpd')!==-1))"
                             "return v.src;"
-                            "if(v&&v.currentSrc&&(v.currentSrc.indexOf('.m3u8')!==-1||v.currentSrc.indexOf('.mpd')!==-1))"
+                            "var cs=v?v.currentSrc:'';"
+                            "if(cs&&(cs.indexOf('.m3u8')!==-1||cs.indexOf('.mpd')!==-1))"
                             "return v.currentSrc;"
                             "}catch(ex){}"
                             "return '';"
@@ -632,7 +635,9 @@ class InstagramLiveEngine:
                 )
                 # Pass cookie file path to _cdp_intercept_hls via function attribute
                 # so it can inject Instagram session cookies into the fresh temp profile.
-                _cdp_intercept_hls._cookie_file = _resolve_cookie(url, self._config)  # type: ignore[attr-defined]
+                _cdp_intercept_hls._cookie_file = (  # type: ignore[attr-defined]
+                    _resolve_cookie(url, self._config)
+                )
                 hls_url = _cdp_intercept_hls(url, browser, _CDP_HLS_WAIT_S)
             except RuntimeError as exc:
                 logger.warning("CDP HLS intercept failed: %s -- trying API fallback", exc)
