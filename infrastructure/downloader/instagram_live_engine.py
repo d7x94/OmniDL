@@ -64,7 +64,8 @@ _BROADCAST_ID_FROM_URL_RE = re.compile(
 # We capture both HLS (.m3u8) and DASH (.mpd) and pass the URL to FFmpeg.
 # FFmpeg handles both formats via -i <url> -c copy.
 _IG_HLS_RE = re.compile(
-    r"(?:cdninstagram\.com|scontent[^/]*\.instagram\.com|live-upload\.instagram\.com)"
+    r"(?:cdninstagram\.com|scontent[^/]*\.instagram\.com|live-upload\.instagram\.com"
+    r"|[^/]*\.fbcdn\.net)"
     r".*?\.(?:m3u8|mpd)",
     re.I,
 )
@@ -74,8 +75,9 @@ _IG_HLS_PATH_RE = re.compile(
 )
 
 # 2025+: Instagram live streams may take longer to initialize in CDP mode.
-# Increased from 30s to 60s to accommodate slower stream initialization.
-_CDP_HLS_WAIT_S = 60.0
+# Increased to 120s: temp profile = no cache, Instagram React SPA needs 20-40s
+# to bootstrap the live player and issue the first CDN request.
+_CDP_HLS_WAIT_S = 120.0
 # Serialize CDP browser launches to prevent profile lock conflicts
 _CDP_LOCK: "threading.Lock | None" = None
 
@@ -173,11 +175,10 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
         "--restore-last-session=false",
         "--no-session-crashed-bubble",
         "--hide-crash-restore-bubble",
-        "--autoplay-policy=no-user-gesture-required",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
         "--disable-sync",
-        "--no-sandbox",
+        "--disable-gpu",
     ]
 
     with _get_cdp_lock():
@@ -187,321 +188,416 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
             stderr=subprocess.DEVNULL,
             creationflags=_WIN_NO_WINDOW,
         )
-        logger.info("CDP: launching %s on port %d (pid=%d)", browser, port, proc.pid)
+    logger.info("CDP: launching %s on port %d (pid=%d)", browser, port, proc.pid)
 
-        hls_url: Optional[str] = None
+    hls_url: Optional[str] = None
 
-        try:
-            with sync_playwright() as pw:
-                cdp_browser = None
-                deadline    = time.monotonic() + 30.0
-                last_exc    = None
+    try:
+        with sync_playwright() as pw:
+            cdp_browser = None
+            deadline    = time.monotonic() + 30.0
+            last_exc    = None
 
-                while time.monotonic() < deadline:
-                    try:
-                        cdp_browser = pw.chromium.connect_over_cdp(
-                            f"http://127.0.0.1:{port}",
-                            timeout=3_000,
-                        )
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        time.sleep(0.8)
-
-                if cdp_browser is None:
-                    raise RuntimeError(
-                        "Khong ket noi duoc CDP.\n"
-                        "Dong hoan toan trinh duyet (ke ca System Tray) roi thu lai.\n"
-                        f"(chi tiet: {last_exc})"
+            while time.monotonic() < deadline:
+                try:
+                    cdp_browser = pw.chromium.connect_over_cdp(
+                        f"http://127.0.0.1:{port}",
+                        timeout=3_000,
                     )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.8)
 
-                logger.info("CDP: connected on port %d", port)
+            if cdp_browser is None:
+                raise RuntimeError(
+                    "Khong ket noi duoc CDP.\n"
+                    "Dong hoan toan trinh duyet (ke ca System Tray) roi thu lai.\n"
+                    f"(chi tiet: {last_exc})"
+                )
 
-                ctx  = cdp_browser.contexts[0]
+            logger.info("CDP: connected on port %d", port)
 
-                # Inject Instagram cookies from the saved cookie file into the
-                # fresh temp profile. Without this the browser has no session and
-                # Instagram serves the login wall instead of the live stream.
+            # Build Instagram cookies BEFORE creating context so they are
+            # present on the very first navigation request.
+            # connect_over_cdp contexts[0] is a default context on a fresh
+            # profile -- adding cookies after the fact is too late because
+            # Instagram's login redirect fires before add_cookies() returns.
+            # Solution: always create a new_context() and pass cookies via
+            # storage_state so the browser sends them on the first request.
+            playwright_cookies: list[SetCookieParam] = []
+            _cookie_file_for_inject = getattr(_cdp_intercept_hls, "_cookie_file", None)
+            if _cookie_file_for_inject:
                 try:
                     from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
                         _prepare_cookie_for_use,
                     )
-                    # _config is not accessible here; we import it via a module-level
-                    # sentinel set by the engine before calling this function.
-                    _cookie_file_for_inject = getattr(
-                        _cdp_intercept_hls, "_cookie_file", None
-                    )
-                    if _cookie_file_for_inject:
-                        usable_ck, is_temp_ck = _prepare_cookie_for_use(
-                            _cookie_file_for_inject
-                        )
-                        try:
-                            jar = MozillaCookieJar()
-                            jar.load(usable_ck, ignore_discard=True, ignore_expires=True)
-                            playwright_cookies: list[SetCookieParam] = [
-                                {
-                                    "name": c.name,
-                                    "value": c.value or "",
-                                    "domain": c.domain.lstrip(".") if c.domain else "instagram.com",
-                                    "path": c.path or "/",
-                                    "secure": bool(c.secure),
-                                    "httpOnly": False,
-                                }
-                                for c in jar
-                                if "instagram.com" in (c.domain or "")
-                            ]
-                            if playwright_cookies:
-                                ctx.add_cookies(playwright_cookies)
-                                logger.info(
-                                    "CDP: injected %d Instagram cookies into browser context",
-                                    len(playwright_cookies),
-                                )
-                        except Exception as _ck_exc:
-                            logger.debug("CDP: cookie inject failed (non-fatal): %s", _ck_exc)
-                        finally:
-                            if is_temp_ck:
-                                try:
-                                    Path(usable_ck).unlink(missing_ok=True)
-                                except Exception:
-                                    pass
+                    usable_ck, is_temp_ck = _prepare_cookie_for_use(_cookie_file_for_inject)
+                    try:
+                        jar = MozillaCookieJar()
+                        jar.load(usable_ck, ignore_discard=True, ignore_expires=True)
+                        far_future = int(time.time()) + 86400 * 365
+                        playwright_cookies = [
+                            {
+                                "name": c.name,
+                                "value": c.value or "",
+                                # Playwright requires domain WITH leading dot for
+                                # subdomain matching; instagram.com cookies must
+                                # also match www.instagram.com.
+                                "domain": (
+                                    c.domain if c.domain.startswith(".")
+                                    else f".{c.domain}"
+                                ) if c.domain else ".instagram.com",
+                                "path": c.path or "/",
+                                "secure": bool(c.secure),
+                                "httpOnly": False,
+                                "sameSite": "None",
+                                # Ensure cookies are not treated as session-only
+                                # (some jar entries have expires=0 which some
+                                # Playwright builds interpret as already-expired).
+                                "expires": c.expires if (c.expires and c.expires > 0) else far_future,
+                            }
+                            for c in jar
+                            if "instagram.com" in (c.domain or "")
+                        ]
+                    except Exception as _ck_exc:
+                        logger.debug("CDP: cookie build failed (non-fatal): %s", _ck_exc)
+                    finally:
+                        if is_temp_ck:
+                            try:
+                                Path(usable_ck).unlink(missing_ok=True)
+                            except Exception:
+                                pass
                 except Exception as _ci_exc:
                     logger.debug("CDP: cookie inject skipped: %s", _ci_exc)
 
-                page = ctx.new_page()
+            # Always use a fresh new_context with cookies pre-loaded.
+            # Do NOT use cdp_browser.contexts[0] -- on connect_over_cdp the
+            # default context is shared with the browser process and cookies
+            # added to it after the fact are not sent on the first request.
+            ctx = cdp_browser.new_context()
+            if playwright_cookies:
+                ctx.add_cookies(playwright_cookies)
+                has_session = any(c["name"] == "sessionid" for c in playwright_cookies)
+                logger.info(
+                    "CDP: injected %d Instagram cookies into browser context (sessionid=%s)",
+                    len(playwright_cookies),
+                    "yes" if has_session else "NO - login will fail",
+                )
 
-                # Context-level route: catches ALL requests including those
-                # from Service Workers (which page.on("request") misses).
-                # Instagram 2025+ may load live streams via Service Worker.
-                def _on_ctx_route(route) -> None:
-                    nonlocal hls_url
-                    u = route.request.url
-                    if not hls_url and (
-                        ".m3u8" in u or ".mpd" in u
-                    ) and any(
-                        d in u for d in ("cdninstagram.com", "instagram.com", "fbcdn.net")
-                    ):
-                        logger.info("CDP[SW]: stream URL via context route: %.120s", u)
-                        hls_url = u
-                    try:
-                        route.continue_()
-                    except Exception:
-                        pass
+            page = ctx.new_page()
 
+            # Context-level route: ONLY intercept .m3u8/.mpd requests.
+            # Routing "**/*" (all requests) throttles the entire page because
+            # every JS/CSS/image asset must round-trip through this Python
+            # callback before the browser continues. With Instagram's SPA
+            # (~5 MB cold JS load) that adds 10-30s to page startup.
+            # Scoping to stream URL patterns eliminates the throttle while
+            # still catching Service Worker-initiated CDN fetches that
+            # page.on("request") misses.
+            def _on_ctx_route(route) -> None:
+                nonlocal hls_url
+                u = route.request.url
+                if not hls_url:
+                    logger.info("CDP[SW]: stream URL via context route: %.120s", u)
+                    hls_url = u
                 try:
-                    ctx.route("**/*", _on_ctx_route)
-                    logger.debug("CDP[SW]: context-level route installed")
-                except Exception as exc:
-                    logger.debug("CDP[SW]: context route failed (%s)", exc)
+                    route.continue_()
+                except Exception:
+                    pass
 
-                # Layer A: Playwright request intercept (page-level)
-                # Log ALL instagram/cdninstagram requests to help diagnose
-                def _on_request(request) -> None:
+            for _stream_pattern in ("**/*.m3u8", "**/*.m3u8?*", "**/*.mpd", "**/*.mpd?*"):
+                try:
+                    ctx.route(_stream_pattern, _on_ctx_route)
+                except Exception as exc:
+                    logger.debug("CDP[SW]: route(%s) failed (%s)", _stream_pattern, exc)
+            logger.debug("CDP[SW]: context-level stream routes installed")
+
+            # Layer A: Playwright request intercept (page-level)
+            # Log ALL instagram/cdninstagram requests to help diagnose
+            def _on_request(request) -> None:
+                nonlocal hls_url
+                u = request.url
+                if ".m3u8" in u or ".mpd" in u:
+                    logger.info("CDP[A]: stream URL request: %.120s", u)
+                    if not hls_url:
+                        hls_url = u
+                elif "instagram.com" in u and any(
+                    x in u for x in ("/live/", "live-hls", "dash-hls", "playback")
+                ):
+                    logger.debug("CDP[A]: IG live-related request: %.120s", u)
+
+            page.on("request", _on_request)
+
+            # Layer B: response MIME-type match
+            def _on_response(response) -> None:
+                nonlocal hls_url
+                if hls_url:
+                    return
+                u  = response.url
+                ct = response.headers.get("content-type", "").lower()
+                if (
+                    "application/vnd.apple.mpegurl" in ct
+                    or "application/x-mpegurl" in ct
+                    or "application/dash+xml" in ct
+                ):
+                    logger.info("CDP[B]: stream via MIME (%s): %.120s", ct, u)
+                    hls_url = u
+                elif (".m3u8" in u or ".mpd" in u) and (
+                    "instagram.com" in u or "cdninstagram.com" in u or "fbcdn.net" in u
+                ):
+                    logger.info("CDP[B]: stream via URL pattern: %.120s", u)
+                    hls_url = u
+
+            page.on("response", _on_response)
+
+            # Layer C: CDP Network domain (catches ALL browser requests)
+            try:
+                cdp_session = ctx.new_cdp_session(page)
+                cdp_session.send("Network.enable")
+
+                def _on_cdp_request(params: dict) -> None:
                     nonlocal hls_url
-                    u = request.url
+                    u = params.get("request", {}).get("url", "")
+                    if not u:
+                        return
                     if ".m3u8" in u or ".mpd" in u:
-                        logger.info("CDP[A]: stream URL request: %.120s", u)
+                        logger.info("CDP[C]: stream URL via Network domain: %.120s", u)
                         if not hls_url:
                             hls_url = u
                     elif "instagram.com" in u and any(
                         x in u for x in ("/live/", "live-hls", "dash-hls", "playback")
                     ):
-                        logger.debug("CDP[A]: IG live-related request: %.120s", u)
+                        logger.debug("CDP[C]: IG live-related: %.120s", u)
 
-                page.on("request", _on_request)
-
-                # Layer B: response MIME-type match
-                def _on_response(response) -> None:
+                def _on_cdp_response(params: dict) -> None:
                     nonlocal hls_url
                     if hls_url:
                         return
-                    u  = response.url
-                    ct = response.headers.get("content-type", "").lower()
+                    headers = params.get("response", {}).get("headers", {})
+                    ct = (
+                        headers.get("content-type")
+                        or headers.get("Content-Type")
+                        or ""
+                    ).lower()
+                    u = params.get("response", {}).get("url", "")
                     if (
-                        "application/vnd.apple.mpegurl" in ct
+                        "application/dash+xml" in ct
+                        or "application/vnd.apple.mpegurl" in ct
                         or "application/x-mpegurl" in ct
-                        or "application/dash+xml" in ct
                     ):
-                        logger.info("CDP[B]: stream via MIME (%s): %.120s", ct, u)
-                        hls_url = u
-                    elif (".m3u8" in u or ".mpd" in u) and (
-                        "instagram.com" in u or "cdninstagram.com" in u or "fbcdn.net" in u
-                    ):
-                        logger.info("CDP[B]: stream via URL pattern: %.120s", u)
+                        logger.info(
+                            "CDP[C]: stream via responseReceived MIME (%s): %.120s",
+                            ct, u,
+                        )
                         hls_url = u
 
-                page.on("response", _on_response)
+                cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
+                cdp_session.on("Network.responseReceived", _on_cdp_response)
+                logger.debug("CDP[C]: Network domain enabled")
+            except Exception as exc:
+                logger.debug("CDP[C]: Network domain unavailable (%s)", exc)
 
-                # Layer C: CDP Network domain (catches ALL browser requests)
+            # Navigate - poll deadline starts AFTER navigation completes
+            logger.info("CDP: navigating to %s", live_url[:100])
+            try:
+                page.goto(live_url, wait_until="domcontentloaded", timeout=20_000)
+                logger.debug("CDP: landed on %s", page.url[:120])
+            except PWTimeout:
+                logger.debug("CDP: domcontentloaded timeout (non-fatal, continuing poll)")
+            except Exception as exc:
+                logger.debug("page.goto warning (non-fatal): %s", exc)
+
+            # Dismiss the Instagram "tap to play" interstitial.
+            # The live page renders a black overlay requiring a user gesture
+            # before the video player starts and HLS segments are fetched.
+            # Inject synthetic mouse events on the overlay and video element
+            # to satisfy the autoplay policy (same pattern as facebook_story_engine).
+            time.sleep(1.5)
+            try:
+                page.evaluate(
+                    "(function(){"
+                    "var overlaySelectors=['[data-visualcompletion=\"media-vc-image\"]',"
+                    "'[role=\"button\"]','._aatk','._aatn','._ab8w'];"
+                    "for(var s=0;s<overlaySelectors.length;s++){"
+                    " var ov=document.querySelector(overlaySelectors[s]);"
+                    " if(ov){try{"
+                    "  var oe={bubbles:true,cancelable:true,view:window};"
+                    "  ov.dispatchEvent(new MouseEvent('mousedown',oe));"
+                    "  ov.dispatchEvent(new MouseEvent('mouseup',oe));"
+                    "  ov.dispatchEvent(new MouseEvent('click',oe));"
+                    " }catch(e){} break;}"
+                    "}"
+                    "var vs=document.querySelectorAll('video');"
+                    "for(var i=0;i<vs.length;i++){"
+                    " (function(v){"
+                    "  try{"
+                    "   var opts={bubbles:true,cancelable:true,view:window};"
+                    "   v.dispatchEvent(new MouseEvent('mousedown',opts));"
+                    "   v.dispatchEvent(new MouseEvent('mouseup',opts));"
+                    "   v.dispatchEvent(new MouseEvent('click',opts));"
+                    "  }catch(e){}"
+                    "  v.muted=false;"
+                    "  var p=v.paused?v.play():Promise.resolve();"
+                    "  if(p&&p.then){"
+                    "   p.catch(function(){"
+                    "    v.muted=true;"
+                    "    var p2=v.play();"
+                    "    if(p2&&p2.then){p2.then(function(){"
+                    "    setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
+                    "   });"
+                    "  }"
+                    " })(vs[i]);"
+                    "}"
+                    "})()"
+                )
+                logger.debug("CDP: injected tap-to-play gesture")
+            except Exception as exc:
+                logger.debug("CDP: tap-to-play inject failed (non-fatal): %s", exc)
+
+            # Poll loop - deadline starts now (after navigation + gesture)
+            loop_deadline  = time.monotonic() + timeout
+            _regested_30s  = False
+            _poll_tick     = 0
+            while time.monotonic() < loop_deadline:
+                if hls_url:
+                    break
+
+                # Re-inject gesture at ~30s - page may still be rendering React
+                elapsed_since_nav = timeout - (loop_deadline - time.monotonic())
+                if not _regested_30s and elapsed_since_nav >= 30.0:
+                    _regested_30s = True
+                    try:
+                        page.evaluate(
+                            "(function(){"
+                            "var vs=document.querySelectorAll('video');"
+                            "for(var i=0;i<vs.length;i++){"
+                            "(function(v){"
+                            " try{"
+                            "  var o={bubbles:true,cancelable:true,view:window};"
+                            "  v.dispatchEvent(new MouseEvent('click',o));"
+                            " }catch(e){}"
+                            " v.muted=true;"
+                            " var p=v.paused?v.play():Promise.resolve();"
+                            " if(p&&p.then){p.then(function(){"
+                            "  setTimeout(function(){v.muted=false;},300);"
+                            " }).catch(function(){});}"
+                            "})(vs[i]);"
+                            "}"
+                            "})()"
+                        )
+                        logger.debug("CDP: re-injected gesture at ~30s")
+                    except Exception:
+                        pass
+
+                _poll_tick += 1
                 try:
-                    cdp_session = ctx.new_cdp_session(page)
-                    cdp_session.send("Network.enable")
-
-                    def _on_cdp_request(params: dict) -> None:
-                        nonlocal hls_url
-                        u = params.get("request", {}).get("url", "")
-                        if not u:
-                            return
-                        if ".m3u8" in u or ".mpd" in u:
-                            logger.info("CDP[C]: stream URL via Network domain: %.120s", u)
-                            if not hls_url:
-                                hls_url = u
-                        elif "instagram.com" in u and any(
-                            x in u for x in ("/live/", "live-hls", "dash-hls", "playback")
-                        ):
-                            logger.debug("CDP[C]: IG live-related: %.120s", u)
-
-                    def _on_cdp_response(params: dict) -> None:
-                        nonlocal hls_url
-                        if hls_url:
-                            return
-                        headers = params.get("response", {}).get("headers", {})
-                        ct = (
-                            headers.get("content-type")
-                            or headers.get("Content-Type")
-                            or ""
-                        ).lower()
-                        u = params.get("response", {}).get("url", "")
-                        if (
-                            "application/dash+xml" in ct
-                            or "application/vnd.apple.mpegurl" in ct
-                            or "application/x-mpegurl" in ct
-                        ):
-                            logger.info(
-                                "CDP[C]: stream via responseReceived MIME (%s): %.120s",
-                                ct, u,
-                            )
-                            hls_url = u
-
-                    cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
-                    cdp_session.on("Network.responseReceived", _on_cdp_response)
-                    logger.debug("CDP[C]: Network domain enabled")
-                except Exception as exc:
-                    logger.debug("CDP[C]: Network domain unavailable (%s)", exc)
-
-                # Navigate - poll deadline starts AFTER navigation completes
-                logger.info("CDP: navigating to %s", live_url[:100])
-                try:
-                    page.goto(live_url, wait_until="domcontentloaded", timeout=30_000)
-                except PWTimeout:
-                    logger.debug("CDP: domcontentloaded timeout (non-fatal, continuing poll)")
-                except Exception as exc:
-                    logger.debug("page.goto warning (non-fatal): %s", exc)
-
-                # Dismiss the Instagram "tap to play" interstitial.
-                # The live page renders a black overlay requiring a user gesture
-                # before the video player starts and HLS segments are fetched.
-                # Inject synthetic mouse events on the overlay and video element
-                # to satisfy the autoplay policy (same pattern as facebook_story_engine).
-                time.sleep(1.5)
-                try:
-                    page.evaluate(
+                    # Layer D: performance resource entries (.m3u8 / .mpd)
+                    val = page.evaluate(
                         "(function(){"
-                        "var overlaySelectors=['[data-visualcompletion=\"media-vc-image\"]',"
-                        "'[role=\"button\"]','._aatk','._aatn','._ab8w'];"
-                        "for(var s=0;s<overlaySelectors.length;s++){"
-                        " var ov=document.querySelector(overlaySelectors[s]);"
-                        " if(ov){try{"
-                        "  var oe={bubbles:true,cancelable:true,view:window};"
-                        "  ov.dispatchEvent(new MouseEvent('mousedown',oe));"
-                        "  ov.dispatchEvent(new MouseEvent('mouseup',oe));"
-                        "  ov.dispatchEvent(new MouseEvent('click',oe));"
-                        " }catch(e){} break;}"
+                        "try{"
+                        "var e=performance.getEntriesByType('resource');"
+                        "for(var i=0;i<e.length;i++){"
+                        "var u=e[i].name;"
+                        "if(u&&(u.indexOf('.m3u8')!==-1||u.indexOf('.mpd')!==-1))"
+                        "return u;"
                         "}"
-                        "var vs=document.querySelectorAll('video');"
-                        "for(var i=0;i<vs.length;i++){"
-                        " (function(v){"
-                        "  try{"
-                        "   var opts={bubbles:true,cancelable:true,view:window};"
-                        "   v.dispatchEvent(new MouseEvent('mousedown',opts));"
-                        "   v.dispatchEvent(new MouseEvent('mouseup',opts));"
-                        "   v.dispatchEvent(new MouseEvent('click',opts));"
-                        "  }catch(e){}"
-                        "  v.muted=false;"
-                        "  var p=v.paused?v.play():Promise.resolve();"
-                        "  if(p&&p.then){"
-                        "   p.catch(function(){"
-                        "    v.muted=true;"
-                        "    var p2=v.play();"
-                        "    if(p2&&p2.then){p2.then(function(){"
-                        "    setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
-                        "   });"
-                        "  }"
-                        " })(vs[i]);"
-                        "}"
+                        "}catch(ex){}"
+                        "return '';"
                         "})()"
                     )
-                    logger.debug("CDP: injected tap-to-play gesture")
-                except Exception as exc:
-                    logger.debug("CDP: tap-to-play inject failed (non-fatal): %s", exc)
-
-                # Poll loop - deadline starts now (after navigation + gesture)
-                loop_deadline = time.monotonic() + timeout
-                while time.monotonic() < loop_deadline:
-                    if hls_url:
+                    if val and (".m3u8" in val or ".mpd" in val):
+                        logger.info("CDP[D]: stream URL via performance API: %.120s", val)
+                        hls_url = val
                         break
+                except Exception:
+                    pass
+
+                # Layer E: scan JS globals every 5 ticks (~2.5s)
+                # Instagram embeds playback_url / dash_abr_playback_url inside
+                # multiple window globals depending on IG version/rollout.
+                if not hls_url and _poll_tick % 5 == 0:
                     try:
                         val = page.evaluate(
                             "(function(){"
                             "try{"
-                            "var e=performance.getEntriesByType('resource');"
-                            "for(var i=0;i<e.length;i++){"
-                            "var u=e[i].name;"
-                            "if(u&&(u.indexOf('.m3u8')!==-1||u.indexOf('.mpd')!==-1))"
-                            "return u;"
+                            # Search multiple IG data globals for stream URLs
+                            "var globs=['__additionalData','__initialData','__reactData','__initialDataLoaded','__bbox'];"
+                            "for(var gi=0;gi<globs.length;gi++){"
+                            " try{"
+                            "  var src=JSON.stringify(window[globs[gi]]||{});"
+                            "  var m=src.match(/\"(https:[^\"]+\\.(?:m3u8|mpd)[^\"]*)\"/i);"
+                            "  if(m)return decodeURIComponent(m[1].replace(/\\\\\\\\/g,'/'));"
+                            " }catch(ex2){}"
                             "}"
+                            # Scan script[type=application/json] tags (SSR data)
+                            "var scripts=document.querySelectorAll('script[type=\"application/json\"]');"
+                            "for(var si=0;si<scripts.length;si++){"
+                            " try{"
+                            "  var m2=scripts[si].textContent.match(/\"(https:[^\"]+\\.(?:m3u8|mpd)[^\"]*)\"/i);"
+                            "  if(m2)return decodeURIComponent(m2[1].replace(/\\\\\\\\/g,'/'));"
+                            " }catch(ex3){}"
+                            "}"
+                            # Fallback: video element src / currentSrc
+                            "var v=document.querySelector('video');"
+                            "if(v&&v.src&&(v.src.indexOf('.m3u8')!==-1||v.src.indexOf('.mpd')!==-1))"
+                            "return v.src;"
+                            "if(v&&v.currentSrc&&(v.currentSrc.indexOf('.m3u8')!==-1||v.currentSrc.indexOf('.mpd')!==-1))"
+                            "return v.currentSrc;"
                             "}catch(ex){}"
                             "return '';"
                             "})()"
                         )
-                        if val and (".m3u8" in val or ".mpd" in val):
-                            logger.info("CDP[D]: stream URL via performance API: %.120s", val)
+                        if val and ("http" in val) and (".m3u8" in val or ".mpd" in val):
+                            logger.info("CDP[E]: stream URL via JS globals: %.120s", val)
                             hls_url = val
                             break
                     except Exception:
                         pass
-                    time.sleep(0.5)
 
-                if not hls_url:
-                    logger.warning(
-                        "CDP: no stream URL captured in %.0fs after navigation. "
-                        "Instagram may require login or is showing app-only wall.",
-                        timeout,
-                    )
+                time.sleep(0.5)
 
-        finally:
-            # Kill the browser process tree. On Windows, proc.terminate() only
-            # signals the parent; GPU/renderer child processes keep running and
-            # hold the debug port, causing ECONNREFUSED on the next launch.
-            # taskkill /F /T kills the entire process tree.
-            try:
-                if sys.platform == "win32":
-                    subprocess.run(  # noqa: S603
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=_WIN_NO_WINDOW,
-                        check=False,
-                    )
-                else:
-                    proc.terminate()
+            if not hls_url:
+                logger.warning(
+                    "CDP: no stream URL captured in %.0fs after navigation. "
+                    "Instagram may require login or is showing app-only wall.",
+                    timeout,
+                )
+
+    finally:
+        # Kill the browser process tree. On Windows, proc.terminate() only
+        # signals the parent; GPU/renderer child processes keep running and
+        # hold the debug port, causing ECONNREFUSED on the next launch.
+        # taskkill /F /T kills the entire process tree.
+        try:
+            if sys.platform == "win32":
+                subprocess.run(  # noqa: S603
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=_WIN_NO_WINDOW,
+                    check=False,
+                )
+            else:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=8)
+                except Exception:
                     try:
-                        proc.wait(timeout=8)
+                        proc.kill()
+                        proc.wait(timeout=3)
                     except Exception:
-                        try:
-                            proc.kill()
-                            proc.wait(timeout=3)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            # Clean up temp profile dir
-            try:
-                shutil.rmtree(tmp_profile, ignore_errors=True)
-            except Exception:
-                pass
-            # Give OS time to release the debug port before next retry attempts
-            # to bind a new Brave instance (prevents ECONNREFUSED on reuse).
-            time.sleep(1.5)
+                        pass
+        except Exception:
+            pass
+        # Clean up temp profile dir
+        try:
+            shutil.rmtree(tmp_profile, ignore_errors=True)
+        except Exception:
+            pass
+        # Give OS time to release the debug port before next retry attempts
+        # to bind a new Brave instance (prevents ECONNREFUSED on reuse).
+        time.sleep(1.5)
 
     return hls_url
 

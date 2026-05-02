@@ -51,8 +51,11 @@ def _find_executable() -> Optional[str]:
     Locate gallery-dl binary.
     Search order:
       1. Frozen app: sys._MEIPASS/gallery-dl/ (bundled binary)
-      2. System PATH (shutil.which)
-      3. Scripts dir of the current Python environment (venv / dev)
+      2. python -m gallery_dl — works in uv/venv where the gallery-dl script
+         wrapper is a uv trampoline that fails with "canonicalize script path"
+         on Windows when the path contains spaces or non-ASCII characters.
+      3. System PATH (shutil.which)
+      4. Scripts dir of the current Python environment (venv / dev)
     Returns None if not found — callers raise RuntimeError with install hint.
     """
     # 1. PyInstaller frozen bundle — gallery-dl binary lives in _MEIPASS/gallery-dl/
@@ -62,17 +65,52 @@ def _find_executable() -> Optional[str]:
             candidate = meipass / "gallery-dl" / name
             if candidate.is_file():
                 return str(candidate)
-    # 2. System PATH
+        # Frozen: do not fall through to python -m (no venv in frozen app)
+        return None
+
+    # 2. python -m gallery_dl — preferred in uv/venv dev environments.
+    # The gallery-dl script entry point on Windows is a uv trampoline (.exe
+    # wrapper) that can fail with "uv trampoline failed to canonicalize script
+    # path" when the venv path contains spaces or non-ASCII chars.  Running via
+    # the Python interpreter directly bypasses the trampoline entirely.
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "gallery_dl", "--version"],
+            capture_output=True,
+            timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 0:
+            # Return a sentinel that _exe() / _base_cmd() recognize as
+            # "use python -m gallery_dl" invocation.
+            return f"{sys.executable}::gallery_dl_module"
+    except Exception:
+        pass
+
+    # 3. System PATH
     found = shutil.which("gallery-dl")
     if found:
         return found
-    # 3. Scripts dir alongside Python executable (venv Scripts / bin)
+
+    # 4. Scripts dir alongside Python executable (venv Scripts / bin)
     scripts = Path(sys.executable).parent
     for name in ("gallery-dl", "gallery-dl.exe", "gallery_dl", "gallery_dl.exe"):
         candidate = scripts / name
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+def _exe_cmd(exe: str) -> list[str]:
+    """Convert the value returned by _find_executable() to a command prefix.
+
+    When exe is the sentinel "python_path::gallery_dl_module", returns
+    [python, "-m", "gallery_dl"].  Otherwise returns [exe].
+    """
+    if exe.endswith("::gallery_dl_module"):
+        python = exe[: -len("::gallery_dl_module")]
+        return [python, "-m", "gallery_dl"]
+    return [exe]
 
 
 def _friendly_error(msg: str) -> str:
@@ -269,7 +307,7 @@ class GalleryDlEngine:
     # ── Internal helpers ──────────────────────────────────────────────────
 
     def _exe(self) -> str:
-        """Return gallery-dl path or raise RuntimeError with install hint."""
+        """Return gallery-dl path (or sentinel) or raise RuntimeError with install hint."""
         exe = _find_executable()
         if not exe:
             raise RuntimeError(
@@ -299,7 +337,7 @@ class GalleryDlEngine:
         """
         # -q suppresses info/progress output — gallery-dl does not have
         # --no-progress; that flag is yt-dlp only and causes an arg-parse error.
-        cmd: list[str] = [self._exe(), "-q"]
+        cmd: list[str] = _exe_cmd(self._exe()) + ["-q"]
         cookie_temp: str | None = None
 
         # Per-platform cookie resolution — same logic as yt_dlp_engine.
@@ -508,11 +546,13 @@ class GalleryDlEngine:
                 "--filter",
                 "extension in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'heic')",
                 "-d", str(output_dir),
+                "--directory", ".",
                 task.url,
             ]
         else:
             cmd = base_cmd + [
                 "-d", str(output_dir),
+                "--directory", ".",
                 task.url,
             ]
         logger.info("gallery-dl download: %s → %s", task.url, output_dir)
@@ -718,18 +758,28 @@ class GalleryDlEngine:
         # videos, so we download them here with yt-dlp which performs a
         # proper bestvideo+bestaudio merge via FFmpeg.
         #
-        # If the --filter was ignored (gallery-dl still downloaded videos),
-        # the yt-dlp pass replaces them — silent gallery-dl videos are
-        # deleted and the yt-dlp copies (with audio) take their place.
+        # Skip the rescue pass entirely when gallery-dl found only images —
+        # a pure-image carousel will always return "No video formats found"
+        # from yt-dlp, wasting ~10s and spamming ERROR lines into the log.
         _current_gdl_files: list[str] = getattr(task, "gallery_dl_files", None) or []
 
-        if _is_ig_carousel and not task.is_cancellation_requested:
+        _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
+        _img_exts_set = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic"})
+
+        # Determine whether the carousel contains any video items by checking
+        # whether gallery-dl downloaded video files despite the --filter, OR
+        # by asking yt-dlp extract_info for the playlist item count vs image count.
+        # Simpler heuristic: if ALL gallery-dl files are images → skip rescue.
+        _all_images_only = bool(_current_gdl_files) and all(
+            Path(f).suffix.lower() in _img_exts_set for f in _current_gdl_files
+        )
+
+        if _is_ig_carousel and not task.is_cancellation_requested and not _all_images_only:
             from utils.ffmpeg_locator import get_ffmpeg_path  # noqa: PLC0415
             _ffmpeg_dir = get_ffmpeg_path()
 
             # Delete any silent gallery-dl videos that slipped through the
             # filter (e.g. gallery-dl version without --filter support).
-            _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
             _gdl_videos = [
                 Path(f) for f in _current_gdl_files
                 if Path(f).suffix.lower() in _vid_exts_set and Path(f).is_file()
