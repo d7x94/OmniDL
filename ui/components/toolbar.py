@@ -304,6 +304,19 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
     def _on_focus_out(self, _e) -> None:
         self._url_entry.configure(border_color=T.border2)
 
+    # ── Clipboard monitor integration ─────────────────────────────────────
+
+    def trigger_from_clipboard(self, url: str) -> None:
+        """Called from ClipboardMonitor via _ui_queue when a new URL is detected.
+        Fills the URL entry and auto-triggers analysis.
+        """
+        if self._analysing:
+            return
+        self._url_entry.delete(0, "end")
+        self._url_entry.insert(0, url)
+        self._set_status("Clipboard URL detected", T.text2)
+        self._start_analyse()
+
     # ── Theme ──────────────────────────────────────────────────────────────
 
     def _on_theme(self) -> None:

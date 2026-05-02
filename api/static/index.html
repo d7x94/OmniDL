@@ -231,7 +231,7 @@
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
     }
-    #url-input { padding-right: 70px; }
+    #url-input { padding-right: 116px; }
 
     .format-row {
       display: grid;
@@ -666,7 +666,7 @@
         <label>Paste URL</label>
         <div id="url-wrap">
           <input type="url" id="url-input" placeholder="https://…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-          <button id="url-paste" onclick="pasteUrl()">Paste</button>
+          <button id="url-paste" onclick="pasteUrl()">Paste & Analyse</button>
         </div>
 
         <!-- Metadata preview (shown after analyse) -->
@@ -1009,9 +1009,13 @@ function switchTab(name, btn) {
 async function pasteUrl() {
   try {
     const text = await navigator.clipboard.readText();
-    document.getElementById('url-input').value = text.trim();
-    // Auto-enable dl button if connected
-    if (connected) document.getElementById('dl-btn').disabled = false;
+    const trimmed = text.trim();
+    if (!trimmed) { toast('Clipboard is empty'); return; }
+    document.getElementById('url-input').value = trimmed;
+    if (connected) {
+      // Auto-analyse immediately after paste — mirrors desktop clipboard monitor behaviour
+      doAnalyse();
+    }
   } catch { toast('Clipboard access denied'); }
 }
 

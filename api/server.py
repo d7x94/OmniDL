@@ -40,6 +40,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from api.models import (
     AnalyseRequest,
     AnalyseResponse,
+    ClipboardAnalyseRequest,
     ConvertJobResponse,
     ConvertRequest,
     DownloadRequest,
@@ -445,6 +446,53 @@ def create_app(
                 "Cache-Control":     "no-cache",
                 "X-Accel-Buffering": "no",
             },
+        )
+
+    # ── Clipboard analyse (Remote client sends URL from its own clipboard) ──
+
+    @app.post("/api/clipboard/analyse", response_model=AnalyseResponse)
+    async def clipboard_analyse(
+        body: ClipboardAnalyseRequest, _: None = Depends(_require_auth)
+    ):
+        """
+        Analyse a URL submitted from the Remote client's clipboard.
+
+        The iPhone PWA can read its own clipboard and POST the URL here.
+        This is identical to /api/analyse but has a dedicated endpoint so
+        the client can distinguish clipboard-triggered requests from manual
+        ones (e.g. to show a different toast or auto-queue immediately).
+        """
+        result: dict = {}
+        done = threading.Event()
+
+        def on_done(info: MediaInfo) -> None:
+            result["info"] = info
+            done.set()
+
+        def on_error(err: str) -> None:
+            result["error"] = err
+            done.set()
+
+        service.analyse_url(body.url, on_done=on_done, on_error=on_error)
+        done.wait(timeout=180)
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        if "info" not in result:
+            raise HTTPException(status_code=408, detail="Analysis timed out after 180 s")
+
+        info: MediaInfo = result["info"]
+        return AnalyseResponse(
+            url=info.url,
+            title=info.title,
+            uploader=info.uploader,
+            duration=info.duration,
+            thumbnail=info.thumbnail,
+            platform=info.platform,
+            formats=info.formats,
+            is_live=info.is_live,
+            playlist_count=len(info.playlist_entries),
+            source_engine=info.source_engine,
         )
 
     # ── Download ──────────────────────────────────────────────────────────

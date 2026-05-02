@@ -415,6 +415,23 @@ class GeneralPanel(_BasePanel):
             self._theme_om.set(current_theme)
         self._theme_om.pack(side="right")
 
+        # -- Clipboard monitor ---------------------------------------------
+        self._section(p, "📋   CLIPBOARD MONITOR")
+        self._card_clip = clip = self._card(p)
+
+        self._clipboard_var = ctk.BooleanVar(value=cfg.clipboard_monitor_enabled)
+        self._switch_row(clip, "Auto-detect URLs from clipboard", self._clipboard_var,
+                         self._on_clipboard_toggle)
+
+        self._clipboard_hint = ctk.CTkLabel(
+            clip,
+            text="Polls clipboard every 1.5 s and auto-fills the URL bar when a link is detected",
+            font=ctk.CTkFont(size=11),
+            text_color=T.text3,
+            anchor="e",
+        )
+        self._clipboard_hint.pack(anchor="e", padx=16, pady=(0, 10))
+
         # -- Debug logging -------------------------------------------------
         self._section(p, "🐛   DEVELOPER")
         self._card_dev = dev = self._card(p)
@@ -586,6 +603,15 @@ class GeneralPanel(_BasePanel):
         T.set_mode(theme)                        # update palette + fire all _on_theme callbacks
         ctk.set_appearance_mode(T.ctk_base)     # map custom theme → "dark"/"light" for CTk
 
+    def _on_clipboard_toggle(self, enabled: bool) -> None:
+        self._app.config.set("clipboard_monitor_enabled", enabled)
+        if enabled:
+            self._app.start_clipboard_monitor()
+            self._app.toast("Clipboard monitor ON")
+        else:
+            self._app.stop_clipboard_monitor()
+            self._app.toast("Clipboard monitor OFF")
+
     def _on_debug_toggle(self, enabled: bool) -> None:
         """Enable or disable debug logging live — no restart required."""
         self._app.config.set("debug_logging", enabled)
@@ -601,7 +627,7 @@ class GeneralPanel(_BasePanel):
     def _on_theme(self) -> None:
         if not self.winfo_exists():
             return
-        for attr in ("_card_loc", "_card_beh", "_card_app", "_card_dev"):
+        for attr in ("_card_loc", "_card_beh", "_card_app", "_card_clip", "_card_dev"):
             card = getattr(self, attr, None)
             if card and card.winfo_exists():
                 card.configure(fg_color=T.surface, border_color=T.border)
@@ -630,5 +656,8 @@ class GeneralPanel(_BasePanel):
         if w and w.winfo_exists():
             w.configure(fg_color=T.surface3, button_color=T.border2, text_color=T.text2)
         w = getattr(self, "_debug_hint", None)
+        if w and w.winfo_exists():
+            w.configure(text_color=T.text3)
+        w = getattr(self, "_clipboard_hint", None)
         if w and w.winfo_exists():
             w.configure(text_color=T.text3)

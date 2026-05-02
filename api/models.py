@@ -215,3 +215,18 @@ class FileDeleteResponse(BaseModel):
     path: str
     action: str    # "deleted"
     detail: str = ""
+
+
+class ClipboardAnalyseRequest(BaseModel):
+    """Analyse a URL from the Remote client's clipboard."""
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def _url_must_be_http(cls, v: str) -> str:
+        m = _URL_RE.search(v)
+        if not m:
+            raise ValueError("URL must start with http:// or https://")
+        url = m.group(0)
+        url = url.rstrip(".,;\"')")
+        return url

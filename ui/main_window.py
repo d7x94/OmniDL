@@ -230,6 +230,10 @@ class MainWindow(ctk.CTk):
         self._status_bar = StatusBar(self, app=self)
         self._status_bar.pack(fill="x", side="bottom")
 
+        # 5. Clipboard monitor (optional, controlled via Settings)
+        self._clipboard_monitor = None
+        self._start_clipboard_monitor_if_enabled()
+
         # 5. Toast overlay
         self._toast_lbl = ctk.CTkLabel(
             self, text="",
@@ -475,6 +479,58 @@ class MainWindow(ctk.CTk):
         else:
             self.attributes("-zoomed", not self.attributes("-zoomed"))
 
+    # ── Clipboard monitor ─────────────────────────────────────────────────
+
+    def _start_clipboard_monitor_if_enabled(self) -> None:
+        if not self._config.clipboard_monitor_enabled:
+            return
+        self.start_clipboard_monitor()
+
+    def start_clipboard_monitor(self) -> None:
+        """Start (or restart) the clipboard monitor. Safe to call multiple times."""
+        if self._clipboard_monitor is not None:
+            self._clipboard_monitor.stop()
+
+        import threading as _threading
+        from utils.clipboard_monitor import ClipboardMonitor
+
+        def _safe_get_clipboard() -> str:
+            # clipboard_get() is a Tkinter call -- must run on main thread.
+            # Block the polling thread with a threading.Event round-trip.
+            result: list = []
+            done = _threading.Event()
+
+            def _fetch():
+                try:
+                    result.append(self.clipboard_get())
+                except Exception:
+                    result.append("")
+                done.set()
+
+            self.after(0, _fetch)
+            done.wait(timeout=2.0)
+            return result[0] if result else ""
+
+        def _on_new_url(url: str) -> None:
+            toolbar = self.get_toolbar()
+            if toolbar is not None:
+                toolbar._ui_queue.put(lambda: toolbar.trigger_from_clipboard(url))
+
+        monitor = ClipboardMonitor(
+            get_clipboard=_safe_get_clipboard,
+            on_new_url=_on_new_url,
+        )
+        self._clipboard_monitor = monitor
+        monitor.start()
+        logger.debug("Clipboard monitor started")
+
+    def stop_clipboard_monitor(self) -> None:
+        """Stop the clipboard monitor."""
+        if self._clipboard_monitor is not None:
+            self._clipboard_monitor.stop()
+            self._clipboard_monitor = None
+            logger.debug("Clipboard monitor stopped")
+
     def _on_close(self) -> None:
         # Check active downloads
         active_dl = [t for t in self._service.get_all_tasks()
@@ -516,6 +572,7 @@ class MainWindow(ctk.CTk):
         # firing into a half-destroyed widget during the 200 ms destroy window.
         if hasattr(self, "_status_bar"):
             self._status_bar.cancel_loops()
+        self.stop_clipboard_monitor()
         self.after(200, self.destroy)
 
 

@@ -79,6 +79,11 @@ _DEFAULTS: dict[str, Any] = {
     # The main omnidl.log stays at INFO to keep it readable.
     # Toggle via Settings → General → "Debug Logging".
     "debug_logging": False,
+    # ── Clipboard monitor ──────────────────────────────────────────────────────
+    # When True, OmniDL polls the system clipboard every 1.5 s and auto-fills
+    # the toolbar URL entry whenever a new HTTP/HTTPS link is detected.
+    # Toggle via Settings → General → "Clipboard Monitor".
+    "clipboard_monitor_enabled": False,
 }
 
 
@@ -502,3 +507,10 @@ class ConfigManager:
     def debug_logging(self) -> bool:
         """True when detailed DEBUG-level logging to omnidl_debug.log is active."""
         return bool(self.get("debug_logging", False))
+
+    # ── Clipboard monitor accessor ────────────────────────────────────────
+
+    @property
+    def clipboard_monitor_enabled(self) -> bool:
+        """True when clipboard URL monitoring is active."""
+        return bool(self.get("clipboard_monitor_enabled", False))
