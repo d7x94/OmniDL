@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import queue
 import re
+import threading
 from typing import TYPE_CHECKING, Optional
 
 try:
@@ -56,6 +57,7 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         self._spinner_job: Optional[str] = None
         self._analyse_token = 0
         self._ui_queue: queue.Queue = queue.Queue()
+        self._current_cancel: Optional[threading.Event] = None
 
         self._build()
         T.register(self._on_theme)
@@ -116,7 +118,23 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
             text_color="white",
             command=self._start_analyse,
         )
-        self._analyse_btn.pack(side="left", padx=(0, 8))
+        self._analyse_btn.pack(side="left", padx=(0, 4))
+
+        # ── Stop button ───────────────────────────────────────────────────
+        self._stop_btn = ctk.CTkButton(
+            inner,
+            text="Stop",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=40,
+            width=70,
+            corner_radius=8,
+            fg_color=T.error if hasattr(T, "error") else "#e53935",
+            hover_color="#c62828",
+            text_color="white",
+            command=self._cancel_analyse,
+        )
+        # Hidden until analyse is in progress
+        self._stop_btn_visible = False
 
         # ── Quick actions ─────────────────────────────────────────────────
         self._paste_btn = ctk.CTkButton(
@@ -170,7 +188,7 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
 
     def _start_analyse(self) -> None:
         raw = self.get_url()
-        if not raw or self._analysing:
+        if not raw:
             return
         # BUG-CB: extract first URL from share text typed/pasted directly into
         # the entry (e.g. Kuaishou: "video title https://v.kuaishou.com/...").
@@ -179,12 +197,20 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         _m = _CLIPBOARD_URL_RE.search(raw)
         url = _m.group(0).rstrip("".join(_URL_TRAILING_JUNK)) if _m else raw
 
+        # Cancel any in-flight analyse (e.g. user typed new URL while Kuaishou CDP
+        # is still running). Setting the event makes the worker exit at the next
+        # cancel check; _safe_done/_safe_error are discarded via token mismatch.
+        if self._current_cancel is not None:
+            self._current_cancel.set()
+            self._current_cancel = None
+
         self._analysing = True
         self._analyse_token += 1
         my_token = self._analyse_token
 
         try:
             self._analyse_btn.configure(state="disabled", text="Analyzing…")
+            self._show_stop_btn(True)
             self._set_status("Fetching media info…", T.text2)
             self._start_spinner()
 
@@ -197,32 +223,33 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
                 home.on_analysis_start()
 
             def _safe_done(info) -> None:
-                # BUG-CRITICAL-1 FIX: winfo_exists() and after(0, ...) are
-                # Tkinter calls — ILLEGAL from a background thread on Python
-                # 3.14 (raises RuntimeError immediately).
-                # Route ALL outcomes through _ui_queue so they execute on the
-                # UI thread. The queue drain loop already handles destruction
-                # (winfo_exists guard lives in the drain method, not here).
                 if my_token != self._analyse_token:
                     self._ui_queue.put(self._reset_btn)
                     return
                 self._ui_queue.put(lambda: self._on_done(info))
 
             def _safe_error(err: str) -> None:
-                # BUG-CRITICAL-1 FIX: same as _safe_done — no Tkinter calls
-                # from background thread.
                 if my_token != self._analyse_token:
                     self._ui_queue.put(self._reset_btn)
                     return
                 self._ui_queue.put(lambda: self._on_error(err))
 
-            self._app.service.analyse_url(
+            cancel_event = self._app.service.analyse_url(
                 url=url, on_done=_safe_done, on_error=_safe_error)
+            self._current_cancel = cancel_event
 
         except Exception:
-            # Guarantee _analysing is always reset even if setup raises,
-            # so the Analyze button never gets permanently disabled.
             self._reset_btn()
+
+    def _cancel_analyse(self) -> None:
+        """Stop button handler — cancels in-flight analyse."""
+        if self._current_cancel is not None:
+            self._current_cancel.set()
+            self._current_cancel = None
+        # Bump token so stale on_done/on_error callbacks are discarded.
+        self._analyse_token += 1
+        self._set_status("Cancelled.", T.text3)
+        self._reset_btn()
 
     def _on_done(self, info) -> None:
         self._stop_spinner()
@@ -249,8 +276,20 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
 
     def _reset_btn(self) -> None:
         self._analysing = False
+        self._current_cancel = None
+        self._show_stop_btn(False)
         if self.winfo_exists():
             self._analyse_btn.configure(state="normal", text="Analyze")
+
+    def _show_stop_btn(self, show: bool) -> None:
+        if not self.winfo_exists():
+            return
+        if show and not self._stop_btn_visible:
+            self._stop_btn.pack(side="left", padx=(0, 8))
+            self._stop_btn_visible = True
+        elif not show and self._stop_btn_visible:
+            self._stop_btn.pack_forget()
+            self._stop_btn_visible = False
 
     # ── Spinner ───────────────────────────────────────────────────────────
 
@@ -310,8 +349,6 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         """Called from ClipboardMonitor via _ui_queue when a new URL is detected.
         Fills the URL entry and auto-triggers analysis.
         """
-        if self._analysing:
-            return
         self._url_entry.delete(0, "end")
         self._url_entry.insert(0, url)
         self._set_status("Clipboard URL detected", T.text2)
@@ -327,6 +364,8 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
             fg_color=T.input, border_color=T.border2, text_color=T.text)
         self._analyse_btn.configure(
             fg_color=T.primary, hover_color=T.primary_hover)
+        self._stop_btn.configure(
+            fg_color=T.error if hasattr(T, "error") else "#e53935")
         self._paste_btn.configure(
             fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2)
         self._clear_btn.configure(

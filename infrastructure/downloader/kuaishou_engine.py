@@ -797,6 +797,7 @@ def _strategy_cdp(
     config: Optional[ConfigManager],
     on_progress: Optional[Callable] = None,
     timeout: float = 45.0,
+    cancel_event: Optional[_threading.Event] = None,
 ) -> tuple | None:
     """Open user's Brave/Chrome via CDP, navigate to Kuaishou page, intercept CDN URL.
 
@@ -816,8 +817,11 @@ def _strategy_cdp(
 
     logger.debug("Kuaishou strategy E: waiting for CDP lock...")
     with _CDP_LOCK:
+        if cancel_event and cancel_event.is_set():
+            logger.debug("Kuaishou strategy E: cancelled while waiting for CDP lock")
+            return None
         logger.debug("Kuaishou strategy E: CDP lock acquired")
-        return _strategy_cdp_locked(page_url, config, on_progress, timeout)
+        return _strategy_cdp_locked(page_url, config, on_progress, timeout, cancel_event)
 
 
 def _strategy_cdp_locked(
@@ -825,6 +829,7 @@ def _strategy_cdp_locked(
     config: Optional[ConfigManager],
     on_progress: Optional[Callable] = None,
     timeout: float = 45.0,
+    cancel_event: Optional[_threading.Event] = None,
 ) -> tuple | None:
     """Inner implementation — called only while _CDP_LOCK is held."""
     from playwright.sync_api import TimeoutError as PWTimeout  # noqa: PLC0415
@@ -970,10 +975,35 @@ def _strategy_cdp_locked(
             # Open exactly one new tab — track it so we close only this tab later.
             page = ctx.new_page()
 
+            # Mutable guard: callbacks check this before accepting a CDN URL.
+            # Set to the real target pid after goto + redirect resolution.
+            # Empty string = "not yet known, accept any" (pre-navigation phase).
+            # This prevents CDN URLs from auto-advanced videos being captured
+            # before or during navigate-back (the URL is fired for the wrong video).
+            _accept_pid: list[str] = [""]
+
+            def _pid_ok() -> bool:
+                """Return True if current page URL matches target, or target not yet known."""
+                guard = _accept_pid[0]
+                if not guard:
+                    return True
+                try:
+                    cur = page.url
+                    cur_pid = _extract_photo_id(cur)
+                    return cur_pid == guard
+                except Exception:
+                    return True
+
             # Layer A: Playwright request intercept
             def _on_request(request) -> None:
                 nonlocal cdn_url
                 if not cdn_url and _is_ks_cdn_url(request.url):
+                    if not _pid_ok():
+                        logger.debug(
+                            "Kuaishou CDP[A]: skipping CDN URL (wrong page pid): %s",
+                            request.url[:80],
+                        )
+                        return
                     logger.debug("Kuaishou CDP[A]: caught %s", request.url[:80])
                     cdn_url = request.url
             page.on("request", _on_request)
@@ -986,6 +1016,8 @@ def _strategy_cdp_locked(
                 ct = response.headers.get("content-type", "").lower()
                 if ct.startswith("video/") and "mjpeg" not in ct:
                     if _is_ks_cdn_url(response.url):
+                        if not _pid_ok():
+                            return
                         logger.debug(
                             "Kuaishou CDP[B]: video MIME=%s url=%s", ct, response.url[:80]
                         )
@@ -1003,6 +1035,12 @@ def _strategy_cdp_locked(
                         return
                     u = params.get("request", {}).get("url", "")
                     if u and _is_ks_cdn_url(u):
+                        if not _pid_ok():
+                            logger.debug(
+                                "Kuaishou CDP[C]: skipping CDN URL (wrong page pid): %s",
+                                u[:80],
+                            )
+                            return
                         logger.debug("Kuaishou CDP[C]: Network domain caught %s", u[:80])
                         cdn_url = u
                 cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
@@ -1019,6 +1057,8 @@ def _strategy_cdp_locked(
                     u = params.get("response", {}).get("url", "")
                     if mime.startswith("video/") and "mjpeg" not in mime:
                         if _is_ks_cdn_url(u) or _KS_CDN_HOST_RE.search(u):
+                            if not _pid_ok():
+                                return
                             logger.debug(
                                 "Kuaishou CDP[D]: responseReceived MIME=%s url=%s",
                                 mime, u[:80],
@@ -1075,18 +1115,41 @@ def _strategy_cdp_locked(
             try:
                 _redirected_url = page.url
                 _redirected_pid = _extract_photo_id(_redirected_url)
-                if _redirected_pid and _redirected_pid != _pid:
+                # BUG-KS-CDP-02 FIX: When goto raises ERR_TIMED_OUT the browser
+                # may not have followed the redirect yet and page.url returns
+                # "about:blank" or the original nav URL unchanged.
+                # _extract_photo_id("about:blank") = "blank" — a garbage pid.
+                # Guard: only accept a redirected pid that looks like a real
+                # Kuaishou photo id (alphanumeric, len >= 6, not reserved words).
+                _RESERVED = {"blank", "about", "null", "undefined", "short-video", "video", "f"}
+                _pid_valid = (
+                    _redirected_pid
+                    and _redirected_pid not in _RESERVED
+                    and len(_redirected_pid) >= 6
+                    and _redirected_pid != _pid
+                )
+                if _pid_valid:
                     logger.debug(
                         "Kuaishou CDP: short URL redirected %s -> real pid=%s",
                         _pid, _redirected_pid,
                     )
                     _nav_url = f"https://www.kuaishou.com/short-video/{_redirected_pid}"
                     _pid = _redirected_pid
+                else:
+                    logger.debug(
+                        "Kuaishou CDP: short URL redirected %s -> real pid=%s (ignored — not a valid pid)",
+                        _pid, _redirected_pid,
+                    )
             except Exception:
                 pass
 
             # photo_id of the video we actually want — used to detect auto-advance.
             _target_pid = _extract_photo_id(_nav_url) or ""
+
+            # Arm the CDN callback guard now that we know the real target pid.
+            # Callbacks will reject CDN URLs fired while the page shows a different video.
+            if _target_pid:
+                _accept_pid[0] = _target_pid
 
             # Click video element to trigger play — Kuaishou player needs a gesture.
             _CLICK_JS = (
@@ -1104,6 +1167,9 @@ def _strategy_cdp_locked(
             )
             _clicked = False
             while time.monotonic() < _click_deadline and not cdn_url:
+                if cancel_event and cancel_event.is_set():
+                    logger.debug("Kuaishou CDP: cancelled during click phase")
+                    return None
                 if not _clicked:
                     try:
                         page.evaluate(_CLICK_JS)
@@ -1126,6 +1192,9 @@ def _strategy_cdp_locked(
             while time.monotonic() < loop_deadline:
                 if cdn_url:
                     break
+                if cancel_event and cancel_event.is_set():
+                    logger.debug("Kuaishou CDP: cancelled during poll loop")
+                    return None
                 now = time.monotonic()
                 if now - last_poll >= 1.5:
                     last_poll = now
@@ -1263,7 +1332,11 @@ def _strategy_cdp_locked(
 # ── Public extraction entry point ─────────────────────────────────────────────
 
 
-def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> MediaInfo:
+def extract_info_kuaishou(
+    url: str,
+    config: Optional[ConfigManager] = None,
+    cancel_event: Optional[_threading.Event] = None,
+) -> MediaInfo:
     """Extract Kuaishou video metadata. Raises RuntimeError on failure.
 
     Tries strategies in order:
@@ -1273,6 +1346,9 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
       D. kuaishou.com REST info API
       E. yt-dlp built-in extractor (last resort)
     """
+    def _cancelled() -> bool:
+        return bool(cancel_event and cancel_event.is_set())
+
     cookie_str = _load_cookie_str(config) if config else ""
     session = _make_session(cookie_str)
 
@@ -1288,24 +1364,34 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
 
         result: tuple | None = None
 
+        if _cancelled():
+            raise RuntimeError("Kuaishou: đã huỷ.")
         logger.debug("Kuaishou: trying strategy A (HTML __NEXT_DATA__)")
         result = _strategy_html(session, photo_id, cookie_str)
 
         if result is None:
+            if _cancelled():
+                raise RuntimeError("Kuaishou: đã huỷ.")
             logger.debug("Kuaishou: trying strategy B (GraphQL + cookie)")
             result = _strategy_gql(session, photo_id, cookie_str)
 
         if result is None:
+            if _cancelled():
+                raise RuntimeError("Kuaishou: đã huỷ.")
             logger.debug("Kuaishou: trying strategy C (kwai.com API)")
             result = _strategy_kwai(session, photo_id)
 
         if result is None:
+            if _cancelled():
+                raise RuntimeError("Kuaishou: đã huỷ.")
             logger.debug("Kuaishou: trying strategy D (m.kuaishou.com mobile API)")
             result = _strategy_mobile(session, photo_id, cookie_str)
 
         if result is None:
+            if _cancelled():
+                raise RuntimeError("Kuaishou: đã huỷ.")
             logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
-            result = _strategy_cdp(resolved, config, timeout=150.0)
+            result = _strategy_cdp(resolved, config, timeout=150.0, cancel_event=cancel_event)
 
         if result is None:
             raise RuntimeError(
@@ -1331,10 +1417,24 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
                 "Video có thể bị giới hạn khu vực hoặc API đã thay đổi."
             )
 
+        # Prefer the real photo_id returned by the strategy (e.g. CDP real_pid)
+        # over the short code that was used for navigation. When server-side
+        # short URL resolution times out on non-CN IP, photo_id stays as the
+        # short code (e.g. "JZQ58vpT") but photo["id"] contains the real ID
+        # resolved by the browser redirect (e.g. "3x78s79ptbs94km"). Using the
+        # short code as video_id causes the re-extract in download() to navigate
+        # to short-video/<short_code> which ERR_TIMESOUTs again and fails.
+        _result_id = (photo.get("id") or "").strip()
+        _effective_id = (
+            _result_id
+            if _result_id and _result_id != photo_id and len(_result_id) > len(photo_id)
+            else photo_id
+        )
+
         # Pass video_url so _clean_caption can extract upload date from CDN path.
         title = _clean_caption(
             (photo.get("caption") or "").strip(),
-            photo_id=photo_id,
+            photo_id=_effective_id,
             uploader=uploader,
             cdn_url=video_url,
         )
@@ -1354,7 +1454,7 @@ def extract_info_kuaishou(url: str, config: Optional[ConfigManager] = None) -> M
             formats=[{"format_id": "best", "url": video_url}],
             is_live=False,
             was_live=False,
-            video_id=photo_id,
+            video_id=_effective_id,
             source_engine="kuaishou",
         )
     finally:
@@ -1375,8 +1475,12 @@ class KuaishouEngine:
     def __init__(self, config: ConfigManager) -> None:
         self._config = config
 
-    def extract_info(self, url: str) -> MediaInfo:
-        return extract_info_kuaishou(url, self._config)
+    def extract_info(
+        self,
+        url: str,
+        cancel_event: Optional[_threading.Event] = None,
+    ) -> MediaInfo:
+        return extract_info_kuaishou(url, self._config, cancel_event=cancel_event)
 
     def download(
         self,
@@ -1505,15 +1609,39 @@ class KuaishouEngine:
                     else:
                         _reextract_url = task.url
                 else:
-                    # task.url is a CDN URL (Remote API flow with no page URL);
-                    # we cannot build a canonical URL — re-extract will likely
-                    # fail, but there is no better option.
-                    logger.warning(
-                        "BUG-KS-01: cannot build canonical Kuaishou URL — "
-                        "video_id=%r task.url=%s; using task.url as fallback",
-                        _vid_id, task.url[:80],
+                    # task.url is a CDN URL (Remote API flow with no page URL).
+                    # BUG-KS-RE-01 FIX: Previously fell back to task.url (= CDN URL)
+                    # which passed to extract_info_kuaishou -> _extract_photo_id
+                    # returned a CDN path segment, not a photo id -> all strategies fail.
+                    # Fix: try to salvage the photo id from media_info.video_id even
+                    # if it looked invalid above, or from task.media_info directly.
+                    # If video_id contains the real id (len >= 6, no CDN host), use it.
+                    # Otherwise there is genuinely nothing to work with — raise early
+                    # with a clear message instead of letting 150s CDP run on a CDN URL.
+                    _salvage_id = (
+                        (media_info.video_id or "").strip()
+                        if media_info
+                        else ""
                     )
-                    _reextract_url = task.url
+                    if (
+                        _salvage_id
+                        and len(_salvage_id) >= 6
+                        and "." not in _salvage_id
+                        and "/" not in _salvage_id
+                    ):
+                        _reextract_url = (
+                            f"https://www.kuaishou.com/short-video/{_salvage_id}"
+                        )
+                        logger.info(
+                            "Kuaishou: Remote API re-extract — salvaged video_id=%s from media_info",
+                            _salvage_id,
+                        )
+                    else:
+                        raise RuntimeError(
+                            "Kuaishou: không thể xác định page URL để re-extract.\n"
+                            f"task.url trông như CDN URL (video_id={_vid_id!r}) — "
+                            "Remote API cần truyền page URL, không phải CDN URL."
+                        )
             logger.info(
                 "Kuaishou: re-extracting fresh CDN URL for task %s via %s",
                 task.id, _reextract_url[:80],
@@ -1595,11 +1723,32 @@ class KuaishouEngine:
                 resp.close()
                 session.close()
                 _vid_id = media_info.video_id or ""
-                _reextract_inline_url = (
-                    f"https://www.kuaishou.com/short-video/{_vid_id}"
-                    if _vid_id and re.match(r"^[A-Za-z0-9_-]{6,}$", _vid_id)
-                    else task.url
-                )
+                _reextract_inline_url: str
+                if _vid_id and re.match(r"^[A-Za-z0-9_-]{6,}$", _vid_id) and "." not in _vid_id:
+                    _reextract_inline_url = (
+                        f"https://www.kuaishou.com/short-video/{_vid_id}"
+                    )
+                elif re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I):
+                    _m = re.search(
+                        r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I
+                    )
+                    _reextract_inline_url = (
+                        f"https://www.kuaishou.com/short-video/{_m.group(1)}"  # type: ignore[union-attr]
+                    )
+                elif "v.kuaishou.com" in task.url:
+                    _sc = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", task.url, re.I)
+                    _reextract_inline_url = (
+                        f"https://www.kuaishou.com/short-video/{_sc.group(1)}"  # type: ignore[union-attr]
+                        if _sc else task.url
+                    )
+                else:
+                    # task.url is a CDN URL (Remote API) — cannot navigate to it.
+                    # Raise so download_manager shows a clear error instead of
+                    # running 150s CDP on a CDN URL that will never yield a page.
+                    raise RuntimeError(
+                        "Kuaishou CDN trả về HTML nhưng không thể xác định page URL để re-extract.\n"
+                        "Remote API cần truyền page URL Kuaishou, không phải CDN URL."
+                    )
                 logger.info(
                     "Kuaishou: inline re-extract via %s", _reextract_inline_url[:80]
                 )

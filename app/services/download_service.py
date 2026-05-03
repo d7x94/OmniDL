@@ -106,15 +106,21 @@ class DownloadService:
         url: str,
         on_done: Callable[[MediaInfo], None],
         on_error: Callable[[str], None],
-    ) -> None:
+    ) -> threading.Event:
         """
         Fetch metadata for *url* in a daemon thread.
         Calls *on_done* or *on_error* on completion (still background thread —
         UI must use .after() to marshal to main thread).
+
+        Returns a threading.Event that can be set to cancel the in-flight request.
+        Setting it causes the worker to raise RuntimeError("Kuaishou: đã huỷ.")
+        and call on_error, except for Kuaishou where it raises before on_error.
         """
+        cancel_event = threading.Event()
+
         if not is_valid_url(url):
             on_error("Invalid URL — must start with http:// or https://")
-            return
+            return cancel_event
 
         def _worker() -> None:
             try:
@@ -138,7 +144,19 @@ class DownloadService:
                     self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
                     on_done(info)
                     return
-                info = self._engine.extract_info(url)
+                # Pass cancel_event to Kuaishou engine so it can abort between
+                # strategies and inside the CDP poll loop. Other engines ignore it.
+                from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
+                    is_kuaishou_url,
+                )
+                if is_kuaishou_url(url):
+                    from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
+                        KuaishouEngine,
+                    )
+                    _ks_engine = KuaishouEngine(self._config)
+                    info = _ks_engine.extract_info(url, cancel_event=cancel_event)
+                else:
+                    info = self._engine.extract_info(url)
                 self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
                 on_done(info)
             except Exception as exc:
@@ -280,10 +298,14 @@ class DownloadService:
                         return
                     except Exception as gdl_exc:
                         err = str(gdl_exc)
+                if cancel_event.is_set():
+                    logger.debug("analyse_url: cancelled — suppressing on_error")
+                    return
                 self._bus.publish(EventBus.ANALYSIS_FAILED, error=err)
                 on_error(err)
 
         threading.Thread(target=_worker, daemon=True, name="omnidl-analyse").start()
+        return cancel_event
 
     # ── Download lifecycle ────────────────────────────────────────────────
 

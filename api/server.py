@@ -436,8 +436,20 @@ def create_app(
                     yield f"event: error_result\ndata: {payload}\n\n"
             finally:
                 # Decrement ref count so TTL cleanup can remove the entry.
+                # BUG-KS-AC-01 FIX: Failed/timed-out entries were kept in cache
+                # for the full 30 s TTL. When the client retried immediately after
+                # a Kuaishou strategy-E timeout (~150 s), the new SSE connection
+                # attached to the dead error entry and received the cached error
+                # instantly — without spawning a new extract job. The retry never
+                # ran strategies again, so the user saw the same error every time
+                # even though a second attempt would succeed (network recovered).
+                # Fix: evict error and timeout entries immediately when the last
+                # ref drops, so the next request always starts a fresh job.
                 with _analyse_cache_lock:
                     entry["refs"] = max(0, entry["refs"] - 1)
+                    if entry["refs"] == 0 and "info" not in entry.get("result", {}):
+                        # Error or timeout — evict so next request spawns a fresh job.
+                        _analyse_cache.pop(clean_url, None)
 
         return StreamingResponse(
             _stream(),

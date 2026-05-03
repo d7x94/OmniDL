@@ -1195,13 +1195,21 @@ async function doDownload() {
   const isLive     = analysedInfo?.is_live ?? false;
   const format_id  = isLive ? 'best' : document.getElementById('format-sel').value;
   const output_ext = isLive ? 'ts'   : document.getElementById('ext-sel').value;
+  // For Kuaishou (and other engines that bypass yt-dlp), send the CDN URL
+  // from analysedInfo.url — not the page URL — so KuaishouEngine.download()
+  // skips re-extract and uses the already-captured CDN URL directly.
+  // For all other platforms analysedInfo.url equals the page URL anyway.
+  const dlUrl = (analysedInfo?.source_engine === 'kuaishou' && analysedInfo?.url)
+    ? analysedInfo.url
+    : url;
   const body = {
-    url,
+    url:           dlUrl,
     format_id,
     output_ext,
-    title:    analysedInfo?.title    || null,
-    platform: analysedInfo?.platform || null,
-    is_live:  isLive,
+    title:         analysedInfo?.title         || null,
+    platform:      analysedInfo?.platform      || null,
+    source_engine: analysedInfo?.source_engine || null,
+    is_live:       isLive,
   };
 
   const btn = document.getElementById('dl-btn');
