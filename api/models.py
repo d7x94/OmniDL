@@ -65,7 +65,7 @@ class DownloadRequest(BaseModel):
     @field_validator("source_engine")
     @classmethod
     def _validate_engine(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"yt_dlp", "gallery_dl", "kuaishou", None}
+        allowed = {"yt_dlp", "gallery_dl", "kuaishou", "instagram_live", None}
         if v not in allowed:
             raise ValueError(f"source_engine must be one of {allowed - {None}}")
         return v

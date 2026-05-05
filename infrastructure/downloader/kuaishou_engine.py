@@ -1118,7 +1118,7 @@ def _strategy_cdp_locked(
                 # BUG-KS-CDP-02 FIX: When goto raises ERR_TIMED_OUT the browser
                 # may not have followed the redirect yet and page.url returns
                 # "about:blank" or the original nav URL unchanged.
-                # _extract_photo_id("about:blank") = "blank" — a garbage pid.
+                # _extract_photo_id("about:blank") = "blank" -- a garbage pid.
                 # Guard: only accept a redirected pid that looks like a real
                 # Kuaishou photo id (alphanumeric, len >= 6, not reserved words).
                 _RESERVED = {"blank", "about", "null", "undefined", "short-video", "video", "f"}
@@ -1136,10 +1136,73 @@ def _strategy_cdp_locked(
                     _nav_url = f"https://www.kuaishou.com/short-video/{_redirected_pid}"
                     _pid = _redirected_pid
                 else:
-                    logger.debug(
-                        "Kuaishou CDP: short URL redirected %s -> real pid=%s (ignored — not a valid pid)",
-                        _pid, _redirected_pid,
+                    # BUG-KS-CDP-03 FIX: page.url is "about:blank" -- goto ERR_TIMED_OUT
+                    # before any redirect happened (kuaishou.com unreachable from this IP).
+                    # Polling 150s will find nothing. Retry navigate once with remaining
+                    # time; if still blank, return None immediately so user gets a fast
+                    # failure instead of a 150s freeze per attempt.
+                    _is_blank = (
+                        not _redirected_pid
+                        or _redirected_pid in _RESERVED
+                        or len(_redirected_pid) < 6
                     )
+                    if _is_blank and "kuaishou.com" not in (_redirected_url or ""):
+                        logger.debug(
+                            "Kuaishou CDP: page.url=%r after goto -- kuaishou.com unreachable; "
+                            "retrying navigate once with remaining time",
+                            _redirected_url,
+                        )
+                        _retry_remaining = _abs_deadline - time.monotonic() - 10.0
+                        if _retry_remaining > 8.0:
+                            try:
+                                page.goto(
+                                    _nav_url,
+                                    wait_until="domcontentloaded",
+                                    timeout=min(_retry_remaining, 40.0) * 1_000,
+                                )
+                            except Exception as _retry_exc:
+                                logger.debug(
+                                    "Kuaishou CDP: retry goto also failed: %s", _retry_exc
+                                )
+                            _retry_url = page.url
+                            _retry_pid = _extract_photo_id(_retry_url)
+                            if (
+                                not _retry_pid
+                                or _retry_pid in _RESERVED
+                                or len(_retry_pid) < 6
+                            ) and "kuaishou.com" not in (_retry_url or ""):
+                                logger.debug(
+                                    "Kuaishou CDP: still blank after retry (%r) -- "
+                                    "kuaishou.com unreachable, aborting strategy E early",
+                                    _retry_url,
+                                )
+                                return None
+                            # Retry succeeded -- update nav URL with real pid if resolved
+                            _retry_valid_pid = _extract_photo_id(_retry_url)
+                            if (
+                                _retry_valid_pid
+                                and _retry_valid_pid not in _RESERVED
+                                and len(_retry_valid_pid) >= 6
+                                and _retry_valid_pid != _pid
+                            ):
+                                _nav_url = f"https://www.kuaishou.com/short-video/{_retry_valid_pid}"
+                                _pid = _retry_valid_pid
+                                logger.debug(
+                                    "Kuaishou CDP: retry redirect -> real pid=%s", _retry_valid_pid
+                                )
+                        else:
+                            logger.debug(
+                                "Kuaishou CDP: insufficient time for retry (%.1fs) -- "
+                                "aborting strategy E early",
+                                _retry_remaining,
+                            )
+                            return None
+                    else:
+                        logger.debug(
+                            "Kuaishou CDP: short URL redirected %s -> real pid=%s "
+                            "(ignored -- not a valid pid)",
+                            _pid, _redirected_pid,
+                        )
             except Exception:
                 pass
 

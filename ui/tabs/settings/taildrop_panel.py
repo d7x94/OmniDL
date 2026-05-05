@@ -6,11 +6,12 @@ Dependencies on MainWindow:
   self._app.config  – taildrop_enabled, taildrop_target_node, taildrop_send_mode
   self._app.toast   – feedback toasts
 
-Background worker: _on_taildrop_scan() uses a plain daemon thread (no _ui_queue
-needed — result is posted directly via self.after(0, ...) on the Tk widget).
+Background worker: _on_taildrop_scan() uses _ui_queue to post results back to the
+UI thread — required for Python 3.14 thread safety (BUG-AY).
 """
 from __future__ import annotations
 
+import queue
 import re
 import threading
 from typing import TYPE_CHECKING
@@ -39,7 +40,20 @@ class TaildropPanel(_BasePanel):
 
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, app)
+        self._ui_queue: queue.Queue = queue.Queue()
         self._build()
+        self._drain_ui_queue()
+
+    def _drain_ui_queue(self) -> None:
+        while True:
+            try:
+                fn = self._ui_queue.get_nowait()
+                fn()
+            except queue.Empty:
+                break
+            except Exception:
+                pass
+        self.after(50, self._drain_ui_queue)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
@@ -353,7 +367,7 @@ class TaildropPanel(_BasePanel):
                 except Exception:
                     pass
 
-            self.after(0, _update)
+            self._ui_queue.put(_update)
 
         threading.Thread(target=_worker, daemon=True, name="omnidl-td-scan").start()
 

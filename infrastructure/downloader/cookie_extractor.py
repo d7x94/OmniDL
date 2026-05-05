@@ -647,17 +647,16 @@ def extract_via_cdp(
                 "Launching %s with real profile for CDP extraction on port %d",
                 browser, port,
             )
-            # CREATE_NO_WINDOW (0x08000000) suppresses the console window that
-            # Brave/Chrome would briefly create and show to the user.
+            # CREATE_NO_WINDOW suppresses the console window that Brave/Chrome
+            # would briefly create and show to the user.
             # DETACHED_PROCESS (0x00000008) was previously used but is wrong:
             # it detaches from the console without preventing a new one from
             # appearing, causing a CMD flash during each CDP extraction.
-            _CREATE_NO_WINDOW = 0x08000000
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=_CREATE_NO_WINDOW,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
 
         if not _cdp_wait_ready(port, timeout=20.0):

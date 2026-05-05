@@ -1261,11 +1261,19 @@ class YtDlpEngine:
             if "bestvideo" in _format_id:
                 # User picked a video+audio quality — honour their intent but
                 # override with the watermark-free h264 chain for TikTok.
-                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+                # BUG-TT-SHOP FIX: TikTok videos with shopping links expose only
+                # a single muxed stream with format_id="audio" (mislabeled — it
+                # IS a video+audio MP4). bestvideo*+bestaudio* fails because there
+                # is only 1 stream; bare "best" then picks it but yt-dlp infers
+                # ext=mp3 from acodec metadata -> output is audio-only mp3.
+                # Fix: insert bestvideo* (single-stream starred selector) before
+                # bare best. Starred selector picks "best format containing video"
+                # regardless of codec labels and preserves the mp4 container.
+                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best"
             elif "bestaudio" in _format_id:
                 pass  # audio-only selector — leave unchanged, no video needed
             else:
-                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
         opts: dict[str, Any] = {
             "format": "best" if is_live else _format_id,
@@ -1333,11 +1341,9 @@ class YtDlpEngine:
         if _ffmpeg_dir:
             opts["ffmpeg_location"] = _ffmpeg_dir
 
-        # HLS livestream options.  hls_use_mpegts writes MPEG-TS segments as
-        # they arrive rather than building an MP4 index — without it, TikTok
-        # live streams fail mid-download or produce unplayable files.
+        # HLS livestream options.
         # live_from_start=False records from now (not stream start).
-        # socket_timeout is tightened for live so the cancel check fires within
+        # socket_timeout=10 tightened for live so the cancel check fires within
         # 10 s rather than 30 s.
         #
         # FIX-HLS-TEMPDIR (P2c):
@@ -1359,23 +1365,27 @@ class YtDlpEngine:
         # • keep_fragments=False             — clean up every .part/.ytdl
         #   segment file after a completed or cancelled live recording so the
         #   output directory is not littered with partial segments.
+        # • hls_prefer_native=True           — force yt-dlp to use its native
+        #   Python HLS downloader (HlsFD) instead of FFmpegFD for live streams.
+        #   FFmpegFD runs ffmpeg as a long-running subprocess and never calls
+        #   progress hooks during the download, making cancel impossible.
+        #   HlsFD downloads segments in a Python loop and calls progress hooks
+        #   after each segment (~2-4 s), so cancel fires reliably.
+        #   hls_use_mpegts was previously used here but switched yt-dlp to
+        #   FFmpegFD, which broke cancel. The Unicode/pipe issue it fixed is
+        #   already handled by paths["temp"] pointing to an ASCII temp dir.
         if is_live:
-            opts["hls_use_mpegts"]              = True
-            opts["live_from_start"]             = False
-            opts["socket_timeout"]              = 10   # faster cancel response
-            opts["concurrent_fragment_downloads"] = 1  # no parallel HLS writes
-            opts["keep_fragments"]              = False
+            opts["hls_prefer_native"]             = True
+            opts["live_from_start"]               = False
+            opts["socket_timeout"]                = 10   # faster cancel response
+            opts["concurrent_fragment_downloads"] = 1   # no parallel HLS writes
+            opts["keep_fragments"]                = False
             # Route temp segment files away from the (potentially Unicode)
             # download directory.  tempfile.gettempdir() always returns an
             # ASCII-safe path on all supported platforms.
             _live_tmp = Path(tempfile.gettempdir()) / "omnidl_live"
             _live_tmp.mkdir(parents=True, exist_ok=True)
             opts["paths"] = {"temp": str(_live_tmp)}
-            # BUG-BW FIX: restrictfilenames removed — superseded by redirecting
-            # outtmpl to the ASCII temp dir above.  restrictfilenames only
-            # replaced file-system-illegal chars, not Unicode, so the named
-            # pipe path could still contain Vietnamese/emoji and crash ffmpeg
-            # with STATUS_PIPE_NOT_AVAILABLE (0xCBAE0008).
 
         # merge_output_format tells yt-dlp to invoke ffmpeg to remux/merge the
         # downloaded streams.  For livestreams the HLS segments are already a

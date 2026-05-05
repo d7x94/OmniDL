@@ -179,6 +179,10 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
         "--disable-backgrounding-occluded-windows",
         "--disable-sync",
         "--disable-gpu",
+        # Push the default browser window off-screen so only the CDP context
+        # window (created via new_context) is visible to the user.
+        "--window-position=-32000,-32000",
+        "--window-size=1280,720",
     ]
 
     with _get_cdp_lock():
@@ -191,6 +195,7 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
     logger.info("CDP: launching %s on port %d (pid=%d)", browser, port, proc.pid)
 
     hls_url: Optional[str] = None
+    _captured_browser_headers: dict = {}
 
     try:
         with sync_playwright() as pw:
@@ -316,12 +321,16 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
             # Layer A: Playwright request intercept (page-level)
             # Log ALL instagram/cdninstagram requests to help diagnose
             def _on_request(request) -> None:
-                nonlocal hls_url
+                nonlocal hls_url, _captured_browser_headers
                 u = request.url
                 if ".m3u8" in u or ".mpd" in u:
-                    logger.info("CDP[A]: stream URL request: %.120s", u)
+                    logger.info("CDP[A]: stream URL request: %s", u)
                     if not hls_url:
                         hls_url = u
+                        try:
+                            _captured_browser_headers = dict(request.all_headers())
+                        except Exception:
+                            pass
                 elif "instagram.com" in u and any(
                     x in u for x in ("/live/", "live-hls", "dash-hls", "playback")
                 ):
@@ -357,14 +366,18 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                 cdp_session.send("Network.enable")
 
                 def _on_cdp_request(params: dict) -> None:
-                    nonlocal hls_url
-                    u = params.get("request", {}).get("url", "")
+                    nonlocal hls_url, _captured_browser_headers
+                    req = params.get("request", {})
+                    u = req.get("url", "")
                     if not u:
                         return
                     if ".m3u8" in u or ".mpd" in u:
-                        logger.info("CDP[C]: stream URL via Network domain: %.120s", u)
+                        logger.info("CDP[C]: stream URL via Network domain: %s", u)
                         if not hls_url:
                             hls_url = u
+                            # Capture the exact headers the browser sent for this request
+                            # so FFmpeg can authenticate with the same credentials.
+                            _captured_browser_headers = dict(req.get("headers", {}))
                     elif "instagram.com" in u and any(
                         x in u for x in ("/live/", "live-hls", "dash-hls", "playback")
                     ):
@@ -411,82 +424,87 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
             # Dismiss the Instagram "tap to play" interstitial.
             # The live page renders a black overlay requiring a user gesture
             # before the video player starts and HLS segments are fetched.
-            # Inject synthetic mouse events on the overlay and video element
-            # to satisfy the autoplay policy (same pattern as facebook_story_engine).
-            time.sleep(1.5)
+            # Instagram's React SPA takes 15-40s to mount the live player --
+            # injecting at 1.5s always misses the overlay (DOM not ready yet).
+            # Instead, re-inject the gesture every 5s inside the poll loop
+            # until the stream URL is found.
+            _GESTURE_JS = (
+                "(function(){"
+                "try{"
+                "var dlg=document.querySelector('[role=\"dialog\"]');"
+                "if(dlg){"
+                "var btns=dlg.querySelectorAll('[role=\"button\"],button');"
+                "if(btns.length>0){"
+                "btns[btns.length-1].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));"
+                "}}"
+                "}catch(e){}"
+                "var playSelectors=['[data-visualcompletion=\"media-vc-image\"]',"
+                "'._aatk','._aatn','._ab8w','._aagu','._aagv'];"
+                "for(var s=0;s<playSelectors.length;s++){"
+                "var ov=document.querySelector(playSelectors[s]);"
+                "if(ov){try{"
+                "var oe={bubbles:true,cancelable:true,view:window};"
+                "ov.dispatchEvent(new MouseEvent('mousedown',oe));"
+                "ov.dispatchEvent(new MouseEvent('mouseup',oe));"
+                "ov.dispatchEvent(new MouseEvent('click',oe));"
+                "}catch(e){} break;}"
+                "}"
+                "try{"
+                "var cx=window.innerWidth/2,cy=window.innerHeight/2;"
+                "var el=document.elementFromPoint(cx,cy);"
+                "if(el){var ev={bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy};"
+                "el.dispatchEvent(new MouseEvent('mousedown',ev));"
+                "el.dispatchEvent(new MouseEvent('mouseup',ev));"
+                "el.dispatchEvent(new MouseEvent('click',ev));}"
+                "}catch(e){}"
+                "var vs=document.querySelectorAll('video');"
+                "for(var i=0;i<vs.length;i++){"
+                "(function(v){"
+                "try{"
+                "var opts={bubbles:true,cancelable:true,view:window};"
+                "v.dispatchEvent(new MouseEvent('mousedown',opts));"
+                "v.dispatchEvent(new MouseEvent('mouseup',opts));"
+                "v.dispatchEvent(new MouseEvent('click',opts));"
+                "}catch(e){}"
+                "v.muted=false;"
+                "var p=v.paused?v.play():Promise.resolve();"
+                "if(p&&p.then){"
+                "p.catch(function(){"
+                "v.muted=true;"
+                "var p2=v.play();"
+                "if(p2&&p2.then){p2.then(function(){"
+                "setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
+                "});"
+                "}"
+                "})(vs[i]);"
+                "}"
+                "})()"
+            )
+
+            time.sleep(2.0)
             try:
-                page.evaluate(
-                    "(function(){"
-                    "var overlaySelectors=['[data-visualcompletion=\"media-vc-image\"]',"
-                    "'[role=\"button\"]','._aatk','._aatn','._ab8w'];"
-                    "for(var s=0;s<overlaySelectors.length;s++){"
-                    " var ov=document.querySelector(overlaySelectors[s]);"
-                    " if(ov){try{"
-                    "  var oe={bubbles:true,cancelable:true,view:window};"
-                    "  ov.dispatchEvent(new MouseEvent('mousedown',oe));"
-                    "  ov.dispatchEvent(new MouseEvent('mouseup',oe));"
-                    "  ov.dispatchEvent(new MouseEvent('click',oe));"
-                    " }catch(e){} break;}"
-                    "}"
-                    "var vs=document.querySelectorAll('video');"
-                    "for(var i=0;i<vs.length;i++){"
-                    " (function(v){"
-                    "  try{"
-                    "   var opts={bubbles:true,cancelable:true,view:window};"
-                    "   v.dispatchEvent(new MouseEvent('mousedown',opts));"
-                    "   v.dispatchEvent(new MouseEvent('mouseup',opts));"
-                    "   v.dispatchEvent(new MouseEvent('click',opts));"
-                    "  }catch(e){}"
-                    "  v.muted=false;"
-                    "  var p=v.paused?v.play():Promise.resolve();"
-                    "  if(p&&p.then){"
-                    "   p.catch(function(){"
-                    "    v.muted=true;"
-                    "    var p2=v.play();"
-                    "    if(p2&&p2.then){p2.then(function(){"
-                    "    setTimeout(function(){v.muted=false;},150);}).catch(function(){});}"
-                    "   });"
-                    "  }"
-                    " })(vs[i]);"
-                    "}"
-                    "})()"
-                )
-                logger.debug("CDP: injected tap-to-play gesture")
+                page.evaluate(_GESTURE_JS)
+                logger.debug("CDP: injected tap-to-play gesture (initial)")
             except Exception as exc:
                 logger.debug("CDP: tap-to-play inject failed (non-fatal): %s", exc)
 
             # Poll loop - deadline starts now (after navigation + gesture)
-            loop_deadline  = time.monotonic() + timeout
-            _regested_30s  = False
-            _poll_tick     = 0
+            loop_deadline   = time.monotonic() + timeout
+            _last_gesture_t = time.monotonic()
+            _GESTURE_INTERVAL = 5.0  # re-inject gesture every 5s until URL found
+            _poll_tick      = 0
             while time.monotonic() < loop_deadline:
                 if hls_url:
                     break
 
-                # Re-inject gesture at ~30s - page may still be rendering React
-                elapsed_since_nav = timeout - (loop_deadline - time.monotonic())
-                if not _regested_30s and elapsed_since_nav >= 30.0:
-                    _regested_30s = True
+                # Re-inject gesture every 5s -- Instagram SPA may render the
+                # live player at any point during the 120s window.
+                now = time.monotonic()
+                if now - _last_gesture_t >= _GESTURE_INTERVAL:
+                    _last_gesture_t = now
                     try:
-                        page.evaluate(
-                            "(function(){"
-                            "var vs=document.querySelectorAll('video');"
-                            "for(var i=0;i<vs.length;i++){"
-                            "(function(v){"
-                            " try{"
-                            "  var o={bubbles:true,cancelable:true,view:window};"
-                            "  v.dispatchEvent(new MouseEvent('click',o));"
-                            " }catch(e){}"
-                            " v.muted=true;"
-                            " var p=v.paused?v.play():Promise.resolve();"
-                            " if(p&&p.then){p.then(function(){"
-                            "  setTimeout(function(){v.muted=false;},300);"
-                            " }).catch(function(){});}"
-                            "})(vs[i]);"
-                            "}"
-                            "})()"
-                        )
-                        logger.debug("CDP: re-injected gesture at ~30s")
+                        page.evaluate(_GESTURE_JS)
+                        logger.debug("CDP: re-injected tap-to-play gesture")
                     except Exception:
                         pass
 
@@ -602,7 +620,7 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
         # to bind a new Brave instance (prevents ECONNREFUSED on reuse).
         time.sleep(1.5)
 
-    return hls_url
+    return hls_url, _captured_browser_headers
 
 
 class InstagramLiveEngine:
@@ -627,6 +645,7 @@ class InstagramLiveEngine:
 
         # Primary: CDP intercept
         hls_url: Optional[str] = None
+        _browser_headers: dict = {}
         if sys.platform in ("win32", "darwin"):
             browser = getattr(self._config, "browser", "brave") or "brave"
             try:
@@ -638,7 +657,7 @@ class InstagramLiveEngine:
                 _cdp_intercept_hls._cookie_file = (  # type: ignore[attr-defined]
                     _resolve_cookie(url, self._config)
                 )
-                hls_url = _cdp_intercept_hls(url, browser, _CDP_HLS_WAIT_S)
+                hls_url, _browser_headers = _cdp_intercept_hls(url, browser, _CDP_HLS_WAIT_S)
             except RuntimeError as exc:
                 logger.warning("CDP HLS intercept failed: %s -- trying API fallback", exc)
             except Exception as exc:
@@ -687,8 +706,20 @@ class InstagramLiveEngine:
             )
         ffmpeg_bin = str(Path(loc.ffmpeg_bin))
 
-        # Build headers for FFmpeg HLS/DASH segment auth
-        headers_arg = self._build_ffmpeg_headers(url)
+        # Build headers for FFmpeg HLS/DASH segment auth.
+        # Prefer browser-captured headers (exact same headers browser used to fetch
+        # the stream URL, including any session cookies tied to that request).
+        # Fall back to cookie-file-based headers if browser headers are empty.
+        if _browser_headers:
+            _SKIP_HEADERS = {"accept-encoding", "connection", "host", "content-length"}
+            headers_arg = "".join(
+                f"{k}: {v}\r\n"
+                for k, v in _browser_headers.items()
+                if k.lower() not in _SKIP_HEADERS
+            )
+            logger.debug("FFmpeg: using %d browser-captured headers", len(_browser_headers))
+        else:
+            headers_arg = self._build_ffmpeg_headers(url)
 
         # DASH MPD requires different container than HLS.
         # HLS -> mpegts (.ts), DASH -> matroska (.mkv) since .ts doesn't support
@@ -703,11 +734,48 @@ class InstagramLiveEngine:
         else:
             container_args = ["-f", "mpegts"]
 
+        # DASH MPD needs different demuxer flags than HLS
+        if is_dash:
+            input_args = [
+                "-reconnect", "1",
+                "-reconnect_on_network_error", "1",
+                "-reconnect_delay_max", "5",
+                "-timeout", "10000000",
+                "-allowed_extensions", "ALL",
+                # Start from near-live instead of startNumber=0.
+                # Instagram DASH live uses a sliding window; older segments are
+                # purged server-side. Default live_start_index=0 requests a
+                # segment that no longer exists -> 404 -> FFmpeg stalls forever.
+                # -3 = start 3 segments before the live edge (always in window).
+                "-live_start_index", "-3",
+                "-headers", headers_arg,
+                "-i", hls_url,
+            ]
+        else:
+            input_args = [
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-timeout", "10000000",
+                "-headers", headers_arg,
+                "-i", hls_url,
+            ]
+
+        if is_dash:
+            # DASH MPD exposes multiple video representations at different bitrates.
+            # Without -map, FFmpeg parses the MPD but writes nothing.
+            # Instagram live MPDs seen so far have no audio stream (video-only DASH);
+            # audio may be muxed into video or delivered via a separate HLS track.
+            # Use 0:a:0? (optional) so FFmpeg records video even when audio is absent.
+            map_args = ["-map", "0:v:0", "-map", "0:a:0?"]
+        else:
+            map_args = []
+
         cmd = [
             ffmpeg_bin,
             "-y",
-            "-headers", headers_arg,
-            "-i", hls_url,
+            *input_args,
+            *map_args,
             "-c", "copy",
             *container_args,
             str(output_path),
@@ -733,6 +801,11 @@ class InstagramLiveEngine:
 
         _prev_size = 0
         _prev_time = time.monotonic()
+        _last_growth_t = time.monotonic()
+        # DASH streams need time to parse MPD, fetch init segment, then media segments.
+        # 90s grace covers slow CDN + optional audio track resolution.
+        _STALL_TIMEOUT = 90.0 if is_dash else 30.0
+        _data_ever_written = False
 
         try:
             while True:
@@ -755,6 +828,48 @@ class InstagramLiveEngine:
                 delta    = cur_size - _prev_size
                 speed_bs = delta / elapsed if elapsed > 0 else 0
 
+                if delta > 0:
+                    _last_growth_t = now
+                    if not _data_ever_written:
+                        _data_ever_written = True
+                        _STALL_TIMEOUT = 30.0  # tighten to 30s once data is flowing
+                elif now - _last_growth_t > _STALL_TIMEOUT:
+                    # FFmpeg is running but writing 0 bytes -- stream ended or
+                    # CDN URL is inaccessible.  Kill so the task fails cleanly
+                    # instead of hanging indefinitely.
+                    _stall_stderr = b""
+                    if proc.stderr:
+                        try:
+                            import os as _os
+                            try:
+                                _stall_stderr = _os.read(proc.stderr.fileno(), 8192)
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    logger.warning(
+                        "InstagramLiveEngine: FFmpeg stalled (no bytes written in %.0fs) -- terminating | stderr: %s",
+                        _STALL_TIMEOUT,
+                        _stall_stderr.decode("utf-8", errors="replace")[-600:] if _stall_stderr else "(empty - pipe may have data after kill)",
+                    )
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    # Read remaining stderr after process ends
+                    if proc.stderr and not _stall_stderr:
+                        try:
+                            _stall_stderr = proc.stderr.read(8192)
+                            if _stall_stderr:
+                                logger.warning(
+                                    "InstagramLiveEngine: FFmpeg stderr after kill: %s",
+                                    _stall_stderr.decode("utf-8", errors="replace")[-600:],
+                                )
+                        except Exception:
+                            pass
+                    break
+
                 with task._lock:
                     task.status           = DownloadStatus.DOWNLOADING
                     task.downloaded_bytes = cur_size
@@ -776,7 +891,7 @@ class InstagramLiveEngine:
             except Exception:
                 pass
 
-        if ret != 0:
+        if ret is not None and ret != 0:
             stderr_bytes = b""
             if proc.stderr:
                 try:
@@ -790,6 +905,12 @@ class InstagramLiveEngine:
             raise RuntimeError(
                 f"FFmpeg ket thuc voi ma loi {ret}.\n"
                 "Kiem tra omnidl_run.log de biet chi tiet."
+            )
+        if ret is None:
+            # Stall kill path: ffmpeg was terminated due to no output
+            raise RuntimeError(
+                "FFmpeg khong ghi duoc du lieu tu stream (stream da ket thuc hoac URL het han).\n"
+                "Thu lai ngay khi stream dang phat."
             )
 
         logger.info("InstagramLiveEngine: recording complete -> %s", output_path)
