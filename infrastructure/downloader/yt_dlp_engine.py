@@ -1134,16 +1134,27 @@ class YtDlpEngine:
             if _sys_outtmpl.platform == "win32":
                 _live_outtmpl_dir = Path(tempfile.gettempdir()) / "omnidl_live"
                 _live_outtmpl_dir.mkdir(parents=True, exist_ok=True)
+                # BUG-BW2 FIX: On Windows, yt-dlp expands outtmpl BEFORE creating
+                # the named pipe.  Even though _live_outtmpl_dir is ASCII, if
+                # %(uploader) or %(title) expand to Unicode (Arabic, CJK, emoji),
+                # the resulting pipe path is Unicode and Windows rejects it with
+                # STATUS_PIPE_NOT_AVAILABLE (0xCBAE0008).
+                # Fix: on Windows, use ONLY %(id) + a static timestamp in the
+                # live outtmpl — both are guaranteed ASCII.  The .ts file is moved
+                # to output_dir with a proper name by the post-download block.
+                outtmpl = str(
+                    _live_outtmpl_dir / f"live_{rec_ts}_%(id).20B.ts"
+                )
             else:
                 _live_outtmpl_dir = output_dir
-            outtmpl = str(
-                _live_outtmpl_dir
-                / (
-                    f"%(uploader,channel|Unknown).50B"
-                    f" - [LIVE] {rec_ts}"
-                    f" %(title).80B [%(id).12B].ts"
+                outtmpl = str(
+                    _live_outtmpl_dir
+                    / (
+                        f"%(uploader,channel|Unknown).50B"
+                        f" - [LIVE] {rec_ts}"
+                        f" %(title).80B [%(id).12B].ts"
+                    )
                 )
-            )
         else:
             outtmpl = str(
                 output_dir
@@ -1269,11 +1280,40 @@ class YtDlpEngine:
                 # Fix: insert bestvideo* (single-stream starred selector) before
                 # bare best. Starred selector picks "best format containing video"
                 # regardless of codec labels and preserves the mp4 container.
-                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best"
+                # BUG-TT-SHOP-2 FIX: bestvideo* alone is insufficient when yt-dlp
+                # infers ext=mp3 from acodec metadata on the single-stream case.
+                # ext= filter added: prefer the stream explicitly labeled mp4/m4v
+                # before falling back to codec-agnostic starred selectors.
+                # BUG-TT-SHOP-3 FIX: shopping-link stream has ext=mp3 (not mp4),
+                # so best[format_id=audio][ext=mp4] does NOT match it.
+                # The stream falls through to bestvideo*+bestaudio* which cannot
+                # split a single stream into video+audio pair -> yt-dlp picks
+                # "audio" stream as audio-only -> output is silent mp4.
+                # Fix: add best[format_id=audio] (no ext filter) AFTER the mp4
+                # variant so the mislabeled shopping stream is still caught.
+                # FFmpegVideoRemuxer (added below for all TikTok VODs) will
+                # recontainer it to the correct output_ext regardless of ext label.
+                _format_id = (
+                    "best[format_id^=h264]"
+                    "/best[format_id=audio][ext=mp4]"
+                    "/best[format_id=audio]"
+                    "/download"
+                    "/bestvideo*+bestaudio*"
+                    "/bestvideo*"
+                    "/best"
+                )
             elif "bestaudio" in _format_id:
                 pass  # audio-only selector — leave unchanged, no video needed
             else:
-                _format_id = "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best"
+                _format_id = (
+                    "best[format_id^=h264]"
+                    "/best[format_id=audio][ext=mp4]"
+                    "/best[format_id=audio]"
+                    "/download"
+                    "/bestvideo*+bestaudio*"
+                    "/bestvideo*"
+                    "/best"
+                )
 
         opts: dict[str, Any] = {
             "format": "best" if is_live else _format_id,
@@ -1460,6 +1500,28 @@ class YtDlpEngine:
                 "EmbedThumbnail+ffmpeg": ["-c", "copy"],
             }
 
+        # BUG-TT-SHOP-2 FIX: TikTok shopping-link videos expose a single muxed
+        # stream with format_id="audio" and acodec=mp3 (mislabeled metadata).
+        # yt-dlp infers ext=mp3 from acodec, so the output lands as .mp3 even
+        # though the stream IS a video+audio MP4.
+        # merge_output_format only triggers when yt-dlp merges 2+ streams — with
+        # a single stream, no merge occurs and the inferred ext=mp3 is kept.
+        # Fix: prepend FFmpegVideoRemuxer to the postprocessors list for all
+        # TikTok VOD non-audio downloads to force-remux into the correct video
+        # container (-c copy, zero re-encode) regardless of what ext yt-dlp infers.
+        # This is a no-op when the output is already in the correct container.
+        # Must run AFTER the thumbnail block so we prepend to the final pp list,
+        # not an intermediate list that gets clobbered by the elif branch above.
+        if _is_tiktok_vod and not is_live and not _is_audio_output:
+            _remux_pp = {
+                "key": "FFmpegVideoRemuxer",
+                "preferedformat": task.output_ext.lstrip(".") or "mp4",
+            }
+            _existing_pps = list(opts.get("postprocessors") or [])
+            # FFmpegVideoRemuxer must be FIRST so the container is correct before
+            # EmbedThumbnail / FFmpegMetadata operate on the file.
+            opts["postprocessors"] = [_remux_pp] + _existing_pps
+
         if self._config.proxy:
             opts["proxy"] = self._config.proxy
         # Cookie resolution: per-platform first, global fallback second.
@@ -1620,9 +1682,15 @@ class YtDlpEngine:
             # with the shortest-lived HLS tokens); other platforms already
             # handle reconnection internally via yt-dlp's own retry logic.
             _exc_str = str(exc)
+            # BUG-TT-02 FIX2: also match short links (vt/vm.tiktok.com) --
+            # task.url holds the original user-pasted URL which may be a short
+            # link even when the stream is a TikTok live.
             _is_hls_expired = (
                 is_live
-                and _TIKTOK_LIVE_RE.search(task.url)
+                and (
+                    _TIKTOK_LIVE_RE.search(task.url)
+                    or _TIKTOK_SHORT_RE.search(task.url)
+                )
                 and "ffmpeg exited with code" in _exc_str.lower()
                 and not task.is_cancellation_requested
             )
