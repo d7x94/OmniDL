@@ -1316,7 +1316,17 @@ class YtDlpEngine:
                 )
 
         opts: dict[str, Any] = {
-            "format": "best" if is_live else _format_id,
+            # BUG-TT-11 FIX: TikTok live sometimes exposes both HLS and DASH.
+            # "best" may pick DASH, which forces FFmpegFD and bypasses
+            # hls_prefer_native=True — FFmpegFD uses a Windows named pipe that
+            # fails with 0xCBAE0008 on Unicode paths or concurrent access.
+            # Force HLS by preferring m3u8 protocols; fall back to "best" for
+            # non-TikTok live platforms that have no HLS stream.
+            "format": (
+                "best[protocol^=m3u8]/best"
+                if (is_live and (_TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)))
+                else ("best" if is_live else _format_id)
+            ),
             # FIX-FINAL: JS challenge solver for YouTube n-challenge.
             # BUG-BQ FIX: must be a list — str causes yt-dlp to iterate over
             # individual characters and silently discard the solver.
@@ -1417,7 +1427,12 @@ class YtDlpEngine:
         if is_live:
             opts["hls_prefer_native"]             = True
             opts["live_from_start"]               = False
-            opts["socket_timeout"]                = 10   # faster cancel response
+            # BUG-TT-11 FIX: 10s too short for TikTok CDN token rotation (~15s).
+            # Segments stalled at boundary -> ffmpeg exit 3419392776. 15s covers
+            # rotation window; cancel still fires within one segment (~15s max).
+            opts["socket_timeout"]                = 15
+            # BUG-TT-11 FIX: 3 retries insufficient when CDN rotates tokens mid-stream.
+            opts["fragment_retries"]              = 5
             opts["concurrent_fragment_downloads"] = 1   # no parallel HLS writes
             opts["keep_fragments"]                = False
             # Route temp segment files away from the (potentially Unicode)

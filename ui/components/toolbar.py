@@ -102,6 +102,7 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         )
         self._url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self._url_entry.bind("<Return>", lambda _: self._start_analyse())
+        self._url_entry.bind("<Control-v>", lambda _: self.after(50, self._paste_and_analyse))
         self._url_entry.bind("<FocusIn>",  self._on_focus_in)
         self._url_entry.bind("<FocusOut>", self._on_focus_out)
 
@@ -327,8 +328,19 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
                 self._url_entry.delete(0, "end")
                 self._url_entry.insert(0, url)
                 self._set_status("URL pasted", T.text2)
+                self._start_analyse()
         except Exception:
             pass
+
+    def _paste_and_analyse(self) -> None:
+        # Ctrl+V path: Tkinter already committed paste text; extract URL then analyse
+        raw = self._url_entry.get().strip()
+        m = _CLIPBOARD_URL_RE.search(raw)
+        if m:
+            url = m.group(0).rstrip("".join(_URL_TRAILING_JUNK))
+            self._url_entry.delete(0, "end")
+            self._url_entry.insert(0, url)
+            self._start_analyse()
 
     def _clear_url(self) -> None:
         self._url_entry.delete(0, "end")
@@ -347,12 +359,11 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
 
     def trigger_from_clipboard(self, url: str) -> None:
         """Called from ClipboardMonitor via _ui_queue when a new URL is detected.
-        Fills the URL entry and auto-triggers analysis.
+        Fills the URL entry only -- analyse runs when user pastes (Paste btn or Ctrl+V).
         """
         self._url_entry.delete(0, "end")
         self._url_entry.insert(0, url)
-        self._set_status("Clipboard URL detected", T.text2)
-        self._start_analyse()
+        self._set_status("Clipboard URL ready - paste to analyse", T.text2)
 
     # ── Theme ──────────────────────────────────────────────────────────────
 
