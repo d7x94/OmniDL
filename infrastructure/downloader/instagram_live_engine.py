@@ -435,7 +435,8 @@ def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[
                 "if(dlg){"
                 "var btns=dlg.querySelectorAll('[role=\"button\"],button');"
                 "if(btns.length>0){"
-                "btns[btns.length-1].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));"
+                "btns[btns.length-1].dispatchEvent("
+                "new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));"
                 "}}"
                 "}catch(e){}"
                 "var playSelectors=['[data-visualcompletion=\"media-vc-image\"]',"
@@ -847,10 +848,16 @@ class InstagramLiveEngine:
                                 pass
                         except Exception:
                             pass
+                    _stall_msg = (
+                        _stall_stderr.decode("utf-8", errors="replace")[-600:]
+                        if _stall_stderr
+                        else "(empty - pipe may have data after kill)"
+                    )
                     logger.warning(
-                        "InstagramLiveEngine: FFmpeg stalled (no bytes written in %.0fs) -- terminating | stderr: %s",
+                        "InstagramLiveEngine: FFmpeg stalled"
+                        " (no bytes written in %.0fs) -- terminating | stderr: %s",
                         _STALL_TIMEOUT,
-                        _stall_stderr.decode("utf-8", errors="replace")[-600:] if _stall_stderr else "(empty - pipe may have data after kill)",
+                        _stall_msg,
                     )
                     proc.terminate()
                     try:
