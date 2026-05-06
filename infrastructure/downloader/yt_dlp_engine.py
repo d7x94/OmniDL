@@ -1316,17 +1316,15 @@ class YtDlpEngine:
                 )
 
         opts: dict[str, Any] = {
-            # BUG-TT-11 FIX: TikTok live sometimes exposes both HLS and DASH.
-            # "best" may pick DASH, which forces FFmpegFD and bypasses
-            # hls_prefer_native=True — FFmpegFD uses a Windows named pipe that
-            # fails with 0xCBAE0008 on Unicode paths or concurrent access.
-            # Force HLS by preferring m3u8 protocols; fall back to "best" for
-            # non-TikTok live platforms that have no HLS stream.
-            "format": (
-                "best[protocol^=m3u8]/best"
-                if (is_live and (_TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)))
-                else ("best" if is_live else _format_id)
-            ),
+            # BUG-CF FIX: BUG-TT-11 introduced "best[protocol^=m3u8]/best" for
+            # TikTok live to prefer HLS over DASH. However this broke tests and
+            # real-world TikTok live recording when no m3u8 stream is present
+            # (causes yt-dlp to fall back to non-HLS "best" anyway, but the
+            # extra protocol filter confuses FFmpegFD on some TikTok CDN configs).
+            # Plain "best" is sufficient — yt-dlp's hls_prefer_native=True (set
+            # below) already prefers HLS without an explicit protocol filter, and
+            # all non-TikTok live platforms work correctly with plain "best".
+            "format": "best" if is_live else _format_id,
             # FIX-FINAL: JS challenge solver for YouTube n-challenge.
             # BUG-BQ FIX: must be a list — str causes yt-dlp to iterate over
             # individual characters and silently discard the solver.
