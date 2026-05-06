@@ -422,7 +422,7 @@ class TestTikTokFormatIdPatch:
         """'bestvideo+bestaudio/best' → BUG-BS 7-tier chain (watermark-free h264 first)."""
         task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_1080p_gets_acodec_filter(self):
         """'bestvideo[height<=1080]+bestaudio/best' → BUG-BS 7-tier chain.
@@ -430,19 +430,19 @@ class TestTikTokFormatIdPatch:
         are already height-limited by TikTok CDN; the selector picks best tbr)."""
         task = self._make_tiktok_task("bestvideo[height<=1080]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_720p_gets_acodec_filter(self):
         """'bestvideo[height<=720]+bestaudio/best' → BUG-BS 7-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=720]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_360p_gets_acodec_filter(self):
         """'bestvideo[height<=360]+bestaudio/best' → BUG-BS 7-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=360]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_audio_only_not_modified(self):
         """'bestaudio/best' (audio-only) must NOT be modified — no bestvideo present."""
@@ -453,12 +453,12 @@ class TestTikTokFormatIdPatch:
     def test_best_gets_seven_tier_chain(self):
         """BUG-BP: format_id='best' on a TikTok VOD now receives the 7-tier chain.
         Previously the else-branch was missing the BUG-BS fix; it now also maps to
-        best[format_id^=h264]/download/bestvideo*+bestaudio*/best."""
+        best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best."""
         url = "https://www.tiktok.com/@testuser/video/9999"
         task = DownloadTask(url=url, format_id="best", output_ext="mp4")
         task.media_info = MediaInfo(url=url, title="Test", is_live=False)
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_non_tiktok_url_not_modified(self):
         """YouTube URLs must NOT have format_id modified."""
@@ -492,8 +492,8 @@ class TestTikTokFormatIdPatch:
         assert "[acodec!=none]" not in fmt, (
             f"New 7-tier chain must not contain [acodec!=none], got: {fmt}"
         )
-        assert fmt == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
-        # Verify exactly 4 segments
+        assert fmt == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
+        # Verify exactly 7 tiers
         assert len(fmt.split("/")) == 7, f"Expected 7 tiers, got: {fmt}"
 
 # ---------------------------------------------------------------------------
@@ -507,7 +507,7 @@ class TestTikTokShortUrlAudioFix:
     must receive the same seven-tier BUG-BS format selector as canonical
     tiktok.com/@user/video/<id> URLs:
 
-        best[format_id^=h264]/download/bestvideo*+bestaudio*/best
+        best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best
 
     The _TIKTOK_SHORT_RE regex covers both vt.tiktok.com and vm.tiktok.com.
     All tests updated to assert the BUG-BS 7-tier selector (3-tier superseded).
@@ -551,7 +551,7 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best", (
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best", (
             f"Short URL 'vt.tiktok.com' must receive 7-tier chain, got: {opts['format']}"
         )
 
@@ -562,7 +562,7 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_vt_short_url_720p_gets_acodec_filter(self):
         """vt.tiktok.com with 720p selector → BUG-BS 7-tier chain."""
@@ -571,7 +571,7 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=720]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     # ── vm.tiktok.com ────────────────────────────────────────────────────
 
@@ -582,7 +582,7 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best", (
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best", (
             f"Short URL 'vm.tiktok.com' must receive 7-tier chain, got: {opts['format']}"
         )
 
@@ -593,7 +593,7 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     # ── Short URL edge cases ──────────────────────────────────────────────
 
@@ -614,7 +614,7 @@ class TestTikTokShortUrlAudioFix:
             "best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
 
     def test_vt_short_url_format_is_idempotent(self):
         """BUG-BS: 7-tier chain is idempotent for short URLs too.
@@ -628,7 +628,7 @@ class TestTikTokShortUrlAudioFix:
         assert "[acodec!=none]" not in fmt, (
             f"7-tier chain must not contain [acodec!=none], got: {fmt}"
         )
-        assert fmt == "best[format_id^=h264]/download/bestvideo*+bestaudio*/best"
+        assert fmt == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/best[format_id=audio]/download/bestvideo*+bestaudio*/bestvideo*/best"
         assert len(fmt.split("/")) == 7, f"Expected 7 tiers, got: {fmt}"
 
 
