@@ -144,7 +144,9 @@ def _find_browser_exe(browser: str) -> str:
     return exe
 
 
-def _cdp_intercept_hls(live_url: str, browser: str, timeout: float) -> Optional[str]:
+def _cdp_intercept_hls(
+    live_url: str, browser: str, timeout: float
+) -> tuple[Optional[str], dict]:
     """
     Launch browser, navigate to live_url, intercept HLS .m3u8 URL via CDP.
     Returns the HLS URL string, or None if not found within timeout.
