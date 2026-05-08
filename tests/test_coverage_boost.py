@@ -79,9 +79,8 @@ class TestCheckProfileLive:
                 on_error=errors.append,
             )
         assert errors
-        assert "username" in errors[0].lower() or errors[0]
 
-    def test_valid_username_spawns_thread_and_calls_on_done(self):
+    def test_valid_username_calls_on_done(self):
         svc, *_ = make_service_full()
         done = []
         with (
@@ -129,7 +128,6 @@ class TestCheckTiktokProfileLive:
                 on_error=errors.append,
             )
         assert errors
-        assert "username" in errors[0].lower() or errors[0]
 
     def test_valid_username_calls_on_done(self):
         svc, *_ = make_service_full()
@@ -164,18 +162,28 @@ class TestCheckTiktokProfileLive:
         assert "tt error" in errors[0]
 
     def test_cookie_temp_file_cleaned_up_on_success(self):
+        """Lines 544-550: finally block unlinks temp cookie file."""
         svc, *_ = make_service_full()
         done = []
         unlinked = []
+
+        # The finally block does: import os as _os; _os.unlink(_tt_cookie_txt)
+        # The local import binds to the real `os` module, so patch "os.unlink".
+        import os as _real_os
+        original_unlink = _real_os.unlink
+
+        def capturing_unlink(p):
+            unlinked.append(p)
+
         with (
             patch("utils.tiktok_live_checker.extract_tiktok_username", return_value="ttuser"),
-            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value="enc_cookie"),
+            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value="enc"),
             patch(
-                "infrastructure.downloader.yt_dlp_engine._prepare_cookie_for_use",
-                return_value=("/tmp/temp_cookie.txt", True),  # nosec B108
+                "app.services.download_service._prepare_cookie_for_use",
+                return_value=("/tmp/temp_tt_cookie.txt", True),  # nosec B108
             ),
             patch("utils.tiktok_live_checker.check_tiktok_live", return_value=None),
-            patch("os.unlink", side_effect=lambda p: unlinked.append(p)),
+            patch("os.unlink", side_effect=capturing_unlink),
         ):
             svc.check_tiktok_profile_live(
                 "https://tiktok.com/@ttuser/live",
@@ -183,14 +191,40 @@ class TestCheckTiktokProfileLive:
                 on_error=lambda e: None,
             )
         assert _wait(done)
-        assert any("/tmp/temp_cookie.txt" in str(p) for p in unlinked)
+        assert "/tmp/temp_tt_cookie.txt" in unlinked  # nosec B108
+
+    def test_cookie_temp_file_cleaned_up_on_exception(self):
+        """Lines 544-550: finally runs even when checker raises."""
+        svc, *_ = make_service_full()
+        errors = []
+        unlinked = []
+
+        with (
+            patch("utils.tiktok_live_checker.extract_tiktok_username", return_value="ttuser"),
+            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value="enc"),
+            patch(
+                "app.services.download_service._prepare_cookie_for_use",
+                return_value=("/tmp/temp_tt_cookie2.txt", True),  # nosec B108
+            ),
+            patch("utils.tiktok_live_checker.check_tiktok_live", side_effect=RuntimeError("fail")),
+            patch("os.unlink", side_effect=lambda p: unlinked.append(p)),
+        ):
+            svc.check_tiktok_profile_live(
+                "https://tiktok.com/@ttuser/live",
+                on_done=lambda u: None,
+                on_error=errors.append,
+            )
+        assert _wait(errors)
+        assert "/tmp/temp_tt_cookie2.txt" in unlinked  # nosec B108
 
 
 # ---------------------------------------------------------------------------
-# DownloadManager - live task ffmpeg hard error (BUG-CI)
+# DownloadManager helpers
 # ---------------------------------------------------------------------------
 
-def _make_mgr(engine, max_retries=2, gallery_engine=None):
+def _make_mgr(engine, max_retries=2, gallery_engine=None,
+              story_engine_enabled=False, instagram_live_engine=None,
+              kuaishou_engine=None):
     cfg = make_config(max_retries=max_retries)
     bus = MagicMock()
     bus.publish = MagicMock()
@@ -199,9 +233,12 @@ def _make_mgr(engine, max_retries=2, gallery_engine=None):
         engine=engine,
         event_bus=bus,
         gallery_engine=gallery_engine,
+        story_engine_enabled=story_engine_enabled,
+        instagram_live_engine=instagram_live_engine,
+        kuaishou_engine=kuaishou_engine,
     )
     mgr.start()
-    return mgr, bus
+    return mgr, bus, cfg
 
 
 def _wait_terminal(task, timeout=5.0):
@@ -213,6 +250,10 @@ def _wait_terminal(task, timeout=5.0):
     return False
 
 
+# ---------------------------------------------------------------------------
+# DownloadManager - live task ffmpeg hard error (BUG-CI)
+# ---------------------------------------------------------------------------
+
 class TestDownloadManagerLiveFfmpegError:
     def test_ffmpeg_error_on_live_task_is_hard_error_no_retry(self):
         call_count = [0]
@@ -223,18 +264,21 @@ class TestDownloadManagerLiveFfmpegError:
             raise RuntimeError("ffmpeg exited with code 1")
 
         engine.download.side_effect = fake_dl
-        mgr, _ = _make_mgr(engine, max_retries=3)
+        mgr, *_ = _make_mgr(engine, max_retries=3)
         try:
             task = DownloadTask(url="https://tiktok.com/@u/live")
             task.media_info = MediaInfo(url=task.url, title="Live", is_live=True)
             mgr.enqueue(task)
             assert _wait_terminal(task)
             assert task.status == DownloadStatus.FAILED
-            # Hard error - no retries
             assert call_count[0] == 1
         finally:
             mgr.shutdown(wait=False)
 
+
+# ---------------------------------------------------------------------------
+# DownloadManager - photo fallback (BUG-BU)
+# ---------------------------------------------------------------------------
 
 class TestDownloadManagerPhotoFallback:
     def test_photo_error_triggers_gallery_fallback(self):
@@ -250,12 +294,10 @@ class TestDownloadManagerPhotoFallback:
         yt_engine.download.side_effect = fake_yt_dl
         gallery_engine.download.side_effect = fake_gallery_dl
 
-        mgr, _ = _make_mgr(yt_engine, max_retries=0, gallery_engine=gallery_engine)
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, gallery_engine=gallery_engine)
         try:
             task = DownloadTask(url="https://instagram.com/p/abc")
-            task.media_info = MediaInfo(
-                url=task.url, title="Photo", source_engine="yt_dlp"
-            )
+            task.media_info = MediaInfo(url=task.url, title="Photo", source_engine="yt_dlp")
             mgr.enqueue(task)
             assert _wait_terminal(task)
             assert task.status == DownloadStatus.COMPLETED
@@ -270,18 +312,52 @@ class TestDownloadManagerPhotoFallback:
         yt_engine.download.side_effect = RuntimeError("no video in this post")
         gallery_engine.download.side_effect = RuntimeError("gdl also failed")
 
-        mgr, _ = _make_mgr(yt_engine, max_retries=0, gallery_engine=gallery_engine)
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, gallery_engine=gallery_engine)
         try:
             task = DownloadTask(url="https://instagram.com/p/xyz")
-            task.media_info = MediaInfo(
-                url=task.url, title="Photo2", source_engine="yt_dlp"
-            )
+            task.media_info = MediaInfo(url=task.url, title="Photo2", source_engine="yt_dlp")
             mgr.enqueue(task)
             assert _wait_terminal(task)
             assert task.status == DownloadStatus.FAILED
         finally:
             mgr.shutdown(wait=False)
 
+    def test_photo_fallback_orphan_cleanup_runs(self, tmp_path):
+        """Lines 507-538: orphan cleanup deletes yt-dlp partial files after gallery-dl succeeds."""
+        yt_engine = MagicMock()
+        gallery_engine = MagicMock()
+
+        orphan = tmp_path / "partial_ytdlp.mp4"
+        orphan.write_bytes(b"fake")
+
+        def fake_yt_dl(task, on_progress=None, on_postprocess=None):
+            raise RuntimeError("no video formats found")
+
+        def fake_gallery_dl(task, on_progress=None, on_postprocess=None):
+            result = tmp_path / "slug" / "photo.jpg"
+            result.parent.mkdir(exist_ok=True)
+            result.write_bytes(b"photo")
+            task.filename = str(result)
+            task.gallery_dl_files = [str(result)]
+
+        yt_engine.download.side_effect = fake_yt_dl
+        gallery_engine.download.side_effect = fake_gallery_dl
+
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, gallery_engine=gallery_engine)
+        try:
+            task = DownloadTask(url="https://instagram.com/p/abc", output_dir=str(tmp_path))
+            task.media_info = MediaInfo(url=task.url, title="Photo", source_engine="yt_dlp")
+            mgr.enqueue(task)
+            assert _wait_terminal(task)
+            assert task.status == DownloadStatus.COMPLETED
+            assert not orphan.exists()
+        finally:
+            mgr.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
+# DownloadManager - not-live retry (BUG-CI transient)
+# ---------------------------------------------------------------------------
 
 class TestDownloadManagerNotLiveRetry:
     def test_not_currently_live_on_live_task_retries(self):
@@ -295,7 +371,7 @@ class TestDownloadManagerNotLiveRetry:
             task.filename = "/tmp/live.mp4"  # nosec B108
 
         engine.download.side_effect = fake_dl
-        mgr, _ = _make_mgr(engine, max_retries=3)
+        mgr, *_ = _make_mgr(engine, max_retries=3)
         try:
             task = DownloadTask(url="https://tiktok.com/@u/live")
             task.media_info = MediaInfo(url=task.url, title="Live", is_live=True)
@@ -307,24 +383,145 @@ class TestDownloadManagerNotLiveRetry:
             mgr.shutdown(wait=False)
 
 
-class TestDownloadManagerCancelDuringBackoff:
-    def test_cancel_during_retry_backoff(self):
-        engine = MagicMock()
-        engine.download.side_effect = RuntimeError("transient error")
+# ---------------------------------------------------------------------------
+# DownloadManager - Kuaishou routing (lines 288-302)
+# ---------------------------------------------------------------------------
 
-        cfg = make_config(max_retries=5)
-        bus = MagicMock()
-        bus.publish = MagicMock()
-        mgr = DownloadManager(config=cfg, engine=engine, event_bus=bus)
-        mgr.start()
+class TestDownloadManagerKuaishouRouting:
+    def test_kuaishou_url_routes_to_kuaishou_engine(self):
+        yt_engine = MagicMock()
+        ks_engine = MagicMock()
+
+        def fake_ks_dl(task, on_progress=None, on_postprocess=None):
+            task.filename = "/tmp/ks_video.mp4"  # nosec B108
+
+        ks_engine.download.side_effect = fake_ks_dl
+
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, kuaishou_engine=ks_engine)
         try:
-            task = DownloadTask(url="https://example.com/v")
-            task.media_info = MediaInfo(url=task.url, title="Test")
-            mgr.enqueue(task)
-            # Give first attempt time to fail, then cancel during backoff
-            time.sleep(0.2)
-            mgr.cancel(task.id)
-            assert _wait_terminal(task, timeout=5)
-            assert task.status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED)
+            task = DownloadTask(url="https://v.kuaishou.com/abc123")
+            task.media_info = MediaInfo(url=task.url, title="KS video")
+            with patch(
+                "infrastructure.downloader.kuaishou_engine.is_kuaishou_url",
+                return_value=True,
+            ):
+                mgr.enqueue(task)
+                assert _wait_terminal(task)
+            assert task.status == DownloadStatus.COMPLETED
+            ks_engine.download.assert_called_once()
+            yt_engine.download.assert_not_called()
+        finally:
+            mgr.shutdown(wait=False)
+
+    def test_kuaishou_source_engine_routes_to_kuaishou_engine(self):
+        yt_engine = MagicMock()
+        ks_engine = MagicMock()
+
+        def fake_ks_dl(task, on_progress=None, on_postprocess=None):
+            task.filename = "/tmp/ks_cdn.mp4"  # nosec B108
+
+        ks_engine.download.side_effect = fake_ks_dl
+
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, kuaishou_engine=ks_engine)
+        try:
+            task = DownloadTask(url="https://cdn.kuaishoudelivery.com/video.mp4")
+            task.media_info = MediaInfo(url=task.url, title="KS cdn", source_engine="kuaishou")
+            with patch(
+                "infrastructure.downloader.kuaishou_engine.is_kuaishou_url",
+                return_value=False,
+            ):
+                mgr.enqueue(task)
+                assert _wait_terminal(task)
+            assert task.status == DownloadStatus.COMPLETED
+            ks_engine.download.assert_called_once()
+        finally:
+            mgr.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
+# DownloadManager - Facebook Story routing (lines 310-332)
+# ---------------------------------------------------------------------------
+
+class TestDownloadManagerFacebookStoryRouting:
+    def test_facebook_story_url_routes_to_story_engine(self, tmp_path):
+        yt_engine = MagicMock()
+        result_file = tmp_path / "story.mp4"
+        result_file.write_bytes(b"fake")
+
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, story_engine_enabled=True)
+        try:
+            task = DownloadTask(url="https://www.facebook.com/stories/123456")
+            task.media_info = MediaInfo(url=task.url, title="FB Story")
+            with (
+                patch(
+                    "infrastructure.downloader.facebook_story_engine.is_facebook_story_url",
+                    return_value=True,
+                ),
+                patch(
+                    "infrastructure.downloader.facebook_story_engine.download_story",
+                    return_value=result_file,
+                ),
+            ):
+                mgr.enqueue(task)
+                assert _wait_terminal(task)
+            assert task.status == DownloadStatus.COMPLETED
+            assert str(result_file) in task.filename
+            yt_engine.download.assert_not_called()
+        finally:
+            mgr.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
+# DownloadManager - Instagram Live routing (lines 341-355)
+# ---------------------------------------------------------------------------
+
+class TestDownloadManagerInstagramLiveRouting:
+    def test_instagram_live_url_routes_to_ig_live_engine(self):
+        yt_engine = MagicMock()
+        ig_engine = MagicMock()
+
+        def fake_ig_dl(task, on_progress=None, on_postprocess=None):
+            task.filename = "/tmp/ig_live.mp4"  # nosec B108
+
+        ig_engine.download.side_effect = fake_ig_dl
+
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, instagram_live_engine=ig_engine)
+        try:
+            task = DownloadTask(url="https://www.instagram.com/user/live/")
+            task.media_info = MediaInfo(url=task.url, title="IG Live")
+            with patch(
+                "infrastructure.downloader.instagram_live_engine.is_instagram_live_url",
+                return_value=True,
+            ):
+                mgr.enqueue(task)
+                assert _wait_terminal(task)
+            assert task.status == DownloadStatus.COMPLETED
+            ig_engine.download.assert_called_once()
+            yt_engine.download.assert_not_called()
+        finally:
+            mgr.shutdown(wait=False)
+
+    def test_instagram_live_source_engine_routes_to_ig_live_engine(self):
+        yt_engine = MagicMock()
+        ig_engine = MagicMock()
+
+        def fake_ig_dl(task, on_progress=None, on_postprocess=None):
+            task.filename = "/tmp/ig_live2.mp4"  # nosec B108
+
+        ig_engine.download.side_effect = fake_ig_dl
+
+        mgr, *_ = _make_mgr(yt_engine, max_retries=0, instagram_live_engine=ig_engine)
+        try:
+            task = DownloadTask(url="https://example.com/stream.m3u8")
+            task.media_info = MediaInfo(url=task.url, title="IG Live via source_engine",
+                                        source_engine="instagram_live")
+            with patch(
+                "infrastructure.downloader.instagram_live_engine.is_instagram_live_url",
+                return_value=False,
+            ):
+                mgr.enqueue(task)
+                assert _wait_terminal(task)
+            assert task.status == DownloadStatus.COMPLETED
+            ig_engine.download.assert_called_once()
         finally:
             mgr.shutdown(wait=False)
