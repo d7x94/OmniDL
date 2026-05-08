@@ -66,11 +66,13 @@ class TestPlatformCookiesNonDict:
 class TestSetCookieForPlatform:
     def test_set_adds_entry(self, tmp_path):
         cfg = _cfg(tmp_path)
-        cfg.set_cookie_for_platform("tiktok", "/tmp/tt.txt")
-        assert cfg.get_cookie_for_platform("tiktok") == "/tmp/tt.txt"
+        cookie_path = str(tmp_path / "tt.txt")
+        cfg.set_cookie_for_platform("tiktok", cookie_path)
+        assert cfg.get_cookie_for_platform("tiktok") == cookie_path
 
     def test_set_empty_removes_entry(self, tmp_path):
-        cfg = _cfg(tmp_path, {"platform_cookies": {"tiktok": "/tmp/tt.txt"}})
+        cookie_path = str(tmp_path / "tt.txt")
+        cfg = _cfg(tmp_path, {"platform_cookies": {"tiktok": cookie_path}})
         cfg.set_cookie_for_platform("tiktok", "")
         assert cfg.get_cookie_for_platform("tiktok") == ""
 
