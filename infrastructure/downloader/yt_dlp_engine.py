@@ -330,6 +330,37 @@ def _detect_platform(url: str) -> str:
     return "Web"
 
 
+def _build_ffmpeg_cookie_header(cookie_file: str) -> str:
+    """Parse a Netscape cookie file and return a 'name=val; ...' string for tiktok.com.
+
+    BUG-TT-20C: TikTok stage CDN nodes require session cookies in HTTP headers
+    even when the HLS URL is signed. Used to build the -headers Cookie: argument
+    for direct FFmpeg calls.
+    Returns empty string on any error so callers can skip -headers gracefully.
+    """
+    if not cookie_file:
+        return ""
+    try:
+        from pathlib import Path as _P  # noqa: PLC0415
+        pairs: list[str] = []
+        for line in _P(cookie_file).read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            domain = parts[0].lstrip(".")
+            if "tiktok" not in domain:
+                continue
+            name, value = parts[5], parts[6]
+            if name and value:
+                pairs.append(f"{name}={value}")
+        return "; ".join(pairs)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _friendly_error(msg: str) -> str:
     msg_l = msg.lower()
     if "private" in msg_l:
@@ -1845,9 +1876,30 @@ class YtDlpEngine:
                                     _seg_exc,
                                 )
                                 if _tt16_attempt == 0:
-                                    # First attempt failed immediately — fall back to yt-dlp
+                                    # BUG-TT-18 FIX: attempt 0 failed with 0B.
+                                    # Try re-extracting a fresh HLS URL before
+                                    # falling back to yt-dlp.
+                                    # BUG-TT-20A FIX: compare base URLs (strip
+                                    # query params) — expire/sign always differ
+                                    # even on the same CDN path, so the old
+                                    # full-URL != check always fired and wasted
+                                    # an attempt on an identical 404 path.
+                                    _fresh0 = self._extract_tiktok_live_hls_url(
+                                        task.url
+                                    )
+                                    _base_cur = _tt16_current_hls.split("?")[0]
+                                    _base_new = _fresh0[0].split("?")[0] if _fresh0 else ""
+                                    if _fresh0 and _base_new != _base_cur:
+                                        _tt16_current_hls, _ = _fresh0
+                                        _tt16_attempt += 1
+                                        time.sleep(2)
+                                        continue
+                                    raise  # same CDN path or extraction failed
+                                # BUG-TT-20B FIX: subsequent 0B failure with no
+                                # captured data means the CDN is unreachable —
+                                # fall back to yt-dlp instead of fake-completing.
+                                if _main_size == 0:
                                     raise
-                                # Subsequent attempts: stream may have ended mid-token
                                 _direct_ffmpeg_ok = True
                                 break
                         except Exception as _seg_exc:
@@ -2220,15 +2272,19 @@ class YtDlpEngine:
             return None
         formats = info.get("formats") or []
         video_id = info.get("id") or ""
-        # Prefer m3u8_native, then m3u8, then any https URL
-        hls_url = ""
-        for proto in ("m3u8_native", "m3u8"):
-            for fmt in formats:
-                if fmt.get("protocol") == proto and fmt.get("url", "").startswith("http"):
-                    hls_url = fmt["url"]
-                    break
-            if hls_url:
-                break
+        # BUG-TT-18 FIX: sort m3u8 formats by quality (height/tbr DESC) before
+        # selecting. yt-dlp returns formats lowest-first; the first m3u8_native
+        # is typically _ld (low definition) whose CDN node may return 404 while
+        # the _hd stream works. Prefer highest quality to avoid this.
+        _m3u8_fmts = [
+            f for f in formats
+            if f.get("protocol") in ("m3u8_native", "m3u8")
+            and f.get("url", "").startswith("http")
+        ]
+        _m3u8_fmts.sort(
+            key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True
+        )
+        hls_url = _m3u8_fmts[0]["url"] if _m3u8_fmts else ""
         if not hls_url:
             # Fallback: any format with an http(s) url that looks like HLS
             for fmt in formats:
@@ -2271,14 +2327,15 @@ class YtDlpEngine:
             ffmpeg_bin = "ffmpeg"
 
         _cookie_temp_direct: str | None = None
+        _ffmpeg_cookie_hdr = ""
         if cookie_path:
             _usable, _is_temp = _prepare_cookie_for_use(cookie_path)
             if _is_temp:
                 _cookie_temp_direct = _usable
-            # FFmpeg accepts Netscape cookie files via -cookies is not standard;
-            # pass via http_persistent=0 and user-agent only — cookie injection
-            # is handled by the already-signed HLS URL from yt-dlp extraction.
-            # The signed URL contains all auth tokens; no cookie header needed.
+            # BUG-TT-20C FIX: TikTok's stage CDN requires session cookies in
+            # HTTP request headers even when the URL is signed (expire+sign).
+            # Parse the decrypted cookie file and pass via -headers to FFmpeg.
+            _ffmpeg_cookie_hdr = _build_ffmpeg_cookie_header(_usable)
 
         cmd = [
             ffmpeg_bin,
@@ -2293,11 +2350,13 @@ class YtDlpEngine:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            "-i", hls_url,
-            "-c", "copy",
-            "-y",
-            out_path,
         ]
+        if _ffmpeg_cookie_hdr:
+            cmd += [
+                "-headers",
+                f"Cookie: {_ffmpeg_cookie_hdr}\r\nReferer: https://www.tiktok.com/\r\n",
+            ]
+        cmd += ["-i", hls_url, "-c", "copy", "-y", out_path]
 
         try:
             proc = subprocess.Popen(

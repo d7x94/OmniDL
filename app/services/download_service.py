@@ -261,18 +261,32 @@ class DownloadService:
                                 on_done(info)
                                 return
                             else:
-                                # BUG-TT-08 FIX: checker confirmed not live (or
-                                # could not obtain roomId after impersonated fetch).
-                                # Do NOT retry with canonical URL -- yt-dlp already
-                                # failed with it and would fail again identically.
-                                # Propagate the original yt-dlp error so the user
-                                # sees a real failure instead of 4 wasted retries.
+                                # BUG-TT-19 FIX: checker returned None -- could be
+                                # bot-detection blocking the page scrape, not a
+                                # confirmed "not live" signal. Wait 5s and retry
+                                # extract_info once (same pattern as BUG-TT-12 at
+                                # download time). TikTok API races usually clear <5s.
                                 logger.info(
                                     "TikTok live checker: @%s -- roomId not found"
-                                    " after full 2-pass scrape; stream may have ended"
-                                    " or TikTok blocked the check.",
+                                    " (bot-detection or API race);"
+                                    " waiting 5s, retrying extract_info",
                                     _username,
                                 )
+                                import time as _time_tt19  # noqa: PLC0415
+                                _time_tt19.sleep(5)
+                                try:
+                                    _retry_info = self._engine.extract_info(url)
+                                    self._bus.publish(
+                                        EventBus.ANALYSIS_DONE, info=_retry_info
+                                    )
+                                    on_done(_retry_info)
+                                    return
+                                except Exception as _retry_exc:
+                                    logger.debug(
+                                        "BUG-TT-19: retry extract_info also"
+                                        " failed: %s",
+                                        _retry_exc,
+                                    )
                                 # fall through to on_error() below
                     except Exception as _tt_exc:
                         logger.debug(

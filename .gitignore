@@ -161,6 +161,9 @@ graphify-out/
 
 # Code-review-graph
 .code-review-graphignore
+.code-review-graph/.
+.claude/
+.mcp.json
 
 OmniDL_Skill/
 Claude.md
