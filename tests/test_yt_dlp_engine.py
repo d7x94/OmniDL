@@ -474,14 +474,12 @@ class TestTikTokFormatIdPatch:
         assert opts["format"] == "bestvideo+bestaudio/best"
 
     def test_tiktok_live_not_modified(self):
-        """TikTok live uses 'best[protocol^=m3u8]/best' to force HLS over FLV.
-        FLV causes FFmpegFD (named pipe) which crashes on Windows Unicode paths.
-        hls_prefer_native=True only applies after HLS is selected, not before."""
+        """TikTok live uses HLS-safe format chain (BUG-TT-14) — VOD patch must not apply."""
         url = "https://www.tiktok.com/@testuser/live"
         task = DownloadTask(url=url, format_id="best", output_ext="mp4")
         task.media_info = MediaInfo(url=url, title="TikTok Live", is_live=True)
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[protocol^=m3u8]/best"
+        assert opts["format"] == "best[protocol=m3u8_native]/best[protocol^=m3u8]/best[protocol^=https]/best"
 
     def test_format_is_idempotent(self):
         """BUG-BS: Running the patch logic twice must not produce extra tiers.

@@ -1310,8 +1310,10 @@ class TestLivestreamDetection:
             except Exception:
                 pass
 
-        assert captured_opts.get("format") == "best", (
-            "Livestream must use format='best', not a split video+audio format"
+        assert captured_opts.get("format") == (
+            "best[protocol=m3u8_native]/best[protocol^=m3u8]/best[protocol^=https]/best"
+        ), (
+            "TikTok livestream must use HLS-safe format chain (BUG-TT-14), not a split video+audio format"
         )
 
     def test_live_task_no_merge_output_format(self, tmp_path):
