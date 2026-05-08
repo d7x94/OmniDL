@@ -1352,7 +1352,9 @@ class YtDlpEngine:
             **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
             # Also enable for TikTok live to log which protocol/format is selected.
-            "logger": _DiagLogger() if (_is_tiktok_vod and not is_live) or (is_live and _TIKTOK_LIVE_RE.search(task.url)) else None,
+            "logger": _DiagLogger()
+            if (_is_tiktok_vod and not is_live) or (is_live and _TIKTOK_LIVE_RE.search(task.url))
+            else None,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
             # BUG-TT-03 FIX: fragment_retries=0 caused entire live recordings to
@@ -1732,41 +1734,141 @@ class YtDlpEngine:
                     "(bypassing yt-dlp FFmpegFD) for task %s",
                     task.id,
                 )
+                # BUG-TT-17 FIX: TikTok HLS URLs are signed (~18-25s TTL).
+                # When FFmpeg dies from a 403/404 after token rotation,
+                # -reconnect retries the *same expired URL* — always fails.
+                # Fix: re-extract a fresh HLS URL after each FFmpeg death,
+                # write each segment to a temp file, then binary-append to the
+                # main output (MPEG-TS binary concat is spec-valid).
+                _MAX_HLS_RETRIES = 20  # ~20 token rotations = long stream
+                _tt16_attempt = 0
+                _tt16_current_hls = _hls_url
                 try:
-                    self._download_tiktok_live_direct(
-                        _hls_url,
-                        _direct_out_path,
-                        task,
-                        _tt16_cookie,
-                        on_progress,
-                    )
-                    _direct_ffmpeg_ok = True
+                    while _tt16_attempt <= _MAX_HLS_RETRIES:
+                        _seg_path = _direct_out_path if _tt16_attempt == 0 else (
+                            _direct_out_path + f".seg{_tt16_attempt}"
+                        )
+                        try:
+                            self._download_tiktok_live_direct(
+                                _tt16_current_hls,
+                                _seg_path,
+                                task,
+                                _tt16_cookie,
+                                on_progress,
+                            )
+                            # FFmpeg exited cleanly — stream ended
+                            if _tt16_attempt > 0:
+                                # Append segment to main file then delete
+                                try:
+                                    with open(_direct_out_path, "ab") as _fout, \
+                                         open(_seg_path, "rb") as _fin:
+                                        _fout.write(_fin.read())
+                                    Path(_seg_path).unlink(missing_ok=True)
+                                    logger.info(
+                                        "BUG-TT-17: appended segment %d to %s",
+                                        _tt16_attempt, _direct_out_path,
+                                    )
+                                except OSError as _ap_exc:
+                                    logger.warning(
+                                        "BUG-TT-17: append seg %d failed: %s",
+                                        _tt16_attempt, _ap_exc,
+                                    )
+                            _direct_ffmpeg_ok = True
+                            break
+                        except yt_dlp.utils.DownloadError:
+                            raise
+                        except RuntimeError as _seg_exc:
+                            _seg_size = 0
+                            try:
+                                _seg_size = Path(_seg_path).stat().st_size
+                            except OSError:
+                                pass
+
+                            # Append whatever was captured before FFmpeg died
+                            if _tt16_attempt > 0 and _seg_size > 0:
+                                try:
+                                    with open(_direct_out_path, "ab") as _fout, \
+                                         open(_seg_path, "rb") as _fin:
+                                        _fout.write(_fin.read())
+                                    Path(_seg_path).unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+
+                            _main_size = 0
+                            try:
+                                _main_size = Path(_direct_out_path).stat().st_size
+                            except OSError:
+                                pass
+
+                            if _main_size > 500_000:
+                                # File has real content — stream likely ended or
+                                # token expired but enough data was captured
+                                if _tt16_attempt >= _MAX_HLS_RETRIES:
+                                    logger.info(
+                                        "BUG-TT-17: max retries reached, "
+                                        "treating %s as completed",
+                                        _fmt_bytes(_main_size),
+                                    )
+                                    _direct_ffmpeg_ok = True
+                                    break
+
+                                # Try re-extracting a fresh HLS URL
+                                logger.info(
+                                    "BUG-TT-17: FFmpeg died after %s recorded "
+                                    "(attempt %d/%d) — re-extracting HLS URL",
+                                    _fmt_bytes(_main_size),
+                                    _tt16_attempt + 1,
+                                    _MAX_HLS_RETRIES,
+                                )
+                                _fresh = self._extract_tiktok_live_hls_url(task.url)
+                                if _fresh:
+                                    _tt16_current_hls, _ = _fresh
+                                    _tt16_attempt += 1
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    # Can't re-extract — stream likely ended
+                                    logger.info(
+                                        "BUG-TT-17: HLS re-extract failed — "
+                                        "stream ended, %s saved",
+                                        _fmt_bytes(_main_size),
+                                    )
+                                    _direct_ffmpeg_ok = True
+                                    break
+                            else:
+                                # Very small file on first attempt — real failure
+                                logger.warning(
+                                    "BUG-TT-17: FFmpeg failed with small output "
+                                    "(%s) on attempt %d: %s",
+                                    _fmt_bytes(_main_size),
+                                    _tt16_attempt,
+                                    _seg_exc,
+                                )
+                                if _tt16_attempt == 0:
+                                    # First attempt failed immediately — fall back to yt-dlp
+                                    raise
+                                # Subsequent attempts: stream may have ended mid-token
+                                _direct_ffmpeg_ok = True
+                                break
+                        except Exception as _seg_exc:
+                            logger.warning(
+                                "BUG-TT-17: unexpected error on attempt %d: %s",
+                                _tt16_attempt, _seg_exc,
+                            )
+                            if _tt16_attempt == 0:
+                                raise
+                            _direct_ffmpeg_ok = True
+                            break
                 except yt_dlp.utils.DownloadError:
                     raise
                 except RuntimeError as _tt16_exc:
-                    # Check if stream ended normally (small file = stream just ended)
-                    _out_size = 0
-                    try:
-                        _out_size = Path(_direct_out_path).stat().st_size
-                    except OSError:
-                        pass
-                    if _out_size > 500_000:
-                        # File has real content — treat as success (stream ended)
-                        logger.info(
-                            "BUG-TT-16: FFmpeg exited with error but file has "
-                            "%s — treating as completed stream",
-                            _fmt_bytes(_out_size),
-                        )
-                        _direct_ffmpeg_ok = True
-                    else:
-                        logger.warning(
-                            "BUG-TT-16: direct FFmpeg failed (%s), falling back "
-                            "to yt-dlp",
-                            _tt16_exc,
-                        )
+                    logger.warning(
+                        "BUG-TT-17: direct FFmpeg failed (%s), falling back to yt-dlp",
+                        _tt16_exc,
+                    )
                 except Exception as _tt16_exc:
                     logger.warning(
-                        "BUG-TT-16: direct FFmpeg unexpected error (%s), "
+                        "BUG-TT-17: direct FFmpeg unexpected error (%s), "
                         "falling back to yt-dlp",
                         _tt16_exc,
                     )
@@ -2081,7 +2183,6 @@ class YtDlpEngine:
         Returns None if extraction fails or no suitable HLS format found.
         The returned hls_url is the best m3u8 URL from the format list.
         """
-        import sys as _sys_hls
         _cookie_path = _resolve_cookie(task_url, self._config)
         opts_ei: dict[str, Any] = {
             "quiet": True,
@@ -2158,7 +2259,6 @@ class YtDlpEngine:
         """
         import subprocess
         import sys as _sys_dl
-        import os
 
         _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -2170,16 +2270,11 @@ class YtDlpEngine:
         else:
             ffmpeg_bin = "ffmpeg"
 
-        # Cookie args: pass as -cookies header if available (plain Netscape txt)
-        cookie_args: list[str] = []
         _cookie_temp_direct: str | None = None
         if cookie_path:
             _usable, _is_temp = _prepare_cookie_for_use(cookie_path)
             if _is_temp:
                 _cookie_temp_direct = _usable
-                cookie_path_use = _usable
-            else:
-                cookie_path_use = cookie_path
             # FFmpeg accepts Netscape cookie files via -cookies is not standard;
             # pass via http_persistent=0 and user-agent only — cookie injection
             # is handled by the already-signed HLS URL from yt-dlp extraction.
@@ -2211,10 +2306,10 @@ class YtDlpEngine:
                 stderr=subprocess.PIPE,
                 creationflags=_CREATE_NO_WINDOW,
             )
-        except FileNotFoundError:
+        except FileNotFoundError as err:
             raise RuntimeError(
                 "FFmpeg không tìm thấy. Kiểm tra cài đặt FFmpeg."
-            )
+            ) from err
         finally:
             if _cookie_temp_direct:
                 try:
