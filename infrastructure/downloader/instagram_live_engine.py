@@ -40,6 +40,7 @@ from typing import Callable, Optional
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager
+from utils.helpers import sanitise_filename as _sanitise_filename
 
 logger = logging.getLogger(__name__)
 
@@ -691,10 +692,10 @@ class InstagramLiveEngine:
         bid_match    = _BROADCAST_ID_FROM_URL_RE.search(url)
         broadcast_id = bid_match.group(1)[:12] if bid_match else "live"
         rec_ts       = time.strftime("%Y-%m-%d %H-%M")
-        raw_name     = f"{username} - [LIVE] {rec_ts} [{broadcast_id}].ts"
-        for ch in r'<>:"/\|?*':
-            raw_name = raw_name.replace(ch, "_")
-        output_path = output_dir / raw_name
+        raw_name     = _sanitise_filename(
+            f"{username} - [LIVE] {rec_ts} [{broadcast_id}]", max_len=180
+        ) + ".ts"
+        output_path  = output_dir / raw_name
 
         with task._lock:
             task.filename = str(output_path)

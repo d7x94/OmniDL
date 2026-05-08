@@ -1316,15 +1316,29 @@ class YtDlpEngine:
                 )
 
         opts: dict[str, Any] = {
-            # BUG-CF FIX: BUG-TT-11 introduced "best[protocol^=m3u8]/best" for
-            # TikTok live to prefer HLS over DASH. However this broke tests and
-            # real-world TikTok live recording when no m3u8 stream is present
-            # (causes yt-dlp to fall back to non-HLS "best" anyway, but the
-            # extra protocol filter confuses FFmpegFD on some TikTok CDN configs).
-            # Plain "best" is sufficient — yt-dlp's hls_prefer_native=True (set
-            # below) already prefers HLS without an explicit protocol filter, and
-            # all non-TikTok live platforms work correctly with plain "best".
-            "format": "best" if is_live else _format_id,
+            # BUG-CF-2 FIX: BUG-CF reverted "best[protocol^=m3u8]/best" arguing
+            # hls_prefer_native=True is sufficient. This is incorrect: hls_prefer_native
+            # only switches the downloader when HLS is already selected; it does NOT
+            # influence format selection. When "best" selects a FLV stream (TikTok live
+            # exposes both HLS and FLV), yt-dlp uses FFmpegFD regardless of
+            # hls_prefer_native=True, and FFmpegFD uses a Windows named pipe derived
+            # from outtmpl -- crashing with 3419392776 (STATUS_PIPE_NOT_AVAILABLE).
+            # hls_prefer_native=True only matters AFTER an HLS stream is selected.
+            # Fix: re-apply the m3u8 preference for TikTok live URLs; fall back to
+            # plain "best" for other live platforms (Instagram, Twitch) which have
+            # no FLV/HLS ambiguity issue. Non-TikTok live and VODs are unaffected.
+            #
+            # BUG-TT-14 FIX: best[protocol^=m3u8] matches both "m3u8" (FFmpegFD) and
+            # "m3u8_native" (HlsFD). When TikTok exposes an m3u8_native stream,
+            # yt-dlp may prefer m3u8 (FFmpegFD) which uses a Windows named pipe.
+            # hls_prefer_native=True switches HlsFD for m3u8 but NOT for m3u8_native
+            # (HlsFD is already used). Force m3u8_native first, then m3u8, then
+            # any https stream, then best -- never FLV/RTMP which always use FFmpegFD.
+            "format": (
+                "best[protocol=m3u8_native]/best[protocol^=m3u8]/best[protocol^=https]/best"
+                if (is_live and (_TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)))
+                else ("best" if is_live else _format_id)
+            ),
             # FIX-FINAL: JS challenge solver for YouTube n-challenge.
             # BUG-BQ FIX: must be a list — str causes yt-dlp to iterate over
             # individual characters and silently discard the solver.
@@ -1337,7 +1351,8 @@ class YtDlpEngine:
             # Required for sites that reject Python's default TLS fingerprint (e.g. Kuaishou).
             **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
-            "logger": _DiagLogger() if (_is_tiktok_vod and not is_live) else None,
+            # Also enable for TikTok live to log which protocol/format is selected.
+            "logger": _DiagLogger() if (_is_tiktok_vod and not is_live) or (is_live and _TIKTOK_LIVE_RE.search(task.url)) else None,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
             # BUG-TT-03 FIX: fragment_retries=0 caused entire live recordings to
@@ -1562,6 +1577,14 @@ class YtDlpEngine:
         # at that point info_dict["filepath"] holds the exact final path.
 
         _final_filepath: list[str] = []   # mutable closure cell
+        # BUG-TT-EFF: track whether yt-dlp selected a video-less stream for a
+        # non-audio-output TikTok VOD.  TikTok "template effect" videos (AR/duet
+        # effects) only expose a single format_id="audio" stream with vcodec=none
+        # — there is no video track available via the API.  The format selector
+        # falls through all tiers and lands on this stream, producing an mp4
+        # container with audio only.  We detect this in the pp_hook and raise a
+        # clear error after download rather than silently delivering a broken file.
+        _selected_vcodec: list[str] = []  # populated by pp_hook on first "finished"
 
         _original_pp_hook = opts.get("postprocessor_hooks", [None])[0]
 
@@ -1570,6 +1593,11 @@ class YtDlpEngine:
             # "finished" event is always the final merged output.
             if d.get("status") == "finished":
                 _info = d.get("info_dict") or {}
+                # BUG-TT-EFF: record vcodec from the first finished event (before
+                # any remux may change the info_dict).
+                if not _selected_vcodec:
+                    _vc = _info.get("vcodec") or ""
+                    _selected_vcodec.append(_vc)
                 fp = (
                     _info.get("filepath")
                     or _info.get("__real_download_filename")
@@ -1669,80 +1697,279 @@ class YtDlpEngine:
                     "(extract_info may not have returned format list)"
                 )
 
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([task.url])
-        except yt_dlp.utils.DownloadError as exc:
-            # Check the task's own cancellation flag rather than parsing the
-            # error string — reliable across yt-dlp versions and locales.
-            if task.is_cancellation_requested:
-                # Remove any partial .part files left by yt-dlp so the download
-                # directory does not accumulate stale fragment files.
-                try:
-                    for f in output_dir.glob("*.part"):
-                        if task.filename and f.stem in task.filename:
-                            f.unlink(missing_ok=True)
-                            logger.debug("Cleaned up partial file: %s", f)
-                except OSError as cleanup_exc:
-                    logger.warning("Part-file cleanup failed: %s", cleanup_exc)
-                raise  # let _run_task handle the CANCELLED transition
-
-            # BUG-TT-02 FIX: TikTok HLS tokens expire after ~1-2 minutes.
-            # When ffmpeg exits with an error on a live stream, re-extract a
-            # fresh HLS URL and retry the download exactly once. This handles
-            # the case where the user paused/reconnected and the original URL
-            # is now stale. Only applies to TikTok live streams (the platform
-            # with the shortest-lived HLS tokens); other platforms already
-            # handle reconnection internally via yt-dlp's own retry logic.
-            _exc_str = str(exc)
-            # BUG-TT-02 FIX2: also match short links (vt/vm.tiktok.com) --
-            # task.url holds the original user-pasted URL which may be a short
-            # link even when the stream is a TikTok live.
-            _is_hls_expired = (
-                is_live
-                and (
-                    _TIKTOK_LIVE_RE.search(task.url)
-                    or _TIKTOK_SHORT_RE.search(task.url)
-                )
-                and "ffmpeg exited with code" in _exc_str.lower()
-                and not task.is_cancellation_requested
+        # BUG-TT-16 FIX: for TikTok live, bypass yt-dlp download and call
+        # FFmpeg directly with -reconnect flags. yt-dlp hard-codes FFmpegFD
+        # for all is_live=True streams (ignores hls_prefer_native). FFmpegFD
+        # has no reconnect logic, so it crashes when TikTok CDN rotates HLS
+        # tokens every ~18-25s. Direct FFmpeg with -reconnect_on_http_error
+        # handles this transparently.
+        _is_tiktok_live_for_direct = (
+            is_live
+            and (
+                _TIKTOK_LIVE_RE.search(task.url)
+                or _TIKTOK_SHORT_RE.search(task.url)
             )
-            if _is_hls_expired:
+        )
+        _direct_ffmpeg_ok = False
+        if _is_tiktok_live_for_direct:
+            import sys as _sys_tt16
+            _hls_result = self._extract_tiktok_live_hls_url(task.url)
+            if _hls_result:
+                _hls_url, _hls_vid_id = _hls_result
+                # Build output path using same ASCII-safe pattern as outtmpl
+                if _sys_tt16.platform == "win32":
+                    _direct_out_dir = Path(tempfile.gettempdir()) / "omnidl_live"
+                    _direct_out_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    _direct_out_dir = output_dir
+                _direct_out_path = str(
+                    _direct_out_dir / f"live_{rec_ts}_{_hls_vid_id[:20]}.ts"
+                )
+                task.filename = _direct_out_path
+                _tt16_cookie = _resolve_cookie(task.url, self._config) or ""
                 logger.info(
-                    "BUG-TT-02: TikTok live HLS expired for task %s — re-extracting",
+                    "BUG-TT-16: TikTok live using direct FFmpeg with reconnect "
+                    "(bypassing yt-dlp FFmpegFD) for task %s",
                     task.id,
                 )
                 try:
-                    _fresh_info = self.extract_info(task.url)
-                    if _fresh_info and _fresh_info.is_live:
-                        task.media_info = _fresh_info
+                    self._download_tiktok_live_direct(
+                        _hls_url,
+                        _direct_out_path,
+                        task,
+                        _tt16_cookie,
+                        on_progress,
+                    )
+                    _direct_ffmpeg_ok = True
+                except yt_dlp.utils.DownloadError:
+                    raise
+                except RuntimeError as _tt16_exc:
+                    # Check if stream ended normally (small file = stream just ended)
+                    _out_size = 0
+                    try:
+                        _out_size = Path(_direct_out_path).stat().st_size
+                    except OSError:
+                        pass
+                    if _out_size > 500_000:
+                        # File has real content — treat as success (stream ended)
                         logger.info(
-                            "BUG-TT-02: fresh HLS URL obtained, retrying download"
+                            "BUG-TT-16: FFmpeg exited with error but file has "
+                            "%s — treating as completed stream",
+                            _fmt_bytes(_out_size),
                         )
+                        _direct_ffmpeg_ok = True
+                    else:
+                        logger.warning(
+                            "BUG-TT-16: direct FFmpeg failed (%s), falling back "
+                            "to yt-dlp",
+                            _tt16_exc,
+                        )
+                except Exception as _tt16_exc:
+                    logger.warning(
+                        "BUG-TT-16: direct FFmpeg unexpected error (%s), "
+                        "falling back to yt-dlp",
+                        _tt16_exc,
+                    )
+            else:
+                logger.debug(
+                    "BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp"
+                )
+
+        if not _direct_ffmpeg_ok:
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    ydl.download([task.url])
+            except yt_dlp.utils.DownloadError as exc:
+                # Check the task's own cancellation flag rather than parsing the
+                # error string — reliable across yt-dlp versions and locales.
+                if task.is_cancellation_requested:
+                    # Remove any partial .part files left by yt-dlp so the download
+                    # directory does not accumulate stale fragment files.
+                    try:
+                        for f in output_dir.glob("*.part"):
+                            if task.filename and f.stem in task.filename:
+                                f.unlink(missing_ok=True)
+                                logger.debug("Cleaned up partial file: %s", f)
+                    except OSError as cleanup_exc:
+                        logger.warning("Part-file cleanup failed: %s", cleanup_exc)
+                    raise  # let _run_task handle the CANCELLED transition
+
+                # BUG-TT-02 FIX: TikTok HLS tokens expire after ~1-2 minutes.
+                # When ffmpeg exits with an error on a live stream, re-extract a
+                # fresh HLS URL and retry the download exactly once. This handles
+                # the case where the user paused/reconnected and the original URL
+                # is now stale. Only applies to TikTok live streams (the platform
+                # with the shortest-lived HLS tokens); other platforms already
+                # handle reconnection internally via yt-dlp's own retry logic.
+                _exc_str = str(exc)
+                _exc_l = _exc_str.lower()
+                # BUG-TT-02 FIX2: also match short links (vt/vm.tiktok.com) --
+                # task.url holds the original user-pasted URL which may be a short
+                # link even when the stream is a TikTok live.
+                _is_tiktok_live_url = (
+                    _TIKTOK_LIVE_RE.search(task.url)
+                    or _TIKTOK_SHORT_RE.search(task.url)
+                )
+                # BUG-TT-12 FIX: TikTok webcast/room/info API sometimes returns
+                # status=4 (not live) even when the stream is active. This is a
+                # TikTok API race / CDN cache issue that affects the yt-dlp
+                # TikTokLiveIE._call_api path. When "not currently live" or
+                # "livestream has ended" occurs at download time (not analyse time,
+                # which is already handled by BUG-TT-06 in download_service.py),
+                # wait 5s and retry once — the CDN cache usually refreshes within
+                # a few seconds.
+                # Trigger conditions: TikTok live URL + live task + "not live" error.
+                _is_tiktok_api_race = (
+                    is_live
+                    and _is_tiktok_live_url
+                    and (
+                        "not currently live" in _exc_l
+                        or "channel is not currently live" in _exc_l
+                        or "this livestream has ended" in _exc_l
+                        or "usernotlive" in _exc_l
+                    )
+                    and not task.is_cancellation_requested
+                )
+                _is_hls_expired = (
+                    is_live
+                    and _is_tiktok_live_url
+                    and "ffmpeg exited with code" in _exc_l
+                    and not task.is_cancellation_requested
+                )
+                if _is_tiktok_api_race:
+                    logger.info(
+                        "BUG-TT-12: TikTok live API returned 'not live' for task %s"
+                        " — waiting 5s and retrying once (CDN cache race)",
+                        task.id,
+                    )
+                    time.sleep(5)
+                    try:
                         with yt_dlp.YoutubeDL(opts) as ydl:
                             ydl.download([task.url])
-                        # If retry succeeded fall through to filename resolution
-                    else:
-                        raise RuntimeError(
-                            "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\n"
-                            "Thêm lại link để theo dõi lần phát tiếp theo."
-                        ) from exc
-                except yt_dlp.utils.DownloadError as retry_exc:
-                    if task.is_cancellation_requested:
+                        # retry succeeded — fall through to filename resolution
+                    except yt_dlp.utils.DownloadError as retry_exc:
+                        if task.is_cancellation_requested:
+                            raise
+                        raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                    except Exception as retry_exc:
+                        raise RuntimeError(str(retry_exc)) from retry_exc
+                elif _is_hls_expired:
+                    logger.info(
+                        "BUG-TT-02: TikTok live HLS expired for task %s — re-extracting",
+                        task.id,
+                    )
+                    try:
+                        _fresh_info = self.extract_info(task.url)
+                        _still_live = bool(_fresh_info and _fresh_info.is_live)
+                        # BUG-TT-13 FIX: yt-dlp TikTokLiveIE._call_api sends an
+                        # unsigned request to webcast.tiktok.com/webcast/room/info
+                        # (no X-Bogus/msToken). TikTok returns status=4 for unsigned
+                        # requests even when the stream is active, so extract_info
+                        # returns is_live=False and BUG-TT-02 gives up prematurely.
+                        # Fix: when extract_info says not-live, cross-check via our
+                        # custom checker which uses Chrome impersonation and different
+                        # endpoints. If checker confirms live, retry download directly
+                        # — the HLS playlist expired, not the stream itself.
+                        if not _still_live and _is_tiktok_live_url:
+                            import re as _re_tt13  # noqa: PLC0415
+                            _tt13_m = _re_tt13.compile(
+                                r"tiktok\.com/@([A-Za-z0-9_.]+)/live", _re_tt13.I
+                            ).search(task.url)
+                            if _tt13_m:
+                                _tt13_user = _tt13_m.group(1)
+                                _tt13_cookie_raw = _resolve_cookie(
+                                    "https://www.tiktok.com/", self._config
+                                ) or ""
+                                _tt13_cookie_txt, _tt13_is_temp = "", False
+                                if _tt13_cookie_raw:
+                                    _tt13_cookie_txt, _tt13_is_temp = _prepare_cookie_for_use(
+                                        _tt13_cookie_raw
+                                    )
+                                try:
+                                    from utils.tiktok_live_checker import (  # noqa: PLC0415
+                                        _check_tiktok_live_with_room_id,
+                                    )
+                                    _tt13_r = _check_tiktok_live_with_room_id(
+                                        _tt13_user,
+                                        proxy=self._config.proxy or "",
+                                        cookie_file=_tt13_cookie_txt,
+                                        share_url=task.url,
+                                    )
+                                    if _tt13_r:
+                                        _still_live = True
+                                        logger.info(
+                                            "BUG-TT-13: yt-dlp said not-live but"
+                                            " checker confirms @%s live"
+                                            " — retrying download directly",
+                                            _tt13_user,
+                                        )
+                                except Exception as _tt13_exc:
+                                    logger.debug(
+                                        "BUG-TT-13: checker failed (%s)"
+                                        " — treating as ended", _tt13_exc,
+                                    )
+                                finally:
+                                    if _tt13_is_temp and _tt13_cookie_txt:
+                                        try:
+                                            import os as _os13  # noqa: PLC0415
+                                            _os13.unlink(_tt13_cookie_txt)
+                                        except OSError:
+                                            pass
+                        if _still_live:
+                            if _fresh_info and _fresh_info.is_live:
+                                task.media_info = _fresh_info
+                            logger.info("BUG-TT-02/13: stream live, retrying download")
+                            time.sleep(3)
+                            with yt_dlp.YoutubeDL(opts) as ydl:
+                                ydl.download([task.url])
+                        else:
+                            raise RuntimeError(
+                                "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\n"
+                                "Thêm lại link để theo dõi lần phát tiếp theo."
+                            ) from exc
+                    except yt_dlp.utils.DownloadError as retry_exc:
+                        if task.is_cancellation_requested:
+                            raise
+                        raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                    except RuntimeError:
                         raise
-                    raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
-                except RuntimeError:
-                    raise
-                except Exception as retry_exc:
-                    raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
-            else:
-                raise RuntimeError(_friendly_error(_exc_str)) from exc
-        except Exception as exc:
-            if task.is_cancellation_requested:
-                raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
-            raise RuntimeError(str(exc)) from exc
+                    except Exception as retry_exc:
+                        raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                else:
+                    raise RuntimeError(_friendly_error(_exc_str)) from exc
+            except Exception as exc:
+                if task.is_cancellation_requested:
+                    raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
+                raise RuntimeError(str(exc)) from exc
 
         # ── Resolve final filename ─────────────────────────────────────────
+        # BUG-TT-EFF: if yt-dlp selected a vcodec=none stream for a non-audio
+        # output, the file is an mp4 container with audio only. Raise a clear
+        # error so the user knows this video type is unavailable via yt-dlp
+        # (TikTok "template effect" videos have no video track in the API).
+        # Guard: only for TikTok VOD, non-audio output, non-live.
+        if (
+            _is_tiktok_vod
+            and not is_live
+            and not _is_audio_output
+            and _selected_vcodec
+            and _selected_vcodec[0].lower() in ("none", "")
+        ):
+            # Delete the broken file so it does not appear in the queue as a
+            # "completed" download with no video.
+            _broken = _final_filepath[0] if _final_filepath else (task.filename or "")
+            if _broken:
+                try:
+                    Path(_broken).unlink(missing_ok=True)
+                    logger.debug("BUG-TT-EFF: deleted audio-only output %s", _broken)
+                except OSError:
+                    pass
+            raise RuntimeError(
+                "Video này chỉ có âm thanh — không có video track.\n"
+                "TikTok \"template effect\" / AR effect videos không cung cấp video "
+                "track qua API (chỉ expose audio stream).\n"
+                "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
+            )
         if _final_filepath:
             # Best case: pp_hook told us exactly where the merged file is
             p = Path(_final_filepath[0])
@@ -1792,6 +2019,34 @@ class YtDlpEngine:
                         "Failed to move live recording to output dir: %s", _mv_exc
                     )
 
+        # BUG-LN-WIN FIX: outtmpl for Windows live uses only timestamp+id to
+        # avoid Unicode named-pipe crash (BUG-BW2).  After the file is in
+        # output_dir, rename it to a full descriptive name using media_info.
+        # Non-Windows and non-live paths are unaffected.
+        if is_live and _sys_mv.platform == "win32" and task.filename:
+            _cur = Path(task.filename)
+            if _cur.is_file() and _cur.parent.resolve() == output_dir.resolve():
+                try:
+                    from utils.helpers import sanitise_filename as _sanitise
+                    _mi = task.media_info
+                    _uploader = (_mi.uploader if _mi and _mi.uploader else "Unknown")[:50]
+                    _title    = (_mi.title    if _mi and _mi.title    else "")[:80]
+                    _vid_id   = (_mi.video_id if _mi and _mi.video_id else "")[:20]
+                    _parts = [_uploader, f"[LIVE] {rec_ts}"]
+                    if _title:
+                        _parts.append(_title)
+                    if _vid_id:
+                        _parts.append(f"[{_vid_id}]")
+                    _new_stem = _sanitise(" ".join(_parts), max_len=180)
+                    _new_name = _new_stem + ".ts"
+                    _new_path = output_dir / _new_name
+                    if _new_path != _cur:
+                        _cur.rename(_new_path)
+                        task.filename = str(_new_path)
+                        logger.info("Live recording renamed: %s", task.filename)
+                except Exception as _rn_exc:
+                    logger.warning("Failed to rename live recording: %s", _rn_exc)
+
         # Always clean up the decrypted temp cookie file, even on error
         if _cookie_temp_dl:
             try:
@@ -1799,6 +2054,233 @@ class YtDlpEngine:
                 logger.debug("Cleaned up temp cookie file: %s", _cookie_temp_dl)
             except Exception:
                 pass
+
+    # ── TikTok live direct-FFmpeg helpers ─────────────────────────────────
+    # BUG-TT-16 FIX: yt-dlp's downloader selection hard-codes FFmpegFD for
+    # all is_live=True streams regardless of hls_prefer_native or format
+    # selector (see yt_dlp/downloader/__init__.py:
+    #   if info_dict.get('is_live'): return FFmpegFD
+    # This line is checked BEFORE hls_prefer_native and BEFORE m3u8_native
+    # protocol preference, so neither setting has any effect for live streams.
+    # FFmpegFD runs FFmpeg as a long-running subprocess reading from the HLS
+    # playlist. TikTok CDN rotates HLS tokens every ~18-25s; when a token
+    # expires mid-download, FFmpeg receives HTTP 403/404 and exits with
+    # code 3419392776 (STATUS_PIPE_NOT_AVAILABLE / generic crash on Windows).
+    # FFmpegFD has no reconnect logic — it just dies.
+    #
+    # Fix: for TikTok live, extract the HLS playlist URL directly from
+    # yt-dlp's info_dict (skip_download=True), then call FFmpeg ourselves
+    # with -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10.
+    # These flags tell FFmpeg to re-request the playlist and resume after
+    # any HTTP error, which covers CDN token rotation transparently.
+    # Progress is polled by watching the output file size.
+
+    def _extract_tiktok_live_hls_url(self, task_url: str) -> "tuple[str, str] | None":
+        """Extract (hls_url, video_id) from TikTok live via yt-dlp skip_download.
+
+        Returns None if extraction fails or no suitable HLS format found.
+        The returned hls_url is the best m3u8 URL from the format list.
+        """
+        import sys as _sys_hls
+        _cookie_path = _resolve_cookie(task_url, self._config)
+        opts_ei: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "socket_timeout": 20,
+        }
+        if _CURL_CFFI_AVAILABLE:
+            opts_ei["impersonate"] = _IMPERSONATE_TARGET
+        if self._config.proxy:
+            opts_ei["proxy"] = self._config.proxy
+        _ffmpeg_dir = get_ffmpeg_path()
+        if _ffmpeg_dir:
+            opts_ei["ffmpeg_location"] = _ffmpeg_dir
+        _cookie_temp: str | None = None
+        if _cookie_path:
+            _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
+            opts_ei["cookiefile"] = _usable
+            if _is_temp:
+                _cookie_temp = _usable
+        try:
+            with yt_dlp.YoutubeDL(opts_ei) as ydl:
+                info = ydl.extract_info(task_url, download=False)
+        except Exception as exc:
+            logger.debug("BUG-TT-16: HLS extract failed: %s", exc)
+            return None
+        finally:
+            if _cookie_temp:
+                try:
+                    Path(_cookie_temp).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if not info:
+            return None
+        formats = info.get("formats") or []
+        video_id = info.get("id") or ""
+        # Prefer m3u8_native, then m3u8, then any https URL
+        hls_url = ""
+        for proto in ("m3u8_native", "m3u8"):
+            for fmt in formats:
+                if fmt.get("protocol") == proto and fmt.get("url", "").startswith("http"):
+                    hls_url = fmt["url"]
+                    break
+            if hls_url:
+                break
+        if not hls_url:
+            # Fallback: any format with an http(s) url that looks like HLS
+            for fmt in formats:
+                u = fmt.get("url", "")
+                if ".m3u8" in u and u.startswith("http"):
+                    hls_url = u
+                    break
+        if not hls_url:
+            logger.debug("BUG-TT-16: no HLS URL found in formats (count=%d)", len(formats))
+            return None
+        logger.debug("BUG-TT-16: extracted HLS URL for %s (id=%s)", task_url[:60], video_id)
+        return hls_url, video_id
+
+    def _download_tiktok_live_direct(
+        self,
+        hls_url: str,
+        out_path: str,
+        task: DownloadTask,
+        cookie_path: str,
+        on_progress: "Optional[Callable[[DownloadTask], None]]",
+    ) -> None:
+        """Download TikTok live HLS to out_path using FFmpeg with reconnect flags.
+
+        BUG-TT-16: bypasses yt-dlp's forced FFmpegFD (no reconnect) by calling
+        FFmpeg directly with -reconnect flags that handle CDN token rotation.
+
+        Raises RuntimeError on failure. Raises yt_dlp.utils.DownloadError on cancel.
+        """
+        import subprocess
+        import sys as _sys_dl
+        import os
+
+        _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        ffmpeg_dir = get_ffmpeg_path()
+        if ffmpeg_dir:
+            ffmpeg_bin = str(Path(ffmpeg_dir) / ("ffmpeg.exe" if _sys_dl.platform == "win32" else "ffmpeg"))
+            if not Path(ffmpeg_bin).is_file():
+                ffmpeg_bin = "ffmpeg"
+        else:
+            ffmpeg_bin = "ffmpeg"
+
+        # Cookie args: pass as -cookies header if available (plain Netscape txt)
+        cookie_args: list[str] = []
+        _cookie_temp_direct: str | None = None
+        if cookie_path:
+            _usable, _is_temp = _prepare_cookie_for_use(cookie_path)
+            if _is_temp:
+                _cookie_temp_direct = _usable
+                cookie_path_use = _usable
+            else:
+                cookie_path_use = cookie_path
+            # FFmpeg accepts Netscape cookie files via -cookies is not standard;
+            # pass via http_persistent=0 and user-agent only — cookie injection
+            # is handled by the already-signed HLS URL from yt-dlp extraction.
+            # The signed URL contains all auth tokens; no cookie header needed.
+
+        cmd = [
+            ffmpeg_bin,
+            "-hide_banner", "-loglevel", "error",
+            # Reconnect flags: retry on any HTTP error (CDN token rotation)
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "10",
+            "-reconnect_on_http_error", "403,404,503",
+            "-user_agent", (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "-i", hls_url,
+            "-c", "copy",
+            "-y",
+            out_path,
+        ]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                creationflags=_CREATE_NO_WINDOW,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "FFmpeg không tìm thấy. Kiểm tra cài đặt FFmpeg."
+            )
+        finally:
+            if _cookie_temp_direct:
+                try:
+                    Path(_cookie_temp_direct).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        task.status = DownloadStatus.DOWNLOADING
+        task.filename = out_path
+        _last_size = 0
+        _stall_count = 0
+        _STALL_LIMIT = 60  # 60 * 2s = 120s stall watchdog
+
+        try:
+            while proc.poll() is None:
+                # Cancel check
+                if task.is_cancellation_requested:
+                    proc.kill()
+                    raise yt_dlp.utils.DownloadError("Cancelled by user")
+                task.wait_if_paused()
+
+                # Progress via file size
+                try:
+                    cur_size = Path(out_path).stat().st_size
+                except OSError:
+                    cur_size = 0
+
+                if cur_size > _last_size:
+                    task.downloaded_bytes = cur_size
+                    task.eta = f"⏺ {_fmt_bytes(cur_size)} đã ghi"
+                    _last_size = cur_size
+                    _stall_count = 0
+                else:
+                    _stall_count += 1
+                    if _stall_count >= _STALL_LIMIT:
+                        proc.kill()
+                        raise RuntimeError(
+                            "FFmpeg stall watchdog: không có dữ liệu trong 120s — "
+                            "stream có thể đã kết thúc."
+                        )
+
+                if on_progress:
+                    on_progress(task)
+                time.sleep(2)
+        except Exception:
+            if proc.poll() is None:
+                proc.kill()
+            raise
+
+        ret = proc.returncode
+        if ret != 0:
+            stderr_out = b""
+            try:
+                stderr_out = proc.stderr.read() if proc.stderr else b""
+            except Exception:
+                pass
+            err_msg = stderr_out.decode("utf-8", errors="replace").strip()[-300:]
+            raise RuntimeError(
+                f"FFmpeg exited with code {ret}.\n"
+                f"{err_msg or 'Không có thông tin lỗi.'}"
+            )
+
+        # Mark progress done
+        task.progress = 100.0
+        if on_progress:
+            on_progress(task)
 
     # ── Internal helpers ──────────────────────────────────────────────────
 

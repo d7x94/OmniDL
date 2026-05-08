@@ -236,12 +236,17 @@ class DownloadService:
                             )
                             if _room_result:
                                 _live_url, _room_id = _room_result
-                                _download_url = (
-                                    f"https://m.tiktok.com/share/live/{_room_id}"
-                                )
+                                # BUG-TT-12 FIX: use canonical @user/live URL instead of
+                                # m.tiktok.com/share/live/<roomId>. With the mobile-share
+                                # form, TikTokLiveIE has no 'uploader' from the URL regex
+                                # and raises ExtractorError("This livestream has ended")
+                                # on any non-2 API status -- not retryable by BUG-TT-12.
+                                # With @user/live, yt-dlp raises UserNotLive which maps to
+                                # "not currently live" -- caught and retried by BUG-TT-12.
+                                _download_url = _live_url
                                 logger.info(
                                     "BUG-TT-06: TikTok live @%s roomId=%s"
-                                    " -- using mobile share URL to bypass profile scrape",
+                                    " -- using canonical live URL for download",
                                     _username, _room_id,
                                 )
                                 info = MediaInfo(
