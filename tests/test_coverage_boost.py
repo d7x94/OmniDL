@@ -134,7 +134,7 @@ class TestCheckTiktokProfileLive:
         done = []
         with (
             patch("utils.tiktok_live_checker.extract_tiktok_username", return_value="ttuser"),
-            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value=""),
+            patch("app.services.download_service._resolve_cookie", return_value=""),
             patch("utils.tiktok_live_checker.check_tiktok_live", return_value="https://tt-live.url"),
         ):
             svc.check_tiktok_profile_live(
@@ -150,7 +150,7 @@ class TestCheckTiktokProfileLive:
         errors = []
         with (
             patch("utils.tiktok_live_checker.extract_tiktok_username", return_value="ttuser"),
-            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value=""),
+            patch("app.services.download_service._resolve_cookie", return_value=""),
             patch("utils.tiktok_live_checker.check_tiktok_live", side_effect=RuntimeError("tt error")),
         ):
             svc.check_tiktok_profile_live(
@@ -177,7 +177,7 @@ class TestCheckTiktokProfileLive:
 
         with (
             patch("utils.tiktok_live_checker.extract_tiktok_username", return_value="ttuser"),
-            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value="enc"),
+            patch("app.services.download_service._resolve_cookie", return_value="enc"),
             patch(
                 "app.services.download_service._prepare_cookie_for_use",
                 return_value=("/tmp/temp_tt_cookie.txt", True),  # nosec B108
@@ -201,7 +201,7 @@ class TestCheckTiktokProfileLive:
 
         with (
             patch("utils.tiktok_live_checker.extract_tiktok_username", return_value="ttuser"),
-            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value="enc"),
+            patch("app.services.download_service._resolve_cookie", return_value="enc"),
             patch(
                 "app.services.download_service._prepare_cookie_for_use",
                 return_value=("/tmp/temp_tt_cookie2.txt", True),  # nosec B108
