@@ -276,3 +276,139 @@ class TestAnalyseUrlTt19Retry:
 
         on_done.assert_not_called()
         on_error.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# BUG-TT-21: _extract_tiktok_live_hls_url respects _exclude_bases
+# ---------------------------------------------------------------------------
+
+class TestExtractTiktokLiveHlsExcludeBases:
+    """BUG-TT-21: when a CDN path 404s, exclude it and return next-best format."""
+
+    def _make_engine(self, tmp_path: Path) -> YtDlpEngine:
+        return YtDlpEngine(_make_config(tmp_path))
+
+    def _make_formats(self):
+        return [
+            {
+                "protocol": "m3u8_native",
+                "url": "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_ld/index.m3u8?expire=1&sign=a",
+                "height": 360,
+                "tbr": 500.0,
+            },
+            {
+                "protocol": "m3u8_native",
+                "url": "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_sd/index.m3u8?expire=1&sign=b",
+                "height": 540,
+                "tbr": 1000.0,
+            },
+            {
+                "protocol": "m3u8_native",
+                "url": "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8?expire=1&sign=c",
+                "height": 720,
+                "tbr": 2000.0,
+            },
+        ]
+
+    def test_excludes_hd_returns_sd(self, tmp_path):
+        """When _hd base is excluded, must return _sd URL."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine = self._make_engine(tmp_path)
+        formats = self._make_formats()
+        hd_base = "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8"
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, url, download=False):
+                return {"formats": formats, "id": "vid123"}
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            result = engine._extract_tiktok_live_hls_url(
+                "https://vt.tiktok.com/ZS9/",
+                _exclude_bases=frozenset({hd_base}),
+            )
+
+        assert result is not None
+        hls_url, _ = result
+        assert "_sd" in hls_url, f"Expected _sd URL when _hd excluded, got: {hls_url!r}"
+        assert "_hd" not in hls_url, f"Must not select excluded _hd, got: {hls_url!r}"
+
+    def test_excludes_hd_and_sd_returns_ld(self, tmp_path):
+        """When _hd and _sd bases excluded, must return _ld URL."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine = self._make_engine(tmp_path)
+        formats = self._make_formats()
+        hd_base = "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8"
+        sd_base = "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_sd/index.m3u8"
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, url, download=False):
+                return {"formats": formats, "id": "vid123"}
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            result = engine._extract_tiktok_live_hls_url(
+                "https://vt.tiktok.com/ZS9/",
+                _exclude_bases=frozenset({hd_base, sd_base}),
+            )
+
+        assert result is not None
+        hls_url, _ = result
+        assert "_ld" in hls_url, f"Expected _ld URL when _hd+_sd excluded, got: {hls_url!r}"
+
+    def test_all_excluded_returns_best_as_last_resort(self, tmp_path):
+        """When all formats are excluded, fall back to best available (no crash)."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine = self._make_engine(tmp_path)
+        formats = self._make_formats()
+        all_bases = frozenset({
+            "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8",
+            "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_sd/index.m3u8",
+            "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_ld/index.m3u8",
+        })
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, url, download=False):
+                return {"formats": formats, "id": "vid123"}
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            result = engine._extract_tiktok_live_hls_url(
+                "https://vt.tiktok.com/ZS9/",
+                _exclude_bases=all_bases,
+            )
+
+        # Must not return None — caller may still succeed (CDN might have recovered)
+        assert result is not None, "Should return best available even when all bases excluded"
+        hls_url, _ = result
+        assert "_hd" in hls_url, f"Last-resort should be best (HD), got: {hls_url!r}"
+
+    def test_no_exclusion_still_returns_best(self, tmp_path):
+        """Calling without _exclude_bases still returns highest quality (no regression)."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine = self._make_engine(tmp_path)
+        formats = self._make_formats()
+
+        class FakeYDL:
+            def __init__(self, opts): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def extract_info(self, url, download=False):
+                return {"formats": formats, "id": "vid123"}
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            result = engine._extract_tiktok_live_hls_url("https://vt.tiktok.com/ZS9/")
+
+        assert result is not None
+        hls_url, _ = result
+        assert "_hd" in hls_url, f"Default (no exclusion) must return best, got: {hls_url!r}"

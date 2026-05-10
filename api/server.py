@@ -91,6 +91,7 @@ _PING_INTERVAL = 15  # seconds — keeps iOS Safari connections alive
 _analyse_cache: dict[str, dict] = {}
 _analyse_cache_lock = threading.Lock()
 _ANALYSE_CACHE_TTL  = 30.0  # seconds to keep result after completion
+_EXTRA_MIME = {".ts": "video/mp2t"}  # missing from Python's default mimetypes DB
 
 
 def _analyse_cache_cleanup() -> None:
@@ -759,7 +760,8 @@ def create_app(
             )
 
         media_type = (
-            mimetypes.guess_type(file_path.name)[0]
+            _EXTRA_MIME.get(file_path.suffix.lower())
+            or mimetypes.guess_type(file_path.name)[0]
             or "application/octet-stream"
         )
         return FileResponse(

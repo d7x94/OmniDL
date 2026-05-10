@@ -1503,7 +1503,7 @@ function previewFile(id, title) {
   // Detect media type from filename stored in task
   const t = tasks[id];
   const fname = (t && t.filename) ? t.filename.toLowerCase() : '';
-  const isVideo = /\.(mp4|mkv|webm|mov|m4v|avi)$/.test(fname);
+  const isVideo = /\.(mp4|mkv|webm|mov|m4v|avi|ts)$/.test(fname);
   const isAudio = /\.(mp3|m4a|aac|ogg|flac|wav)$/.test(fname);
   const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(fname);
 
@@ -1515,11 +1515,18 @@ function previewFile(id, title) {
   content.innerHTML   = '';
 
   if (isVideo) {
-    content.innerHTML = `<video controls autoplay playsinline preload="metadata"
-      style="max-width:100%;max-height:72vh;border-radius:12px">
-      <source src="${fileUrl}">
-      Your browser does not support video playback.
-    </video>`;
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;gap:10px">
+        <video controls autoplay playsinline preload="metadata"
+          style="max-width:100%;max-height:65vh;border-radius:12px">
+          <source src="${fileUrl}">
+          Your browser does not support video playback.
+        </video>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+          <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
+          <a class="btn btn-secondary btn-sm" href="infuse://x-callback-url/play?url=${encodeURIComponent(fileUrl)}">Infuse</a>
+        </div>
+      </div>`;
   } else if (isAudio) {
     content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
       <source src="${fileUrl}">
@@ -1687,11 +1694,18 @@ function previewConvertFile(jobId, title) {
   content.innerHTML   = '';
 
   // Converted output is always MP4 — use video player directly.
-  content.innerHTML = `<video controls autoplay playsinline preload="metadata"
-    style="max-width:100%;max-height:72vh;border-radius:12px">
-    <source src="${fileUrl}" type="video/mp4">
-    Trình duyệt không hỗ trợ phát video.
-  </video>`;
+  content.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;width:100%;gap:10px">
+      <video controls autoplay playsinline preload="metadata"
+        style="max-width:100%;max-height:65vh;border-radius:12px">
+        <source src="${fileUrl}" type="video/mp4">
+        Trình duyệt không hỗ trợ phát video.
+      </video>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+        <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
+        <a class="btn btn-secondary btn-sm" href="infuse://x-callback-url/play?url=${encodeURIComponent(fileUrl)}">Infuse</a>
+      </div>
+    </div>`;
 
   overlay.classList.add('open');
 }

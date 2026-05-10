@@ -1188,3 +1188,218 @@ class TestInstagramPhoto:
         assert "yt-dlp" in msg.lower(), (
             f"extractor error must mention yt-dlp update, got: {msg!r} (FIX-D)"
         )
+
+
+# ---------------------------------------------------------------------------
+# BUG-TT-PROD — TikTok product link "audio-only" false positive
+# ---------------------------------------------------------------------------
+
+class TestBugTtProd:
+    """Regression for BUG-TT-PROD.
+
+    TikTok product/shopping link videos expose format_id="audio" with
+    vcodec=none and acodec=aac (ext=m4a) in yt-dlp metadata, but the actual
+    file contains a real video track.  The BUG-TT-EFF block must probe with
+    FFprobe before raising the audio-only error.
+    """
+
+    _URL = "https://www.tiktok.com/@shop/video/7123456789012345678"
+
+    def _make_fake_ydl(self, output_file: Path):
+        """FakeYDL that writes a file and fires pp_hook with vcodec=none."""
+        captured: list[dict] = []
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured.append(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def download(self, urls):
+                output_file.write_bytes(b"x" * 100_000)
+                for hook in captured[0].get("postprocessor_hooks", []):
+                    hook({
+                        "status": "finished",
+                        "postprocessor": "FFmpegVideoRemuxer",
+                        "info_dict": {
+                            "vcodec": "none",
+                            "acodec": "aac",
+                            "format_id": "audio",
+                            "ext": "mp4",
+                            "filepath": str(output_file),
+                            "__real_download_filename": str(output_file),
+                        },
+                    })
+
+        return FakeYDL
+
+    def _make_engine_task(self, tmp_path):
+        cfg = make_config(download_dir=tmp_path)
+        engine = YtDlpEngine(cfg)
+        task = DownloadTask(url=self._URL, format_id="best", output_ext="mp4")
+        task.media_info = MediaInfo(url=self._URL, title="Product Video")
+        task.output_dir = str(tmp_path)
+        return engine, task
+
+    def test_product_link_kept_when_ffprobe_finds_video(self, tmp_path):
+        """vcodec=none metadata but FFprobe finds h264 -> no error, file kept."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine, task = self._make_engine_task(tmp_path)
+        output_file = tmp_path / "product.mp4"
+        FakeYDL = self._make_fake_ydl(output_file)
+
+        probe_result = MagicMock()
+        probe_result.video_codec = "h264"
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_result):
+                engine.download(task)
+
+        assert output_file.exists(), "BUG-TT-PROD: product link file must not be deleted when FFprobe finds video"
+
+    def test_template_effect_raises_when_ffprobe_confirms_no_video(self, tmp_path):
+        """FFprobe also finds no video -> file deleted, error raised (BUG-TT-EFF regression)."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine, task = self._make_engine_task(tmp_path)
+        output_file = tmp_path / "template.mp4"
+        FakeYDL = self._make_fake_ydl(output_file)
+
+        probe_result = MagicMock()
+        probe_result.video_codec = ""
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_result):
+                with pytest.raises(RuntimeError, match="âm thanh"):
+                    engine.download(task)
+
+        assert not output_file.exists(), "BUG-TT-EFF: template effect file must be deleted"
+
+    def test_raises_when_ffprobe_unavailable(self, tmp_path):
+        """FFprobe returns None -> safe fallback: error raised, file deleted."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine, task = self._make_engine_task(tmp_path)
+        output_file = tmp_path / "template2.mp4"
+        FakeYDL = self._make_fake_ydl(output_file)
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=None):
+                with pytest.raises(RuntimeError, match="âm thanh"):
+                    engine.download(task)
+
+    def test_shopping_video_musical_ly_retry_succeeds(self, tmp_path):
+        """BUG-TT-SHOP-3: first attempt audio-only, musical_ly retry returns real video."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine, task = self._make_engine_task(tmp_path)
+        first_file = tmp_path / "first.mp4"
+        retry_file = tmp_path / "retry.mp4"
+        call_count = [0]
+        captured_opts: list[dict] = []
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self._opts = opts
+                captured_opts.append(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def download(self, urls):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    first_file.write_bytes(b"x" * 100_000)
+                    for hook in self._opts.get("postprocessor_hooks", []):
+                        hook({
+                            "status": "finished",
+                            "postprocessor": "FFmpegVideoRemuxer",
+                            "info_dict": {
+                                "vcodec": "none",
+                                "acodec": "mp3",
+                                "format_id": "audio",
+                                "ext": "mp4",
+                                "filepath": str(first_file),
+                                "__real_download_filename": str(first_file),
+                            },
+                        })
+                else:
+                    retry_file.write_bytes(b"x" * 200_000)
+                    for hook in self._opts.get("postprocessor_hooks", []):
+                        hook({
+                            "status": "finished",
+                            "postprocessor": "FFmpegVideoRemuxer",
+                            "info_dict": {
+                                "vcodec": "h264",
+                                "acodec": "aac",
+                                "format_id": "h264_540p",
+                                "ext": "mp4",
+                                "filepath": str(retry_file),
+                                "__real_download_filename": str(retry_file),
+                            },
+                        })
+
+        probe_no_video = MagicMock()
+        probe_no_video.video_codec = ""
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_no_video):
+                engine.download(task)  # must not raise
+
+        assert call_count[0] == 2, "BUG-TT-SHOP-3: must call YDL twice (initial + retry)"
+        assert retry_file.exists(), "BUG-TT-SHOP-3: retry output must be kept"
+        retry_extractor_args = captured_opts[1].get("extractor_args", {})
+        assert retry_extractor_args.get("tiktok", {}).get("app_name") == ["musical_ly"]
+
+    def test_shopping_video_musical_ly_retry_also_audio_only_raises(self, tmp_path):
+        """BUG-TT-SHOP-3: both attempts audio-only -> error raised, call count == 2."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine, task = self._make_engine_task(tmp_path)
+        call_count = [0]
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self._opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def download(self, urls):
+                call_count[0] += 1
+                out = tmp_path / f"out{call_count[0]}.mp4"
+                out.write_bytes(b"x" * 100_000)
+                for hook in self._opts.get("postprocessor_hooks", []):
+                    hook({
+                        "status": "finished",
+                        "postprocessor": "FFmpegVideoRemuxer",
+                        "info_dict": {
+                            "vcodec": "none",
+                            "acodec": "mp3",
+                            "format_id": "audio",
+                            "ext": "mp4",
+                            "filepath": str(out),
+                            "__real_download_filename": str(out),
+                        },
+                    })
+
+        probe_no_video = MagicMock()
+        probe_no_video.video_codec = ""
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_no_video):
+                with pytest.raises(RuntimeError, match="âm thanh"):
+                    engine.download(task)
+
+        assert call_count[0] == 2, "BUG-TT-SHOP-3: must attempt retry before raising"

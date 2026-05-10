@@ -1324,13 +1324,20 @@ class YtDlpEngine:
                 # variant so the mislabeled shopping stream is still caught.
                 # FFmpegVideoRemuxer (added below for all TikTok VODs) will
                 # recontainer it to the correct output_ext regardless of ext label.
+                # BUG-TT-EFF-2 FIX: template effect and shopping cart videos expose
+                # a genuine audio-only stream with format_id="audio" (vcodec=none).
+                # best[format_id=audio] was matching BEFORE /download, so the
+                # watermarked video+audio "download" format was never tried.
+                # Fix: move /download before best[format_id=audio] (unqualified).
+                # best[format_id=audio][ext=mp4] still catches mislabeled muxed
+                # shopping streams. best[format_id=audio] is now last resort only.
                 _format_id = (
                     "best[format_id^=h264]"
                     "/best[format_id=audio][ext=mp4]"
-                    "/best[format_id=audio]"
                     "/download"
                     "/bestvideo*+bestaudio*"
                     "/bestvideo*"
+                    "/best[format_id=audio]"
                     "/best"
                 )
             elif "bestaudio" in _format_id:
@@ -1339,10 +1346,10 @@ class YtDlpEngine:
                 _format_id = (
                     "best[format_id^=h264]"
                     "/best[format_id=audio][ext=mp4]"
-                    "/best[format_id=audio]"
                     "/download"
                     "/bestvideo*+bestaudio*"
                     "/bestvideo*"
+                    "/best[format_id=audio]"
                     "/best"
                 )
 
@@ -1774,6 +1781,7 @@ class YtDlpEngine:
                 _MAX_HLS_RETRIES = 20  # ~20 token rotations = long stream
                 _tt16_attempt = 0
                 _tt16_current_hls = _hls_url
+                _tt16_bad_bases: set[str] = set()
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
                         _seg_path = _direct_out_path if _tt16_attempt == 0 else (
@@ -1884,17 +1892,24 @@ class YtDlpEngine:
                                     # even on the same CDN path, so the old
                                     # full-URL != check always fired and wasted
                                     # an attempt on an identical 404 path.
+                                    # BUG-TT-21 FIX: when re-extract returns the
+                                    # same CDN path (_hd 404s consistently), pass
+                                    # the bad base as excluded so a lower-quality
+                                    # variant (_sd, _ld) on a different CDN path
+                                    # can be tried instead.
+                                    _bad_base = _tt16_current_hls.split("?")[0]
+                                    _tt16_bad_bases.add(_bad_base)
                                     _fresh0 = self._extract_tiktok_live_hls_url(
-                                        task.url
+                                        task.url,
+                                        _exclude_bases=frozenset(_tt16_bad_bases),
                                     )
-                                    _base_cur = _tt16_current_hls.split("?")[0]
                                     _base_new = _fresh0[0].split("?")[0] if _fresh0 else ""
-                                    if _fresh0 and _base_new != _base_cur:
+                                    if _fresh0 and _base_new not in _tt16_bad_bases:
                                         _tt16_current_hls, _ = _fresh0
                                         _tt16_attempt += 1
                                         time.sleep(2)
                                         continue
-                                    raise  # same CDN path or extraction failed
+                                    raise  # no alternative CDN path available
                                 # BUG-TT-20B FIX: subsequent 0B failure with no
                                 # captured data means the CDN is unreachable —
                                 # fall back to yt-dlp instead of fake-completing.
@@ -2109,21 +2124,90 @@ class YtDlpEngine:
             and _selected_vcodec
             and _selected_vcodec[0].lower() in ("none", "")
         ):
-            # Delete the broken file so it does not appear in the queue as a
-            # "completed" download with no video.
+            # BUG-TT-PROD FIX: TikTok product/shopping link videos expose
+            # format_id="audio" with vcodec=none and acodec=aac (ext=m4a) in
+            # yt-dlp metadata, but the actual downloaded file DOES contain a
+            # video track — the metadata is mislabeled by TikTok API.
+            # Same as BUG-TT-SHOP-2 (acodec=mp3) but with acodec=aac/ext=m4a,
+            # so best[format_id=audio][ext=mp4] doesn't catch it.
+            # Probe the actual output with FFprobe before deleting. If the file
+            # has a video codec, the metadata was wrong — skip the error.
+            # Only delete+raise when FFprobe confirms no video (or unavailable).
             _broken = _final_filepath[0] if _final_filepath else (task.filename or "")
-            if _broken:
+            _probe_confirmed_no_video = True  # safe default: trust metadata
+            if _broken and Path(_broken).is_file():
+                from app.services.ffmpeg_convert_service import probe_media_info as _probe_mi
+                _probe_result = _probe_mi(Path(_broken))
+                if _probe_result is not None and _probe_result.video_codec:
+                    logger.debug(
+                        "BUG-TT-PROD: vcodec=none in yt-dlp metadata but FFprobe "
+                        "found video_codec=%r in %s — product link video, skipping error",
+                        _probe_result.video_codec,
+                        _broken,
+                    )
+                    _probe_confirmed_no_video = False
+            if _probe_confirmed_no_video:
+                # Delete the audio-only file before retry or final error.
+                if _broken:
+                    try:
+                        Path(_broken).unlink(missing_ok=True)
+                        logger.debug("BUG-TT-EFF: deleted audio-only output %s", _broken)
+                    except OSError:
+                        pass
+
+                # BUG-TT-SHOP-3 FIX: TikTok product/showcase videos sometimes only
+                # expose video formats to the musical_ly mobile client (different API
+                # aid param). Retry once with app_name=musical_ly + video-only format
+                # chain before giving up. Silent on failure — raises below if no video.
+                _shop3_got_video = False
+                _final_filepath.clear()
+                _selected_vcodec.clear()
+                _ml_opts = dict(opts)
+                _ml_opts["extractor_args"] = {"tiktok": {"app_name": ["musical_ly"]}}
+                _ml_opts["format"] = (
+                    "best[format_id^=h264]"
+                    "/download"
+                    "/bestvideo*+bestaudio*"
+                    "/bestvideo*"
+                    "/best[vcodec!=none]"
+                )
                 try:
-                    Path(_broken).unlink(missing_ok=True)
-                    logger.debug("BUG-TT-EFF: deleted audio-only output %s", _broken)
-                except OSError:
-                    pass
-            raise RuntimeError(
-                "Video này chỉ có âm thanh — không có video track.\n"
-                "TikTok \"template effect\" / AR effect videos không cung cấp video "
-                "track qua API (chỉ expose audio stream).\n"
-                "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
-            )
+                    with yt_dlp.YoutubeDL(_ml_opts) as ydl:
+                        ydl.download([task.url])
+                    if _selected_vcodec and _selected_vcodec[0].lower() not in ("none", ""):
+                        _shop3_got_video = True
+                        logger.debug(
+                            "BUG-TT-SHOP-3: musical_ly retry succeeded, vcodec=%r",
+                            _selected_vcodec[0],
+                        )
+                    elif _final_filepath and Path(_final_filepath[0]).is_file():
+                        from app.services.ffmpeg_convert_service import (  # noqa: PLC0415
+                            probe_media_info as _probe_shop3,
+                        )
+                        _r3 = _probe_shop3(Path(_final_filepath[0]))
+                        if _r3 and _r3.video_codec:
+                            _shop3_got_video = True
+                            logger.debug(
+                                "BUG-TT-SHOP-3: musical_ly retry — FFprobe found video=%r",
+                                _r3.video_codec,
+                            )
+                except Exception as _shop3_exc:
+                    logger.debug("BUG-TT-SHOP-3: musical_ly retry failed: %s", _shop3_exc)
+
+                if not _shop3_got_video:
+                    _retry_broken = _final_filepath[0] if _final_filepath else ""
+                    if _retry_broken:
+                        try:
+                            Path(_retry_broken).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    raise RuntimeError(
+                        "Video này chỉ có âm thanh — không có video track.\n"
+                        "TikTok product/showcase và \"template effect\" / AR effect videos"
+                        " không cung cấp video track qua API (chỉ expose audio stream).\n"
+                        "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
+                    )
+                # BUG-TT-SHOP-3: musical_ly retry succeeded — fall through to filename resolution
         if _final_filepath:
             # Best case: pp_hook told us exactly where the merged file is
             p = Path(_final_filepath[0])
@@ -2229,11 +2313,17 @@ class YtDlpEngine:
     # any HTTP error, which covers CDN token rotation transparently.
     # Progress is polled by watching the output file size.
 
-    def _extract_tiktok_live_hls_url(self, task_url: str) -> "tuple[str, str] | None":
+    def _extract_tiktok_live_hls_url(
+        self,
+        task_url: str,
+        _exclude_bases: "frozenset[str] | None" = None,
+    ) -> "tuple[str, str] | None":
         """Extract (hls_url, video_id) from TikTok live via yt-dlp skip_download.
 
         Returns None if extraction fails or no suitable HLS format found.
         The returned hls_url is the best m3u8 URL from the format list.
+        _exclude_bases: base URLs (path without query params) to skip — used to
+        avoid CDN nodes that returned 404 on a previous attempt.
         """
         _cookie_path = _resolve_cookie(task_url, self._config)
         opts_ei: dict[str, Any] = {
@@ -2284,14 +2374,30 @@ class YtDlpEngine:
         _m3u8_fmts.sort(
             key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True
         )
-        hls_url = _m3u8_fmts[0]["url"] if _m3u8_fmts else ""
+        _excl = _exclude_bases or frozenset()
+        hls_url = ""
+        for _f in _m3u8_fmts:
+            _u = _f["url"]
+            if _u.split("?")[0] not in _excl:
+                hls_url = _u
+                break
+        if not hls_url and _m3u8_fmts:
+            # All candidates excluded — last resort: try best anyway
+            hls_url = _m3u8_fmts[0]["url"]
         if not hls_url:
             # Fallback: any format with an http(s) url that looks like HLS
             for fmt in formats:
                 u = fmt.get("url", "")
                 if ".m3u8" in u and u.startswith("http"):
-                    hls_url = u
-                    break
+                    if u.split("?")[0] not in _excl:
+                        hls_url = u
+                        break
+            if not hls_url:
+                for fmt in formats:
+                    u = fmt.get("url", "")
+                    if ".m3u8" in u and u.startswith("http"):
+                        hls_url = u
+                        break
         if not hls_url:
             logger.debug("BUG-TT-16: no HLS URL found in formats (count=%d)", len(formats))
             return None
