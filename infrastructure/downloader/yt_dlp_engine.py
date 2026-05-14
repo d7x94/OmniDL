@@ -946,7 +946,7 @@ class YtDlpEngine:
         return MediaInfo(
             url=url,
             title=info.get("title") or "Unknown",
-            uploader=info.get("uploader") or info.get("channel") or "",
+            uploader=info.get("uploader") or info.get("uploader_id") or info.get("channel") or "",
             duration=int(info.get("duration") or 0),
             thumbnail=info.get("thumbnail") or "",
             platform=_detect_platform(url),
@@ -1750,12 +1750,14 @@ class YtDlpEngine:
                 or _TIKTOK_SHORT_RE.search(task.url)
             )
         )
+        _live_vid_id = ""
         _direct_ffmpeg_ok = False
         if _is_tiktok_live_for_direct:
             import sys as _sys_tt16
             _hls_result = self._extract_tiktok_live_hls_url(task.url)
             if _hls_result:
                 _hls_url, _hls_vid_id = _hls_result
+                _live_vid_id = _hls_vid_id
                 # Build output path using same ASCII-safe pattern as outtmpl
                 if _sys_tt16.platform == "win32":
                     _direct_out_dir = Path(tempfile.gettempdir()) / "omnidl_live"
@@ -1906,14 +1908,34 @@ class YtDlpEngine:
                                     _base_new = _fresh0[0].split("?")[0] if _fresh0 else ""
                                     if _fresh0 and _base_new not in _tt16_bad_bases:
                                         _tt16_current_hls, _ = _fresh0
+                                        try:
+                                            Path(_direct_out_path).unlink(missing_ok=True)
+                                        except OSError:
+                                            pass
                                         _tt16_attempt += 1
                                         time.sleep(2)
                                         continue
                                     raise  # no alternative CDN path available
-                                # BUG-TT-20B FIX: subsequent 0B failure with no
-                                # captured data means the CDN is unreachable —
-                                # fall back to yt-dlp instead of fake-completing.
+                                # BUG-TT-20B FIX: subsequent 0B failure — exclude
+                                # this base too and try one more CDN path before
+                                # falling back to yt-dlp (BUG-TT-22).
                                 if _main_size == 0:
+                                    _bad_base2 = _tt16_current_hls.split("?")[0]
+                                    _tt16_bad_bases.add(_bad_base2)
+                                    _fresh1 = self._extract_tiktok_live_hls_url(
+                                        task.url,
+                                        _exclude_bases=frozenset(_tt16_bad_bases),
+                                    )
+                                    _base_new2 = _fresh1[0].split("?")[0] if _fresh1 else ""
+                                    if _fresh1 and _base_new2 not in _tt16_bad_bases:
+                                        _tt16_current_hls, _ = _fresh1
+                                        try:
+                                            Path(_direct_out_path).unlink(missing_ok=True)
+                                        except OSError:
+                                            pass
+                                        _tt16_attempt += 1
+                                        time.sleep(2)
+                                        continue
                                     raise
                                 _direct_ffmpeg_ok = True
                                 break
@@ -1939,6 +1961,13 @@ class YtDlpEngine:
                         "falling back to yt-dlp",
                         _tt16_exc,
                     )
+                if _direct_ffmpeg_ok and _tt16_attempt > 0:
+                    for _ci in range(1, _tt16_attempt + 2):
+                        _seg_clean = Path(_direct_out_path + f".seg{_ci}")
+                        try:
+                            _seg_clean.unlink(missing_ok=True)
+                        except OSError:
+                            pass
             else:
                 logger.debug(
                     "BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp"
@@ -2269,7 +2298,7 @@ class YtDlpEngine:
                     _mi = task.media_info
                     _uploader = (_mi.uploader if _mi and _mi.uploader else "Unknown")[:50]
                     _title    = (_mi.title    if _mi and _mi.title    else "")[:80]
-                    _vid_id   = (_mi.video_id if _mi and _mi.video_id else "")[:20]
+                    _vid_id   = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
                     _parts = [_uploader, f"[LIVE] {rec_ts}"]
                     if _title:
                         _parts.append(_title)

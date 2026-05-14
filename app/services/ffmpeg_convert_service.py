@@ -798,6 +798,21 @@ class FfmpegConvertService:
             temp_output.unlink(missing_ok=True)   # BUG 8: clean up on any failure
             raise
 
+        # Validate that the output has a video track when the source did.
+        # FLV/TS live files can silently produce audio-only output when ffmpeg
+        # misses the H.264 SPS/PPS (hidden by -loglevel error). iPhone's hardware
+        # decoder requires the avcc box and shows audio-only; desktop players
+        # recover from the bitstream, so the bug is iPhone-specific.
+        src_info = probe_media_info(source)
+        if src_info and src_info.video_codec:
+            out_info = probe_media_info(temp_output)
+            if not out_info or not out_info.video_codec:
+                temp_output.unlink(missing_ok=True)
+                raise ConversionError(
+                    "Output has no video track — file nguồn thiếu SPS/PPS "
+                    "hoặc codec video không được hỗ trợ"
+                )
+
         # Remux to target container when target_ext differs from mp4.
         # mkv and avi accept the H.264+AAC stream without re-encode (-c copy).
         target_ext = target_ext.lower()
@@ -921,6 +936,15 @@ class FfmpegConvertService:
             vf_parts = [preset["scale"]]
 
         cmd: list[str] = [str(ffmpeg_bin), "-y"]
+
+        # FLV and TS live recordings often have H.264 SPS/PPS after the first
+        # keyframe (not in the container header). Extend analysis so ffmpeg finds
+        # codec parameters before starting the encode; without this, libx264 may
+        # receive 0 frames and the output MP4 has no video track — iPhone's
+        # hardware decoder then falls back to audio-only while desktop players
+        # recover by parsing NALUs directly from the bitstream.
+        if source.suffix.lower() in {".flv", ".ts"}:
+            cmd += ["-analyzeduration", "100M", "-probesize", "100M"]
 
         if seek > 0:
             cmd += ["-ss", f"{seek:.3f}"]

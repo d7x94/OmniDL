@@ -53,6 +53,8 @@ from api.models import (
     FileDeleteRequest,
     FileDeleteResponse,
     FileInfoResponse,
+    FileTransferRequest,
+    FileTransferResponse,
     QueueActionResponse,
     TaskResponse,
 )
@@ -1239,6 +1241,69 @@ def create_app(
             action="deleted",
             detail=f"Deleted: {target.name}",
         )
+
+    @app.get("/api/nodes", summary="List configured Taildrop target nodes")
+    async def list_nodes(_: None = Depends(_require_auth)) -> list[str]:
+        return config.taildrop_target_nodes
+
+    @app.get("/api/files/serve", summary="Stream a file by absolute path (within download_dir)")
+    async def serve_file(
+        path: str = Query(...), _: None = Depends(_require_auth)
+    ):
+        root = config.download_dir.resolve()
+        try:
+            target = Path(path).resolve()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid path") from None
+        if not target.is_relative_to(root):
+            raise HTTPException(status_code=400, detail="Path outside download directory")
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        mime = (
+            _EXTRA_MIME.get(target.suffix.lower())
+            or mimetypes.guess_type(target.name)[0]
+            or "application/octet-stream"
+        )
+        return FileResponse(
+            path=str(target),
+            media_type=mime,
+            filename=target.name,
+            headers={"Content-Disposition": f'inline; filename="{target.name}"'},
+        )
+
+    @app.post(
+        "/api/files/transfer",
+        response_model=FileTransferResponse,
+        summary="Send a file to selected Taildrop nodes",
+    )
+    async def transfer_file_by_path(
+        body: FileTransferRequest, _: None = Depends(_require_auth)
+    ) -> FileTransferResponse:
+        if not config.taildrop_enabled:
+            raise HTTPException(status_code=503, detail="Taildrop is disabled in settings")
+        td = getattr(service, "taildrop", None)
+        if td is None:
+            raise HTTPException(status_code=503, detail="Taildrop service unavailable")
+        if not body.nodes:
+            raise HTTPException(status_code=400, detail="No nodes specified")
+        root = config.download_dir.resolve()
+        try:
+            target = Path(body.path).resolve()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid path") from None
+        if not target.is_relative_to(root):
+            raise HTTPException(status_code=400, detail="Path outside download directory")
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        def _on_done(node: str) -> None:
+            _broadcast("file_transfer_done", {"path": body.path, "node": node})
+
+        def _on_error(node: str, error: str = "") -> None:
+            _broadcast("file_transfer_failed", {"path": body.path, "node": node, "error": error})
+
+        td.send_file_to_nodes(target, body.nodes, on_node_done=_on_done, on_node_error=_on_error)
+        return FileTransferResponse(detail=f"Queued to: {', '.join(body.nodes)}")
 
     # ── SSE ───────────────────────────────────────────────────────────────
 

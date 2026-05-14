@@ -525,6 +525,33 @@
       white-space: nowrap;
     }
 
+    /* ── Node picker ─────────────────────────────────────────────────── */
+    #nodes-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.7);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #nodes-overlay.open { display: flex; }
+    #nodes-sheet {
+      background: var(--surface);
+      border-radius: var(--radius) var(--radius) 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+    #nodes-sheet h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+    .node-sub { font-size: 12px; color: var(--text2); margin-bottom: 14px; word-break: break-all; }
+    .node-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 0; border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    .node-row:last-child { border-bottom: none; }
+    .node-row input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex-shrink: 0; }
+    .node-row span { font-size: 15px; }
+
     /* ── Empty states ─────────────────────────────────────────────────── */
     .empty {
       text-align: center;
@@ -804,6 +831,17 @@
   </div>
 </div>
 
+<!-- Node picker bottom sheet -->
+<div id="nodes-overlay">
+  <div id="nodes-sheet">
+    <h2>📲 Gửi đến</h2>
+    <div class="node-sub" id="nodes-sheet-sub"></div>
+    <div id="nodes-list"></div>
+    <button class="btn btn-primary" onclick="confirmSendToNodes()" style="margin-top:14px">Gửi</button>
+    <button class="btn btn-secondary" onclick="closeNodePicker()" style="margin-top:8px">Huỷ</button>
+  </div>
+</div>
+
 <!-- Settings bottom sheet -->
 <div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
   <div id="settings-sheet">
@@ -840,6 +878,8 @@ let _pendingConvertTaskId = null; // task_id being configured in the convert she
 let _pendingFilePath = null;   // absolute file path being configured in convert sheet (Files tab)
 let _fileJobMap = {};          // absolute filePath → job_id (file-based convert jobs)
 let _browseData = null;        // last /api/files/browse response (for re-render without re-fetch)
+let _availableNodes = [];      // cached from GET /api/nodes
+let _transferFilePath = null;  // path being sent via node picker
 
 /* ── Persistence ────────────────────────────────────────────────────── */
 function loadCfg() {
@@ -969,6 +1009,17 @@ function connectSSE() {
     _maybeRenderFileBrowser();
   });
 
+  evtSrc.addEventListener('file_transfer_done', e => {
+    const d = JSON.parse(e.data);
+    const fname = (d.path || '').split(/[\\/]/).pop();
+    toast(`✅ Đã gửi ${fname} → ${d.node}`);
+  });
+  evtSrc.addEventListener('file_transfer_failed', e => {
+    const d = JSON.parse(e.data);
+    const fname = (d.path || '').split(/[\\/]/).pop();
+    toast(`❌ Gửi thất bại → ${d.node}: ${d.error || 'lỗi không xác định'}`);
+  });
+
   evtSrc.onerror = () => setConnected(false);
 }
 
@@ -981,6 +1032,7 @@ function setConnected(ok) {
   label.textContent = ok ? 'Connected' : 'Disconnected';
   if (ok) {
     document.getElementById('dl-btn').disabled = false;
+    loadNodes();
   }
 }
 
@@ -1784,6 +1836,87 @@ function fmtDur(sec) {
            : `${m}:${String(s).padStart(2,'0')}`;
 }
 
+/* ── Node picker ───────────────────────────────────────────────────── */
+async function loadNodes() {
+  if (!cfg.host) return;
+  try { _availableNodes = await api('GET', '/api/nodes'); } catch(_) { _availableNodes = []; }
+}
+
+async function openNodePicker(path) {
+  if (!_availableNodes.length) await loadNodes();
+  if (!_availableNodes.length) { toast('Taildrop: chưa có node nào được cấu hình'); return; }
+  _transferFilePath = path;
+  document.getElementById('nodes-sheet-sub').textContent = path.split(/[\\/]/).pop();
+  document.getElementById('nodes-list').innerHTML = _availableNodes.map(node =>
+    `<label class="node-row">
+      <input type="checkbox" checked value="${escHtml(node)}">
+      <span>${escHtml(node)}</span>
+    </label>`
+  ).join('');
+  document.getElementById('nodes-overlay').classList.add('open');
+}
+
+function closeNodePicker() {
+  document.getElementById('nodes-overlay').classList.remove('open');
+  _transferFilePath = null;
+}
+
+async function confirmSendToNodes() {
+  const nodes = Array.from(
+    document.querySelectorAll('#nodes-list input[type=checkbox]:checked')
+  ).map(cb => cb.value);
+  if (!nodes.length) { toast('Chọn ít nhất 1 node'); return; }
+  const path = _transferFilePath;
+  closeNodePicker();
+  try {
+    await api('POST', '/api/files/transfer', { path, nodes });
+    toast('📡 Đang gửi…');
+  } catch(e) { toast('❌ ' + e.message); }
+}
+
+/* ── Preview by path (Files tab) ───────────────────────────────────── */
+function previewFileByPath(path, name) {
+  const base    = cfg.host.replace(/\/+$/, '');
+  const token   = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+  const fileUrl = `${base}/api/files/serve?path=${encodeURIComponent(path)}${token}`;
+
+  const fname   = name.toLowerCase();
+  const isVideo = /\.(mp4|mkv|webm|mov|m4v|avi|ts|flv)$/.test(fname);
+  const isAudio = /\.(mp3|m4a|aac|ogg|flac|wav)$/.test(fname);
+  const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(fname);
+
+  const overlay = document.getElementById('preview-overlay');
+  const content = document.getElementById('preview-content');
+  document.getElementById('preview-title').textContent = name;
+  content.innerHTML = '';
+
+  if (isVideo) {
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;gap:10px">
+        <video controls autoplay playsinline preload="metadata"
+          style="max-width:100%;max-height:65vh;border-radius:12px">
+          <source src="${fileUrl}">
+        </video>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+          <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
+          <a class="btn btn-secondary btn-sm"
+            href="infuse://x-callback-url/play?url=${encodeURIComponent(fileUrl)}">Infuse</a>
+        </div>
+      </div>`;
+  } else if (isAudio) {
+    content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
+      <source src="${fileUrl}"></audio>`;
+  } else if (isImage) {
+    content.innerHTML = `<img src="${fileUrl}"
+      style="max-width:100%;max-height:72vh;border-radius:12px;object-fit:contain"
+      alt="${escHtml(name)}">`;
+  } else {
+    window.open(fileUrl, '_blank');
+    return;
+  }
+  overlay.classList.add('open');
+}
+
 /* ── File browser ───────────────────────────────────────────────────── */
 function joinPath(dir, name) {
   const sep = dir.includes('\\') ? '\\' : '/';
@@ -1896,11 +2029,25 @@ function renderFileBrowser() {
       </div>`;
     }
 
+    const fileBtns = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+      <button class="btn btn-sm btn-preview"
+        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+        onclick="previewFileByPath(this.dataset.path,this.dataset.name)">
+        ▶ Preview
+      </button>
+      <button class="btn btn-sm btn-transfer"
+        data-path="${escHtml(fullPath)}"
+        onclick="openNodePicker(this.dataset.path)">
+        📲 Gửi
+      </button>
+    </div>`;
+
     return `<div class="fb-item">
       <div class="fb-icon">📄</div>
       <div class="fb-body">
         <div class="fb-name">${escHtml(item.name)}</div>
         ${meta ? `<div class="fb-meta">${escHtml(meta)}</div>` : ''}
+        ${fileBtns}
         ${cvBlock}
       </div>
     </div>`;
@@ -1977,6 +2124,10 @@ document.getElementById('settings-overlay').addEventListener('click', function(e
 
 document.getElementById('preview-overlay').addEventListener('click', function(e) {
   if (e.target === this) closePreview();
+});
+
+document.getElementById('nodes-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeNodePicker();
 });
 
 // Allow Enter key in URL input to trigger analyse

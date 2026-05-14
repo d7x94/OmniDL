@@ -746,12 +746,6 @@ class InstagramLiveEngine:
                 "-reconnect_delay_max", "5",
                 "-timeout", "10000000",
                 "-allowed_extensions", "ALL",
-                # Start from near-live instead of startNumber=0.
-                # Instagram DASH live uses a sliding window; older segments are
-                # purged server-side. Default live_start_index=0 requests a
-                # segment that no longer exists -> 404 -> FFmpeg stalls forever.
-                # -3 = start 3 segments before the live edge (always in window).
-                "-live_start_index", "-3",
                 "-headers", headers_arg,
                 "-i", hls_url,
             ]

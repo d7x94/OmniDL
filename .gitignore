@@ -170,5 +170,6 @@ omnidl_skill_090526_0705/
 Vande.md
 Claude.md
 .python-version
-
 *.bat
+RTK.md
+.rtk/

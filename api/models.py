@@ -217,6 +217,16 @@ class FileDeleteResponse(BaseModel):
     detail: str = ""
 
 
+class FileTransferRequest(BaseModel):
+    """Send a file to one or more Taildrop nodes."""
+    path:  str
+    nodes: list[str]
+
+
+class FileTransferResponse(BaseModel):
+    detail: str = ""
+
+
 class ClipboardAnalyseRequest(BaseModel):
     """Analyse a URL from the Remote client's clipboard."""
     url: str
