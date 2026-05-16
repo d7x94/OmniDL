@@ -180,7 +180,12 @@ def encrypt_cookie_file(txt_path: Path) -> Path:
     """
     plat = _platform()
     if plat == "other":
-        logger.debug("Cookie encryption skipped (Linux — not yet supported)")
+        logger.warning(
+            "Cookie stored in plaintext at %s — encryption is not supported on Linux. "
+            "File permissions set to 0o600 (owner-only), but data is unencrypted at rest. "
+            "secretstorage/KWallet integration is not yet implemented.",
+            txt_path,
+        )
         # Restrict permissions so only the owning user can read the plaintext
         # cookie file (mode 0o600 = rw-------).  On Linux we have no DPAPI/
         # Keychain equivalent, so tight filesystem permissions are the only

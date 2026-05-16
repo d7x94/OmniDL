@@ -1968,6 +1968,13 @@ class YtDlpEngine:
                             _seg_clean.unlink(missing_ok=True)
                         except OSError:
                             pass
+                    # BUG-TT-23 FIX: _download_tiktok_live_direct overwrites
+                    # task.filename with the last segment path (e.g. .seg1).
+                    # After that segment is appended+deleted, task.filename points
+                    # to a non-existent file → filename resolution falls through to
+                    # size scan → picks the largest (old) file in output_dir.
+                    # Reset to the main output file which has all segments merged.
+                    task.filename = _direct_out_path
             else:
                 logger.debug(
                     "BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp"
@@ -2410,8 +2417,28 @@ class YtDlpEngine:
             if _u.split("?")[0] not in _excl:
                 hls_url = _u
                 break
+        if not hls_url and _m3u8_fmts and _excl:
+            # BUG-TT-24 FIX: all HLS CDN paths excluded (persistent 404).
+            # FLV CDN infra (pull-flv-*) is separate from HLS (pull-hls-*),
+            # so try HTTP-FLV before falling back to an already-excluded HLS path.
+            _flv_fmts = [
+                f for f in formats
+                if f.get("url", "").startswith("http")
+                and (f.get("ext") == "flv" or ".flv" in f.get("url", ""))
+                and f.get("url", "").split("?")[0] not in _excl
+            ]
+            if _flv_fmts:
+                _flv_fmts.sort(
+                    key=lambda f: (f.get("height") or 0, f.get("tbr") or 0),
+                    reverse=True,
+                )
+                hls_url = _flv_fmts[0]["url"]
+                logger.debug(
+                    "BUG-TT-24: HLS CDN exhausted — using FLV fallback for %s",
+                    task_url[:60],
+                )
         if not hls_url and _m3u8_fmts:
-            # All candidates excluded — last resort: try best anyway
+            # All candidates excluded — last resort: try best HLS anyway
             hls_url = _m3u8_fmts[0]["url"]
         if not hls_url:
             # Fallback: any format with an http(s) url that looks like HLS
@@ -2491,7 +2518,7 @@ class YtDlpEngine:
                 "-headers",
                 f"Cookie: {_ffmpeg_cookie_hdr}\r\nReferer: https://www.tiktok.com/\r\n",
             ]
-        cmd += ["-i", hls_url, "-c", "copy", "-y", out_path]
+        cmd += ["-i", hls_url, "-c", "copy", "-f", "mpegts", "-y", out_path]
 
         try:
             proc = subprocess.Popen(

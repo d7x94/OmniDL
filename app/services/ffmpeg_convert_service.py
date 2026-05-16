@@ -132,6 +132,7 @@ class FfmpegMediaInfo:
     height: int = 0
     duration_s: float = 0.0
     bitrate_bps: int = 0
+    video_nb_frames: int = 0
 
 
 class ConversionError(RuntimeError):
@@ -434,9 +435,16 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
         logger.debug("probe_media_info: ffprobe not available")
         return None
     try:
+        # FLV/TS with Enhanced codec (HEVC) require extended analysis to be
+        # detected by ffprobe; without this the video stream is not found and
+        # the post-conversion validation block is silently skipped.
+        probe_extra: list[str] = []
+        if source.suffix.lower() in {".flv", ".ts"}:
+            probe_extra = ["-analyzeduration", "50M", "-probesize", "50M"]
         result = subprocess.run(
             [
                 loc.ffprobe_bin,
+                *probe_extra,
                 "-v", "quiet",
                 "-print_format", "json",
                 "-show_format",
@@ -444,7 +452,7 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
                 str(source),
             ],
             capture_output=True,
-            timeout=15,
+            timeout=30,
             encoding="utf-8",
             errors="replace",
             creationflags=_WIN_NO_WINDOW,
@@ -460,6 +468,7 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
         bitrate_bps = int(fmt.get("bit_rate") or 0)
         video_codec = audio_codec = ""
         width = height = 0
+        video_nb_frames = 0
 
         for stream in streams:
             codec_type = stream.get("codec_type", "")
@@ -467,6 +476,7 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
                 video_codec = stream.get("codec_name", "")
                 width = int(stream.get("width") or 0)
                 height = int(stream.get("height") or 0)
+                video_nb_frames = int(stream.get("nb_frames") or 0)
                 if not duration_s:
                     duration_s = float(stream.get("duration") or 0)
             elif codec_type == "audio" and not audio_codec:
@@ -481,6 +491,7 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
             height=height,
             duration_s=duration_s,
             bitrate_bps=bitrate_bps,
+            video_nb_frames=video_nb_frames,
         )
     except Exception as exc:
         logger.debug("probe_media_info failed for %s: %s", source, exc)
@@ -803,14 +814,17 @@ class FfmpegConvertService:
         # misses the H.264 SPS/PPS (hidden by -loglevel error). iPhone's hardware
         # decoder requires the avcc box and shows audio-only; desktop players
         # recover from the bitstream, so the bug is iPhone-specific.
+        # Also check video_nb_frames > 0: a zero-frame H.264 track passes codec
+        # detection (header metadata) but produces an unplayable file on iPhone/VLC.
         src_info = probe_media_info(source)
         if src_info and src_info.video_codec:
             out_info = probe_media_info(temp_output)
-            if not out_info or not out_info.video_codec:
+            if not out_info or not out_info.video_codec or out_info.video_nb_frames == 0:
                 temp_output.unlink(missing_ok=True)
                 raise ConversionError(
-                    "Output has no video track — file nguồn thiếu SPS/PPS "
-                    "hoặc codec video không được hỗ trợ"
+                    "Output has no video frames — FLV source may use Enhanced "
+                    "codec (HEVC) or has missing SPS/PPS. "
+                    "Try re-downloading with yt-dlp instead of IDM."
                 )
 
         # Remux to target container when target_ext differs from mp4.
@@ -935,6 +949,8 @@ class FfmpegConvertService:
         if preset["scale"]:
             vf_parts = [preset["scale"]]
 
+        is_flv_ts = source.suffix.lower() in {".flv", ".ts"}
+
         cmd: list[str] = [str(ffmpeg_bin), "-y"]
 
         # FLV and TS live recordings often have H.264 SPS/PPS after the first
@@ -943,8 +959,10 @@ class FfmpegConvertService:
         # receive 0 frames and the output MP4 has no video track — iPhone's
         # hardware decoder then falls back to audio-only while desktop players
         # recover by parsing NALUs directly from the bitstream.
-        if source.suffix.lower() in {".flv", ".ts"}:
-            cmd += ["-analyzeduration", "100M", "-probesize", "100M"]
+        # -fflags +genpts fixes DTS/PTS gaps common in IDM live captures.
+        if is_flv_ts:
+            cmd += ["-analyzeduration", "200M", "-probesize", "200M",
+                    "-fflags", "+genpts+igndts"]
 
         if seek > 0:
             cmd += ["-ss", f"{seek:.3f}"]
@@ -953,12 +971,23 @@ class FfmpegConvertService:
             "-i", str(source),
             "-progress", "pipe:1",
             "-nostats",
-            "-loglevel", "error",
+            "-loglevel", "warning",
         ]
 
         # ── Video codec + quality (delegated to helpers) ──────────────────
-        if encode_settings is None:
-            cmd += FfmpegConvertService._build_cpu_flags(preset, None)
+        if encode_settings is None or is_flv_ts:
+            # For FLV/TS: always use CPU (libx264) regardless of encode_settings.
+            # Hardware encoders (h264_qsv, h264_nvenc, h264_amf) produce
+            # non-monotonic output DTS when given FLV live captures with timestamp
+            # gaps — the patched timestamps result in a broken MP4 ctts box that
+            # iPhone's VideoToolbox hardware decoder rejects.
+            if is_flv_ts and encode_settings is not None \
+                    and encode_settings.encoder_key != "cpu":
+                logger.debug(
+                    "_build_cmd: forcing CPU encoder for FLV/TS source (was %s)",
+                    encode_settings.encoder_key,
+                )
+            cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
         else:
             encoder_key = encode_settings.encoder_key
             hw_spec: Optional[HwEncoderSpec] = _HW_ENCODER_CATALOG.get(encoder_key)
@@ -979,10 +1008,16 @@ class FfmpegConvertService:
             "-vf", ",".join(vf_parts),
             "-c:a", "aac",
             "-b:a", preset["audio_b"],
+            "-ac", "2",
             "-ar", "44100",
             "-movflags", "+faststart",
-            str(output),
         ]
+        # Explicit stream selection for FLV/TS: prevents silent wrong-stream
+        # picks when the container has non-standard stream ordering.
+        # 0:a? makes audio optional — handles video-only FLV without crashing.
+        if is_flv_ts:
+            cmd += ["-map", "0:v:0", "-map", "0:a?"]
+        cmd += [str(output)]
         return cmd
 
     @staticmethod
@@ -1114,6 +1149,11 @@ class FfmpegConvertService:
             raise ConversionError(
                 f"ffmpeg thoát với lỗi {proc.returncode}.\n{tail}"
             )
+
+        # Log FFmpeg warnings even on success — helps diagnose FLV/TS issues
+        # where returncode=0 but frames were dropped or codec errors occurred.
+        for line in stderr_lines:
+            logger.debug("ffmpeg: %s", line)
 
     @staticmethod
     def _concat(

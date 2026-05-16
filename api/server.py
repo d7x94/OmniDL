@@ -21,6 +21,7 @@ Token auth:
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import mimetypes
@@ -94,6 +95,25 @@ _analyse_cache: dict[str, dict] = {}
 _analyse_cache_lock = threading.Lock()
 _ANALYSE_CACHE_TTL  = 30.0  # seconds to keep result after completion
 _EXTRA_MIME = {".ts": "video/mp2t"}  # missing from Python's default mimetypes DB
+
+# Per-IP sliding-window rate limiter (stdlib only, no new deps).
+_RATE_LIMIT   = 60        # max requests per window
+_RATE_WINDOW  = 60.0      # seconds
+_rate_buckets: dict[str, collections.deque] = {}
+_rate_lock    = threading.Lock()
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if within limit, False if over. Thread-safe."""
+    now = time.monotonic()
+    with _rate_lock:
+        bucket = _rate_buckets.setdefault(ip, collections.deque())
+        while bucket and now - bucket[0] > _RATE_WINDOW:
+            bucket.popleft()
+        if len(bucket) >= _RATE_LIMIT:
+            return False
+        bucket.append(now)
+        return True
 
 
 def _analyse_cache_cleanup() -> None:
@@ -266,6 +286,9 @@ def create_app(
           • ?token=<token>                 query   (EventSource only)
         Skipped entirely when api_token is empty (open/local-only mode).
         """
+        client_ip = request.client.host if request.client else "unknown"
+        if not _check_rate_limit(client_ip):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded — try again later")
         if not _token:
             return   # auth disabled — local trusted network only
         provided = token  # query param first (SSE path)
@@ -274,8 +297,10 @@ def create_app(
             if auth_header.startswith("Bearer "):
                 provided = auth_header[7:]
         if not provided:
+            logger.warning("API auth: missing token from %s", client_ip)
             raise HTTPException(status_code=401, detail="Authorization required")
         if not secrets.compare_digest(provided, _token):
+            logger.warning("API auth: invalid token from %s", client_ip)
             raise HTTPException(status_code=403, detail="Invalid token")
 
     # ── Health check ──────────────────────────────────────────────────────
@@ -378,13 +403,15 @@ def create_app(
                 _analyse_cache[clean_url] = entry
 
                 def on_done(info: MediaInfo) -> None:
-                    entry["result"]["info"] = info
-                    entry["ts"] = time.monotonic()
+                    with _analyse_cache_lock:
+                        entry["result"]["info"] = info
+                        entry["ts"] = time.monotonic()
                     entry["done"].set()
 
                 def on_error(err: str) -> None:
-                    entry["result"]["error"] = err
-                    entry["ts"] = time.monotonic()
+                    with _analyse_cache_lock:
+                        entry["result"]["error"] = err
+                        entry["ts"] = time.monotonic()
                     entry["done"].set()
 
                 service.analyse_url(clean_url, on_done=on_done, on_error=on_error)
@@ -1268,7 +1295,9 @@ def create_app(
             path=str(target),
             media_type=mime,
             filename=target.name,
-            headers={"Content-Disposition": f'inline; filename="{target.name}"'},
+            headers={"Content-Disposition": 'inline; filename="{}"'.format(
+                "".join(c if c >= " " and c != '"' else "_" for c in target.name)
+            )},
         )
 
     @app.post(
@@ -1506,6 +1535,13 @@ def start_api_server(
         new_token = secrets.token_urlsafe(24)
         config.set_api_token(new_token)
         logger.info("OmniDL API: no token configured -- generated new token [stored in keyring]")
+    if not config.api_token:
+        logger.warning(
+            "OmniDL API: token generation failed — server will run in OPEN MODE "
+            "(no authentication) on %s:%d. Set an API token in Settings -> Remote API.",
+            config.api_host,
+            config.api_port,
+        )
 
     # Wire EventBus → SSE broadcaster before the server starts accepting
     # connections, so no events are missed.
@@ -1547,6 +1583,31 @@ def start_api_server(
             getattr(config, "api_ts_https_internal_port", 0):
         _bind_host = "127.0.0.1"
         _bind_port = config.api_ts_https_internal_port
+        # Pre-verify the saved port is actually bindable.  On Windows, ports in
+        # excluded ranges (Hyper-V / WSL2 reservations) return winerror 10013
+        # even on loopback, causing uvicorn to fail silently.  Pick a new port
+        # and persist it so subsequent restarts also use the working port.
+        import socket as _socket, random as _random
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+            try:
+                _s.bind((_bind_host, _bind_port))
+            except OSError:
+                logger.warning(
+                    "api_ts_https_internal_port %d is not bindable — picking a new port",
+                    _bind_port,
+                )
+                for _ in range(30):
+                    _candidate = _random.randint(50000, 65000)
+                    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s2:
+                        try:
+                            _s2.bind((_bind_host, _candidate))
+                            _bind_port = _candidate
+                            config.set("api_ts_https_internal_port", _bind_port)
+                            config.save()
+                            logger.info("api_ts_https_internal_port updated to %d", _bind_port)
+                            break
+                        except OSError:
+                            continue
     else:
         _bind_host = config.api_host
         _bind_port = config.api_port
@@ -1572,10 +1633,12 @@ def start_api_server(
     uv_server = uvicorn.Server(uv_config)
 
     def _run_server() -> None:
+        _tok_status = "[set]" if config.api_token else "[NONE - open mode]"
         logger.info(
-            "OmniDL API server listening on http://%s:%d  (token: [set])",
+            "OmniDL API server listening on http://%s:%d  (token: %s)",
             _bind_host,
             _bind_port,
+            _tok_status,
         )
         uv_server.run()
 

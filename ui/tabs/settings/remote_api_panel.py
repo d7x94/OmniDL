@@ -29,6 +29,19 @@ if TYPE_CHECKING:
 logger = __import__("logging").getLogger(__name__)
 
 
+def _pick_bindable_port(lo: int = 50000, hi: int = 65000) -> int:
+    import socket
+    for _ in range(30):
+        port = random.randint(lo, hi)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return random.randint(lo, hi)
+
+
 class RemoteApiPanel(_BasePanel):
     """
     Renders the 🔌 REMOTE API section and owns all related handlers.
@@ -406,7 +419,7 @@ class RemoteApiPanel(_BasePanel):
                 self._app.toast("Khong tim thay tailscale CLI — cai Tailscale tren may nay.", "error")
                 return
 
-            new_port = random.randint(50000, 65000)
+            new_port = _pick_bindable_port()
             cfg.set("api_ts_https_enabled", True)
             cfg.set("api_ts_https_internal_port", new_port)
             cfg.save()
@@ -514,7 +527,7 @@ class RemoteApiPanel(_BasePanel):
             self._app.toast("Hay bat HTTPS Profile truoc khi reset.", "error")
             return
 
-        new_port  = random.randint(50000, 65000)
+        new_port  = _pick_bindable_port()
         new_token = _secrets.token_urlsafe(24)
 
         cfg.set("api_ts_https_internal_port", new_port)

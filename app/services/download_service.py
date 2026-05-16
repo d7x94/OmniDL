@@ -263,30 +263,57 @@ class DownloadService:
                             else:
                                 # BUG-TT-19 FIX: checker returned None -- could be
                                 # bot-detection blocking the page scrape, not a
-                                # confirmed "not live" signal. Wait 5s and retry
-                                # extract_info once (same pattern as BUG-TT-12 at
-                                # download time). TikTok API races usually clear <5s.
-                                logger.info(
-                                    "TikTok live checker: @%s -- roomId not found"
-                                    " (bot-detection or API race);"
-                                    " waiting 5s, retrying extract_info",
-                                    _username,
-                                )
+                                # confirmed "not live" signal. TikTok API windows
+                                # of inconsistency can last 30-90s; retry checker
+                                # + extract_info up to 3 times with backoff.
                                 import time as _time_tt19  # noqa: PLC0415
-                                _time_tt19.sleep(5)
-                                try:
-                                    _retry_info = self._engine.extract_info(url)
-                                    self._bus.publish(
-                                        EventBus.ANALYSIS_DONE, info=_retry_info
+                                for _retry_delay in (10, 20, 30):
+                                    logger.info(
+                                        "TikTok live checker: @%s -- roomId not found"
+                                        " (bot-detection or API race);"
+                                        " waiting %ds, retrying",
+                                        _username, _retry_delay,
                                     )
-                                    on_done(_retry_info)
-                                    return
-                                except Exception as _retry_exc:
-                                    logger.debug(
-                                        "BUG-TT-19: retry extract_info also"
-                                        " failed: %s",
-                                        _retry_exc,
+                                    _time_tt19.sleep(_retry_delay)
+                                    _room_result2 = _check_tiktok_live_with_room_id(
+                                        _username,
+                                        proxy=proxy,
+                                        cookie_file=_tt_cookie_txt,
+                                        share_url=resolved,
                                     )
+                                    if _room_result2:
+                                        _live_url2, _room_id2 = _room_result2
+                                        logger.info(
+                                            "BUG-TT-19: checker succeeded on %ds"
+                                            " retry @%s roomId=%s",
+                                            _retry_delay, _username, _room_id2,
+                                        )
+                                        _info2 = MediaInfo(
+                                            url=_live_url2,
+                                            title=f"@{_username} -- TikTok Live",
+                                            uploader=_username,
+                                            platform="TikTok",
+                                            source_engine="yt_dlp",
+                                            is_live=True,
+                                        )
+                                        self._bus.publish(
+                                            EventBus.ANALYSIS_DONE, info=_info2
+                                        )
+                                        on_done(_info2)
+                                        return
+                                    try:
+                                        _retry_info = self._engine.extract_info(url)
+                                        self._bus.publish(
+                                            EventBus.ANALYSIS_DONE, info=_retry_info
+                                        )
+                                        on_done(_retry_info)
+                                        return
+                                    except Exception as _retry_exc:
+                                        logger.debug(
+                                            "BUG-TT-19: retry after %ds also"
+                                            " failed: %s",
+                                            _retry_delay, _retry_exc,
+                                        )
                                 # fall through to on_error() below
                     except Exception as _tt_exc:
                         logger.debug(
