@@ -599,6 +599,8 @@ class ServiceFacade:
     def get_history(self):               return self._svc.get_history()
     def search_history(self, q):         return self._svc.search_history(q)
     def clear_history(self):             self._svc.clear_history()
+    def delete_history_entry(self, tid): self._svc.delete_history_entry(tid)
+    def get_history_stats(self):         return self._svc.get_history_stats()
     def get_download_dir(self) -> Path:  return self._cfg.download_dir
     def set_download_dir(self, p: Path): self._cfg.set("download_dir", str(p))
 

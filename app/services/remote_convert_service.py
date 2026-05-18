@@ -54,9 +54,10 @@ logger = logging.getLogger(__name__)
 
 # ── Validation constants ──────────────────────────────────────────────────────
 
-_VALID_ENCODERS: frozenset[str] = frozenset(_HW_ENCODER_CATALOG.keys()) | {"cpu"}
+_VALID_ENCODERS: frozenset[str] = frozenset(_HW_ENCODER_CATALOG.keys()) | {"cpu", "auto"}
 _VALID_QUALITIES: frozenset[str] = frozenset({"high", "standard", "small", "custom"})
 _VALID_SPEEDS: frozenset[str] = frozenset({"quality", "balanced", "fast"})
+_VALID_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1"})
 _CRF_MIN, _CRF_MAX = 0, 51
 
 # Maximum number of jobs kept in memory (oldest terminal jobs purged first)
@@ -106,6 +107,7 @@ class RemoteConvertService:
         speed_preset: str = "balanced",
         custom_crf:   int = 23,
         target_ext:   str = "mp4",
+        output_codec: str = "h264",
     ) -> ConversionJob:
         """
         Validate settings, create a ConversionJob, and dispatch to ConvertQueue.
@@ -138,6 +140,17 @@ class RemoteConvertService:
                 f"Valid values: {sorted(_VALID_SPEEDS)}"
             )
         custom_crf = max(_CRF_MIN, min(_CRF_MAX, int(custom_crf)))
+        if output_codec not in _VALID_CODECS:
+            raise ValueError(
+                f"output_codec '{output_codec}' is not allowed. "
+                f"Valid values: {sorted(_VALID_CODECS)}"
+            )
+
+        # Resolve "auto" → best available GPU encoder, fallback to CPU
+        if encoder_key == "auto":
+            opts = get_available_encoder_options()
+            gpu_keys = [k for k, _ in opts if k != "cpu"]
+            encoder_key = gpu_keys[0] if gpu_keys else "cpu"
 
         # ── Create job ────────────────────────────────────────────────────
         job = ConversionJob(
@@ -147,6 +160,7 @@ class RemoteConvertService:
             quality         = quality,
             speed_preset    = speed_preset,
             custom_crf      = custom_crf,
+            output_codec    = output_codec,
             status          = ConversionStatus.PENDING,
         )
 
@@ -160,6 +174,7 @@ class RemoteConvertService:
             quality       = quality,
             speed_preset  = speed_preset,
             custom_quality= custom_crf,
+            output_codec  = output_codec,
         )
 
         def _on_start() -> None:
@@ -243,6 +258,7 @@ class RemoteConvertService:
         speed_preset: str = "balanced",
         custom_crf:   int = 23,
         target_ext:   str = "mp4",
+        output_codec: str = "h264",
     ) -> ConversionJob:
         """
         Start a conversion job on an arbitrary local file.
@@ -259,7 +275,25 @@ class RemoteConvertService:
             speed_preset   = speed_preset,
             custom_crf     = custom_crf,
             target_ext     = target_ext,
+            output_codec   = output_codec,
         )
+
+    def auto_convert_tiktok_live(self, task, **kwargs) -> None:
+        mi = getattr(task, "media_info", None)
+        if not (mi and mi.is_live and "tiktok" in task.url.lower()):
+            return
+        src = Path(task.filename)
+        if not src.is_file() or src.suffix.lower() == ".mp4":
+            return
+        try:
+            self.start_convert(
+                source_task_id=task.id,
+                file_path=src,
+                encoder_key="auto",
+            )
+            logger.info("Auto-converting TikTok livestream (remote): %s", src.name)
+        except Exception:
+            logger.exception("Auto-convert failed for %s", src.name)
 
     def delete_convert_file(
         self, job_id: str, allowed_dir: Path
@@ -387,5 +421,9 @@ class RemoteConvertService:
             return
         # Sort by finished_at ascending, remove oldest first
         terminal.sort(key=lambda j: j.finished_at)
-        for j in terminal[:max(1, len(terminal) // 2)]:
+        to_remove = terminal[:max(1, len(terminal) // 2)]
+        if not to_remove:
+            logger.warning("_purge_old_jobs: registry at %d jobs but all are active - cannot purge", len(self._jobs))
+            return
+        for j in to_remove:
             self._jobs.pop(j.job_id, None)

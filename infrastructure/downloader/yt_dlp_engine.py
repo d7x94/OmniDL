@@ -11,6 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse as _urlparse
 
 import yt_dlp
 
@@ -211,8 +212,6 @@ def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
     Security: every candidate path is validated by _validate_cookie_path_raw()
     (same CWE-22 logic as _validate_cookie_path()) before being returned.
     """
-    from urllib.parse import urlparse as _urlparse
-
     # ── Step 1: detect platform from URL hostname ─────────────────────────
     platform_key: str | None = None
     try:
@@ -1756,8 +1755,27 @@ class YtDlpEngine:
             import sys as _sys_tt16
             _hls_result = self._extract_tiktok_live_hls_url(task.url)
             if _hls_result:
-                _hls_url, _hls_vid_id = _hls_result
+                _hls_url, _hls_vid_id, _hls_uploader, _hls_title = _hls_result
                 _live_vid_id = _hls_vid_id
+                # Enrich task.media_info with live metadata from HLS extraction
+                # (analyse-phase info is often incomplete for TikTok live)
+                if task.media_info:
+                    if _hls_uploader and not task.media_info.uploader:
+                        task.media_info.uploader = _hls_uploader
+                    _mi_title = task.media_info.title or ""
+                    _is_synthetic_mi_title = (
+                        not _mi_title
+                        or _mi_title == "Unknown"
+                        or _mi_title.lower().startswith("tiktok-live video")
+                        or (
+                            _hls_uploader
+                            and _mi_title.lstrip("@").lower().startswith(
+                                _hls_uploader.lower()
+                            )
+                        )
+                    )
+                    if _hls_title and _is_synthetic_mi_title:
+                        task.media_info.title = _hls_title
                 # Build output path using same ASCII-safe pattern as outtmpl
                 if _sys_tt16.platform == "win32":
                     _direct_out_dir = Path(tempfile.gettempdir()) / "omnidl_live"
@@ -1784,6 +1802,7 @@ class YtDlpEngine:
                 _tt16_attempt = 0
                 _tt16_current_hls = _hls_url
                 _tt16_bad_bases: set[str] = set()
+                _tt16_bad_hosts: set[str] = set()
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
                         _seg_path = _direct_out_path if _tt16_attempt == 0 else (
@@ -1863,7 +1882,7 @@ class YtDlpEngine:
                                 )
                                 _fresh = self._extract_tiktok_live_hls_url(task.url)
                                 if _fresh:
-                                    _tt16_current_hls, _ = _fresh
+                                    _tt16_current_hls = _fresh[0]
                                     _tt16_attempt += 1
                                     time.sleep(2)
                                     continue
@@ -1901,13 +1920,15 @@ class YtDlpEngine:
                                     # can be tried instead.
                                     _bad_base = _tt16_current_hls.split("?")[0]
                                     _tt16_bad_bases.add(_bad_base)
+                                    _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
                                     _fresh0 = self._extract_tiktok_live_hls_url(
                                         task.url,
                                         _exclude_bases=frozenset(_tt16_bad_bases),
+                                        _exclude_hosts=frozenset(_tt16_bad_hosts),
                                     )
                                     _base_new = _fresh0[0].split("?")[0] if _fresh0 else ""
                                     if _fresh0 and _base_new not in _tt16_bad_bases:
-                                        _tt16_current_hls, _ = _fresh0
+                                        _tt16_current_hls = _fresh0[0]
                                         try:
                                             Path(_direct_out_path).unlink(missing_ok=True)
                                         except OSError:
@@ -1922,13 +1943,15 @@ class YtDlpEngine:
                                 if _main_size == 0:
                                     _bad_base2 = _tt16_current_hls.split("?")[0]
                                     _tt16_bad_bases.add(_bad_base2)
+                                    _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
                                     _fresh1 = self._extract_tiktok_live_hls_url(
                                         task.url,
                                         _exclude_bases=frozenset(_tt16_bad_bases),
+                                        _exclude_hosts=frozenset(_tt16_bad_hosts),
                                     )
                                     _base_new2 = _fresh1[0].split("?")[0] if _fresh1 else ""
                                     if _fresh1 and _base_new2 not in _tt16_bad_bases:
-                                        _tt16_current_hls, _ = _fresh1
+                                        _tt16_current_hls = _fresh1[0]
                                         try:
                                             Path(_direct_out_path).unlink(missing_ok=True)
                                         except OSError:
@@ -1981,6 +2004,39 @@ class YtDlpEngine:
                 )
 
         if not _direct_ffmpeg_ok:
+            # BUG-YTDLP-PROGRESS FIX: yt-dlp's FFmpegFD for live streams may
+            # not emit progress hook updates reliably (0 bytes during startup,
+            # then sparse). Add a file-size polling thread identical to the
+            # direct FFmpeg path so the UI shows "⏺ X MiB đã ghi" instead of
+            # silent "0%". Thread reads task.filename (set by progress hook at
+            # line 2717-2718 once yt-dlp opens the output file) and polls size.
+            _ytdlp_poll_stop = None
+            if is_live and on_progress:
+                import threading as _th_ytdlp
+                _ytdlp_poll_stop = _th_ytdlp.Event()
+
+                def _ytdlp_live_poller(
+                    _stop=_ytdlp_poll_stop,
+                    _task=task,
+                    _cb=on_progress,
+                ) -> None:
+                    while not _stop.wait(2.0):
+                        _f = _task.filename
+                        if not _f:
+                            continue
+                        try:
+                            _sz = Path(_f).stat().st_size
+                        except OSError:
+                            continue
+                        if _sz > 0:
+                            _task.downloaded_bytes = _sz
+                            _task.eta = f"⏺ {_fmt_bytes(_sz)} đã ghi"
+                            _cb(_task)
+
+                _th_ytdlp.Thread(
+                    target=_ytdlp_live_poller, daemon=True
+                ).start()
+
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([task.url])
@@ -2146,6 +2202,9 @@ class YtDlpEngine:
                 if task.is_cancellation_requested:
                     raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
                 raise RuntimeError(str(exc)) from exc
+            finally:
+                if _ytdlp_poll_stop:
+                    _ytdlp_poll_stop.set()
 
         # ── Resolve final filename ─────────────────────────────────────────
         # BUG-TT-EFF: if yt-dlp selected a vcodec=none stream for a non-audio
@@ -2303,9 +2362,23 @@ class YtDlpEngine:
                 try:
                     from utils.helpers import sanitise_filename as _sanitise
                     _mi = task.media_info
+                    import re as _re_ln
                     _uploader = (_mi.uploader if _mi and _mi.uploader else "Unknown")[:50]
                     _title    = (_mi.title    if _mi and _mi.title    else "")[:80]
                     _vid_id   = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
+                    # Strip synthetic/redundant titles before building filename
+                    if _re_ln.match(r"(?i)tiktok-live video\b", _title):
+                        # yt-dlp synthetic: "tiktok-live video #<id> <date>_<time>"
+                        _title = ""
+                    elif _title.lstrip("@").lower().startswith(_uploader.lower()):
+                        # download_service synthetic: "@username -- TikTok Live"
+                        _title = ""
+                    else:
+                        # Strip trailing timestamp yt-dlp appends to stream titles
+                        # e.g. "Gift gallery 2026-05-05 09_40" -> "Gift gallery"
+                        _title = _re_ln.sub(
+                            r"\s*\d{4}-\d{2}-\d{2}[ _]\d{2}[_:]\d{2}\s*$", "", _title
+                        ).strip()
                     _parts = [_uploader, f"[LIVE] {rec_ts}"]
                     if _title:
                         _parts.append(_title)
@@ -2353,8 +2426,9 @@ class YtDlpEngine:
         self,
         task_url: str,
         _exclude_bases: "frozenset[str] | None" = None,
-    ) -> "tuple[str, str] | None":
-        """Extract (hls_url, video_id) from TikTok live via yt-dlp skip_download.
+        _exclude_hosts: "frozenset[str] | None" = None,
+    ) -> "tuple[str, str, str, str] | None":
+        """Extract (hls_url, video_id, uploader, title) from TikTok live via yt-dlp skip_download.
 
         Returns None if extraction fails or no suitable HLS format found.
         The returned hls_url is the best m3u8 URL from the format list.
@@ -2411,13 +2485,14 @@ class YtDlpEngine:
             key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True
         )
         _excl = _exclude_bases or frozenset()
+        _excl_h = _exclude_hosts or frozenset()
         hls_url = ""
         for _f in _m3u8_fmts:
             _u = _f["url"]
-            if _u.split("?")[0] not in _excl:
+            if _u.split("?")[0] not in _excl and _urlparse(_u).netloc not in _excl_h:
                 hls_url = _u
                 break
-        if not hls_url and _m3u8_fmts and _excl:
+        if not hls_url and _m3u8_fmts and (_excl or _excl_h):
             # BUG-TT-24 FIX: all HLS CDN paths excluded (persistent 404).
             # FLV CDN infra (pull-flv-*) is separate from HLS (pull-hls-*),
             # so try HTTP-FLV before falling back to an already-excluded HLS path.
@@ -2426,6 +2501,7 @@ class YtDlpEngine:
                 if f.get("url", "").startswith("http")
                 and (f.get("ext") == "flv" or ".flv" in f.get("url", ""))
                 and f.get("url", "").split("?")[0] not in _excl
+                and _urlparse(f.get("url", "")).netloc not in _excl_h
             ]
             if _flv_fmts:
                 _flv_fmts.sort(
@@ -2445,7 +2521,7 @@ class YtDlpEngine:
             for fmt in formats:
                 u = fmt.get("url", "")
                 if ".m3u8" in u and u.startswith("http"):
-                    if u.split("?")[0] not in _excl:
+                    if u.split("?")[0] not in _excl and _urlparse(u).netloc not in _excl_h:
                         hls_url = u
                         break
             if not hls_url:
@@ -2457,8 +2533,12 @@ class YtDlpEngine:
         if not hls_url:
             logger.debug("BUG-TT-16: no HLS URL found in formats (count=%d)", len(formats))
             return None
+        uploader = (
+            info.get("uploader") or info.get("uploader_id") or info.get("channel") or ""
+        )
+        title = info.get("title") or ""
         logger.debug("BUG-TT-16: extracted HLS URL for %s (id=%s)", task_url[:60], video_id)
-        return hls_url, video_id
+        return hls_url, video_id, uploader, title
 
     def _download_tiktok_live_direct(
         self,
@@ -2499,14 +2579,31 @@ class YtDlpEngine:
             # Parse the decrypted cookie file and pass via -headers to FFmpeg.
             _ffmpeg_cookie_hdr = _build_ffmpeg_cookie_header(_usable)
 
+        import threading
+        from collections import deque
+
+        # BUG-FLV-PERSIST FIX: FLV streams are continuous HTTP connections —
+        # HLS-specific options (-http_persistent, -reconnect_at_eof,
+        # -reconnect_on_http_error, -reconnect_max_retries) are invalid for
+        # FLV inputs and cause "Option http_persistent not found" → exit code
+        # 2880417800. Detect FLV and skip those options.
+        _is_flv_url = ".flv" in hls_url.lower()
+
         cmd = [
             ffmpeg_bin,
             "-hide_banner", "-loglevel", "error",
-            # Reconnect flags: retry on any HTTP error (CDN token rotation)
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "10",
-            "-reconnect_on_http_error", "403,404,503",
+        ]
+        if not _is_flv_url:
+            cmd += [
+                "-reconnect_on_http_error", "403,404,503",
+                "-reconnect_at_eof", "1",
+                "-reconnect_max_retries", "10",
+                "-http_persistent", "0",
+            ]
+        cmd += [
             "-user_agent", (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -2538,11 +2635,33 @@ class YtDlpEngine:
                 except OSError:
                     pass
 
+        # Real-time stderr reader: kills FFmpeg immediately on 404/403 instead
+        # of waiting the full reconnect_delay_max (10s) timeout per failure.
+        _stderr_lines: deque[str] = deque(maxlen=20)
+        _kill_on_http_err = threading.Event()
+
+        def _read_stderr(pipe: "Any", lines: "deque[str]", ev: threading.Event) -> None:
+            try:
+                for raw in pipe:
+                    line = raw.decode("utf-8", errors="replace").rstrip()
+                    lines.append(line)
+                    if "404 Not Found" in line or "403 Forbidden" in line:
+                        ev.set()
+            except Exception:
+                pass
+
+        _stderr_thread = threading.Thread(
+            target=_read_stderr,
+            args=(proc.stderr, _stderr_lines, _kill_on_http_err),
+            daemon=True,
+        )
+        _stderr_thread.start()
+
         task.status = DownloadStatus.DOWNLOADING
         task.filename = out_path
         _last_size = 0
-        _stall_count = 0
-        _STALL_LIMIT = 60  # 60 * 2s = 120s stall watchdog
+        _stall_seconds = 0
+        _STALL_LIMIT_S = 120  # seconds without new data → stream ended
 
         try:
             while proc.poll() is None:
@@ -2552,20 +2671,31 @@ class YtDlpEngine:
                     raise yt_dlp.utils.DownloadError("Cancelled by user")
                 task.wait_if_paused()
 
+                # Early kill on 404/403 — saves ~10s per CDN failure
+                if _kill_on_http_err.is_set() and proc.poll() is None:
+                    proc.kill()
+
                 # Progress via file size
                 try:
                     cur_size = Path(out_path).stat().st_size
                 except OSError:
                     cur_size = 0
 
+                elapsed = task.elapsed
                 if cur_size > _last_size:
                     task.downloaded_bytes = cur_size
-                    task.eta = f"⏺ {_fmt_bytes(cur_size)} đã ghi"
+                    task.eta = (
+                        f"⏺ {_fmt_bytes(cur_size)} | {elapsed}"
+                        if elapsed
+                        else f"⏺ {_fmt_bytes(cur_size)} đã ghi"
+                    )
                     _last_size = cur_size
-                    _stall_count = 0
+                    _stall_seconds = 0
                 else:
-                    _stall_count += 1
-                    if _stall_count >= _STALL_LIMIT:
+                    _stall_seconds += 1
+                    if elapsed:
+                        task.eta = f"⏺ {elapsed}"
+                    if _stall_seconds >= _STALL_LIMIT_S:
                         proc.kill()
                         raise RuntimeError(
                             "FFmpeg stall watchdog: không có dữ liệu trong 120s — "
@@ -2574,20 +2704,16 @@ class YtDlpEngine:
 
                 if on_progress:
                     on_progress(task)
-                time.sleep(2)
+                time.sleep(1)
         except Exception:
             if proc.poll() is None:
                 proc.kill()
             raise
 
+        _stderr_thread.join(timeout=2)
         ret = proc.returncode
         if ret != 0:
-            stderr_out = b""
-            try:
-                stderr_out = proc.stderr.read() if proc.stderr else b""
-            except Exception:
-                pass
-            err_msg = stderr_out.decode("utf-8", errors="replace").strip()[-300:]
+            err_msg = "\n".join(_stderr_lines)[-300:]
             raise RuntimeError(
                 f"FFmpeg exited with code {ret}.\n"
                 f"{err_msg or 'Không có thông tin lỗi.'}"
@@ -2627,15 +2753,19 @@ class YtDlpEngine:
                 if speed:
                     task.speed = _fmt_speed(speed)
                 eta = d.get("eta")
-                if eta is not None:
+                if is_live:
+                    # FIX-1: For livestreams, always show elapsed recording time
+                    # instead of yt-dlp's eta (which is meaningless for open-ended
+                    # streams). Format: "⏺ X MiB | MM:SS" or fallbacks.
+                    elapsed = task.elapsed
+                    if task.downloaded_bytes > 0 and elapsed:
+                        task.eta = f"⏺ {_fmt_bytes(task.downloaded_bytes)} | {elapsed}"
+                    elif task.downloaded_bytes > 0:
+                        task.eta = f"⏺ {_fmt_bytes(task.downloaded_bytes)} đã ghi"
+                    elif elapsed:
+                        task.eta = f"⏺ {elapsed}"
+                elif eta is not None:
                     task.eta = _fmt_eta(eta)
-                # FIX-1: Live streams never have total_bytes (open-ended HLS).
-                # Show bytes recorded so user knows the download is active.
-                # Condition is guarded by is_live so VODs are never affected —
-                # even VODs that transiently report total_bytes=0 in the first
-                # few hook calls will not show this message.
-                elif is_live and task.total_bytes == 0 and task.downloaded_bytes > 0:
-                    task.eta = f"⏺ {_fmt_bytes(task.downloaded_bytes)} đã ghi"
                 _fname = d.get("filename")
                 if _fname and Path(_fname).is_absolute():
                     task.filename = _fname

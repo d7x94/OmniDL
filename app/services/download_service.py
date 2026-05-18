@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
-from app.services.ffmpeg_convert_service import FfmpegConvertService
+from app.services.ffmpeg_convert_service import ConvertQueue, EncodeSettings, FfmpegConvertService
 from app.services.taildrop_service import TaildropService
 from app.services.thumbnail_service import ThumbnailService
 from domain.enums.download_status import DownloadStatus
@@ -98,6 +98,32 @@ class DownloadService:
         # torn down together with DownloadService.close().
         self._taildrop = TaildropService(config=self._config, event_bus=self._bus)
         self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._taildrop.on_download_completed)
+
+        self._auto_convert_queue = ConvertQueue(max_concurrent=1)
+        self._bus.subscribe(EventBus.DOWNLOAD_COMPLETED, self._auto_convert_tiktok_live)
+
+    def _auto_convert_tiktok_live(self, task: DownloadTask, **kwargs) -> None:
+        mi = task.media_info
+        if not (mi and mi.is_live and "tiktok" in task.url.lower()):
+            return
+        # When the Remote API is enabled, RemoteConvertService subscribes to the
+        # same DOWNLOAD_COMPLETED event and handles auto-convert with full job
+        # tracking and GPU→CPU fallback.  Running both simultaneously causes two
+        # FFmpeg processes to write to the same temp file, corrupting the output.
+        if self._config.api_enabled:
+            return
+        src = Path(task.filename)
+        if not src.is_file() or src.suffix.lower() == ".mp4":
+            return
+        logger.info("Auto-converting TikTok livestream: %s", src.name)
+        self._auto_convert_queue.submit(
+            source=src,
+            encode_settings=EncodeSettings(encoder_key="auto"),
+            on_done=self._taildrop.send_converted_file,
+            on_error=lambda err: logger.warning(
+                "Auto-convert TikTok live failed: %s - %s", src.name, err
+            ),
+        )
 
     # ── Analysis (async) ──────────────────────────────────────────────────
 
@@ -434,6 +460,23 @@ class DownloadService:
 
     def clear_history(self) -> None:
         self._history.clear()
+
+    def delete_history_entry(self, task_id: str) -> None:
+        self._history.remove(task_id)
+
+    def get_history_stats(self) -> dict:
+        entries = self._history.all()
+        by_platform: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        total_bytes = 0
+        for e in entries:
+            p = e.get("platform", "unknown")
+            s = e.get("status", "unknown")
+            by_platform[p] = by_platform.get(p, 0) + 1
+            by_status[s] = by_status.get(s, 0) + 1
+            total_bytes += e.get("downloaded_bytes", 0)
+        return {"total": len(entries), "total_bytes": total_bytes,
+                "by_platform": by_platform, "by_status": by_status}
 
     @property
     def taildrop(self) -> "TaildropService":

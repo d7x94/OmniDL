@@ -929,10 +929,11 @@ class TestInstagramLive:
             f"when total_bytes==0, got: {task.eta!r} (regression guard FIX-1)"
         )
 
-    def test_live_hook_normal_eta_takes_precedence(self):
+    def test_live_hook_ignores_ytdlp_eta(self):
         """
-        If yt-dlp does provide an eta (unusual for live but possible),
-        the normal eta formatting takes precedence over the bytes string.
+        yt-dlp's eta is meaningless for open-ended livestreams (no known end).
+        Even when yt-dlp provides an eta, the hook must ignore it and show the
+        bytes-recorded format instead.
         """
         cfg = make_config()
         engine = YtDlpEngine(cfg)
@@ -945,11 +946,14 @@ class TestInstagramLive:
             "total_bytes": 0,
             "total_bytes_estimate": 0,
             "speed": None,
-            "eta": 90,   # yt-dlp provided eta = 90 seconds
+            "eta": 90,   # yt-dlp provided eta = 90 seconds — must be ignored
         })
 
-        assert task.eta == "01:30", (
-            f"When yt-dlp provides eta, it must be used as-is, got: {task.eta!r}"
+        assert task.eta != "01:30", (
+            f"Live hook must NOT use yt-dlp's numeric eta, got: {task.eta!r}"
+        )
+        assert "ghi" in task.eta, (
+            f"Live hook must show bytes-recorded format, got: {task.eta!r}"
         )
 
 

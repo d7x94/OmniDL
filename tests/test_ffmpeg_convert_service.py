@@ -563,7 +563,11 @@ class TestEncodeSettings:
 
 class TestHwEncoderCatalog:
     def test_all_known_encoders_present(self):
-        expected = {"nvenc", "qsv", "amf", "videotoolbox"}
+        expected = {
+            "nvenc", "qsv", "amf", "videotoolbox",
+            "nvenc_hevc", "qsv_hevc", "amf_hevc",
+            "nvenc_av1", "qsv_av1", "amf_av1",
+        }
         assert expected == set(_HW_ENCODER_CATALOG.keys())
 
     def test_nvenc_uses_cq_flag(self):

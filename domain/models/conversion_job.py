@@ -59,6 +59,7 @@ class ConversionJob:
     quality:      str = "standard"
     speed_preset: str = "balanced"
     custom_crf:   int = 23
+    output_codec: str = "h264"
 
     # ── Mutable state ─────────────────────────────────────────────────────
     status:          str   = ConversionStatus.PENDING
@@ -108,6 +109,7 @@ class ConversionJob:
                 "quality":         self.quality,
                 "speed_preset":    self.speed_preset,
                 "custom_crf":      self.custom_crf,
+                "output_codec":    self.output_codec,
                 "status":          self.status,
                 "progress":        self.progress,
                 "output_filename": self.output_filename,

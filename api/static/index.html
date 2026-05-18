@@ -408,6 +408,15 @@
       height:100%; background:#0891b2; border-radius:2px;
       transition:width .4s linear;
     }
+    @keyframes qi-indeterminate {
+      0%   { transform: translateX(-120%); }
+      100% { transform: translateX(520%); }
+    }
+    .qi-convert-fill.indeterminate {
+      width: 25% !important;
+      transition: none;
+      animation: qi-indeterminate 1.4s ease-in-out infinite;
+    }
     /* Preview modal */
     #preview-overlay {
       position: fixed; inset: 0;
@@ -605,6 +614,29 @@
       word-break: break-all;
       line-height: 1.4;
     }
+    .fb-toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 6px 0 10px;
+      align-items: center;
+    }
+    .fb-toolbar input[type="search"] {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .fb-toolbar select {
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+    }
     .fb-item {
       display: flex;
       align-items: flex-start;
@@ -769,6 +801,15 @@
         <button class="btn btn-secondary btn-sm" id="fb-up-btn" onclick="browseUp()" style="display:none">⬆ Lên</button>
         <div class="fb-path" id="fb-path"></div>
       </div>
+      <div class="fb-toolbar">
+        <input type="search" id="fb-search" placeholder="Tìm tên file..." oninput="renderFileBrowser()" />
+        <select id="fb-sort" onchange="renderFileBrowser()">
+          <option value="name-asc">Tên A-Z</option>
+          <option value="name-desc">Tên Z-A</option>
+          <option value="date-desc">Mới nhất</option>
+          <option value="date-asc">Cũ nhất</option>
+        </select>
+      </div>
       <div id="fb-list"></div>
     </div>
 
@@ -819,6 +860,15 @@
         <div class="radio-btn"       data-cvspd="quality"  onclick="setCvspd(this)">Chậm<br><span style="font-size:10px;font-weight:400">Nén tốt</span></div>
         <div class="radio-btn active" data-cvspd="balanced" onclick="setCvspd(this)">Cân bằng</div>
         <div class="radio-btn"       data-cvspd="fast"     onclick="setCvspd(this)">Nhanh<br><span style="font-size:10px;font-weight:400">File lớn hơn</span></div>
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label>Codec output</label>
+      <div class="radio-grid" id="cvcodec-grid">
+        <div class="radio-btn active" data-cvcodec="h264" onclick="setCvcodec(this)">H.264<br><span style="font-size:10px;font-weight:400">Tương thích cao nhất</span></div>
+        <div class="radio-btn"       data-cvcodec="hevc" onclick="setCvcodec(this)">H.265 / HEVC<br><span style="font-size:10px;font-weight:400">~30% nhỏ hơn</span></div>
+        <div class="radio-btn"       data-cvcodec="av1"  onclick="setCvcodec(this)">AV1<br><span style="font-size:10px;font-weight:400">~50% nhỏ hơn</span></div>
       </div>
     </div>
 
@@ -984,7 +1034,10 @@ function connectSSE() {
     // Update progress bar inline without full re-render (performance)
     const fill = document.getElementById(`cvfill-${j.job_id}`);
     const pct  = document.getElementById(`cvpct-${j.job_id}`);
-    if (fill) fill.style.width = j.progress + '%';
+    if (fill) {
+      if (j.progress > 0) fill.classList.remove('indeterminate');
+      fill.style.width = j.progress + '%';
+    }
     if (pct)  pct.textContent  = j.progress.toFixed(0) + '%';
   });
   evtSrc.addEventListener('convert_completed', e => {
@@ -1369,7 +1422,7 @@ function queueItemHtml(t) {
           <span id="cvpct-${activeJob.job_id}">${activeJob.progress.toFixed(0)}%</span>
         </div>
         <div class="qi-convert-track">
-          <div class="qi-convert-fill" id="cvfill-${activeJob.job_id}"
+          <div class="qi-convert-fill${activeJob.progress === 0 ? ' indeterminate' : ''}" id="cvfill-${activeJob.job_id}"
                style="width:${activeJob.progress}%"></div>
         </div>
         <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
@@ -1611,9 +1664,10 @@ async function openConvertSheet(taskId, title) {
   document.getElementById('convert-sheet-sub').textContent = title || taskId;
 
   // Reset selections to defaults
-  _setActive('cvq-grid',   'data-cvq',   'standard');
-  _setActive('cvenc-grid', 'data-cvenc', 'cpu');
-  _setActive('cvspd-grid', 'data-cvspd', 'balanced');
+  _setActive('cvq-grid',      'data-cvq',      'standard');
+  _setActive('cvenc-grid',    'data-cvenc',    'cpu');
+  _setActive('cvspd-grid',    'data-cvspd',    'balanced');
+  _setActive('cvcodec-grid',  'data-cvcodec',  'h264');
   document.getElementById('crf-row').style.display = 'none';
   document.getElementById('crf-slider').value = '23';
   document.getElementById('crf-val').textContent = '23';
@@ -1645,8 +1699,9 @@ function setCvq(el) {
   document.getElementById('crf-row').style.display =
     el.dataset.cvq === 'custom' ? 'flex' : 'none';
 }
-function setCvenc(el) { _setActive('cvenc-grid', 'data-cvenc', el.dataset.cvenc); }
-function setCvspd(el)  { _setActive('cvspd-grid', 'data-cvspd', el.dataset.cvspd); }
+function setCvenc(el)   { _setActive('cvenc-grid',  'data-cvenc',   el.dataset.cvenc); }
+function setCvspd(el)   { _setActive('cvspd-grid',  'data-cvspd',   el.dataset.cvspd); }
+function setCvcodec(el) { _setActive('cvcodec-grid','data-cvcodec', el.dataset.cvcodec); }
 
 function _setActive(gridId, attr, value) {
   document.querySelectorAll(`#${gridId} .radio-btn`).forEach(b => {
@@ -1660,9 +1715,10 @@ async function submitConvert() {
   const filePath = _pendingFilePath;
   if (!taskId && !filePath) return;
 
-  const quality     = document.querySelector('#cvq-grid   .radio-btn.active')?.dataset.cvq   || 'standard';
-  const encoderKey  = document.querySelector('#cvenc-grid .radio-btn.active')?.dataset.cvenc || 'cpu';
-  const speedPreset = document.querySelector('#cvspd-grid .radio-btn.active')?.dataset.cvspd || 'balanced';
+  const quality     = document.querySelector('#cvq-grid      .radio-btn.active')?.dataset.cvq      || 'standard';
+  const encoderKey  = document.querySelector('#cvenc-grid   .radio-btn.active')?.dataset.cvenc   || 'cpu';
+  const speedPreset = document.querySelector('#cvspd-grid   .radio-btn.active')?.dataset.cvspd   || 'balanced';
+  const outputCodec = document.querySelector('#cvcodec-grid .radio-btn.active')?.dataset.cvcodec || 'h264';
   const customCrf   = parseInt(document.getElementById('crf-slider').value, 10) || 23;
 
   closeConvertSheet();
@@ -1677,6 +1733,7 @@ async function submitConvert() {
         quality,
         speed_preset: speedPreset,
         custom_crf:   customCrf,
+        output_codec: outputCodec,
       });
       convertJobs[job.job_id] = { ...job, status: 'PENDING', progress: 0, output_filename: '', error_msg: '' };
       _fileJobMap[filePath]   = job.job_id;
@@ -1693,6 +1750,7 @@ async function submitConvert() {
         quality,
         speed_preset: speedPreset,
         custom_crf:   customCrf,
+        output_codec: outputCodec,
       });
       convertJobs[job.job_id] = job;
       toast('🎬 Đang convert…');
@@ -1767,7 +1825,7 @@ async function loadHistory() {
   const list = document.getElementById('history-list');
   list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
   try {
-    const items = await api('GET', '/api/history');
+    const { items = [] } = await api('GET', '/api/history');
     if (!items.length) {
       list.innerHTML = `<div class="empty">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -1931,6 +1989,8 @@ async function browseFiles(path) {
     const params = (path != null) ? '?path=' + encodeURIComponent(path) : '';
     const data   = await api('GET', '/api/files/browse' + params);
     _browseData  = data;
+    const searchEl = document.getElementById('fb-search');
+    if (searchEl) searchEl.value = '';
     renderFileBrowser();
   } catch(e) {
     list.innerHTML = `<div class="empty"><p style="color:var(--danger)">${escHtml(e.message)}</p></div>`;
@@ -1950,12 +2010,35 @@ function renderFileBrowser() {
   upBtn.style.display = data.parent_path != null ? 'inline-flex' : 'none';
 
   const list = document.getElementById('fb-list');
-  if (!data.items.length) {
-    list.innerHTML = '<div class="empty"><p>Thư mục trống</p></div>';
+
+  const searchVal = (document.getElementById('fb-search')?.value || '').toLowerCase();
+  const sortVal   = document.getElementById('fb-sort')?.value || 'name-asc';
+
+  let dirs  = data.items.filter(i => i.type === 'dir');
+  let files = data.items.filter(i => i.type === 'file');
+
+  if (searchVal) {
+    dirs  = dirs.filter(i  => i.name.toLowerCase().includes(searchVal));
+    files = files.filter(i => i.name.toLowerCase().includes(searchVal));
+  }
+
+  const sortFn = {
+    'name-asc':  (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+    'name-desc': (a, b) => b.name.toLowerCase().localeCompare(a.name.toLowerCase()),
+    'date-desc': (a, b) => (b.modified_at || 0) - (a.modified_at || 0),
+    'date-asc':  (a, b) => (a.modified_at || 0) - (b.modified_at || 0),
+  }[sortVal];
+  dirs.sort(sortFn);
+  files.sort(sortFn);
+
+  const items = [...dirs, ...files];
+
+  if (!items.length) {
+    list.innerHTML = '<div class="empty"><p>' + (searchVal ? 'Không tìm thấy' : 'Thư mục trống') + '</p></div>';
     return;
   }
 
-  list.innerHTML = data.items.map(item => {
+  list.innerHTML = items.map(item => {
     const fullPath = joinPath(data.current_path, item.name);
 
     if (item.type === 'dir') {
@@ -1987,7 +2070,7 @@ function renderFileBrowser() {
           <span id="cvpct-${job.job_id}">${job.progress.toFixed(0)}%</span>
         </div>
         <div class="qi-convert-track">
-          <div class="qi-convert-fill" id="cvfill-${job.job_id}" style="width:${job.progress}%"></div>
+          <div class="qi-convert-fill${job.progress === 0 ? ' indeterminate' : ''}" id="cvfill-${job.job_id}" style="width:${job.progress}%"></div>
         </div>
       </div>`;
     } else if (job && job.status === 'COMPLETED' && !job.output_deleted) {
@@ -2072,9 +2155,10 @@ function openFileConvertSheet(filePath, fileName) {
   _pendingConvertTaskId = null;
   document.getElementById('convert-sheet-sub').textContent = fileName || filePath;
 
-  _setActive('cvq-grid',   'data-cvq',   'standard');
-  _setActive('cvenc-grid', 'data-cvenc', 'cpu');
-  _setActive('cvspd-grid', 'data-cvspd', 'balanced');
+  _setActive('cvq-grid',     'data-cvq',     'standard');
+  _setActive('cvenc-grid',  'data-cvenc',  'cpu');
+  _setActive('cvspd-grid',  'data-cvspd',  'balanced');
+  _setActive('cvcodec-grid','data-cvcodec','h264');
   document.getElementById('crf-row').style.display = 'none';
   document.getElementById('crf-slider').value      = '23';
   document.getElementById('crf-val').textContent   = '23';

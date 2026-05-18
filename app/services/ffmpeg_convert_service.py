@@ -37,6 +37,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Optional
@@ -93,7 +94,7 @@ _PRESETS: dict[str, dict] = {
         "audio_b": "96k",
         "scale":   (
             "scale='if(gt(ih,720),trunc(iw*720/ih/2)*2,trunc(iw/2)*2)'"
-            ":'if(gt(ih,720),720,trunc(ih/2)*2)'"
+            ":'if(gt(ih,720),720,trunc(ih/2)*2)':flags=lanczos"
         ),
         "label":   "File nhỏ (720p)",
     },
@@ -114,6 +115,22 @@ def _parse_duration(text: str) -> float:
     h, mn, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
     frac = m.group(4)
     return h * 3600 + mn * 60 + s + int(frac) / (10 ** len(frac))
+
+
+def _ff_float(val, default: float = 0.0) -> float:
+    """Safe float conversion for ffprobe JSON values that may be 'N/A'."""
+    try:
+        return float(val or 0)
+    except (ValueError, TypeError):
+        return default
+
+
+def _ff_int(val, default: int = 0) -> int:
+    """Safe int conversion for ffprobe JSON values that may be 'N/A'."""
+    try:
+        return int(val or 0)
+    except (ValueError, TypeError):
+        return default
 
 
 # ── Public data types ─────────────────────────────────────────────────────────
@@ -189,6 +206,56 @@ _HW_ENCODER_CATALOG: dict[str, HwEncoderSpec] = {
         speed_flag="",
         speed_map={},
     ),
+    # ── HEVC / H.265 hardware encoders ────────────────────────────────────
+    "nvenc_hevc": HwEncoderSpec(
+        ffmpeg_codec="hevc_nvenc",
+        quality_flag="-cq",
+        quality_values={"high": "20", "standard": "24", "small": "29"},
+        supports_profile_level=False,
+        speed_flag="-preset",
+        speed_map={"quality": "p7", "balanced": "p5", "fast": "p3"},
+    ),
+    "qsv_hevc": HwEncoderSpec(
+        ffmpeg_codec="hevc_qsv",
+        quality_flag="-global_quality",
+        quality_values={"high": "20", "standard": "24", "small": "29"},
+        supports_profile_level=False,
+        speed_flag="-preset",
+        speed_map={"quality": "slow", "balanced": "medium", "fast": "fast"},
+    ),
+    "amf_hevc": HwEncoderSpec(
+        ffmpeg_codec="hevc_amf",
+        quality_flag="-qp",
+        quality_values={"high": "20", "standard": "24", "small": "29"},
+        supports_profile_level=False,
+        speed_flag="-quality",
+        speed_map={"quality": "quality", "balanced": "balanced", "fast": "speed"},
+    ),
+    # ── AV1 hardware encoders (ffmpeg 8+) ─────────────────────────────────
+    "nvenc_av1": HwEncoderSpec(
+        ffmpeg_codec="av1_nvenc",
+        quality_flag="-cq",
+        quality_values={"high": "20", "standard": "28", "small": "36"},
+        supports_profile_level=False,
+        speed_flag="-preset",
+        speed_map={"quality": "p7", "balanced": "p5", "fast": "p3"},
+    ),
+    "qsv_av1": HwEncoderSpec(
+        ffmpeg_codec="av1_qsv",
+        quality_flag="-global_quality",
+        quality_values={"high": "20", "standard": "28", "small": "36"},
+        supports_profile_level=False,
+        speed_flag="-preset",
+        speed_map={"quality": "slow", "balanced": "medium", "fast": "fast"},
+    ),
+    "amf_av1": HwEncoderSpec(
+        ffmpeg_codec="av1_amf",
+        quality_flag="-qp",
+        quality_values={"high": "20", "standard": "28", "small": "36"},
+        supports_profile_level=False,
+        speed_flag="-quality",
+        speed_map={"quality": "quality", "balanced": "balanced", "fast": "speed"},
+    ),
 }
 
 # Maps ffmpeg codec string -> catalog key for detection
@@ -213,6 +280,12 @@ ENCODER_OPTIONS: list[tuple[str, str]] = [
     ("videotoolbox", "VideoToolbox (macOS)"),
 ]
 
+CODEC_OPTIONS: list[tuple[str, str]] = [
+    ("h264", "H.264 (tương thích cao nhất)"),
+    ("hevc", "H.265 / HEVC (~30% nhỏ hơn)"),
+    ("av1",  "AV1 (~50% nhỏ hơn, cần ff8+)"),
+]
+
 SPEED_OPTIONS: list[tuple[str, str]] = [
     # "quality" → slower encode, better compression (not a quality *level*)
     ("quality",  "Chậm (Nén tốt nhất)"),
@@ -228,6 +301,7 @@ class EncodeSettings:
     quality: str = "standard"
     speed_preset: str = "balanced"
     custom_quality: int = 23
+    output_codec: str = "h264"      # h264|hevc|av1
 
 
 # ── Encoder detection cache ───────────────────────────────────────────────────
@@ -464,25 +538,39 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
         streams: list = data.get("streams", [])
         fmt: dict = data.get("format", {})
 
-        duration_s = float(fmt.get("duration") or 0)
-        bitrate_bps = int(fmt.get("bit_rate") or 0)
+        duration_s = _ff_float(fmt.get("duration"))
+        bitrate_bps = _ff_int(fmt.get("bit_rate"))
         video_codec = audio_codec = ""
         width = height = 0
         video_nb_frames = 0
+        video_fps = 0.0
 
         for stream in streams:
             codec_type = stream.get("codec_type", "")
             if codec_type == "video" and not video_codec:
                 video_codec = stream.get("codec_name", "")
-                width = int(stream.get("width") or 0)
-                height = int(stream.get("height") or 0)
-                video_nb_frames = int(stream.get("nb_frames") or 0)
+                width = _ff_int(stream.get("width"))
+                height = _ff_int(stream.get("height"))
+                video_nb_frames = _ff_int(stream.get("nb_frames"))
                 if not duration_s:
-                    duration_s = float(stream.get("duration") or 0)
+                    duration_s = _ff_float(stream.get("duration"))
+                # Parse r_frame_rate ("30/1", "25/1") for nb_frames fallback
+                rfr = stream.get("r_frame_rate", "")
+                if rfr and "/" in rfr:
+                    try:
+                        num, den = rfr.split("/")
+                        fps = float(num) / float(den) if float(den) else 0.0
+                        video_fps = fps
+                    except (ValueError, ZeroDivisionError):
+                        pass
             elif codec_type == "audio" and not audio_codec:
                 audio_codec = stream.get("codec_name", "")
                 if not duration_s:
-                    duration_s = float(stream.get("duration") or 0)
+                    duration_s = _ff_float(stream.get("duration"))
+
+        # Fallback: estimate from frame count for FLV livestream (Duration: N/A)
+        if not duration_s and video_nb_frames and video_fps > 0:
+            duration_s = video_nb_frames / video_fps
 
         return FfmpegMediaInfo(
             video_codec=video_codec,
@@ -647,15 +735,21 @@ class FfmpegConvertService:
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         # Use target_ext for the temp and final output filenames.
-        # .part.mp4 is the existing invariant for temp files; we keep it
-        # regardless of target_ext so the .part cleanup rules still apply.
-        temp_output = dest_dir / f"{source.stem}_iPhone.part.mp4"
+        # Include a per-job UUID suffix so concurrent jobs on the same source
+        # (e.g. desktop + remote auto-convert both triggered) write to distinct
+        # temp paths and cannot corrupt each other's output.
+        _job_id = uuid.uuid4().hex[:8]
+        temp_output = dest_dir / f"{source.stem}_iPhone_{_job_id}.part.mp4"
 
         duration_s = self._probe_duration(ffmpeg_bin, source)
 
-        if temp_output.is_file():
-            temp_output.unlink(missing_ok=True)
-            logger.info("Deleted stale .part file before restart: %s", temp_output.name)
+        # Clean up any stale .part files from previous interrupted jobs on this source.
+        for _stale in dest_dir.glob(f"{source.stem}_iPhone*.part.mp4"):
+            try:
+                _stale.unlink(missing_ok=True)
+                logger.info("Deleted stale .part file before restart: %s", _stale.name)
+            except OSError:
+                pass
 
         output = self._try_encode_with_fallback(
             ffmpeg_bin, source, dest_dir, temp_output,
@@ -734,6 +828,18 @@ class FfmpegConvertService:
 
         CPU failures propagate immediately without retry.
         """
+        # Resolve "auto" → best available GPU encoder, fallback to CPU
+        if encode_settings is not None and encode_settings.encoder_key == "auto":
+            avail = get_available_encoder_options()
+            gpu_keys = [k for k, _ in avail if k != "cpu"]
+            encode_settings = EncodeSettings(
+                encoder_key=gpu_keys[0] if gpu_keys else "cpu",
+                quality=encode_settings.quality,
+                speed_preset=encode_settings.speed_preset,
+                custom_quality=encode_settings.custom_quality,
+                output_codec=encode_settings.output_codec,
+            )
+
         is_gpu = (
             encode_settings is not None
             and encode_settings.encoder_key != "cpu"
@@ -765,6 +871,7 @@ class FfmpegConvertService:
                 quality=encode_settings.quality,  # type: ignore[union-attr]
                 speed_preset=encode_settings.speed_preset,  # type: ignore[union-attr]
                 custom_quality=encode_settings.custom_quality,  # type: ignore[union-attr]
+                output_codec=encode_settings.output_codec,  # type: ignore[union-attr]
             )
             return self._fresh_encode(
                 ffmpeg_bin, source, dest_dir, temp_output,
@@ -893,6 +1000,38 @@ class FfmpegConvertService:
         ]
 
     @staticmethod
+    def _build_cpu_flags_hevc(
+        preset: dict,
+        encode_settings: EncodeSettings,
+    ) -> list[str]:
+        _crf_map = {"high": "20", "standard": "26", "small": "30"}
+        crf_val = (
+            str(encode_settings.custom_quality)
+            if encode_settings.quality == "custom"
+            else _crf_map.get(encode_settings.quality, "26")
+        )
+        _speed_map = {"quality": "slow", "balanced": "medium", "fast": "fast"}
+        x265_preset = _speed_map.get(encode_settings.speed_preset, "medium")
+        # -tag:v hvc1: required for QuickTime/iOS to recognise HEVC in MP4
+        return ["-c:v", "libx265", "-preset", x265_preset, "-crf", crf_val, "-tag:v", "hvc1"]
+
+    @staticmethod
+    def _build_cpu_flags_av1(
+        preset: dict,
+        encode_settings: EncodeSettings,
+    ) -> list[str]:
+        # SVT-AV1: CRF 1-63, preset 0(slowest)-13(fastest)
+        _crf_map = {"high": "22", "standard": "32", "small": "40"}
+        crf_val = (
+            str(encode_settings.custom_quality)
+            if encode_settings.quality == "custom"
+            else _crf_map.get(encode_settings.quality, "32")
+        )
+        _speed_map = {"quality": "4", "balanced": "7", "fast": "10"}
+        svt_preset = _speed_map.get(encode_settings.speed_preset, "7")
+        return ["-c:v", "libsvtav1", "-preset", svt_preset, "-crf", crf_val]
+
+    @staticmethod
     def _build_gpu_flags(
         hw_spec: HwEncoderSpec,
         encode_settings: EncodeSettings,
@@ -971,40 +1110,49 @@ class FfmpegConvertService:
             "-i", str(source),
             "-progress", "pipe:1",
             "-nostats",
+            "-stats_period", "0.5",
             "-loglevel", "warning",
         ]
 
+        codec = encode_settings.output_codec if encode_settings else "h264"
+
         # ── Video codec + quality (delegated to helpers) ──────────────────
-        if encode_settings is None or is_flv_ts:
-            # For FLV/TS: always use CPU (libx264) regardless of encode_settings.
-            # Hardware encoders (h264_qsv, h264_nvenc, h264_amf) produce
-            # non-monotonic output DTS when given FLV live captures with timestamp
-            # gaps — the patched timestamps result in a broken MP4 ctts box that
-            # iPhone's VideoToolbox hardware decoder rejects.
-            if is_flv_ts and encode_settings is not None \
-                    and encode_settings.encoder_key != "cpu":
-                logger.debug(
-                    "_build_cmd: forcing CPU encoder for FLV/TS source (was %s)",
-                    encode_settings.encoder_key,
-                )
+        if encode_settings is None:
             cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
         else:
             encoder_key = encode_settings.encoder_key
-            hw_spec: Optional[HwEncoderSpec] = _HW_ENCODER_CATALOG.get(encoder_key)
-
-            if encoder_key == "cpu" or hw_spec is None:
-                if hw_spec is None and encoder_key != "cpu":
+            if encoder_key == "cpu":
+                if codec == "hevc":
+                    cmd += FfmpegConvertService._build_cpu_flags_hevc(preset, encode_settings)
+                elif codec == "av1":
+                    cmd += FfmpegConvertService._build_cpu_flags_av1(preset, encode_settings)
+                else:
+                    cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
+            else:
+                catalog_key = f"{encoder_key}_{codec}" if codec != "h264" else encoder_key
+                hw_spec: Optional[HwEncoderSpec] = (
+                    _HW_ENCODER_CATALOG.get(catalog_key)
+                    or _HW_ENCODER_CATALOG.get(encoder_key)
+                )
+                if hw_spec is None:
                     logger.warning(
                         "_build_cmd: unknown encoder %r, falling back to libx264",
                         encoder_key,
                     )
-                cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
-            else:
-                cmd += FfmpegConvertService._build_gpu_flags(hw_spec, encode_settings)
+                    cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
+                else:
+                    cmd += FfmpegConvertService._build_gpu_flags(hw_spec, encode_settings)
+
+        # FLV/TS + GPU: -fps_mode cfr gives GPU encoders monotonic PTS so the
+        # output MP4 ctts box is valid for iPhone's VideoToolbox decoder.
+        # libx264 handles variable PTS natively and does not need this flag.
+        if is_flv_ts and encode_settings and encode_settings.encoder_key != "cpu":
+            cmd += ["-fps_mode", "cfr"]
 
         # ── Common output flags ───────────────────────────────────────────
+        pix_fmt = "yuv420p"
         cmd += [
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", pix_fmt,
             "-vf", ",".join(vf_parts),
             "-c:a", "aac",
             "-b:a", preset["audio_b"],
@@ -1085,13 +1233,18 @@ class FfmpegConvertService:
             for raw in proc.stdout:
                 _last_stdout_activity[0] = time.monotonic()
                 line = raw.decode("utf-8", errors="replace").rstrip()
-                if on_progress and duration_s > 0:
+                if on_progress:
                     m = _PROG_MS_RE.match(line)
                     if m:
                         time_us = int(m.group(1))
                         if time_us >= 0:
                             elapsed_s = time_us / 1_000_000
-                            pct = min(99.0, elapsed_s / duration_s * 100.0)
+                            if duration_s > 0:
+                                pct = min(99.0, elapsed_s / duration_s * 100.0)
+                            else:
+                                # Duration unknown — asymptotic curve, never hits 100%
+                                # t=30s→32%, t=60s→48%, t=120s→65%, t=300s→82%
+                                pct = 95.0 * elapsed_s / (elapsed_s + 65.0)
                             on_progress(pct)
             _stdout_done.set()
 
@@ -1241,10 +1394,14 @@ class FfmpegConvertService:
                 capture_output=True, timeout=10,
                 creationflags=_WIN_NO_WINDOW,
             )
-            return _parse_duration(r.stderr.decode("utf-8", errors="replace"))
+            d = _parse_duration(r.stderr.decode("utf-8", errors="replace"))
+            if d > 0:
+                return d
         except Exception as exc:
             logger.debug("Duration probe failed: %s", exc)
-        return 0.0
+        # Fallback: ffprobe JSON (more reliable for FLV/livestream with N/A duration)
+        info = probe_media_info(source)
+        return info.duration_s if info else 0.0
 
 
 # ── Convert queue ─────────────────────────────────────────────────────────────

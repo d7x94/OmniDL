@@ -90,7 +90,11 @@ class TestStartConvertValidation:
         for enc in _VALID_ENCODERS:
             with patch.object(svc._queue, "submit", return_value=None):
                 job = svc.start_convert("tid", _dummy_file(tmp_path), encoder_key=enc)
-            assert job.encoder_key == enc
+            # "auto" is resolved to the best available encoder before job creation
+            if enc == "auto":
+                assert job.encoder_key in _VALID_ENCODERS - {"auto"}
+            else:
+                assert job.encoder_key == enc
 
     def test_all_valid_qualities_accepted(self, tmp_path):
         svc = _make_service(tmp_path)

@@ -18,6 +18,7 @@ pytest-cache-files-*/
 venv_build/
 venv/
 .venv/
+.venv_wsl/
 env/
 
 # PyInstaller
@@ -174,3 +175,4 @@ Claude.md
 RTK.md
 .rtk/
 EVALUATION_REPORT.md
+D/

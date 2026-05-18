@@ -33,6 +33,7 @@ import customtkinter as ctk
 
 from app.event_bus import EventBus
 from app.services.ffmpeg_convert_service import (
+    CODEC_OPTIONS,
     ENCODER_OPTIONS,
     SPEED_OPTIONS,
     SUPPORTED_EXTS,
@@ -229,6 +230,10 @@ class FileCard(ctk.CTkFrame):
         # independent of Tkinter internal state.
         self._delete_btn_visible: bool = False
         # Starts hidden; refresh() shows it when DONE + output.is_file()
+        self._cancel_btn_visible: bool = False
+        # Starts hidden; refresh() shows it when QUEUED or CONVERTING
+        self._action_btns_visible: bool = False
+        # Starts hidden; refresh() shows open+preview when DONE
 
         # ── Row 2: media info ─────────────────────────────────────────────
         info_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -298,23 +303,13 @@ class FileCard(ctk.CTkFrame):
         if job.state == FileState.DONE and job.output:
             sz = fmt_bytes(job.output.stat().st_size) if job.output.is_file() else ""
             self._out_lbl.configure(text=f"→ {job.output.name}  {sz}")
-            if not self._open_btn.winfo_ismapped():
+            if not self._action_btns_visible:
                 self._remove_btn.pack_forget()
                 self._open_btn.pack(side="left")
                 self._preview_btn.pack(side="left", padx=(4, 0))
                 self._remove_btn.pack(side="left", padx=(4, 0))
+                self._action_btns_visible = True
 
-            # Show delete-output button whenever the output file still exists.
-            # The user decides when to delete after verifying the file arrived
-            # on their iPhone — no Taildrop event gate needed.
-            #
-            # NOTE: winfo_ismapped() is intentionally NOT used here.
-            # CTkButton is a composite widget (CTkFrame + tk.Button); Tkinter
-            # updates the mapped state asynchronously after the next event-loop
-            # iteration, so winfo_ismapped() may return a stale value and cause
-            # the button to be packed twice (stacking invisible duplicates) or
-            # never shown at all.  self._delete_btn_visible is the authoritative
-            # source of truth and is always in sync with pack/pack_forget calls.
             output_still_exists = job.output.is_file()
             if output_still_exists and not self._delete_btn_visible:
                 self._delete_output_btn.pack(side="left", padx=(4, 0))
@@ -326,9 +321,10 @@ class FileCard(ctk.CTkFrame):
             self._err_lbl.configure(text=f"  {job.error_msg[:160]}")
             self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
         else:
-            if self._open_btn.winfo_ismapped():
+            if self._action_btns_visible:
                 self._open_btn.pack_forget()
                 self._preview_btn.pack_forget()
+                self._action_btns_visible = False
 
         self._remove_btn.configure(
             state="disabled" if job.state in (
@@ -338,12 +334,12 @@ class FileCard(ctk.CTkFrame):
 
         # Show cancel button while active, hide otherwise
         is_active = job.state in (FileState.QUEUED, FileState.CONVERTING)
-        if is_active:
-            if not self._cancel_btn.winfo_ismapped():
-                self._cancel_btn.pack(side="left", padx=(4, 0))
-        else:
-            if self._cancel_btn.winfo_ismapped():
-                self._cancel_btn.pack_forget()
+        if is_active and not self._cancel_btn_visible:
+            self._cancel_btn.pack(side="left", padx=(4, 0))
+            self._cancel_btn_visible = True
+        elif not is_active and self._cancel_btn_visible:
+            self._cancel_btn.pack_forget()
+            self._cancel_btn_visible = False
 
     def update_info(self, info: Optional[FfmpegMediaInfo]) -> None:
         """Refresh the media-info label from an ffprobe FfmpegMediaInfo result."""
@@ -432,7 +428,11 @@ class ConvertTab(ctk.CTkFrame):
         self._active_count = 0
         # GPU encoder + speed state
         self._encoder_key = tk.StringVar(value="cpu")
+        self._encoder_auto_selected = False
         self._speed_preset = tk.StringVar(value="balanced")
+        self._output_codec = tk.StringVar(value="h264")
+        self._codec_cards: dict[str, ctk.CTkFrame] = {}
+        self._codec_main_labels: dict[str, ctk.CTkLabel] = {}
         self._custom_quality = tk.StringVar(value="23")
         self._available_encoders: set[str] = {"cpu"}
         # Filtered (key, label) pairs — kept in sync with _available_encoders.
@@ -665,6 +665,37 @@ class ConvertTab(ctk.CTkFrame):
             s_card.pack(side="left", padx=(0, 6))
             self._speed_cards[s_key] = s_card
 
+        # ── Codec output row ──────────────────────────────────────────────
+        cod_row = ctk.CTkFrame(cfg, fg_color="transparent")
+        cod_row.pack(fill="x", padx=20, pady=(4, 4))
+
+        ctk.CTkLabel(
+            cod_row, text="Codec",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=T.text2,
+            width=90, anchor="w",
+        ).pack(side="left")
+
+        for c_key, c_label in CODEC_OPTIONS:
+            c_card = ctk.CTkFrame(
+                cod_row,
+                corner_radius=6,
+                fg_color=T.primary_dim if c_key == "h264" else T.surface2,
+                border_width=1,
+                border_color=T.primary if c_key == "h264" else T.border,
+                cursor="hand2",
+            )
+            lbl = ctk.CTkLabel(
+                c_card, text=c_label,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=T.text if c_key == "h264" else T.text2,
+            )
+            lbl.pack(padx=12, pady=6)
+            self._codec_main_labels[c_key] = lbl
+            for w in (c_card, lbl):
+                w.bind("<Button-1>", lambda _e, k=c_key: self._on_codec_change(k))
+            c_card.pack(side="left", padx=(0, 6))
+            self._codec_cards[c_key] = c_card
+
         out_row = ctk.CTkFrame(cfg, fg_color="transparent")
         out_row.pack(fill="x", padx=20, pady=(4, 16))
 
@@ -870,6 +901,15 @@ class ConvertTab(ctk.CTkFrame):
             cpu_label = next((lbl for k, lbl in available_opts if k == "cpu"), labels[0])
             self._encoder_menu.set(cpu_label)
 
+        # Auto-select best GPU on first detection (if user hasn't changed from default)
+        if not self._encoder_auto_selected:
+            self._encoder_auto_selected = True
+            gpu_opts = [(k, lbl) for k, lbl in available_opts if k != "cpu"]
+            if gpu_opts and self._encoder_key.get() == "cpu":
+                best_key, best_label = gpu_opts[0]
+                self._encoder_key.set(best_key)
+                self._encoder_menu.set(best_label)
+
         # Update status label
         gpu_labels = [lbl for k, lbl in available_opts if k != "cpu"]
         status = f"GPU: {', '.join(gpu_labels)}" if gpu_labels else "Chỉ CPU"
@@ -900,6 +940,18 @@ class ConvertTab(ctk.CTkFrame):
                 lbl.configure(
                     text_color=T.text if selected else T.text2
                 )
+
+    def _on_codec_change(self, key: str) -> None:
+        self._output_codec.set(key)
+        for k, card in self._codec_cards.items():
+            selected = (k == key)
+            card.configure(
+                fg_color=T.primary_dim if selected else T.surface2,
+                border_color=T.primary if selected else T.border,
+            )
+            lbl = self._codec_main_labels.get(k)
+            if lbl and lbl.winfo_exists():
+                lbl.configure(text_color=T.text if selected else T.text2)
 
     def _browse_files(self) -> None:
         paths = fd.askopenfilenames(
@@ -1014,6 +1066,7 @@ class ConvertTab(ctk.CTkFrame):
             quality=quality,
             speed_preset=self._speed_preset.get(),
             custom_quality=max(16, min(35, custom_val)),
+            output_codec=self._output_codec.get(),
         )
 
         self._convert_btn.configure(state="disabled")

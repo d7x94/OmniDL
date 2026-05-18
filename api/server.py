@@ -56,6 +56,8 @@ from api.models import (
     FileInfoResponse,
     FileTransferRequest,
     FileTransferResponse,
+    HistoryListResponse,
+    HistoryStatsResponse,
     QueueActionResponse,
     TaskResponse,
 )
@@ -133,6 +135,7 @@ _active_thread: threading.Thread | None = None
 _active_bus:    "EventBus | None" = None          # held to allow re-wiring on restart
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
 _bus_wired   = False              # BUG-CB: prevent duplicate subscriptions on restart
+_wired_remote_convert: "Optional[RemoteConvertService]" = None  # tracks active auto_convert subscription
 
 
 def _broadcast(event_type: str, data: dict) -> None:
@@ -238,6 +241,9 @@ def _wire_event_bus(bus: EventBus) -> None:
     bus.subscribe(EventBus.CONVERT_COMPLETED, _on_convert_completed)
     bus.subscribe(EventBus.CONVERT_FAILED,    _on_convert_failed)
     bus.subscribe(EventBus.CONVERT_CANCELLED, _on_convert_cancelled)
+
+    # auto_convert_tiktok_live is wired separately in start_api_server() so it
+    # can be swapped on each restart without duplicating the static _on_* handlers.
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -847,6 +853,7 @@ def create_app(
             quality         = snap["quality"],
             speed_preset    = snap["speed_preset"],
             custom_crf      = snap["custom_crf"],
+            output_codec    = snap.get("output_codec", "h264"),
             status          = snap["status"],
             progress        = snap["progress"],
             output_filename = Path(out).name if out else "",
@@ -935,6 +942,7 @@ def create_app(
                         quality=body.quality or "standard",
                         speed_preset=body.speed_preset or "balanced",
                         custom_crf=body.custom_crf if body.custom_crf is not None else 23,
+                        output_codec=body.output_codec or "h264",
                     )
                     jobs.append(j)
                 except ValueError as exc:
@@ -950,6 +958,7 @@ def create_app(
                 quality        = body.quality or "standard",
                 speed_preset   = body.speed_preset or "balanced",
                 custom_crf     = body.custom_crf if body.custom_crf is not None else 23,
+                output_codec   = body.output_codec or "h264",
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1090,10 +1099,40 @@ def create_app(
         )
 
 
-    @app.get("/api/history", summary="Return full download history (newest first)")
-    async def get_history(_: None = Depends(_require_auth)):
-        """Return the full download history (newest first)."""
-        return list(reversed(service.get_history()))
+    @app.get("/api/history/stats", response_model=HistoryStatsResponse,
+             summary="Return download history statistics")
+    async def get_history_stats(_: None = Depends(_require_auth)):
+        return service.get_history_stats()
+
+    @app.get("/api/history", response_model=HistoryListResponse,
+             summary="Return download history with optional search/filter/pagination")
+    async def get_history(
+        q: Optional[str] = Query(None, description="Search in title, URL, filename"),
+        status: Optional[str] = Query(None, description="Filter by status (COMPLETED/FAILED/CANCELLED)"),
+        platform: Optional[str] = Query(None, description="Filter by platform (youtube/tiktok/...)"),
+        page: int = Query(1, ge=1, description="Page number (1-based)"),
+        limit: int = Query(50, ge=1, le=500, description="Items per page"),
+        _: None = Depends(_require_auth),
+    ) -> HistoryListResponse:
+        items = list(reversed(service.get_history()))
+        if q:
+            ql = q.lower()
+            items = [x for x in items if ql in x.get("url", "").lower()
+                     or ql in x.get("title", "").lower()
+                     or ql in x.get("filename", "").lower()]
+        if status:
+            items = [x for x in items if x.get("status") == status]
+        if platform:
+            items = [x for x in items if x.get("platform") == platform]
+        total = len(items)
+        start = (page - 1) * limit
+        return HistoryListResponse(items=items[start:start + limit],
+                                   total=total, page=page, limit=limit)
+
+    @app.delete("/api/history/{task_id}", summary="Delete a single history entry")
+    async def delete_history_entry(task_id: str, _: None = Depends(_require_auth)):
+        service.delete_history_entry(task_id)
+        return {"deleted": task_id}
 
     # ── File Browser ──────────────────────────────────────────────────────
 
@@ -1209,6 +1248,7 @@ def create_app(
                 speed_preset = body.speed_preset or "balanced",
                 custom_crf   = body.custom_crf if body.custom_crf is not None else 23,
                 target_ext   = body.target_ext or "mp4",
+                output_codec = body.output_codec or "h264",
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1543,17 +1583,8 @@ def start_api_server(
             config.api_port,
         )
 
-    # Wire EventBus → SSE broadcaster before the server starts accepting
-    # connections, so no events are missed.
-    # BUG-CB: guard prevents duplicate subscriptions when restart_api_server()
-    # calls start_api_server() again (token rotate, port change, etc.).
-    global _bus_wired
-    if not _bus_wired:
-        _wire_event_bus(bus)
-        _bus_wired = True
-
-    # Instantiate RemoteConvertService — shares the same EventBus so convert
-    # progress events flow through the existing SSE broadcaster automatically.
+    # Instantiate RemoteConvertService before wiring the EventBus so that
+    # auto_convert_tiktok_live can be subscribed inside the _bus_wired guard.
     # BUG-BU FIX: Use getattr() so that if start_api_server is called with a
     # ServiceFacade that pre-dates the taildrop property (e.g. an older build
     # started from Settings toggle), the call degrades gracefully to taildrop=None
@@ -1564,6 +1595,21 @@ def start_api_server(
         event_bus=bus,
         taildrop=getattr(service, "taildrop", None),  # BUG-BU: safe fallback
     )
+
+    # Wire EventBus → SSE broadcaster before the server starts accepting
+    # connections, so no events are missed.
+    # BUG-CB: guard prevents duplicate subscriptions when restart_api_server()
+    # calls start_api_server() again (token rotate, port change, etc.).
+    global _bus_wired, _wired_remote_convert
+    if not _bus_wired:
+        _wire_event_bus(bus)
+        _bus_wired = True
+    # Always swap the auto_convert subscription to the current remote_convert instance.
+    if _wired_remote_convert is not None:
+        bus.unsubscribe(EventBus.DOWNLOAD_COMPLETED, _wired_remote_convert.auto_convert_tiktok_live)
+    if remote_convert is not None:
+        bus.subscribe(EventBus.DOWNLOAD_COMPLETED, remote_convert.auto_convert_tiktok_live)
+    _wired_remote_convert = remote_convert
 
     app = create_app(service, config, remote_convert=remote_convert)
 

@@ -149,8 +149,8 @@ class TestSnapshot:
 
     EXPECTED_KEYS = {
         "job_id", "source_task_id", "encoder_key", "quality", "speed_preset",
-        "custom_crf", "status", "progress", "output_filename", "error_msg",
-        "created_at", "finished_at", "output_deleted",
+        "custom_crf", "output_codec", "status", "progress", "output_filename",
+        "error_msg", "created_at", "finished_at", "output_deleted",
     }
 
     def test_snapshot_contains_all_keys(self):

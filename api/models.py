@@ -144,6 +144,8 @@ class ConvertRequest(BaseModel):
     speed_preset: Optional[str] = "balanced"
     # CRF value used when quality=="custom" (0–51)
     custom_crf:   Optional[int] = 23
+    # "h264" | "hevc" | "av1"
+    output_codec: Optional[str] = "h264"
 
 
 class ConvertJobResponse(BaseModel):
@@ -154,6 +156,7 @@ class ConvertJobResponse(BaseModel):
     quality:         str
     speed_preset:    str
     custom_crf:      int
+    output_codec:    str = "h264"
     status:          str    # ConversionStatus string
     progress:        float  # 0.0 – 100.0
     output_filename: str    # basename of converted file, empty until COMPLETED
@@ -198,6 +201,7 @@ class FileConvertRequest(BaseModel):
     quality:       Optional[str] = "standard"
     speed_preset:  Optional[str] = "balanced"
     custom_crf:    Optional[int] = 23
+    output_codec:  Optional[str] = "h264"
 
 
 class FileConvertJobResponse(BaseModel):
@@ -225,6 +229,20 @@ class FileTransferRequest(BaseModel):
 
 class FileTransferResponse(BaseModel):
     detail: str = ""
+
+
+class HistoryListResponse(BaseModel):
+    items: list[dict]
+    total: int
+    page: int
+    limit: int
+
+
+class HistoryStatsResponse(BaseModel):
+    total: int
+    total_bytes: int
+    by_platform: dict
+    by_status: dict
 
 
 class ClipboardAnalyseRequest(BaseModel):
