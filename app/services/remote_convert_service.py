@@ -423,7 +423,10 @@ class RemoteConvertService:
         terminal.sort(key=lambda j: j.finished_at)
         to_remove = terminal[:max(1, len(terminal) // 2)]
         if not to_remove:
-            logger.warning("_purge_old_jobs: registry at %d jobs but all are active - cannot purge", len(self._jobs))
+            logger.warning(
+                "_purge_old_jobs: registry at %d jobs but all are active - cannot purge",
+                len(self._jobs),
+            )
             return
         for j in to_remove:
             self._jobs.pop(j.job_id, None)

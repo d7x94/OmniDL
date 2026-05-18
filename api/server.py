@@ -1633,7 +1633,8 @@ def start_api_server(
         # excluded ranges (Hyper-V / WSL2 reservations) return winerror 10013
         # even on loopback, causing uvicorn to fail silently.  Pick a new port
         # and persist it so subsequent restarts also use the working port.
-        import socket as _socket, random as _random
+        import random as _random
+        import socket as _socket
         with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
             try:
                 _s.bind((_bind_host, _bind_port))
