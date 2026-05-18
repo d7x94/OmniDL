@@ -99,7 +99,7 @@ class TestExtractTiktokLiveHlsQuality:
             )
 
         assert result is not None
-        hls_url, vid_id = result
+        hls_url, vid_id, *_ = result
         assert "stream_hd" in hls_url, (
             f"Expected HD stream URL, got: {hls_url!r} (BUG-TT-18)"
         )
@@ -138,7 +138,7 @@ class TestExtractTiktokLiveHlsQuality:
             result = engine._extract_tiktok_live_hls_url("https://vt.tiktok.com/ZS9/")
 
         assert result is not None
-        hls_url, _ = result
+        hls_url, *_ = result
         assert "high_tbr" in hls_url, (
             f"Must prefer higher tbr at same height, got: {hls_url!r} (BUG-TT-18)"
         )
@@ -332,7 +332,7 @@ class TestExtractTiktokLiveHlsExcludeBases:
             )
 
         assert result is not None
-        hls_url, _ = result
+        hls_url, *_ = result
         assert "_sd" in hls_url, f"Expected _sd URL when _hd excluded, got: {hls_url!r}"
         assert "_hd" not in hls_url, f"Must not select excluded _hd, got: {hls_url!r}"
 
@@ -359,7 +359,7 @@ class TestExtractTiktokLiveHlsExcludeBases:
             )
 
         assert result is not None
-        hls_url, _ = result
+        hls_url, *_ = result
         assert "_ld" in hls_url, f"Expected _ld URL when _hd+_sd excluded, got: {hls_url!r}"
 
     def test_all_excluded_returns_best_as_last_resort(self, tmp_path):
@@ -389,7 +389,7 @@ class TestExtractTiktokLiveHlsExcludeBases:
 
         # Must not return None — caller may still succeed (CDN might have recovered)
         assert result is not None, "Should return best available even when all bases excluded"
-        hls_url, _ = result
+        hls_url, *_ = result
         assert "_hd" in hls_url, f"Last-resort should be best (HD), got: {hls_url!r}"
 
     def test_no_exclusion_still_returns_best(self, tmp_path):
@@ -410,5 +410,5 @@ class TestExtractTiktokLiveHlsExcludeBases:
             result = engine._extract_tiktok_live_hls_url("https://vt.tiktok.com/ZS9/")
 
         assert result is not None
-        hls_url, _ = result
+        hls_url, *_ = result
         assert "_hd" in hls_url, f"Default (no exclusion) must return best, got: {hls_url!r}"

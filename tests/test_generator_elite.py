@@ -827,12 +827,8 @@ class TestConvertSync:
         proc_mock.wait.return_value = None
         proc_mock.returncode = 0
 
-        # Production code writes to a .part.mp4 temp file then renames it
-        part_file = tmp_path / "video_iPhone.part.mp4"
-
         def fake_popen(cmd, **kwargs):
-            # Extract the -o / output path from the command (second-to-last arg)
-            part_file.write_bytes(b"x" * 5000)
+            Path(cmd[-1]).write_bytes(b"x" * 5000)
             return proc_mock
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
