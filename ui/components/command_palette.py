@@ -38,9 +38,6 @@ class CommandPalette(QDialog):
         self._build()
         self._populate(COMMANDS)
 
-        if parent:
-            self._center_on_parent()
-
     def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -112,3 +109,5 @@ class CommandPalette(QDialog):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._search.setFocus()
+        if self.parent():
+            self._center_on_parent()

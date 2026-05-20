@@ -49,7 +49,9 @@ class NotificationPanel(QFrame):
         hrow.setSpacing(0)
 
         title = QLabel("THONG BAO")
-        title.setStyleSheet(f"color: {T.text}; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; background: transparent;")
+        title.setStyleSheet(
+            f"color: {T.text}; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; background: transparent;"
+        )
         hrow.addWidget(title, 1)
 
         self._clear_btn = QPushButton("Xoa het")
@@ -136,7 +138,9 @@ class NotificationPanel(QFrame):
 
         title_lbl = QLabel(title)
         title_lbl.setWordWrap(True)
-        title_lbl.setStyleSheet(f"color: {T.text}; font-size: 12px; font-weight: 600; background: transparent;")
+        title_lbl.setStyleSheet(
+            f"color: {T.text}; font-size: 12px; font-weight: 600; background: transparent;"
+        )
         text_col.addWidget(title_lbl)
 
         if detail:
@@ -193,9 +197,10 @@ class NotificationPanel(QFrame):
     # ── Positioning ────────────────────────────────────────────────────────
 
     def _reposition(self) -> None:
-        if self.parent() is None:
+        parent = self.parent()
+        if not isinstance(parent, QWidget):
             return
-        pw = self.parent().width()
+        pw = parent.width()
         # 8px margin from right, position below top_bar (~80px from top)
         x = pw - _PANEL_W - 8
         y = 80
@@ -204,9 +209,10 @@ class NotificationPanel(QFrame):
     # ── Animation ──────────────────────────────────────────────────────────
 
     def _slide_in(self) -> None:
-        if self.parent() is None:
+        parent = self.parent()
+        if not isinstance(parent, QWidget):
             return
-        pw = self.parent().width()
+        pw = parent.width()
         end_x = pw - _PANEL_W - 8
         start_x = pw  # off-screen right
         y = self.y()
@@ -214,10 +220,11 @@ class NotificationPanel(QFrame):
         self._animate(QPoint(start_x, y), QPoint(end_x, y))
 
     def _slide_out(self) -> None:
-        if self.parent() is None:
+        parent = self.parent()
+        if not isinstance(parent, QWidget):
             self.hide()
             return
-        pw = self.parent().width()
+        pw = parent.width()
         end_x = pw
         self._animate(self.pos(), QPoint(end_x, self.y()), on_finish=self.hide)
 

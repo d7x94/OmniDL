@@ -375,7 +375,7 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if self._toast_lbl.isVisible():
             self._position_toast()
-        if hasattr(self, "_notification_panel") and self._notification_panel.isVisible():
+        if self._notification_panel.isVisible():
             self._notification_panel._reposition()
 
     # ── Clipboard monitor ─────────────────────────────────────────────────
