@@ -286,7 +286,10 @@ class MainWindow(QMainWindow):
     # ── Placeholder actions ───────────────────────────────────────────────
 
     def _open_command_palette(self) -> None:
-        pass
+        from ui.components.command_palette import CommandPalette
+
+        palette = CommandPalette(self, on_navigate=self.navigate_to)
+        palette.exec()
 
     def _open_notification_panel(self) -> None:
         pass
