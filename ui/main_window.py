@@ -1,142 +1,216 @@
-"""
-ui/main_window.py
-Root application window.
+"""Main application window."""
 
-Layout (top to bottom):
-  ┌──────────────────────────────────────────────────────┐
-  │  Title Bar  (custom, no native chrome)               │
-  ├──────────────────────────────────────────────────────┤
-  │  Toolbar    (URL input — always visible)             │
-  ├─────────────┬────────────────────────────────────────┤
-  │             │                                        │
-  │   Sidebar   │   Content (tabs)                       │
-  │             │                                        │
-  ├──────────────────────────────────────────────────────┤
-  │  Status Bar (speed · active count · network)         │
-  └──────────────────────────────────────────────────────┘
-"""
 from __future__ import annotations
 
-import ctypes
 import logging
-import sys
 import threading as _threading
-import tkinter as tk
-import tkinter.messagebox as mb
 from pathlib import Path
 from typing import Optional
 
-import customtkinter as ctk
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.services.download_service import DownloadService
 from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
-from ui.themes.tokens import T
-from utils.__version__ import __version__
+from ui.theme_qt import apply_theme
+from ui.themes.tokens import THEME_NAMES, T
 from utils.clipboard_monitor import ClipboardMonitor
 
 logger = logging.getLogger(__name__)
 
 NAV_ITEMS = [
-    ("home",         "⬇",  "Download",     "DOWNLOADS"),
-    ("queue",        "≡",  "Queue",         "DOWNLOADS"),
-    ("batch",        "☰",  "Batch",         "DOWNLOADS"),
-    ("live_monitor", "🔴", "Live Monitor",  "DOWNLOADS"),
-    ("convert",      "🍎", "Convert",       "TOOLS"),
-    ("history",      "⏱",  "History",       "LIBRARY"),
-    ("settings",     "⚙",  "Settings",      "SYSTEM"),
-    ("special_dl",   "⚡", "Special",       "SYSTEM"),
+    ("home", "↓", "Tải xuống", "TẢI XUỐNG"),
+    ("queue", "≡", "Hàng đợi", "TẢI XUỐNG"),
+    ("batch", "⊞", "Hàng loạt", "TẢI XUỐNG"),
+    ("live_monitor", "◉", "Live Monitor", "TẢI XUỐNG"),
+    ("convert", "⇄", "Chuyển đổi", "CÔNG CỤ"),
+    ("history", "◷", "Lịch sử", "THƯ VIỆN"),
+    ("settings", "⊙", "Cài đặt", "HỆ THỐNG"),
+    ("special_dl", "◆", "Đặc biệt", "HỆ THỐNG"),
 ]
 
-_TOAST_BG = {
+_TOAST_COLOR = {
     "success": "success",
-    "error":   "error",
-    "info":    "primary",
+    "error": "error",
+    "info": "primary",
     "warning": "warning",
 }
 
 
-class MainWindow(ctk.CTk):
-
+class MainWindow(QMainWindow):
     MIN_W = 1080
     MIN_H = 720
 
     def __init__(self, service: DownloadService, config: ConfigManager) -> None:
         super().__init__()
         self._service = service
-        self._config  = config
+        self._config = config
         self._current_tab: Optional[str] = None
-        self._toast_after: Optional[str] = None
-        self.attributes("-alpha", 0)   # invisible during construction — no flicker
-        self._setup_window()           # (withdraw() breaks overrideredirect on Windows)
-        self._build_ui()
-        self.attributes("-alpha", 1)   # reveal once all widgets are built and themed
-        # Register real Win32 HWND so open_file() can monitor the media player.
-        # Also start _poll_focus() which drains _focus_queue on the UI thread —
-        # the only thread that can reliably raise our overrideredirect window.
-        if sys.platform == "win32":
-            try:
-                from utils.helpers import register_app_hwnd
-                self.update_idletasks()
-                _hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-                register_app_hwnd(_hwnd if _hwnd else self.winfo_id())
-            except Exception:
-                pass  # non-fatal: focus reclaim is cosmetic only
-        self._poll_focus_id: Optional[str] = None
-        self._poll_focus()
+        self._clipboard_monitor = None
+        self._toast_timer: Optional[QTimer] = None
+        self._pill_btns: dict[str, QPushButton] = {}
+        self._pill_badges: dict[str, QLabel] = {}
+        self._build()
+        self._start_clipboard_monitor_if_enabled()
 
-    def _poll_focus(self) -> None:
-        """Raise OmniDL above other windows after the media player closes.
+    # ── Build ─────────────────────────────────────────────────────────────
 
-        Drains _focus_queue every 200 ms on the UI (main) thread.
+    def _build(self) -> None:
+        self._facade = ServiceFacade(self._service, self._config)
+        self.setWindowTitle("OmniDL — Ultimate Media Downloader")
+        self.setMinimumSize(self.MIN_W, self.MIN_H)
+        self.resize(self.MIN_W, self.MIN_H)
+        self._center_on_screen()
+        self.setAcceptDrops(True)
 
-        When _wait (daemon thread in open_file) signals via the queue:
-          1. attributes("-topmost", True)  — OmniDL above ALL non-topmost
-          2. lift()                        — Tkinter Z-order raise
-          3. BringWindowToTop(hwnd)        — Win32 Z-order raise (no perms needed)
-          4. after(600 ms): topmost=False  — restore normal Z-order
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        Why this finally works:
-          The user complaint is VISUAL ("bị che" = visually covered).
-          That is a Z-order problem, not a keyboard-focus problem.
-          BringWindowToTop + topmost require NO foreground permission.
-          WaitForSingleObject provides EXACT timing (player process exit),
-          so topmost is set at precisely the right moment — after the player
-          closes — not before (which was the bug in all previous attempts).
-        """
-        try:
-            from utils.helpers import _focus_queue
-            while not _focus_queue.empty():
-                try:
-                    _focus_queue.get_nowait()
-                except Exception:
-                    break
-                if not self.winfo_exists():
-                    break
-                # Set topmost AFTER player exits — correct timing.
-                # OmniDL rises above Brave/Explorer/any other window.
-                self.attributes("-topmost", True)
-                self.lift()
-                if sys.platform == "win32":
-                    try:
-                        import ctypes as _ct
-                        _hwnd = _ct.windll.user32.GetParent(self.winfo_id())
-                        if _hwnd:
-                            _ct.windll.user32.BringWindowToTop(_hwnd)
-                    except Exception:
-                        pass
-                # Restore normal Z-order after 600 ms.
-                self.after(600, lambda: (
-                    self.attributes("-topmost", False)
-                    if self.winfo_exists() else None
-                ))
-        except Exception:
-            pass
-        if self.winfo_exists():
-            self._poll_focus_id = self.after(200, self._poll_focus)
+        # Toolbar
+        from ui.components.toolbar import Toolbar
 
-    # ── Exposed API ───────────────────────────────────────────────────────
+        self._toolbar = Toolbar(app=self)
+        root.addWidget(self._toolbar)
+
+        # Top bar: pill tabs + right controls
+        top_bar = QWidget()
+        top_bar.setObjectName("top_bar")
+        top_bar_layout = QHBoxLayout(top_bar)
+        top_bar_layout.setContentsMargins(12, 6, 12, 6)
+        top_bar_layout.setSpacing(8)
+
+        self._pill_bar = self._build_pill_tabs()
+        top_bar_layout.addWidget(self._pill_bar, 1)
+
+        # Theme toggle button
+        self._theme_btn = QPushButton("☀ Sáng")
+        self._theme_btn.setFixedSize(80, 28)
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        top_bar_layout.addWidget(self._theme_btn)
+
+        # Notification bell
+        self._notif_btn = QPushButton("🔔")
+        self._notif_btn.setFixedSize(32, 28)
+        self._notif_btn.setToolTip("Thông báo")
+        self._notif_btn.clicked.connect(self._open_notification_panel)
+        top_bar_layout.addWidget(self._notif_btn)
+
+        root.addWidget(top_bar)
+
+        # Thin separator below top bar
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {T.border};")
+        root.addWidget(sep)
+
+        # Content area
+        self._stack = QStackedWidget()
+        self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        root.addWidget(self._stack, 1)
+
+        # Build tabs
+        self._tabs: dict[str, QWidget] = {}
+        self._build_tabs()
+
+        # Status bar
+        from ui.components.status_bar import StatusBar
+
+        self._status_bar = StatusBar(app=self)
+        self.setStatusBar(self._status_bar)
+
+        # Toast label (overlay)
+        self._toast_lbl = QLabel("", self)
+        self._toast_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._toast_lbl.setStyleSheet(f"""
+            QLabel {{
+                background-color: {T.primary};
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+        """)
+        self._toast_lbl.hide()
+
+        # Ctrl+K shortcut
+        shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        shortcut.activated.connect(self._open_command_palette)
+
+        # Register theme callback
+        T.register(self._on_theme)
+        is_dark = T.mode not in ("light", "solarized", "lavender")
+        self._theme_btn.setText("🌙 Tối" if not is_dark else "☀ Sáng")
+
+        self.navigate_to("home")
+
+    def _build_pill_tabs(self) -> QWidget:
+        pill_bar = QWidget()
+        pill_bar.setObjectName("pill_bar")
+
+        layout = QHBoxLayout(pill_bar)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        for key, icon, label, _section in NAV_ITEMS:
+            btn = QPushButton(f"{icon}  {label}")
+            btn.setObjectName("pill_tab")
+            btn.setProperty("active", "false")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, k=key: self.navigate_to(k))
+            layout.addWidget(btn)
+            self._pill_btns[key] = btn
+
+        layout.addStretch()
+        return pill_bar
+
+    def _build_tabs(self) -> None:
+        from ui.tabs.batch_tab import BatchTab
+        from ui.tabs.convert_tab import ConvertTab
+        from ui.tabs.history_tab import HistoryTab
+        from ui.tabs.home_tab import HomeTab
+        from ui.tabs.live_monitor_tab import LiveMonitorTab
+        from ui.tabs.queue_tab import QueueTab
+        from ui.tabs.settings_tab import SettingsTab
+        from ui.tabs.special_dl_tab import SpecialDlTab
+
+        tab_classes = {
+            "home": HomeTab,
+            "queue": QueueTab,
+            "batch": BatchTab,
+            "live_monitor": LiveMonitorTab,
+            "convert": ConvertTab,
+            "history": HistoryTab,
+            "settings": SettingsTab,
+            "special_dl": SpecialDlTab,
+        }
+        for key, cls in tab_classes.items():
+            widget = cls(self)
+            # Mark top-level frame for QSS tab accent
+            if isinstance(widget, QFrame):
+                widget.setObjectName("tab_content")
+                widget.setProperty("tab_key", key)
+            self._tabs[key] = widget
+            self._stack.addWidget(widget)
+
+    # ── Public API ────────────────────────────────────────────────────────
 
     @property
     def service(self) -> "ServiceFacade":
@@ -148,338 +222,150 @@ class MainWindow(ctk.CTk):
 
     @property
     def taildrop(self) -> "TaildropService":
-        """Expose TaildropService for ConvertTab and other UI consumers."""
         return self._service.taildrop
 
-    def get_tab(self, key: str):
+    def get_tab(self, key: str) -> Optional[QWidget]:
         return self._tabs.get(key)
 
     def get_toolbar(self):
         return getattr(self, "_toolbar", None)
-
-    # ── Window setup ──────────────────────────────────────────────────────
-
-    def _setup_window(self) -> None:
-        self.title("OmniDL — Ultimate Media Downloader")
-        self.minsize(self.MIN_W, self.MIN_H)
-        self.geometry(f"{self.MIN_W}x{self.MIN_H}")
-        self.configure(fg_color=T.bg)
-        self.overrideredirect(True)
-        self.update_idletasks()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"+{(sw - self.MIN_W)//2}+{(sh - self.MIN_H)//2}")
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        if sys.platform == "win32":
-            self._restore_taskbar()
-
-    def _restore_taskbar(self) -> None:
-        try:
-            import ctypes
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-            ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x00040000)
-            self.wm_withdraw()
-            self.wm_deiconify()
-        except Exception as exc:  # non-fatal: taskbar style is cosmetic
-            logger.debug("_restore_taskbar failed: %s", exc)
-
-    def _minimize(self) -> None:
-        """Minimize window — works correctly even with overrideredirect=True."""
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-                ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
-                return
-            except Exception as exc:  # non-fatal: falls back to iconify()
-                logger.debug("Win32 minimize failed, falling back to iconify: %s", exc)
-        self.iconify()
-
-    # ── UI construction ───────────────────────────────────────────────────
-
-    def _build_ui(self) -> None:
-        self._facade = ServiceFacade(self._service, self._config)
-
-        # 1. Custom title bar
-        self._build_title_bar()
-
-        # 2. Persistent toolbar (URL input)
-        from ui.components.toolbar import Toolbar
-        self._toolbar = Toolbar(self, app=self)
-        self._toolbar.pack(fill="x")
-
-        # 3. Body: sidebar | content
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True)
-
-        self._sidebar = ctk.CTkFrame(
-            body, width=220, fg_color=T.sidebar, corner_radius=0)
-        self._sidebar.pack(side="left", fill="y")
-        self._sidebar.pack_propagate(False)
-        self._build_sidebar()
-
-        self._divider = ctk.CTkFrame(body, width=1, fg_color=T.border, corner_radius=0)
-        self._divider.pack(side="left", fill="y")
-
-        self._content = ctk.CTkFrame(body, fg_color=T.bg, corner_radius=0)
-        self._content.pack(side="left", fill="both", expand=True)
-
-        self._build_tabs()
-        self.navigate_to("home")
-
-        # 4. Status bar
-        from ui.components.status_bar import StatusBar
-        self._status_bar = StatusBar(self, app=self)
-        self._status_bar.pack(fill="x", side="bottom")
-
-        # 5. Clipboard monitor (optional, controlled via Settings)
-        self._clipboard_monitor = None
-        self._start_clipboard_monitor_if_enabled()
-
-        # 5. Toast overlay
-        self._toast_lbl = ctk.CTkLabel(
-            self, text="",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=T.primary, corner_radius=8,
-            text_color="white", padx=16, pady=8,
-        )
-
-        # Register for theme changes so structural frames refresh on toggle
-        T.register(self._on_theme)
-        # Sync theme-button label with the token system's current mode
-        # (needed when the saved theme differs from the hardcoded default "dark")
-        self._theme_btn.configure(
-            text="🌙 Dark" if T.mode == "light" else "☀ Light"
-        )
-
-    def _build_title_bar(self) -> None:
-        tb = ctk.CTkFrame(self, fg_color=T.sidebar, height=44, corner_radius=0)
-        self._title_bar = tb          # ← ref for theme refresh
-        tb.pack(fill="x")
-        tb.pack_propagate(False)
-
-        # Logo
-        logo = ctk.CTkFrame(tb, fg_color="transparent")
-        logo.pack(side="left", padx=18)
-
-        self._logo_icon = ctk.CTkLabel(
-            logo, text="⬇",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=T.primary,
-        )
-        self._logo_icon.pack(side="left", padx=(0, 6))
-        self._logo_name = ctk.CTkLabel(
-            logo, text="OmniDL",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=T.text,
-        )
-        self._logo_name.pack(side="left")
-
-        # Window controls
-        bx = ctk.CTkFrame(tb, fg_color="transparent")
-        bx.pack(side="right", padx=10)
-
-        self._wctrl_btns: list[ctk.CTkButton] = []
-        for text, cmd, hover in [
-            ("—",  self._minimize,   T.surface3),
-            ("⬜", self._toggle_max, T.surface3),
-            ("✕",  self._on_close,  T.close_hover),
-        ]:
-            btn = ctk.CTkButton(
-                bx, text=text, width=36, height=28,
-                fg_color="transparent", hover_color=hover,
-                font=ctk.CTkFont(size=12), text_color=T.text3,
-                command=cmd,
-            )
-            btn.pack(side="left", padx=1)
-            self._wctrl_btns.append(btn)
-
-        for w in (tb, logo, *tb.winfo_children(), *logo.winfo_children()):
-            w.bind("<ButtonPress-1>", self._drag_start, add="+")
-            w.bind("<B1-Motion>",     self._drag_move,  add="+")
-        self._dx = self._dy = 0
-
-    def _build_sidebar(self) -> None:
-        sections_seen: set[str] = set()
-        self._nav_btns: dict[str, ctk.CTkButton] = {}
-        self._nav_indicators: dict[str, ctk.CTkFrame] = {}
-        self._section_labels: list[ctk.CTkLabel] = []  # ← for theme refresh
-
-        for key, icon, label, section in NAV_ITEMS:
-            if section not in sections_seen:
-                sections_seen.add(section)
-                lbl = ctk.CTkLabel(
-                    self._sidebar, text=section,
-                    font=ctk.CTkFont(size=9, weight="bold"),
-                    text_color=T.text3,
-                )
-                lbl.pack(anchor="w", padx=20, pady=(18, 4))
-                self._section_labels.append(lbl)
-
-            row = ctk.CTkFrame(self._sidebar, fg_color="transparent", height=40)
-            row.pack(fill="x", padx=8, pady=1)
-            row.pack_propagate(False)
-
-            indicator = ctk.CTkFrame(
-                row, width=3, fg_color="transparent", corner_radius=2)
-            indicator.pack(side="left", fill="y", padx=(0, 1))
-
-            btn = ctk.CTkButton(
-                row,
-                text=f"  {icon}   {label}",
-                anchor="w",
-                font=ctk.CTkFont(size=13, weight="bold"),
-                height=38, corner_radius=8,
-                fg_color="transparent",
-                hover_color=T.surface2,
-                text_color=T.text3,
-                command=lambda k=key: self.navigate_to(k),
-            )
-            btn.pack(side="left", fill="both", expand=True)
-
-            self._nav_btns[key] = btn
-            self._nav_indicators[key] = indicator
-
-        # Bottom strip
-        bottom = ctk.CTkFrame(self._sidebar, fg_color="transparent")
-        bottom.pack(side="bottom", fill="x", padx=12, pady=12)
-
-        self._powered_lbl = ctk.CTkLabel(
-            bottom, text=f"v{__version__}",
-            font=ctk.CTkFont(size=10), text_color=T.text3,
-        )
-        self._powered_lbl.pack(side="left")
-
-        self._theme_btn = ctk.CTkButton(
-            bottom, text="☀ Light",
-            font=ctk.CTkFont(size=10),
-            height=28, width=76, corner_radius=6,
-            fg_color=T.surface2, hover_color=T.surface3,
-            text_color=T.text2,
-            command=self._toggle_theme,
-        )
-        self._theme_btn.pack(side="right")
-
-    def _build_tabs(self) -> None:
-        from ui.tabs.batch_tab import BatchTab
-        from ui.tabs.convert_tab import ConvertTab
-        from ui.tabs.history_tab import HistoryTab
-        from ui.tabs.home_tab import HomeTab
-        from ui.tabs.live_monitor_tab import LiveMonitorTab
-        from ui.tabs.queue_tab import QueueTab
-        from ui.tabs.settings_tab import SettingsTab
-        from ui.tabs.special_dl_tab import SpecialDlTab
-        self._tabs: dict[str, ctk.CTkFrame] = {
-            "home":         HomeTab(self._content, self),
-            "queue":        QueueTab(self._content, self),
-            "batch":        BatchTab(self._content, self),
-            "live_monitor": LiveMonitorTab(self._content, self),
-            "convert":      ConvertTab(self._content, self),
-            "history":  HistoryTab(self._content, self),
-            "settings":    SettingsTab(self._content, self),
-            "special_dl":  SpecialDlTab(self._content, self),
-        }
 
     # ── Navigation ────────────────────────────────────────────────────────
 
     def navigate_to(self, key: str) -> None:
         if key not in self._tabs:
             return
-        if self._current_tab:
-            self._tabs[self._current_tab].pack_forget()
-        self._tabs[key].pack(fill="both", expand=True)
+        self._stack.setCurrentWidget(self._tabs[key])
+
+        # Update pill button active state
+        prev = self._current_tab
         self._current_tab = key
 
-        for k, btn in self._nav_btns.items():
-            ind = self._nav_indicators[k]
-            if k == key:
-                btn.configure(fg_color=T.primary_dim, text_color=T.text)
-                ind.configure(fg_color=T.primary)
-            else:
-                btn.configure(fg_color="transparent", text_color=T.text3)
-                ind.configure(fg_color="transparent")
+        if prev and prev in self._pill_btns:
+            btn = self._pill_btns[prev]
+            btn.setProperty("active", "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+        if key in self._pill_btns:
+            btn = self._pill_btns[key]
+            btn.setProperty("active", "true")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
         if key == "history":
-            self._tabs["history"].refresh()   # type: ignore
+            tab = self._tabs.get("history")
+            if tab and hasattr(tab, "refresh"):
+                tab.refresh()
         if key == "home":
-            self._tabs["home"].refresh()      # type: ignore
+            tab = self._tabs.get("home")
+            if tab and hasattr(tab, "refresh"):
+                tab.refresh()
 
-    # ── Theme toggle ──────────────────────────────────────────────────────
+    def update_tab_badge(self, tab_key: str, count: int) -> None:
+        """Update badge count on pill tab. count=0 removes badge."""
+        btn = self._pill_btns.get(tab_key)
+        if not btn:
+            return
+        badge = self._pill_badges.get(tab_key)
+        if count == 0:
+            if badge:
+                badge.hide()
+            return
+        if badge is None:
+            badge = QLabel(btn)
+            badge.setObjectName("badge")
+            badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self._pill_badges[tab_key] = badge
+        badge.setText(str(count))
+        badge.adjustSize()
+        # Position badge at top-right of button
+        badge.move(btn.width() - badge.width() - 2, 2)
+        badge.show()
+        badge.raise_()
+
+    # ── Placeholder actions ───────────────────────────────────────────────
+
+    def _open_command_palette(self) -> None:
+        pass
+
+    def _open_notification_panel(self) -> None:
+        pass
+
+    # ── Theme ─────────────────────────────────────────────────────────────
 
     def _toggle_theme(self) -> None:
-        new_mode = "light" if T.mode == "dark" else "dark"
-        T.set_mode(new_mode)  # fires _on_theme + all registered callbacks
-        ctk.set_appearance_mode(new_mode)
+        themes = list(THEME_NAMES)
+        current_idx = themes.index(T.mode) if T.mode in themes else 0
+        new_mode = themes[(current_idx + 1) % len(themes)]
+        T.set_mode(new_mode)
         self._config.set("theme", new_mode)
-        self._theme_btn.configure(
-            text="🌙 Dark" if new_mode == "light" else "☀ Light")
+        is_dark = T.mode not in ("light", "solarized", "lavender")
+        self._theme_btn.setText("🌙 Tối" if not is_dark else "☀ Sáng")
 
     def _on_theme(self) -> None:
-        """Refresh every structural widget in MainWindow after a theme change."""
-        if not self.winfo_exists():
+        apply_theme()
+        # Re-apply active pill state after theme change
+        if self._current_tab:
+            self.navigate_to(self._current_tab)
+
+    # ── Drag & drop ───────────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            url = event.mimeData().urls()[0].toString()
+        elif event.mimeData().hasText():
+            url = event.mimeData().text()
+        else:
             return
-        # Root + body frames
-        self.configure(fg_color=T.bg)
-        self._title_bar.configure(fg_color=T.sidebar)
-        self._logo_icon.configure(text_color=T.primary)
-        self._logo_name.configure(text_color=T.text)
-        # Window-control buttons: — and ⬜ use surface3; ✕ uses close_hover
-        for btn in self._wctrl_btns[:-1]:
-            btn.configure(text_color=T.text3, hover_color=T.surface3)
-        if self._wctrl_btns:
-            self._wctrl_btns[-1].configure(
-                text_color=T.text3, hover_color=T.close_hover)
-        self._sidebar.configure(fg_color=T.sidebar)
-        self._divider.configure(fg_color=T.border)
-        self._content.configure(fg_color=T.bg)
-        # Sidebar labels
-        for lbl in self._section_labels:
-            lbl.configure(text_color=T.text3)
-        # Nav buttons — update colours and re-apply active state
-        for k, btn in self._nav_btns.items():
-            ind = self._nav_indicators[k]
-            if k == self._current_tab:
-                btn.configure(fg_color=T.primary_dim, text_color=T.text,
-                               hover_color=T.surface2)
-                ind.configure(fg_color=T.primary)
-            else:
-                btn.configure(fg_color="transparent", text_color=T.text3,
-                               hover_color=T.surface2)
-                ind.configure(fg_color="transparent")
-        self._theme_btn.configure(
-            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2)
+        self.navigate_to("home")
+        home = self._tabs.get("home")
+        if home and hasattr(home, "url_input"):
+            home.url_input.setText(url)
 
     # ── Toast ─────────────────────────────────────────────────────────────
 
     def toast(self, message: str, kind: str = "info") -> None:
-        color = getattr(T, _TOAST_BG.get(kind, "primary"))
-        self._toast_lbl.configure(
-            text=f"  {message}  ",
-            fg_color=color,
-            text_color="white",
-        )
-        self._toast_lbl.place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-48)
-        if self._toast_after:
-            self.after_cancel(self._toast_after)
-        self._toast_after = self.after(3200, self._toast_lbl.place_forget)
+        color_key = _TOAST_COLOR.get(kind, "primary")
+        color = getattr(T, color_key)
+        self._toast_lbl.setText(f"  {message}  ")
+        self._toast_lbl.setStyleSheet(f"""
+            QLabel {{
+                background-color: {color};
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+        """)
+        self._toast_lbl.adjustSize()
+        self._position_toast()
+        self._toast_lbl.show()
+        self._toast_lbl.raise_()
 
-    # ── Window management ─────────────────────────────────────────────────
+        if self._toast_timer:
+            self._toast_timer.stop()
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self._toast_lbl.hide)
+        self._toast_timer.start(3200)
 
-    def _drag_start(self, e: tk.Event) -> None:
-        self._dx = e.x_root - self.winfo_x()
-        self._dy = e.y_root - self.winfo_y()
+    def _position_toast(self) -> None:
+        w = self._toast_lbl.width()
+        h = self._toast_lbl.height()
+        x = self.width() - w - 20
+        y = self.height() - h - 48
+        self._toast_lbl.move(x, y)
 
-    def _drag_move(self, e: tk.Event) -> None:
-        self.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
-
-    def _toggle_max(self) -> None:
-        if sys.platform == "win32":
-            self.state("normal" if self.state() == "zoomed" else "zoomed")
-        elif sys.platform == "darwin":
-            self.wm_attributes("-fullscreen",
-                               not bool(self.wm_attributes("-fullscreen")))
-        else:
-            self.attributes("-zoomed", not self.attributes("-zoomed"))
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._toast_lbl.isVisible():
+            self._position_toast()
 
     # ── Clipboard monitor ─────────────────────────────────────────────────
 
@@ -489,31 +375,30 @@ class MainWindow(ctk.CTk):
         self.start_clipboard_monitor()
 
     def start_clipboard_monitor(self) -> None:
-        """Start (or restart) the clipboard monitor. Safe to call multiple times."""
         if self._clipboard_monitor is not None:
             self._clipboard_monitor.stop()
 
         def _safe_get_clipboard() -> str:
-            # clipboard_get() is a Tkinter call -- must run on main thread.
-            # Block the polling thread with a threading.Event round-trip.
             result: list = []
             done = _threading.Event()
 
-            def _fetch():
+            def _fetch() -> None:
                 try:
-                    result.append(self.clipboard_get())
+                    result.append(QGuiApplication.clipboard().text())
                 except Exception:
                     result.append("")
                 done.set()
 
-            self.after(0, _fetch)
+            QTimer.singleShot(0, _fetch)
             done.wait(timeout=2.0)
             return result[0] if result else ""
 
         def _on_new_url(url: str) -> None:
+            from ui.signals import ui_bridge
+
             toolbar = self.get_toolbar()
             if toolbar is not None:
-                toolbar._ui_queue.put(lambda: toolbar.trigger_from_clipboard(url))
+                ui_bridge.post(lambda u=url: toolbar.trigger_from_clipboard(u))
 
         monitor = ClipboardMonitor(
             get_clipboard=_safe_get_clipboard,
@@ -521,24 +406,18 @@ class MainWindow(ctk.CTk):
         )
         self._clipboard_monitor = monitor
         monitor.start()
-        logger.debug("Clipboard monitor started")
 
     def stop_clipboard_monitor(self) -> None:
-        """Stop the clipboard monitor."""
         if self._clipboard_monitor is not None:
             self._clipboard_monitor.stop()
             self._clipboard_monitor = None
-            logger.debug("Clipboard monitor stopped")
 
-    def _on_close(self) -> None:
-        # Check active downloads
-        active_dl = [t for t in self._service.get_all_tasks()
-                     if t.status in DownloadStatus.active_states()]
+    # ── Close ────────────────────────────────────────────────────────────
 
-        # Check active conversions via ConvertTab._active_count
+    def closeEvent(self, event) -> None:
+        active_dl = [t for t in self._service.get_all_tasks() if t.status in DownloadStatus.active_states()]
         convert_tab = self._tabs.get("convert")
         active_cv = getattr(convert_tab, "_active_count", 0)
-
         total_active = len(active_dl) + active_cv
 
         if total_active:
@@ -548,34 +427,34 @@ class MainWindow(ctk.CTk):
             if active_cv:
                 parts.append(f"{active_cv} conversion(s)")
             summary = " và ".join(parts)
-            if not mb.askyesno(
+            reply = QMessageBox.question(
+                self,
                 "OmniDL",
                 f"{summary} đang chạy.\nĐóng và huỷ tất cả?",
-                icon="warning",
-            ):
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
                 return
 
         for t in active_dl:
             self._service.cancel_download(t.id)
+
         self._config.save()
-        # Cancel the _poll_focus timer so it does not fire after destroy()
-        # begins — winfo_exists() guard catches it anyway, but explicit cancel
-        # avoids the redundant callback cycle during the 200 ms destroy window.
-        if self._poll_focus_id:
-            try:
-                self.after_cancel(self._poll_focus_id)
-            except Exception:
-                pass
-            self._poll_focus_id = None
-        # Cancel status_bar loops — prevents _poll and _drain_ui_queue from
-        # firing into a half-destroyed widget during the 200 ms destroy window.
-        if hasattr(self, "_status_bar"):
-            self._status_bar.cancel_loops()
         self.stop_clipboard_monitor()
-        self.after(200, self.destroy)
+        if hasattr(self, "_status_bar"):
+            self._status_bar.stop()
+        event.accept()
+
+    def _center_on_screen(self) -> None:
+        screen = QGuiApplication.primaryScreen().geometry()
+        x = (screen.width() - self.MIN_W) // 2
+        y = (screen.height() - self.MIN_H) // 2
+        self.move(x, y)
 
 
 # ── Service facade ────────────────────────────────────────────────────────────
+
 
 class ServiceFacade:
     def __init__(self, svc: DownloadService, cfg: ConfigManager) -> None:
@@ -583,31 +462,59 @@ class ServiceFacade:
         self._cfg = cfg
 
     def analyse_url(self, url, on_done, on_error):
-        self._svc.analyse_url(url, on_done, on_error)
+        return self._svc.analyse_url(url, on_done, on_error)
 
     def start_download(self, url, media_info, format_id, output_ext, output_dir=None):
-        return self._svc.start_download(  # DEF-030: propagate DownloadTask to caller
-            url, media_info, format_id, output_ext, output_dir
-        )
+        return self._svc.start_download(url, media_info, format_id, output_ext, output_dir)
 
-    def pause_download(self, task_id):   self._svc.pause_download(task_id)
-    def resume_download(self, task_id):  self._svc.resume_download(task_id)
-    def cancel_download(self, task_id):  self._svc.cancel_download(task_id)
-    def clear_finished(self, exclude_ids=None): self._svc.clear_finished(exclude_ids=exclude_ids)
-    def get_all_tasks(self):             return self._svc.get_all_tasks()
-    def get_task(self, tid):             return self._svc.get_task(tid)
-    def get_history(self):               return self._svc.get_history()
-    def search_history(self, q):         return self._svc.search_history(q)
-    def clear_history(self):             self._svc.clear_history()
-    def delete_history_entry(self, tid): self._svc.delete_history_entry(tid)
-    def get_history_stats(self):         return self._svc.get_history_stats()
-    def get_download_dir(self) -> Path:  return self._cfg.download_dir
-    def set_download_dir(self, p: Path): self._cfg.set("download_dir", str(p))
+    def pause_download(self, task_id):
+        self._svc.pause_download(task_id)
 
-    def convert_to_mp4(self, source: Path, on_progress=None,
-                       on_done=None, on_error=None,
-                       target_ext: str = "mp4",
-                       encode_settings=None) -> None:
+    def resume_download(self, task_id):
+        self._svc.resume_download(task_id)
+
+    def cancel_download(self, task_id):
+        self._svc.cancel_download(task_id)
+
+    def clear_finished(self, exclude_ids=None):
+        self._svc.clear_finished(exclude_ids=exclude_ids)
+
+    def get_all_tasks(self):
+        return self._svc.get_all_tasks()
+
+    def get_task(self, tid):
+        return self._svc.get_task(tid)
+
+    def get_history(self):
+        return self._svc.get_history()
+
+    def search_history(self, q):
+        return self._svc.search_history(q)
+
+    def clear_history(self):
+        self._svc.clear_history()
+
+    def delete_history_entry(self, tid):
+        self._svc.delete_history_entry(tid)
+
+    def get_history_stats(self):
+        return self._svc.get_history_stats()
+
+    def get_download_dir(self) -> Path:
+        return self._cfg.download_dir
+
+    def set_download_dir(self, p: Path):
+        self._cfg.set("download_dir", str(p))
+
+    def convert_to_mp4(
+        self,
+        source: Path,
+        on_progress=None,
+        on_done=None,
+        on_error=None,
+        target_ext: str = "mp4",
+        encode_settings=None,
+    ) -> None:
         self._svc.convert_to_mp4(
             source=source,
             on_progress=on_progress,
@@ -617,23 +524,15 @@ class ServiceFacade:
             encode_settings=encode_settings,
         )
 
-    def fetch_thumbnail(self, url: str, width: int, height: int,
-                        on_done, on_error) -> None:
-        """Route thumbnail fetch through ServiceFacade (SSRF validation included)."""
-        self._svc.fetch_thumbnail(
-            url=url, width=width, height=height,
-            on_done=on_done, on_error=on_error,
-        )
+    def fetch_thumbnail(self, url: str, width: int, height: int, on_done, on_error) -> None:
+        self._svc.fetch_thumbnail(url=url, width=width, height=height, on_done=on_done, on_error=on_error)
 
     def check_profile_live(self, url: str, on_done, on_error) -> None:
-        """Check if an Instagram profile URL is currently live (background thread)."""
         self._svc.check_profile_live(url=url, on_done=on_done, on_error=on_error)
 
     def check_tiktok_profile_live(self, url: str, on_done, on_error) -> None:
-        """Check if a TikTok profile URL is currently live (background thread)."""
         self._svc.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
 
     @property
     def taildrop(self) -> "TaildropService":
-        """Expose TaildropService so api.server can access it via ServiceFacade."""
         return self._svc.taildrop
