@@ -47,7 +47,7 @@ class CommandPalette(QDialog):
         layout.setSpacing(0)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Tim kiem lenh...")
+        self._search.setPlaceholderText("Tìm kiếm lệnh...")
         self._search.setFixedHeight(44)
         self._search.textChanged.connect(self._on_search)
         layout.addWidget(self._search)
