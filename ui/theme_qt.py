@@ -442,7 +442,7 @@ QPushButton#pill_tab[active="true"] {{
     color: white;
     font-weight: 700;
 }}
-QPushButton#pill_tab:hover {{
+QPushButton#pill_tab[active="false"]:hover {{
     background: {T.surface2};
     color: {T.text};
 }}
@@ -459,8 +459,8 @@ QLabel#badge[type="error"] {{
     background: {T.error};
 }}
 /* --- Per-tab content frames --- */
-# Tab accent colors are intentionally hardcoded - they identify each tab
-# visually and don't change with theme. See TAB_ACCENTS in tokens.py.
+/* Tab accent colors are intentionally hardcoded - they identify each tab
+   visually and don't change with theme. See TAB_ACCENTS in tokens.py. */
 QWidget#tab_content[tab_key="home"] {{ border-top: 3px solid #6366F1; }}
 QWidget#tab_content[tab_key="queue"] {{ border-top: 3px solid #6366F1; }}
 QWidget#tab_content[tab_key="batch"] {{ border-top: 3px solid #818CF8; }}
@@ -491,7 +491,3 @@ QFrame#mini_status {{
     border-radius: 0px;
 }}
 """
-
-
-# Register with the token system so QSS re-applies on theme change
-T.register(apply_theme)

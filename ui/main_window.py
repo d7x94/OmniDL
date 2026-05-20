@@ -277,8 +277,9 @@ class MainWindow(QMainWindow):
             self._pill_badges[tab_key] = badge
         badge.setText(str(count))
         badge.adjustSize()
-        # Position badge at top-right of button
-        badge.move(btn.width() - badge.width() - 2, 2)
+        # Position badge at top-right of button (guard: width is 0 before window is shown)
+        if btn.width() > 0:
+            badge.move(btn.width() - badge.width() - 2, 2)
         badge.show()
         badge.raise_()
 
@@ -303,9 +304,11 @@ class MainWindow(QMainWindow):
 
     def _on_theme(self) -> None:
         apply_theme()
-        # Re-apply active pill state after theme change
-        if self._current_tab:
-            self.navigate_to(self._current_tab)
+        if self._current_tab and self._current_tab in self._pill_btns:
+            btn = self._pill_btns[self._current_tab]
+            btn.setProperty("active", "true")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     # ── Drag & drop ───────────────────────────────────────────────────────
 
