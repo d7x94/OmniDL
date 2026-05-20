@@ -154,6 +154,11 @@ class MainWindow(QMainWindow):
         shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
         shortcut.activated.connect(self._open_command_palette)
 
+        # Notification panel (floating overlay)
+        from ui.components.notification_panel import NotificationPanel
+
+        self._notification_panel = NotificationPanel(self)
+
         # Register theme callback
         T.register(self._on_theme)
         is_dark = T.mode not in ("light", "solarized", "lavender")
@@ -292,7 +297,7 @@ class MainWindow(QMainWindow):
         palette.exec()
 
     def _open_notification_panel(self) -> None:
-        pass
+        self._notification_panel.toggle()
 
     # ── Theme ─────────────────────────────────────────────────────────────
 
@@ -370,6 +375,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if self._toast_lbl.isVisible():
             self._position_toast()
+        if hasattr(self, "_notification_panel") and self._notification_panel.isVisible():
+            self._notification_panel._reposition()
 
     # ── Clipboard monitor ─────────────────────────────────────────────────
 
