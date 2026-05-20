@@ -27,7 +27,7 @@ from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
 from ui.theme_qt import apply_theme
-from ui.themes.tokens import THEME_NAMES, T
+from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T
 from utils.clipboard_monitor import ClipboardMonitor
 
 logger = logging.getLogger(__name__)
@@ -109,6 +109,20 @@ class MainWindow(QMainWindow):
         self._notif_btn = QPushButton("🔔")
         self._notif_btn.setFixedSize(32, 28)
         self._notif_btn.setToolTip("Thông báo")
+        self._notif_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text2};
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+                color: {T.text};
+            }}
+        """)
         self._notif_btn.clicked.connect(self._open_notification_panel)
         top_bar_layout.addWidget(self._notif_btn)
 
@@ -119,6 +133,12 @@ class MainWindow(QMainWindow):
         sep.setFixedHeight(1)
         sep.setStyleSheet(f"background-color: {T.border};")
         root.addWidget(sep)
+
+        # 3px accent bar — color updates per active tab in navigate_to()
+        self._accent_bar = QFrame()
+        self._accent_bar.setFixedHeight(3)
+        self._accent_bar.setStyleSheet(f"background: {TAB_ACCENTS['home']['accent']}; border: none;")
+        root.addWidget(self._accent_bar)
 
         # Content area
         self._stack = QStackedWidget()
@@ -178,6 +198,7 @@ class MainWindow(QMainWindow):
             btn = QPushButton(f"{icon}  {label}")
             btn.setObjectName("pill_tab")
             btn.setProperty("active", "false")
+            btn.setProperty("tab_key", key)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda checked=False, k=key: self.navigate_to(k))
             layout.addWidget(btn)
@@ -255,6 +276,10 @@ class MainWindow(QMainWindow):
             btn.setProperty("active", "true")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+
+        self._accent_bar.setStyleSheet(
+            f"background: {TAB_ACCENTS.get(key, {}).get('accent', T.primary)}; border: none;"
+        )
 
         if key == "history":
             tab = self._tabs.get("history")

@@ -19,6 +19,7 @@ Token auth:
   • Tokens are compared with secrets.compare_digest() to prevent
     timing-oracle attacks.
 """
+
 from __future__ import annotations
 
 import collections
@@ -77,7 +78,7 @@ logger = logging.getLogger(__name__)
 # ── SSE broadcast helpers ─────────────────────────────────────────────────────
 
 _sse_clients: list[queue.Queue] = []
-_sse_lock    = threading.Lock()
+_sse_lock = threading.Lock()
 _PING_INTERVAL = 15  # seconds — keeps iOS Safari connections alive
 
 # ── Analyse job cache ─────────────────────────────────────────────────────────
@@ -95,14 +96,14 @@ _PING_INTERVAL = 15  # seconds — keeps iOS Safari connections alive
 
 _analyse_cache: dict[str, dict] = {}
 _analyse_cache_lock = threading.Lock()
-_ANALYSE_CACHE_TTL  = 30.0  # seconds to keep result after completion
+_ANALYSE_CACHE_TTL = 30.0  # seconds to keep result after completion
 _EXTRA_MIME = {".ts": "video/mp2t"}  # missing from Python's default mimetypes DB
 
 # Per-IP sliding-window rate limiter (stdlib only, no new deps).
-_RATE_LIMIT   = 60        # max requests per window
-_RATE_WINDOW  = 60.0      # seconds
+_RATE_LIMIT = 60  # max requests per window
+_RATE_WINDOW = 60.0  # seconds
 _rate_buckets: dict[str, collections.deque] = {}
-_rate_lock    = threading.Lock()
+_rate_lock = threading.Lock()
 
 
 def _check_rate_limit(ip: str) -> bool:
@@ -122,19 +123,20 @@ def _analyse_cache_cleanup() -> None:
     """Remove completed entries older than TTL. Must be called under _analyse_cache_lock."""
     now = time.monotonic()
     stale = [
-        k for k, v in _analyse_cache.items()
-        if v["done"].is_set() and v.get("refs", 0) == 0
-        and now - v.get("ts", now) > _ANALYSE_CACHE_TTL
+        k
+        for k, v in _analyse_cache.items()
+        if v["done"].is_set() and v.get("refs", 0) == 0 and now - v.get("ts", now) > _ANALYSE_CACHE_TTL
     ]
     for k in stale:
         del _analyse_cache[k]
 
+
 # ── Runtime server state (module-level so stop/restart can reach it) ─────────
-_active_server: "uvicorn.Server | None" = None   # type: ignore[name-defined]
+_active_server: "uvicorn.Server | None" = None  # type: ignore[name-defined]
 _active_thread: threading.Thread | None = None
-_active_bus:    "EventBus | None" = None          # held to allow re-wiring on restart
+_active_bus: "EventBus | None" = None  # held to allow re-wiring on restart
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
-_bus_wired   = False              # BUG-CB: prevent duplicate subscriptions on restart
+_bus_wired = False  # BUG-CB: prevent duplicate subscriptions on restart
 _wired_remote_convert: "Optional[RemoteConvertService]" = None  # tracks active auto_convert subscription
 
 
@@ -156,23 +158,25 @@ def _task_to_dict(task: DownloadTask) -> dict:
     """Serialize a DownloadTask to a JSON-safe dict for SSE / REST responses."""
     snap = task.snapshot()
     return {
-        "id":               task.id,
-        "url":              task.url,
-        "title":            task.title,
-        "platform":         task.platform,
-        "status":           snap["status"].name,
-        "progress":         round(snap["progress"], 1),
-        "speed":            snap["speed"],
-        "eta":              snap["eta"],
+        "id": task.id,
+        "url": task.url,
+        "title": task.title,
+        "platform": task.platform,
+        "status": snap["status"].name,
+        "progress": round(snap["progress"], 1),
+        "speed": snap["speed"],
+        "eta": snap["eta"],
         "downloaded_bytes": snap["downloaded_bytes"],
-        "total_bytes":      snap["total_bytes"],
-        "filename":         snap["filename"],
-        "error_msg":        snap["error_msg"],
-        "created_at":       task.created_at,
+        "total_bytes": snap["total_bytes"],
+        "filename": snap["filename"],
+        "error_msg": snap["error_msg"],
+        "created_at": task.created_at,
+        "is_live": bool(task.media_info.is_live) if task.media_info else False,
     }
 
 
 # ── EventBus → SSE wiring ─────────────────────────────────────────────────────
+
 
 def _wire_event_bus(bus: EventBus) -> None:
     """
@@ -180,35 +184,51 @@ def _wire_event_bus(bus: EventBus) -> None:
     Called once at server startup — subscriptions are permanent for the
     lifetime of the process.
     """
-    def _on_started(task: DownloadTask)   -> None: _broadcast("started",   _task_to_dict(task))
-    def _on_progress(task: DownloadTask)  -> None: _broadcast("progress",  _task_to_dict(task))
-    def _on_completed(task: DownloadTask) -> None: _broadcast("completed", _task_to_dict(task))
-    def _on_failed(task: DownloadTask)    -> None: _broadcast("failed",    _task_to_dict(task))
-    def _on_cancelled(task: DownloadTask) -> None: _broadcast("cancelled", _task_to_dict(task))
+
+    def _on_started(task: DownloadTask) -> None:
+        _broadcast("started", _task_to_dict(task))
+
+    def _on_progress(task: DownloadTask) -> None:
+        _broadcast("progress", _task_to_dict(task))
+
+    def _on_completed(task: DownloadTask) -> None:
+        _broadcast("completed", _task_to_dict(task))
+
+    def _on_failed(task: DownloadTask) -> None:
+        _broadcast("failed", _task_to_dict(task))
+
+    def _on_cancelled(task: DownloadTask) -> None:
+        _broadcast("cancelled", _task_to_dict(task))
 
     # Taildrop transfer results — broadcast so the Remote UI can restore
     # the transfer button and show a completion / failure toast.
     # kwargs: task, dest_node  (and error for FAILED)
     def _on_taildrop_completed(task: DownloadTask, dest_node: str, **_kw) -> None:
-        _broadcast("taildrop_completed", {
-            "task_id":   task.id,
-            "dest_node": dest_node,
-        })
+        _broadcast(
+            "taildrop_completed",
+            {
+                "task_id": task.id,
+                "dest_node": dest_node,
+            },
+        )
 
     def _on_taildrop_failed(task: DownloadTask, dest_node: str, error: str = "", **_kw) -> None:
-        _broadcast("taildrop_failed", {
-            "task_id":   task.id,
-            "dest_node": dest_node,
-            "error":     error,
-        })
+        _broadcast(
+            "taildrop_failed",
+            {
+                "task_id": task.id,
+                "dest_node": dest_node,
+                "error": error,
+            },
+        )
 
-    bus.subscribe(EventBus.DOWNLOAD_STARTED,   _on_started)
-    bus.subscribe(EventBus.DOWNLOAD_PROGRESS,  _on_progress)
+    bus.subscribe(EventBus.DOWNLOAD_STARTED, _on_started)
+    bus.subscribe(EventBus.DOWNLOAD_PROGRESS, _on_progress)
     bus.subscribe(EventBus.DOWNLOAD_COMPLETED, _on_completed)
-    bus.subscribe(EventBus.DOWNLOAD_FAILED,    _on_failed)
+    bus.subscribe(EventBus.DOWNLOAD_FAILED, _on_failed)
     bus.subscribe(EventBus.DOWNLOAD_CANCELLED, _on_cancelled)
     bus.subscribe(EventBus.TAILDROP_COMPLETED, _on_taildrop_completed)
-    bus.subscribe(EventBus.TAILDROP_FAILED,    _on_taildrop_failed)
+    bus.subscribe(EventBus.TAILDROP_FAILED, _on_taildrop_failed)
 
     # ── Convert events → SSE ─────────────────────────────────────────────
     # Serialise ConversionJob snapshots the same way as tasks, so the iOS
@@ -236,10 +256,10 @@ def _wire_event_bus(bus: EventBus) -> None:
     def _on_convert_cancelled(job: ConversionJob, **_kw) -> None:
         _broadcast("convert_cancelled", _job_to_sse(job))
 
-    bus.subscribe(EventBus.CONVERT_STARTED,   _on_convert_started)
-    bus.subscribe(EventBus.CONVERT_PROGRESS,  _on_convert_progress)
+    bus.subscribe(EventBus.CONVERT_STARTED, _on_convert_started)
+    bus.subscribe(EventBus.CONVERT_PROGRESS, _on_convert_progress)
     bus.subscribe(EventBus.CONVERT_COMPLETED, _on_convert_completed)
-    bus.subscribe(EventBus.CONVERT_FAILED,    _on_convert_failed)
+    bus.subscribe(EventBus.CONVERT_FAILED, _on_convert_failed)
     bus.subscribe(EventBus.CONVERT_CANCELLED, _on_convert_cancelled)
 
     # auto_convert_tiktok_live is wired separately in start_api_server() so it
@@ -247,6 +267,7 @@ def _wire_event_bus(bus: EventBus) -> None:
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
+
 
 def create_app(
     service: "DownloadService",
@@ -263,7 +284,7 @@ def create_app(
     app = FastAPI(
         title="OmniDL Remote API",
         version="1.0.0",
-        docs_url=None,    # disable Swagger UI — reduces attack surface
+        docs_url=None,  # disable Swagger UI — reduces attack surface
         redoc_url=None,
         openapi_url=None,
     )
@@ -278,7 +299,7 @@ def create_app(
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    _token: str = config.api_token   # captured at factory time, immutable
+    _token: str = config.api_token  # captured at factory time, immutable
 
     # ── Auth dependency ───────────────────────────────────────────────────
 
@@ -296,7 +317,7 @@ def create_app(
         if not _check_rate_limit(client_ip):
             raise HTTPException(status_code=429, detail="Rate limit exceeded — try again later")
         if not _token:
-            return   # auth disabled — local trusted network only
+            return  # auth disabled — local trusted network only
         provided = token  # query param first (SSE path)
         if not provided:
             auth_header = request.headers.get("Authorization", "")
@@ -384,9 +405,11 @@ def create_app(
             req = AnalyseRequest(url=url)
         except Exception as exc:
             _exc_msg = str(exc)
+
             def _invalid() -> Generator[str, None, None]:
                 payload = json.dumps({"detail": _exc_msg})
                 yield f"event: error_result\ndata: {payload}\n\n"
+
             return StreamingResponse(
                 _invalid(),
                 media_type="text/event-stream",
@@ -401,10 +424,10 @@ def create_app(
             if entry is None:
                 # First request for this URL — create job and start extract.
                 entry = {
-                    "done":   threading.Event(),
+                    "done": threading.Event(),
                     "result": {},
-                    "ts":     0.0,
-                    "refs":   0,
+                    "ts": 0.0,
+                    "refs": 0,
                 }
                 _analyse_cache[clean_url] = entry
 
@@ -425,13 +448,14 @@ def create_app(
             else:
                 logger.debug(
                     "Analyse cache: attaching to existing job for %s (done=%s)",
-                    clean_url[:80], entry["done"].is_set(),
+                    clean_url[:80],
+                    entry["done"].is_set(),
                 )
             entry["refs"] += 1
 
         def _stream() -> Generator[str, None, None]:
             try:
-                done   = entry["done"]
+                done = entry["done"]
                 result = entry["result"]
 
                 deadline = time.monotonic() + 180.0
@@ -454,18 +478,20 @@ def create_app(
                     yield f"event: error_result\ndata: {payload}\n\n"
                 elif "info" in result:
                     info: MediaInfo = result["info"]
-                    payload = json.dumps({
-                        "url":            info.url,
-                        "title":          info.title,
-                        "uploader":       info.uploader,
-                        "duration":       info.duration,
-                        "thumbnail":      info.thumbnail,
-                        "platform":       info.platform,
-                        "formats":        info.formats,
-                        "is_live":        info.is_live,
-                        "playlist_count": len(info.playlist_entries),
-                        "source_engine":  info.source_engine,
-                    })
+                    payload = json.dumps(
+                        {
+                            "url": info.url,
+                            "title": info.title,
+                            "uploader": info.uploader,
+                            "duration": info.duration,
+                            "thumbnail": info.thumbnail,
+                            "platform": info.platform,
+                            "formats": info.formats,
+                            "is_live": info.is_live,
+                            "playlist_count": len(info.playlist_entries),
+                            "source_engine": info.source_engine,
+                        }
+                    )
                     yield f"event: result\ndata: {payload}\n\n"
                 else:
                     payload = json.dumps({"detail": "Analysis timed out after 180 s"})
@@ -491,7 +517,7 @@ def create_app(
             _stream(),
             media_type="text/event-stream",
             headers={
-                "Cache-Control":     "no-cache",
+                "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
             },
         )
@@ -499,9 +525,7 @@ def create_app(
     # ── Clipboard analyse (Remote client sends URL from its own clipboard) ──
 
     @app.post("/api/clipboard/analyse", response_model=AnalyseResponse)
-    async def clipboard_analyse(
-        body: ClipboardAnalyseRequest, _: None = Depends(_require_auth)
-    ):
+    async def clipboard_analyse(body: ClipboardAnalyseRequest, _: None = Depends(_require_auth)):
         """
         Analyse a URL submitted from the Remote client's clipboard.
 
@@ -614,9 +638,7 @@ def create_app(
         if remote_convert is not None:
             _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
             exclude = frozenset(
-                j.source_task_id
-                for j in remote_convert.get_all_jobs()
-                if j.status in _ACTIVE
+                j.source_task_id for j in remote_convert.get_all_jobs() if j.status in _ACTIVE
             )
         service.clear_finished(exclude_ids=exclude or None)
         return {"status": "ok", "excluded_count": len(exclude), "excluded_ids": list(exclude)}
@@ -634,7 +656,7 @@ def create_app(
         if not raw:
             raise HTTPException(status_code=404, detail="File path not recorded for this task")
         resolved = Path(raw).resolve()
-        allowed  = config.download_dir.resolve()
+        allowed = config.download_dir.resolve()
         # Path.is_relative_to() — Python 3.9+; project targets 3.11+ so safe.
         if not resolved.is_relative_to(allowed):
             raise HTTPException(
@@ -648,9 +670,7 @@ def create_app(
         response_model=FileActionResponse,
         summary="Send completed file to iPhone via Taildrop",
     )
-    async def transfer_to_device(
-        task_id: str, _: None = Depends(_require_auth)
-    ) -> FileActionResponse:
+    async def transfer_to_device(task_id: str, _: None = Depends(_require_auth)) -> FileActionResponse:
         """
         Trigger an on-demand Taildrop transfer for a completed task.
 
@@ -697,9 +717,7 @@ def create_app(
         response_model=FileActionResponse,
         summary="Delete the output file of a completed task from the server",
     )
-    async def delete_task_file(
-        task_id: str, _: None = Depends(_require_auth)
-    ) -> FileActionResponse:
+    async def delete_task_file(task_id: str, _: None = Depends(_require_auth)) -> FileActionResponse:
         """
         Permanently delete the output file from the server's disk.
 
@@ -764,9 +782,7 @@ def create_app(
         "/api/queue/{task_id}/file",
         summary="Stream / preview the output file of a completed task",
     )
-    async def preview_task_file(
-        task_id: str, _: None = Depends(_require_auth)
-    ):
+    async def preview_task_file(task_id: str, _: None = Depends(_require_auth)):
         """
         Serve the output file inline so iOS Safari can preview it.
 
@@ -812,9 +828,7 @@ def create_app(
         response_model=FileInfoResponse,
         summary="Get file metadata for a completed task",
     )
-    async def get_task_fileinfo(
-        task_id: str, _: None = Depends(_require_auth)
-    ) -> FileInfoResponse:
+    async def get_task_fileinfo(task_id: str, _: None = Depends(_require_auth)) -> FileInfoResponse:
         """
         Return file metadata (name, size, existence) without streaming the file.
         Used by the UI to decide which action buttons to show.
@@ -822,15 +836,15 @@ def create_app(
         task = _get_task_or_404(service, task_id)
         raw = getattr(task, "filename", None) or ""
         exists = False
-        size   = 0
-        name   = ""
+        size = 0
+        name = ""
         if raw:
             p = Path(raw).resolve()
             allowed = config.download_dir.resolve()
             if p.is_relative_to(allowed) and p.exists():
                 exists = True
-                size   = p.stat().st_size
-                name   = p.name
+                size = p.stat().st_size
+                name = p.name
 
         return FileInfoResponse(
             task_id=task_id,
@@ -845,23 +859,23 @@ def create_app(
     def _job_to_response(job: ConversionJob) -> ConvertJobResponse:
         """Serialise a ConversionJob to the API response model."""
         snap = job.snapshot()
-        out  = snap.get("output_filename", "") or ""
+        out = snap.get("output_filename", "") or ""
         return ConvertJobResponse(
-            job_id          = snap["job_id"],
-            source_task_id  = snap["source_task_id"],
-            encoder_key     = snap["encoder_key"],
-            quality         = snap["quality"],
-            speed_preset    = snap["speed_preset"],
-            custom_crf      = snap["custom_crf"],
-            output_codec    = snap.get("output_codec", "h264"),
-            status          = snap["status"],
-            progress        = snap["progress"],
-            output_filename = Path(out).name if out else "",
-            error_msg       = snap["error_msg"],
-            created_at      = snap["created_at"],
-            finished_at     = snap["finished_at"],
-            preview_url     = f"/api/convert/{snap['job_id']}/file",
-            output_deleted  = snap.get("output_deleted", False),
+            job_id=snap["job_id"],
+            source_task_id=snap["source_task_id"],
+            encoder_key=snap["encoder_key"],
+            quality=snap["quality"],
+            speed_preset=snap["speed_preset"],
+            custom_crf=snap["custom_crf"],
+            output_codec=snap.get("output_codec", "h264"),
+            status=snap["status"],
+            progress=snap["progress"],
+            output_filename=Path(out).name if out else "",
+            error_msg=snap["error_msg"],
+            created_at=snap["created_at"],
+            finished_at=snap["finished_at"],
+            preview_url=f"/api/convert/{snap['job_id']}/file",
+            output_deleted=snap.get("output_deleted", False),
         )
 
     @app.get(
@@ -920,13 +934,19 @@ def create_app(
         # job per file.  Progress for every job arrives via SSE convert_* events.
         if file_path.is_dir():
             from app.services.ffmpeg_convert_service import SUPPORTED_EXTS
-            video_files = sorted([
-                f for f in file_path.rglob("*")
-                if (f.is_file()
-                    and f.suffix.lower().lstrip(".") in SUPPORTED_EXTS
-                    and not f.name.endswith(".part.mp4")
-                    and not f.stem.endswith("_iPhone"))
-            ])
+
+            video_files = sorted(
+                [
+                    f
+                    for f in file_path.rglob("*")
+                    if (
+                        f.is_file()
+                        and f.suffix.lower().lstrip(".") in SUPPORTED_EXTS
+                        and not f.name.endswith(".part.mp4")
+                        and not f.stem.endswith("_iPhone")
+                    )
+                ]
+            )
             if not video_files:
                 raise HTTPException(
                     status_code=400,
@@ -952,13 +972,13 @@ def create_app(
 
         try:
             job = remote_convert.start_convert(
-                source_task_id = task_id,
-                file_path      = file_path,
-                encoder_key    = body.encoder_key or "cpu",
-                quality        = body.quality or "standard",
-                speed_preset   = body.speed_preset or "balanced",
-                custom_crf     = body.custom_crf if body.custom_crf is not None else 23,
-                output_codec   = body.output_codec or "h264",
+                source_task_id=task_id,
+                file_path=file_path,
+                encoder_key=body.encoder_key or "cpu",
+                quality=body.quality or "standard",
+                speed_preset=body.speed_preset or "balanced",
+                custom_crf=body.custom_crf if body.custom_crf is not None else 23,
+                output_codec=body.output_codec or "h264",
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -970,9 +990,7 @@ def create_app(
         response_model=ConvertJobResponse,
         summary="Get status and progress of a conversion job",
     )
-    async def get_convert_job(
-        job_id: str, _: None = Depends(_require_auth)
-    ) -> ConvertJobResponse:
+    async def get_convert_job(job_id: str, _: None = Depends(_require_auth)) -> ConvertJobResponse:
         """Poll a conversion job. Prefer SSE convert_progress events instead."""
         if remote_convert is None:
             raise HTTPException(status_code=503, detail="Convert service not available")
@@ -986,9 +1004,7 @@ def create_app(
         response_model=FileActionResponse,
         summary="Cancel an in-progress conversion job",
     )
-    async def cancel_convert_job(
-        job_id: str, _: None = Depends(_require_auth)
-    ) -> FileActionResponse:
+    async def cancel_convert_job(job_id: str, _: None = Depends(_require_auth)) -> FileActionResponse:
         """
         Signal the FFmpeg worker to stop.
 
@@ -1003,16 +1019,15 @@ def create_app(
                 status_code=400,
                 detail="Job not found or already in terminal state",
             )
-        return FileActionResponse(task_id=job_id, action="cancel_requested",
-                                  detail="Cancellation signal sent")
+        return FileActionResponse(
+            task_id=job_id, action="cancel_requested", detail="Cancellation signal sent"
+        )
 
     @app.get(
         "/api/convert/{job_id}/file",
         summary="Stream / preview the converted MP4 output",
     )
-    async def preview_convert_file(
-        job_id: str, _: None = Depends(_require_auth)
-    ):
+    async def preview_convert_file(job_id: str, _: None = Depends(_require_auth)):
         """
         Serve the converted MP4 inline for iOS Safari preview.
 
@@ -1028,10 +1043,9 @@ def create_app(
             raise HTTPException(status_code=400, detail="Conversion not completed yet")
 
         out_path = Path(job.output_filename).resolve()
-        allowed  = config.download_dir.resolve()
+        allowed = config.download_dir.resolve()
         if not out_path.is_relative_to(allowed):
-            raise HTTPException(status_code=403,
-                                detail="Output file is outside download directory")
+            raise HTTPException(status_code=403, detail="Output file is outside download directory")
         if not out_path.exists():
             raise HTTPException(status_code=404, detail="Converted file not found on disk")
 
@@ -1048,9 +1062,7 @@ def create_app(
         response_model=FileActionResponse,
         summary="Delete the converted output file from the server's disk",
     )
-    async def delete_convert_file(
-        job_id: str, _: None = Depends(_require_auth)
-    ) -> FileActionResponse:
+    async def delete_convert_file(job_id: str, _: None = Depends(_require_auth)) -> FileActionResponse:
         """
         Permanently delete the converted MP4 output file from the laptop.
 
@@ -1090,7 +1102,8 @@ def create_app(
 
         logger.info(
             "Remote API: deleted converted file '%s' for convert job %s",
-            filename, job_id,
+            filename,
+            job_id,
         )
         return FileActionResponse(
             task_id=job_id,
@@ -1098,14 +1111,19 @@ def create_app(
             detail=f"Deleted: {filename}",
         )
 
-
-    @app.get("/api/history/stats", response_model=HistoryStatsResponse,
-             summary="Return download history statistics")
+    @app.get(
+        "/api/history/stats",
+        response_model=HistoryStatsResponse,
+        summary="Return download history statistics",
+    )
     async def get_history_stats(_: None = Depends(_require_auth)):
         return service.get_history_stats()
 
-    @app.get("/api/history", response_model=HistoryListResponse,
-             summary="Return download history with optional search/filter/pagination")
+    @app.get(
+        "/api/history",
+        response_model=HistoryListResponse,
+        summary="Return download history with optional search/filter/pagination",
+    )
     async def get_history(
         q: Optional[str] = Query(None, description="Search in title, URL, filename"),
         status: Optional[str] = Query(None, description="Filter by status (COMPLETED/FAILED/CANCELLED)"),
@@ -1117,17 +1135,20 @@ def create_app(
         items = list(reversed(service.get_history()))
         if q:
             ql = q.lower()
-            items = [x for x in items if ql in x.get("url", "").lower()
-                     or ql in x.get("title", "").lower()
-                     or ql in x.get("filename", "").lower()]
+            items = [
+                x
+                for x in items
+                if ql in x.get("url", "").lower()
+                or ql in x.get("title", "").lower()
+                or ql in x.get("filename", "").lower()
+            ]
         if status:
             items = [x for x in items if x.get("status") == status]
         if platform:
             items = [x for x in items if x.get("platform") == platform]
         total = len(items)
         start = (page - 1) * limit
-        return HistoryListResponse(items=items[start:start + limit],
-                                   total=total, page=page, limit=limit)
+        return HistoryListResponse(items=items[start : start + limit], total=total, page=page, limit=limit)
 
     @app.delete("/api/history/{task_id}", summary="Delete a single history entry")
     async def delete_history_entry(task_id: str, _: None = Depends(_require_auth)):
@@ -1188,17 +1209,19 @@ def create_app(
                 stat = entry.stat()
             except OSError:
                 continue
-            items.append(FileBrowseItem(
-                name        = entry.name,
-                type        = "file" if entry.is_file() else "dir",
-                size        = stat.st_size if entry.is_file() else None,
-                modified_at = stat.st_mtime,
-            ))
+            items.append(
+                FileBrowseItem(
+                    name=entry.name,
+                    type="file" if entry.is_file() else "dir",
+                    size=stat.st_size if entry.is_file() else None,
+                    modified_at=stat.st_mtime,
+                )
+            )
 
         return FileBrowseResponse(
-            current_path = str(target),
-            parent_path  = parent_path,
-            items        = items,
+            current_path=str(target),
+            parent_path=parent_path,
+            items=items,
         )
 
     @app.post(
@@ -1242,20 +1265,21 @@ def create_app(
 
         try:
             job = remote_convert.start_convert_from_path(
-                file_path    = file_path,
-                encoder_key  = body.encoder_key or "cpu",
-                quality      = body.quality or "standard",
-                speed_preset = body.speed_preset or "balanced",
-                custom_crf   = body.custom_crf if body.custom_crf is not None else 23,
-                target_ext   = body.target_ext or "mp4",
-                output_codec = body.output_codec or "h264",
+                file_path=file_path,
+                encoder_key=body.encoder_key or "cpu",
+                quality=body.quality or "standard",
+                speed_preset=body.speed_preset or "balanced",
+                custom_crf=body.custom_crf if body.custom_crf is not None else 23,
+                target_ext=body.target_ext or "mp4",
+                output_codec=body.output_codec or "h264",
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         logger.info(
             "Remote API: started standalone convert job %s for '%s'",
-            job.job_id, file_path.name,
+            job.job_id,
+            file_path.name,
         )
         return FileConvertJobResponse(job_id=job.job_id)
 
@@ -1264,9 +1288,7 @@ def create_app(
         response_model=FileDeleteResponse,
         summary="Delete a file or directory within download_dir",
     )
-    async def delete_file(
-        body: FileDeleteRequest, _: None = Depends(_require_auth)
-    ) -> FileDeleteResponse:
+    async def delete_file(body: FileDeleteRequest, _: None = Depends(_require_auth)) -> FileDeleteResponse:
         """
         Permanently delete a file or directory from the server.
 
@@ -1314,9 +1336,7 @@ def create_app(
         return config.taildrop_target_nodes
 
     @app.get("/api/files/serve", summary="Stream a file by absolute path (within download_dir)")
-    async def serve_file(
-        path: str = Query(...), _: None = Depends(_require_auth)
-    ):
+    async def serve_file(path: str = Query(...), _: None = Depends(_require_auth)):
         root = config.download_dir.resolve()
         try:
             target = Path(path).resolve()
@@ -1335,9 +1355,11 @@ def create_app(
             path=str(target),
             media_type=mime,
             filename=target.name,
-            headers={"Content-Disposition": 'inline; filename="{}"'.format(
-                "".join(c if c >= " " and c != '"' else "_" for c in target.name)
-            )},
+            headers={
+                "Content-Disposition": 'inline; filename="{}"'.format(
+                    "".join(c if c >= " " and c != '"' else "_" for c in target.name)
+                )
+            },
         )
 
     @app.post(
@@ -1404,10 +1426,7 @@ def create_app(
             # payload stays small (RemoteConvertService already caps at
             # MAX_JOBS = 100 and purges oldest terminal jobs automatically).
             if remote_convert is not None:
-                convert_snap = [
-                    _job_to_response(job).model_dump()
-                    for job in remote_convert.get_all_jobs()
-                ]
+                convert_snap = [_job_to_response(job).model_dump() for job in remote_convert.get_all_jobs()]
                 if convert_snap:
                     yield f"event: convert_snapshot\ndata: {json.dumps(convert_snap)}\n\n"
 
@@ -1433,13 +1452,14 @@ def create_app(
             _stream(),
             media_type="text/event-stream",
             headers={
-                "Cache-Control":    "no-cache",
-                "X-Accel-Buffering": "no",   # disable nginx buffering
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # disable nginx buffering
             },
         )
 
     # ── Web UI ────────────────────────────────────────────────────────────
 
+    # No auth on GET / — HTML shell only; all actual API calls still require Bearer token.
     @app.get("/", response_class=HTMLResponse)
     async def web_ui():
         """Serve the mobile PWA web interface.
@@ -1475,6 +1495,7 @@ def create_app(
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
 
 def _get_task_or_404(service: "DownloadService", task_id: str) -> DownloadTask:
     task = service.get_task(task_id)
@@ -1551,6 +1572,7 @@ def restart_api_server(
 
 # ── Public startup function ───────────────────────────────────────────────────
 
+
 def start_api_server(
     service: "DownloadService",
     config: "ConfigManager",
@@ -1590,6 +1612,7 @@ def start_api_server(
     # started from Settings toggle), the call degrades gracefully to taildrop=None
     # instead of raising AttributeError and leaving the API permanently disabled.
     from app.services.remote_convert_service import RemoteConvertService
+
     remote_convert = RemoteConvertService(
         config=config,
         event_bus=bus,
@@ -1625,8 +1648,7 @@ def start_api_server(
     # When the Tailscale HTTPS Profile is active, bind to 127.0.0.1 on the
     # random internal port so only tailscale serve can reach the API from the
     # network.  Otherwise use the user-configured host/port (default: 0.0.0.0:7799).
-    if getattr(config, "api_ts_https_enabled", False) and \
-            getattr(config, "api_ts_https_internal_port", 0):
+    if getattr(config, "api_ts_https_enabled", False) and getattr(config, "api_ts_https_internal_port", 0):
         _bind_host = "127.0.0.1"
         _bind_port = config.api_ts_https_internal_port
         # Pre-verify the saved port is actually bindable.  On Windows, ports in
@@ -1635,6 +1657,7 @@ def start_api_server(
         # and persist it so subsequent restarts also use the working port.
         import random as _random
         import socket as _socket
+
         with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
             try:
                 _s.bind((_bind_host, _bind_port))
@@ -1694,7 +1717,7 @@ def start_api_server(
         _active_server = uv_server
         thread = threading.Thread(
             target=_run_server,
-            daemon=True,   # exits automatically when the main process exits
+            daemon=True,  # exits automatically when the main process exits
             name="omnidl-api-server",
         )
         _active_thread = thread

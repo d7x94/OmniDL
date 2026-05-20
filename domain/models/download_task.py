@@ -2,6 +2,7 @@
 domain/models/download_task.py
 Core domain entity.  Pure Python — zero infrastructure deps.
 """
+
 from __future__ import annotations
 
 import threading
@@ -16,16 +17,18 @@ from domain.enums.download_status import DownloadStatus
 @dataclass
 class MediaInfo:
     """Lightweight metadata returned by the extraction step."""
+
     url: str
     title: str = "Unknown"
     uploader: str = ""
-    duration: int = 0          # seconds
+    uploader_id: str = ""
+    duration: int = 0  # seconds
     thumbnail: str = ""
     platform: str = "unknown"
     formats: list[dict] = field(default_factory=list)
     is_live: bool = False
     was_live: bool = False
-    video_id: str = ""         # yt-dlp's internal video ID (used for filename)
+    video_id: str = ""  # yt-dlp's internal video ID (used for filename)
     # Which engine produced this MediaInfo — routing hint for DownloadManager.
     # "yt_dlp"     → YtDlpEngine.download()   (default, all video platforms)
     # "gallery_dl" → GalleryDlEngine.download() (image/gallery platforms)
@@ -35,9 +38,8 @@ class MediaInfo:
     # Each entry is the direct URL of one video in the playlist.
     # HomeTab redirects to BatchTab when this list is non-empty.
     # Empty list (default) = single-item result — existing behaviour unchanged.
-    playlist_entries: list = field(default_factory=list)   # list[str]
-    playlist_title: str = ""    # channel/playlist display name
-
+    playlist_entries: list = field(default_factory=list)  # list[str]
+    playlist_title: str = ""  # channel/playlist display name
 
 
 def _set_event() -> threading.Event:
@@ -68,16 +70,16 @@ class DownloadTask:
     # ── Options chosen by the user ────────────────────────────────────────
     format_id: str = "bestvideo+bestaudio/best"
     output_ext: str = "mp4"
-    output_dir: str = ""          # resolved absolute path string
+    output_dir: str = ""  # resolved absolute path string
 
     # ── Mutable progress state ────────────────────────────────────────────
     status: DownloadStatus = DownloadStatus.QUEUED
-    progress: float = 0.0         # 0–100
-    speed: str = ""               # "3.2 MiB/s"
-    eta: str = ""                 # "01:23"
+    progress: float = 0.0  # 0–100
+    speed: str = ""  # "3.2 MiB/s"
+    eta: str = ""  # "01:23"
     downloaded_bytes: int = 0
     total_bytes: int = 0
-    filename: str = ""            # final output path
+    filename: str = ""  # final output path
     error_msg: str = ""
     # Files downloaded in this task by GalleryDlEngine (populated only for
     # gallery-dl image downloads).  Used by TaildropService to zip only the
@@ -90,20 +92,14 @@ class DownloadTask:
     finished_at: float = 0.0
 
     # ── Control primitives (not serialised) ──────────────────────────────
-    _cancel_event: threading.Event = field(
-        default_factory=threading.Event, compare=False, repr=False
-    )
-    _pause_event: threading.Event = field(
-        default_factory=_set_event, compare=False, repr=False
-    )
+    _cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
+    _pause_event: threading.Event = field(default_factory=_set_event, compare=False, repr=False)
     # An RLock guards coordinated multi-field reads via snapshot().  Python's
     # GIL makes individual attribute assignments atomic, but reading a pair of
     # fields (e.g. downloaded_bytes + total_bytes) is not atomic — the UI poll
     # thread could see an inconsistent snapshot (e.g. "105 MB / 100 MB") without
     # this lock.
-    _lock: threading.RLock = field(
-        default_factory=threading.RLock, compare=False, repr=False
-    )
+    _lock: threading.RLock = field(default_factory=threading.RLock, compare=False, repr=False)
 
     # ── Convenience properties ────────────────────────────────────────────
 
@@ -132,14 +128,14 @@ class DownloadTask:
     # ── Control ───────────────────────────────────────────────────────────
 
     def pause(self) -> None:
-        with self._lock:   # DEF-004: atomic check-and-mutate
+        with self._lock:  # DEF-004: atomic check-and-mutate
             if self.status == DownloadStatus.PROCESSING:
                 return
             self._pause_event.clear()
             self.status = DownloadStatus.PAUSED
 
     def resume(self) -> None:
-        with self._lock:   # DEF-004: atomic check-and-mutate
+        with self._lock:  # DEF-004: atomic check-and-mutate
             self._pause_event.set()
             if self.status == DownloadStatus.PAUSED:
                 self.status = DownloadStatus.DOWNLOADING
@@ -147,7 +143,7 @@ class DownloadTask:
     def cancel(self) -> None:
         with self._lock:
             self._cancel_event.set()
-            self._pause_event.set()   # unblock any waiting hook
+            self._pause_event.set()  # unblock any waiting hook
 
     @property
     def is_cancellation_requested(self) -> bool:
@@ -205,6 +201,5 @@ class DownloadTask:
                 "created_at": self.created_at,
                 "finished_at": self.finished_at,
                 "error_msg": self.error_msg,
+                "is_live": self.media_info.is_live if self.media_info else False,
             }
-
-

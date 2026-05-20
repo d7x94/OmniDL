@@ -2,6 +2,7 @@
 infrastructure/downloader/yt_dlp_engine.py
 Thin wrapper around yt-dlp: metadata extraction + download execution.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,6 +38,7 @@ import yt_dlp
 try:
     import curl_cffi as _curl_cffi  # noqa: F401
     from yt_dlp.networking.impersonate import ImpersonateTarget as _ImpersonateTarget
+
     _IMPERSONATE_TARGET = _ImpersonateTarget.from_str("chrome")
     # _IMPERSONATE_STRING: the curl_cffi-native string (e.g. "chrome131") used
     # when calling curl_cffi.requests.Session/head/get directly.
@@ -54,6 +56,7 @@ try:
     # Also extract the map VALUE (curl_cffi string) for direct curl_cffi API calls.
     try:
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _CurlCFFIRH  # type: ignore[import]
+
         _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
         # First try exact match (curl_cffi < 0.15 — unversioned keys)
         if _IMPERSONATE_TARGET not in _supported_map:
@@ -90,6 +93,7 @@ except ImportError:
     _IMPERSONATE_STRING = None  # type: ignore[assignment]
 except Exception as _curl_load_err:
     import logging as _logging
+
     _logging.getLogger(__name__).warning(
         "curl_cffi/impersonate unavailable (%s) — "
         "TLS impersonation disabled; Kuaishou and TikTok live may fail",
@@ -163,6 +167,7 @@ def _prepare_cookie_for_use(cookie_path: str) -> "tuple[str, bool]":
     If is_temp=False, the path is the original file — do not delete.
     """
     from infrastructure.downloader.cookie_storage import decrypt_to_tempfile, is_encrypted
+
     p = Path(cookie_path)
     if is_encrypted(p):
         try:
@@ -173,6 +178,7 @@ def _prepare_cookie_for_use(cookie_path: str) -> "tuple[str, bool]":
             return cookie_path, False  # fallback: pass enc path (will fail in yt-dlp, but safe)
     return cookie_path, False
 
+
 # ── Per-platform cookie resolution ───────────────────────────────────────────
 
 # Maps registered hostname suffixes to ConfigManager platform keys.
@@ -181,19 +187,19 @@ def _prepare_cookie_for_use(cookie_path: str) -> "tuple[str, bool]":
 #   malicious.tiktok.com.evil → hostname does NOT end with ".tiktok.com"
 #   www.tiktok.com            → hostname ends with ".tiktok.com" ✅
 _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
-    ("youtube.com",   "youtube"),   # age-restricted content requires Google account cookies
-    ("youtu.be",      "youtube"),
-    ("tiktok.com",    "tiktok"),
+    ("youtube.com", "youtube"),  # age-restricted content requires Google account cookies
+    ("youtu.be", "youtube"),
+    ("tiktok.com", "tiktok"),
     ("instagram.com", "instagram"),
-    ("facebook.com",  "facebook"),
-    ("fb.watch",      "facebook"),
-    ("twitter.com",   "twitter"),
-    ("x.com",         "twitter"),
-    ("threads.net",   "threads"),
-    ("threads.com",   "threads"),   # new domain (2024+)
-    ("kuaishou.com",  "kuaishou"),
-    ("kwai.com",      "kuaishou"),
-    ("v.kuaishou.com","kuaishou"),
+    ("facebook.com", "facebook"),
+    ("fb.watch", "facebook"),
+    ("twitter.com", "twitter"),
+    ("x.com", "twitter"),
+    ("threads.net", "threads"),
+    ("threads.com", "threads"),  # new domain (2024+)
+    ("kuaishou.com", "kuaishou"),
+    ("kwai.com", "kuaishou"),
+    ("v.kuaishou.com", "kuaishou"),
 ]
 
 
@@ -229,9 +235,7 @@ def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
         candidate = config.get_cookie_for_platform(platform_key).strip()
         validated = _validate_cookie_path_raw(candidate, config)
         if validated:
-            logger.info(
-                "Using %s cookie: %s", platform_key, validated
-            )
+            logger.info("Using %s cookie: %s", platform_key, validated)
             return validated
 
     # ── Step 3: global cookie fallback ───────────────────────────────────
@@ -270,9 +274,7 @@ def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str 
     if cp.suffix == ".txt":
         enc_cp = cp.with_suffix(".enc")
         if enc_cp.is_file():
-            logger.debug(
-                "Platform cookie auto-upgraded .txt → .enc: %s", enc_cp.name
-            )
+            logger.debug("Platform cookie auto-upgraded .txt → .enc: %s", enc_cp.name)
             return str(enc_cp)
 
     logger.warning(
@@ -300,13 +302,11 @@ def _validate_cookie_path_raw(cookie_file: str, config: "ConfigManager") -> str 
 # logic must apply to all TikTok VOD downloads regardless of URL form.
 # _TIKTOK_LIVE_RE is unchanged — short live links are extremely rare and
 # TikTok does not publish vt.tiktok.com/… for livestreams.
-_TIKTOK_VOD_RE   = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
+_TIKTOK_VOD_RE = re.compile(r"tiktok\.com/@[^/]+/video/\d+", re.I)
 _TIKTOK_SHORT_RE = re.compile(r"(?:vt|vm)\.tiktok\.com/", re.I)
 # BUG-TT-06 FIX: also match m.tiktok.com/share/live/<room_id> — the mobile
 # share URL form that yt-dlp accepts directly without a profile-page scrape.
-_TIKTOK_LIVE_RE  = re.compile(
-    r"(?:tiktok\.com/@[^/]+/live|m\.tiktok\.com/share/live/\d+)", re.I
-)
+_TIKTOK_LIVE_RE = re.compile(r"(?:tiktok\.com/@[^/]+/live|m\.tiktok\.com/share/live/\d+)", re.I)
 
 # Map URL patterns to friendly platform names
 _PLATFORM_MAP: list[tuple[re.Pattern, str]] = [
@@ -341,6 +341,7 @@ def _build_ffmpeg_cookie_header(cookie_file: str) -> str:
         return ""
     try:
         from pathlib import Path as _P  # noqa: PLC0415
+
         pairs: list[str] = []
         for line in _P(cookie_file).read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
@@ -398,8 +399,12 @@ def _friendly_error(msg: str) -> str:
             "3. Cập nhật cookie file trong Settings → Network → Cookie file.\n"
             "Lưu ý: Cookie Instagram thường hết hạn sau 1–2 tuần."
         )
-    if ("rate" in msg_l and ("limit" in msg_l or "429" in msg_l or "too many" in msg_l)
-            or "429" in msg_l or "too many requests" in msg_l):
+    if (
+        "rate" in msg_l
+        and ("limit" in msg_l or "429" in msg_l or "too many" in msg_l)
+        or "429" in msg_l
+        or "too many requests" in msg_l
+    ):
         return (
             "Rate limit reached — too many requests in a short time.\n"
             "Wait 5–10 minutes and try again. "
@@ -468,8 +473,11 @@ def _friendly_error(msg: str) -> str:
             "Make sure you are logged in via cookies in Settings."
         )
     # TikTok / platform deleted or unavailable video
-    if "currently not available" in msg_l or "video does not exist" in msg_l \
-            or "this video is not available" in msg_l:
+    if (
+        "currently not available" in msg_l
+        or "video does not exist" in msg_l
+        or "this video is not available" in msg_l
+    ):
         return (
             "Video này không còn tồn tại hoặc đã bị xóa.\n"
             "Kiểm tra lại URL — nếu link rút gọn (vt.tiktok.com), "
@@ -487,15 +495,15 @@ def _friendly_error(msg: str) -> str:
 # Single-video URLs (e.g. /video/ID, /watch?v=, /status/) must NOT match
 # so noplaylist=True continues to work correctly for them.
 _PROFILE_URL_RE = re.compile(
-    r'(?:'
-    r'tiktok\.com/@[^/?#]+/?(?:[?#].*)?$'                              # TikTok @user
-    r'|youtube\.com/(?:@[^/?#]+|c/[^/?#]+|channel/[^/?#]+|user/[^/?#]+)/?(?:[?#].*)?$'  # YT channel
-    r'|youtube\.com/playlist\?'                                         # YT playlist
-    r'|twitter\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$'              # Twitter @user (not tweets)
-    r'|x\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$'                    # X @user (not tweets)
-    r'|instagram\.com/(?!p/|reel/|tv/|live/|stories/|explore/|accounts/)[^/?#]+/?(?:[?#].*)?$'  # IG profile
-    r'|threads\.(net|com)/@[^/?#]+/?(?:[?#].*)?$'                      # Threads @user
-    r')',
+    r"(?:"
+    r"tiktok\.com/@[^/?#]+/?(?:[?#].*)?$"  # TikTok @user
+    r"|youtube\.com/(?:@[^/?#]+|c/[^/?#]+|channel/[^/?#]+|user/[^/?#]+)/?(?:[?#].*)?$"  # YT channel
+    r"|youtube\.com/playlist\?"  # YT playlist
+    r"|twitter\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$"  # Twitter @user (not tweets)
+    r"|x\.com/(?!.*?/status/)[^/?#]+/?(?:[?#].*)?$"  # X @user (not tweets)
+    r"|instagram\.com/(?!p/|reel/|tv/|live/|stories/|explore/|accounts/)[^/?#]+/?(?:[?#].*)?$"  # IG profile
+    r"|threads\.(net|com)/@[^/?#]+/?(?:[?#].*)?$"  # Threads @user
+    r")",
     re.I,
 )
 
@@ -520,8 +528,7 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
     (
         # Instagram Stories — both /stories/ path and reel-style archive URLs
         re.compile(r"instagram\.com/stories/", re.I),
-        "Instagram Stories require login cookies.\n"
-        "Set up a cookie file in Settings → Network → Cookie file.",
+        "Instagram Stories require login cookies.\nSet up a cookie file in Settings → Network → Cookie file.",
     ),
     (
         # Instagram Live — old format (/username/live/) AND new 2024+ format (/live/shortcode/)
@@ -532,8 +539,7 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
     (
         # Facebook Live — facebook.com/live/ path
         re.compile(r"facebook\.com/live/", re.I),
-        "Facebook Live streams require cookies.\n"
-        "Set up a cookie file in Settings → Network → Cookie file.",
+        "Facebook Live streams require cookies.\nSet up a cookie file in Settings → Network → Cookie file.",
     ),
     (
         # Facebook Stories — covers /stories/, story.php, permalink story, share/r/
@@ -555,10 +561,9 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
 ]
 
 
-
 def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
     """Return a user-friendly message if URL is blocked, else None.
-    
+
     has_cookies=True means a cookie file or browser cookies are configured,
     so cookie-required URLs (Stories, Live) are allowed through to yt-dlp.
     """
@@ -573,11 +578,24 @@ def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
 
 
 # DEF-015: module-level constant — avoids re-allocating on every download() call
-_MEDIA_EXTS: frozenset[str] = frozenset({
-    ".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v",
-    ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav",
-    ".ts",   # MPEG-TS live recordings — needed so pp_hook captures task.filename
-})
+_MEDIA_EXTS: frozenset[str] = frozenset(
+    {
+        ".mp4",
+        ".mkv",
+        ".webm",
+        ".mov",
+        ".avi",
+        ".flv",
+        ".m4v",
+        ".mp3",
+        ".m4a",
+        ".opus",
+        ".aac",
+        ".flac",
+        ".wav",
+        ".ts",  # MPEG-TS live recordings — needed so pp_hook captures task.filename
+    }
+)
 
 # DEF-015: module-level constant — avoids re-allocating on every _apply_extra_args() call.
 # Allowlist for user-supplied extra yt-dlp args (CWE-78: OS Command Injection guard).
@@ -585,25 +603,27 @@ _MEDIA_EXTS: frozenset[str] = frozenset({
 # excluded — they allow arbitrary command execution from user-supplied config.
 # NOTE: "no_check_certificates" intentionally excluded —
 # disabling TLS verification exposes all downloads to MITM attacks.
-_SAFE_EXTRA_OPTS: frozenset[str] = frozenset({
-    "format",
-    "subtitleslangs",
-    "writesubtitles",
-    "writethumbnail",
-    "noplaylist",
-    "playliststart",
-    "playlistend",
-    "ratelimit",
-    "sleep_interval",
-    "max_sleep_interval",
-    "geo_bypass",
-    "geo_bypass_country",
-    "write_all_thumbnails",
-    "write_description",
-    "write_info_json",
-    "age_limit",
-    "user_agent",
-})
+_SAFE_EXTRA_OPTS: frozenset[str] = frozenset(
+    {
+        "format",
+        "subtitleslangs",
+        "writesubtitles",
+        "writethumbnail",
+        "noplaylist",
+        "playliststart",
+        "playlistend",
+        "ratelimit",
+        "sleep_interval",
+        "max_sleep_interval",
+        "geo_bypass",
+        "geo_bypass_country",
+        "write_all_thumbnails",
+        "write_description",
+        "write_info_json",
+        "age_limit",
+        "user_agent",
+    }
+)
 
 # BUG-BT: Audio-only output formats that require FFmpegExtractAudio postprocessor
 # instead of merge_output_format.  merge_output_format is designed to pick the
@@ -633,6 +653,7 @@ def _resolve_kuaishou_url(url: str) -> str:
         return url
     try:
         from curl_cffi import requests as _cffi_req
+
         # BUG-TT-10 FIX: curl_cffi API requires a string (e.g. "chrome131"),
         # NOT an ImpersonateTarget object. Use _IMPERSONATE_STRING here.
         resp = _cffi_req.head(
@@ -665,9 +686,19 @@ def _resolve_kuaishou_url(url: str) -> str:
 # FFmpegMergerPP activity, and fallback events into omnidl_run.log.
 # Read-only: zero effect on download logic or output.
 _DIAG_KEYWORDS: tuple[str, ...] = (
-    "merging formats", "destination:", "requested format",
-    "ffmpeg", "format_id", "vcodec", "acodec", "sorted",
-    "selected", "tiktok", "downloading", "fallback", "not available",
+    "merging formats",
+    "destination:",
+    "requested format",
+    "ffmpeg",
+    "format_id",
+    "vcodec",
+    "acodec",
+    "sorted",
+    "selected",
+    "tiktok",
+    "downloading",
+    "fallback",
+    "not available",
 )
 
 
@@ -675,10 +706,13 @@ class _DiagLogger:
     def debug(self, msg: str) -> None:
         if any(kw in msg.lower() for kw in _DIAG_KEYWORDS):
             logger.debug("[yt-dlp diag] %s", msg.strip())
+
     def info(self, msg: str) -> None:
         pass  # progress bar lines — skip
+
     def warning(self, msg: str) -> None:
         logger.warning("[yt-dlp] %s", msg.strip())
+
     def error(self, msg: str) -> None:
         logger.error("[yt-dlp] %s", msg.strip())
 
@@ -707,6 +741,7 @@ class YtDlpEngine:
             extract_info_kuaishou,
             is_kuaishou_url,
         )
+
         if is_kuaishou_url(url):
             return extract_info_kuaishou(url, self._config)
 
@@ -754,7 +789,7 @@ class YtDlpEngine:
             "no_warnings": True,
             "skip_download": True,
             "noplaylist": True,
-            "socket_timeout": 20,   # DEF-007: prevent hang on stalled server
+            "socket_timeout": 20,  # DEF-007: prevent hang on stalled server
             # FIX-FINAL: JS challenge solver for YouTube n-challenge
             # Must be a list — str causes yt-dlp to iterate characters (BUG-BQ).
             "remote_components": ["ejs:github"],
@@ -774,7 +809,7 @@ class YtDlpEngine:
         # _resolve_cookie() uses urlparse hostname matching (not regex substring)
         # to prevent subdomain-spoofing. CWE-22 guard applied inside.
         _cookie_path = _resolve_cookie(url, self._config)
-        _cookie_temp_ei: str | None = None   # temp file to clean up after extract
+        _cookie_temp_ei: str | None = None  # temp file to clean up after extract
         if _cookie_path:
             _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
             opts["cookiefile"] = _usable
@@ -802,14 +837,12 @@ class YtDlpEngine:
         # this post" — photo posts have no video stream but ARE downloadable
         # with format="best".  The shortcode is extracted for video_id so
         # the filename template is still meaningful.
-        _ig_photo_re = re.compile(
-            r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)", re.I
-        )
+        _ig_photo_re = re.compile(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)", re.I)
         for attempt in range(3):
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                break   # success
+                break  # success
             except yt_dlp.utils.DownloadError as exc:
                 msg = str(exc)
                 msg_l = msg.lower()
@@ -823,10 +856,7 @@ class YtDlpEngine:
                 # We intercept both and return synthetic MediaInfo(formats=[],
                 # duration=0) so BUG Z photo detection in home_tab activates.
                 # The download() call then uses format="best" to fetch the image.
-                _is_photo_error = (
-                    "no video in this post" in msg_l
-                    or "no video formats found" in msg_l
-                )
+                _is_photo_error = "no video in this post" in msg_l or "no video formats found" in msg_l
                 if _is_photo_error and _ig_photo_re.search(url):
                     m = _ig_photo_re.search(url)
                     shortcode = m.group(1) if m else ""
@@ -861,21 +891,26 @@ class YtDlpEngine:
                 # Don't retry hard errors (private, removed, unsupported,
                 # or Instagram auth challenges that retrying cannot resolve).
                 _hard = (
-                    "private", "removed", "unsupported url",
-                    "not found", "404", "login",
-                    "checkpoint", "challenge_required",   # FIX-3: Instagram auth
-                    "no video in this post",              # FIX-B: photo (no cookies)
-                    "no video formats found",             # FIX-B: photo (with cookies)
-                    "extractor error",                    # FIX-B: yt-dlp internal bug
-                    "currently not available",            # TikTok deleted video
-                    "video does not exist",               # TikTok removed video
-                    "this video is not available",        # TikTok region/deleted
-                    "unavailable",                        # generic platform unavailable
-                    "ssl routines",                       # BUG-CC: TLS fingerprint rejection (Kuaishou)
-                    "tls connect error",                  # BUG-CC: curl TLS failure
-                    "curl: (35)",                         # BUG-CC: curl SSL connect error code
-                    "is not available",                   # BUG-CD: impersonate target missing in EXE
-                    "not currently live",                 # TikTok/IG channel is offline — not an error
+                    "private",
+                    "removed",
+                    "unsupported url",
+                    "not found",
+                    "404",
+                    "login",
+                    "checkpoint",
+                    "challenge_required",  # FIX-3: Instagram auth
+                    "no video in this post",  # FIX-B: photo (no cookies)
+                    "no video formats found",  # FIX-B: photo (with cookies)
+                    "extractor error",  # FIX-B: yt-dlp internal bug
+                    "currently not available",  # TikTok deleted video
+                    "video does not exist",  # TikTok removed video
+                    "this video is not available",  # TikTok region/deleted
+                    "unavailable",  # generic platform unavailable
+                    "ssl routines",  # BUG-CC: TLS fingerprint rejection (Kuaishou)
+                    "tls connect error",  # BUG-CC: curl TLS failure
+                    "curl: (35)",  # BUG-CC: curl SSL connect error code
+                    "is not available",  # BUG-CD: impersonate target missing in EXE
+                    "not currently live",  # TikTok/IG channel is offline — not an error
                 )
                 if any(k in msg_l for k in _hard):
                     raise RuntimeError(_friendly_error(msg)) from exc
@@ -883,7 +918,7 @@ class YtDlpEngine:
                 # are resolved automatically. Retries here handle transient issues.
                 last_exc = exc
                 if attempt < 2:
-                    time.sleep(2 ** attempt)   # 1s, 2s back-off
+                    time.sleep(2**attempt)  # 1s, 2s back-off
             except Exception as exc:
                 msg = str(exc)
                 # FIX-B: KeyError('=') manifests as a generic Exception with
@@ -892,14 +927,16 @@ class YtDlpEngine:
                     raise RuntimeError(_friendly_error(msg)) from exc
                 last_exc = exc
                 if attempt < 2:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
         if info is None:
             msg = str(last_exc) if last_exc else "No response from server"
             if any(k in msg.lower() for k in ("rate", "429", "too many")):
                 platform = _detect_platform(url)
-                msg = (f"{platform} rate limit reached. "
-                       "Wait 2-3 minutes and try again. "
-                       "Tip: enable browser cookies in Settings -> Network.")
+                msg = (
+                    f"{platform} rate limit reached. "
+                    "Wait 2-3 minutes and try again. "
+                    "Tip: enable browser cookies in Settings -> Network."
+                )
             raise RuntimeError(_friendly_error(msg)) from last_exc
 
         # Single-video path — profile URLs were already handled above by
@@ -909,9 +946,7 @@ class YtDlpEngine:
         # returns is_live=False (race condition during stream preparation).
         # The regex mirrors _instagram_live_re in download() — both patterns
         # must be kept in sync (BUG Y invariant).
-        _ig_live_re = re.compile(
-            r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
-        )
+        _ig_live_re = re.compile(r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I)
         # FIX-TK / BUG-BM: TikTok canonical VOD URLs (/video/<id>) must never
         # be treated as live — force is_live=False regardless of what yt-dlp
         # returns (race condition during stream preparation can flip is_live).
@@ -946,6 +981,7 @@ class YtDlpEngine:
             url=url,
             title=info.get("title") or "Unknown",
             uploader=info.get("uploader") or info.get("uploader_id") or info.get("channel") or "",
+            uploader_id=info.get("uploader_id", "") or "",
             duration=int(info.get("duration") or 0),
             thumbnail=info.get("thumbnail") or "",
             platform=_detect_platform(url),
@@ -958,9 +994,7 @@ class YtDlpEngine:
 
     # ── Playlist / channel fast extraction ───────────────────────────────
 
-    def _extract_playlist_flat(
-        self, url: str, base_opts: "dict[str, object]"
-    ) -> "MediaInfo":
+    def _extract_playlist_flat(self, url: str, base_opts: "dict[str, object]") -> "MediaInfo":
         """
         Collect entry URLs from a profile/channel/playlist URL using
         extract_flat="in_playlist".
@@ -981,29 +1015,24 @@ class YtDlpEngine:
         Raises RuntimeError on hard failures (auth, empty playlist, network).
         """
         opts_flat: dict[str, object] = dict(base_opts)
-        opts_flat["noplaylist"]   = False
+        opts_flat["noplaylist"] = False
         opts_flat["extract_flat"] = "in_playlist"
         # ignoreerrors silences per-entry warnings that can appear even with
         # extract_flat (e.g. private entries in a mixed public/private feed).
         opts_flat["ignoreerrors"] = True
 
-        logger.info(
-            "Profile/playlist flat-extract: %s", url
-        )
+        logger.info("Profile/playlist flat-extract: %s", url)
         try:
             with yt_dlp.YoutubeDL(opts_flat) as ydl:
                 info = ydl.extract_info(url, download=False)
         except yt_dlp.utils.DownloadError as exc:
             raise RuntimeError(_friendly_error(str(exc))) from exc
         except Exception as exc:
-            raise RuntimeError(
-                f"Không thể lấy danh sách từ URL này: {exc}"
-            ) from exc
+            raise RuntimeError(f"Không thể lấy danh sách từ URL này: {exc}") from exc
 
         if not info:
             raise RuntimeError(
-                "Không nhận được dữ liệu từ URL. "
-                "Kiểm tra lại URL hoặc thêm cookie file trong Settings."
+                "Không nhận được dữ liệu từ URL. Kiểm tra lại URL hoặc thêm cookie file trong Settings."
             )
 
         # Flatten nested playlist (e.g. YouTube channel has a playlist of
@@ -1015,7 +1044,7 @@ class YtDlpEngine:
                 if not isinstance(entry, dict):
                     continue
                 if entry.get("_type") == "playlist":
-                    _collect(entry)           # recurse one level
+                    _collect(entry)  # recurse one level
                 else:
                     raw_entries.append(entry)
 
@@ -1046,12 +1075,7 @@ class YtDlpEngine:
             )
 
         # Use playlist-level title/uploader for display
-        playlist_title = (
-            info.get("title")
-            or info.get("uploader")
-            or info.get("channel")
-            or ""
-        )
+        playlist_title = info.get("title") or info.get("uploader") or info.get("channel") or ""
         # Use first entry's thumbnail as preview (may be empty — acceptable)
         first = raw_entries[0] if raw_entries else {}
 
@@ -1059,10 +1083,10 @@ class YtDlpEngine:
             url=url,
             title=playlist_title or "Unknown",
             uploader=info.get("uploader") or info.get("channel") or "",
-            duration=0,                         # no single duration for a playlist
+            duration=0,  # no single duration for a playlist
             thumbnail=first.get("thumbnail") or "",
             platform=_detect_platform(url),
-            formats=[],                          # no format picker for playlists
+            formats=[],  # no format picker for playlists
             is_live=False,
             was_live=False,
             video_id=info.get("id") or "",
@@ -1091,9 +1115,7 @@ class YtDlpEngine:
         # lands in the wrong place AND info_dict["filepath"] is relative,
         # causing task.filename to resolve to EXE-dir/video.mp4.
         # .resolve() makes the path absolute before yt-dlp ever sees it.
-        output_dir = (
-            Path(task.output_dir) if task.output_dir else self._config.download_dir
-        ).resolve()
+        output_dir = (Path(task.output_dir) if task.output_dir else self._config.download_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Livestream detection ──────────────────────────────────────────
@@ -1107,20 +1129,14 @@ class YtDlpEngine:
         # to GalleryDlEngine by DownloadManager before reaching this method —
         # this code never runs for photos.
         _tiktok_live_re = _TIKTOK_LIVE_RE
-        _instagram_live_re = re.compile(
-            r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
-        )
+        _instagram_live_re = re.compile(r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I)
         is_live = bool(
             (task.media_info and task.media_info.is_live)
-            or (task.media_info and task.media_info.duration == 0
-                and _tiktok_live_re.search(task.url))
-            or (task.media_info and task.media_info.duration == 0
-                and _instagram_live_re.search(task.url))
+            or (task.media_info and task.media_info.duration == 0 and _tiktok_live_re.search(task.url))
+            or (task.media_info and task.media_info.duration == 0 and _instagram_live_re.search(task.url))
         )
         if is_live:
-            logger.info(
-                "Task %s detected as livestream — using HLS-safe options", task.id
-            )
+            logger.info("Task %s detected as livestream — using HLS-safe options", task.id)
 
         # ── Filename template (all fixes applied) ────────────────────────
         #
@@ -1161,6 +1177,7 @@ class YtDlpEngine:
             # file is moved to output_dir by the post-download block below.
             # Non-Windows paths are unchanged — named pipes are not used there.
             import sys as _sys_outtmpl
+
             if _sys_outtmpl.platform == "win32":
                 _live_outtmpl_dir = Path(tempfile.gettempdir()) / "omnidl_live"
                 _live_outtmpl_dir.mkdir(parents=True, exist_ok=True)
@@ -1172,18 +1189,12 @@ class YtDlpEngine:
                 # Fix: on Windows, use ONLY %(id) + a static timestamp in the
                 # live outtmpl — both are guaranteed ASCII.  The .ts file is moved
                 # to output_dir with a proper name by the post-download block.
-                outtmpl = str(
-                    _live_outtmpl_dir / f"live_{rec_ts}_%(id).20B.ts"
-                )
+                outtmpl = str(_live_outtmpl_dir / f"live_{rec_ts}_%(id).20B.ts")
             else:
                 _live_outtmpl_dir = output_dir
                 outtmpl = str(
                     _live_outtmpl_dir
-                    / (
-                        f"%(uploader,channel|Unknown).50B"
-                        f" - [LIVE] {rec_ts}"
-                        f" %(title).80B [%(id).12B].ts"
-                    )
+                    / (f"%(uploader,channel|Unknown).50B - [LIVE] {rec_ts} %(title).80B [%(id).12B].ts")
                 )
         else:
             outtmpl = str(
@@ -1241,9 +1252,7 @@ class YtDlpEngine:
         # Guard: already starred → skip (idempotency).
         # BUG-BM invariant preserved: _TIKTOK_SHORT_RE covers vt/vm.tiktok.com.
         _format_id = task.format_id
-        _is_tiktok_vod = (
-            _TIKTOK_VOD_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
-        )
+        _is_tiktok_vod = _TIKTOK_VOD_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
 
         # BUG-BT FIX: Detect audio-only output formats early so downstream
         # logic can route to FFmpegExtractAudio instead of merge_output_format.
@@ -1477,16 +1486,16 @@ class YtDlpEngine:
         #   FFmpegFD, which broke cancel. The Unicode/pipe issue it fixed is
         #   already handled by paths["temp"] pointing to an ASCII temp dir.
         if is_live:
-            opts["hls_prefer_native"]             = True
-            opts["live_from_start"]               = False
+            opts["hls_prefer_native"] = True
+            opts["live_from_start"] = False
             # BUG-TT-11 FIX: 10s too short for TikTok CDN token rotation (~15s).
             # Segments stalled at boundary -> ffmpeg exit 3419392776. 15s covers
             # rotation window; cancel still fires within one segment (~15s max).
-            opts["socket_timeout"]                = 15
+            opts["socket_timeout"] = 15
             # BUG-TT-11 FIX: 3 retries insufficient when CDN rotates tokens mid-stream.
-            opts["fragment_retries"]              = 5
-            opts["concurrent_fragment_downloads"] = 1   # no parallel HLS writes
-            opts["keep_fragments"]                = False
+            opts["fragment_retries"] = 5
+            opts["concurrent_fragment_downloads"] = 1  # no parallel HLS writes
+            opts["keep_fragments"] = False
             # Route temp segment files away from the (potentially Unicode)
             # download directory.  tempfile.gettempdir() always returns an
             # ASCII-safe path on all supported platforms.
@@ -1615,7 +1624,7 @@ class YtDlpEngine:
         # The pp_hook fires with status="finished" after FFmpeg merge completes;
         # at that point info_dict["filepath"] holds the exact final path.
 
-        _final_filepath: list[str] = []   # mutable closure cell
+        _final_filepath: list[str] = []  # mutable closure cell
         # BUG-TT-EFF: track whether yt-dlp selected a video-less stream for a
         # non-audio-output TikTok VOD.  TikTok "template effect" videos (AR/duet
         # effects) only expose a single format_id="audio" stream with vcodec=none
@@ -1637,11 +1646,7 @@ class YtDlpEngine:
                 if not _selected_vcodec:
                     _vc = _info.get("vcodec") or ""
                     _selected_vcodec.append(_vc)
-                fp = (
-                    _info.get("filepath")
-                    or _info.get("__real_download_filename")
-                    or ""
-                )
+                fp = _info.get("filepath") or _info.get("__real_download_filename") or ""
                 if fp:
                     p = Path(fp)
                     if p.suffix.lower() in _MEDIA_EXTS and not fp.endswith(".part"):
@@ -1698,8 +1703,7 @@ class YtDlpEngine:
         # selected one) to understand whether separate audio-only streams exist.
         if _is_tiktok_vod and not is_live:
             logger.debug(
-                "[BUG-BQ diag] TikTok VOD starting | task=%s | "
-                "original_format_id=%r | effective_format=%r",
+                "[BUG-BQ diag] TikTok VOD starting | task=%s | original_format_id=%r | effective_format=%r",
                 task.id[:8],
                 task.format_id,
                 opts.get("format"),
@@ -1707,9 +1711,7 @@ class YtDlpEngine:
             # BUG-BR FORMAT AUDIT: dump every format from extract_info so we
             # can see whether TikTok provides separate audio streams and how
             # they are labeled.  This is read-only — no effect on download.
-            _all_formats = (
-                task.media_info.formats if task.media_info else []
-            )
+            _all_formats = task.media_info.formats if task.media_info else []
             if _all_formats:
                 logger.debug(
                     "[BUG-BR fmt-audit] %d format(s) available from extract_info:",
@@ -1742,17 +1744,14 @@ class YtDlpEngine:
         # has no reconnect logic, so it crashes when TikTok CDN rotates HLS
         # tokens every ~18-25s. Direct FFmpeg with -reconnect_on_http_error
         # handles this transparently.
-        _is_tiktok_live_for_direct = (
-            is_live
-            and (
-                _TIKTOK_LIVE_RE.search(task.url)
-                or _TIKTOK_SHORT_RE.search(task.url)
-            )
+        _is_tiktok_live_for_direct = is_live and (
+            _TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
         )
         _live_vid_id = ""
         _direct_ffmpeg_ok = False
         if _is_tiktok_live_for_direct:
             import sys as _sys_tt16
+
             _hls_result = self._extract_tiktok_live_hls_url(task.url)
             if _hls_result:
                 _hls_url, _hls_vid_id, _hls_uploader, _hls_title = _hls_result
@@ -1767,12 +1766,7 @@ class YtDlpEngine:
                         not _mi_title
                         or _mi_title == "Unknown"
                         or _mi_title.lower().startswith("tiktok-live video")
-                        or (
-                            _hls_uploader
-                            and _mi_title.lstrip("@").lower().startswith(
-                                _hls_uploader.lower()
-                            )
-                        )
+                        or (_hls_uploader and _mi_title.lstrip("@").lower().startswith(_hls_uploader.lower()))
                     )
                     if _hls_title and _is_synthetic_mi_title:
                         task.media_info.title = _hls_title
@@ -1782,9 +1776,7 @@ class YtDlpEngine:
                     _direct_out_dir.mkdir(parents=True, exist_ok=True)
                 else:
                     _direct_out_dir = output_dir
-                _direct_out_path = str(
-                    _direct_out_dir / f"live_{rec_ts}_{_hls_vid_id[:20]}.ts"
-                )
+                _direct_out_path = str(_direct_out_dir / f"live_{rec_ts}_{_hls_vid_id[:20]}.ts")
                 task.filename = _direct_out_path
                 _tt16_cookie = _resolve_cookie(task.url, self._config) or ""
                 logger.info(
@@ -1805,8 +1797,10 @@ class YtDlpEngine:
                 _tt16_bad_hosts: set[str] = set()
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
-                        _seg_path = _direct_out_path if _tt16_attempt == 0 else (
-                            _direct_out_path + f".seg{_tt16_attempt}"
+                        _seg_path = (
+                            _direct_out_path
+                            if _tt16_attempt == 0
+                            else (_direct_out_path + f".seg{_tt16_attempt}")
                         )
                         try:
                             self._download_tiktok_live_direct(
@@ -1820,18 +1814,19 @@ class YtDlpEngine:
                             if _tt16_attempt > 0:
                                 # Append segment to main file then delete
                                 try:
-                                    with open(_direct_out_path, "ab") as _fout, \
-                                         open(_seg_path, "rb") as _fin:
+                                    with open(_direct_out_path, "ab") as _fout, open(_seg_path, "rb") as _fin:
                                         _fout.write(_fin.read())
                                     Path(_seg_path).unlink(missing_ok=True)
                                     logger.info(
                                         "BUG-TT-17: appended segment %d to %s",
-                                        _tt16_attempt, _direct_out_path,
+                                        _tt16_attempt,
+                                        _direct_out_path,
                                     )
                                 except OSError as _ap_exc:
                                     logger.warning(
                                         "BUG-TT-17: append seg %d failed: %s",
-                                        _tt16_attempt, _ap_exc,
+                                        _tt16_attempt,
+                                        _ap_exc,
                                     )
                             _direct_ffmpeg_ok = True
                             break
@@ -1847,8 +1842,7 @@ class YtDlpEngine:
                             # Append whatever was captured before FFmpeg died
                             if _tt16_attempt > 0 and _seg_size > 0:
                                 try:
-                                    with open(_direct_out_path, "ab") as _fout, \
-                                         open(_seg_path, "rb") as _fin:
+                                    with open(_direct_out_path, "ab") as _fout, open(_seg_path, "rb") as _fin:
                                         _fout.write(_fin.read())
                                     Path(_seg_path).unlink(missing_ok=True)
                                 except OSError:
@@ -1865,8 +1859,7 @@ class YtDlpEngine:
                                 # token expired but enough data was captured
                                 if _tt16_attempt >= _MAX_HLS_RETRIES:
                                     logger.info(
-                                        "BUG-TT-17: max retries reached, "
-                                        "treating %s as completed",
+                                        "BUG-TT-17: max retries reached, treating %s as completed",
                                         _fmt_bytes(_main_size),
                                     )
                                     _direct_ffmpeg_ok = True
@@ -1889,8 +1882,7 @@ class YtDlpEngine:
                                 else:
                                     # Can't re-extract — stream likely ended
                                     logger.info(
-                                        "BUG-TT-17: HLS re-extract failed — "
-                                        "stream ended, %s saved",
+                                        "BUG-TT-17: HLS re-extract failed — stream ended, %s saved",
                                         _fmt_bytes(_main_size),
                                     )
                                     _direct_ffmpeg_ok = True
@@ -1898,8 +1890,7 @@ class YtDlpEngine:
                             else:
                                 # Very small file on first attempt — real failure
                                 logger.warning(
-                                    "BUG-TT-17: FFmpeg failed with small output "
-                                    "(%s) on attempt %d: %s",
+                                    "BUG-TT-17: FFmpeg failed with small output (%s) on attempt %d: %s",
                                     _fmt_bytes(_main_size),
                                     _tt16_attempt,
                                     _seg_exc,
@@ -1965,7 +1956,8 @@ class YtDlpEngine:
                         except Exception as _seg_exc:
                             logger.warning(
                                 "BUG-TT-17: unexpected error on attempt %d: %s",
-                                _tt16_attempt, _seg_exc,
+                                _tt16_attempt,
+                                _seg_exc,
                             )
                             if _tt16_attempt == 0:
                                 raise
@@ -1980,8 +1972,7 @@ class YtDlpEngine:
                     )
                 except Exception as _tt16_exc:
                     logger.warning(
-                        "BUG-TT-17: direct FFmpeg unexpected error (%s), "
-                        "falling back to yt-dlp",
+                        "BUG-TT-17: direct FFmpeg unexpected error (%s), falling back to yt-dlp",
                         _tt16_exc,
                     )
                 if _direct_ffmpeg_ok and _tt16_attempt > 0:
@@ -1999,9 +1990,7 @@ class YtDlpEngine:
                     # Reset to the main output file which has all segments merged.
                     task.filename = _direct_out_path
             else:
-                logger.debug(
-                    "BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp"
-                )
+                logger.debug("BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp")
 
         if not _direct_ffmpeg_ok:
             # BUG-YTDLP-PROGRESS FIX: yt-dlp's FFmpegFD for live streams may
@@ -2013,6 +2002,7 @@ class YtDlpEngine:
             _ytdlp_poll_stop = None
             if is_live and on_progress:
                 import threading as _th_ytdlp
+
                 _ytdlp_poll_stop = _th_ytdlp.Event()
 
                 def _ytdlp_live_poller(
@@ -2033,9 +2023,7 @@ class YtDlpEngine:
                             _task.eta = f"⏺ {_fmt_bytes(_sz)} đã ghi"
                             _cb(_task)
 
-                _th_ytdlp.Thread(
-                    target=_ytdlp_live_poller, daemon=True
-                ).start()
+                _th_ytdlp.Thread(target=_ytdlp_live_poller, daemon=True).start()
 
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -2067,10 +2055,7 @@ class YtDlpEngine:
                 # BUG-TT-02 FIX2: also match short links (vt/vm.tiktok.com) --
                 # task.url holds the original user-pasted URL which may be a short
                 # link even when the stream is a TikTok live.
-                _is_tiktok_live_url = (
-                    _TIKTOK_LIVE_RE.search(task.url)
-                    or _TIKTOK_SHORT_RE.search(task.url)
-                )
+                _is_tiktok_live_url = _TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)
                 # BUG-TT-12 FIX: TikTok webcast/room/info API sometimes returns
                 # status=4 (not live) even when the stream is active. This is a
                 # TikTok API race / CDN cache issue that affects the yt-dlp
@@ -2133,14 +2118,15 @@ class YtDlpEngine:
                         # — the HLS playlist expired, not the stream itself.
                         if not _still_live and _is_tiktok_live_url:
                             import re as _re_tt13  # noqa: PLC0415
+
                             _tt13_m = _re_tt13.compile(
                                 r"tiktok\.com/@([A-Za-z0-9_.]+)/live", _re_tt13.I
                             ).search(task.url)
                             if _tt13_m:
                                 _tt13_user = _tt13_m.group(1)
-                                _tt13_cookie_raw = _resolve_cookie(
-                                    "https://www.tiktok.com/", self._config
-                                ) or ""
+                                _tt13_cookie_raw = (
+                                    _resolve_cookie("https://www.tiktok.com/", self._config) or ""
+                                )
                                 _tt13_cookie_txt, _tt13_is_temp = "", False
                                 if _tt13_cookie_raw:
                                     _tt13_cookie_txt, _tt13_is_temp = _prepare_cookie_for_use(
@@ -2150,6 +2136,7 @@ class YtDlpEngine:
                                     from utils.tiktok_live_checker import (  # noqa: PLC0415
                                         _check_tiktok_live_with_room_id,
                                     )
+
                                     _tt13_r = _check_tiktok_live_with_room_id(
                                         _tt13_user,
                                         proxy=self._config.proxy or "",
@@ -2166,13 +2153,14 @@ class YtDlpEngine:
                                         )
                                 except Exception as _tt13_exc:
                                     logger.debug(
-                                        "BUG-TT-13: checker failed (%s)"
-                                        " — treating as ended", _tt13_exc,
+                                        "BUG-TT-13: checker failed (%s) — treating as ended",
+                                        _tt13_exc,
                                     )
                                 finally:
                                     if _tt13_is_temp and _tt13_cookie_txt:
                                         try:
                                             import os as _os13  # noqa: PLC0415
+
                                             _os13.unlink(_tt13_cookie_txt)
                                         except OSError:
                                             pass
@@ -2232,6 +2220,7 @@ class YtDlpEngine:
             _probe_confirmed_no_video = True  # safe default: trust metadata
             if _broken and Path(_broken).is_file():
                 from app.services.ffmpeg_convert_service import probe_media_info as _probe_mi
+
                 _probe_result = _probe_mi(Path(_broken))
                 if _probe_result is not None and _probe_result.video_codec:
                     logger.debug(
@@ -2260,11 +2249,7 @@ class YtDlpEngine:
                 _ml_opts = dict(opts)
                 _ml_opts["extractor_args"] = {"tiktok": {"app_name": ["musical_ly"]}}
                 _ml_opts["format"] = (
-                    "best[format_id^=h264]"
-                    "/download"
-                    "/bestvideo*+bestaudio*"
-                    "/bestvideo*"
-                    "/best[vcodec!=none]"
+                    "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best[vcodec!=none]"
                 )
                 try:
                     with yt_dlp.YoutubeDL(_ml_opts) as ydl:
@@ -2279,6 +2264,7 @@ class YtDlpEngine:
                         from app.services.ffmpeg_convert_service import (  # noqa: PLC0415
                             probe_media_info as _probe_shop3,
                         )
+
                         _r3 = _probe_shop3(Path(_final_filepath[0]))
                         if _r3 and _r3.video_codec:
                             _shop3_got_video = True
@@ -2298,7 +2284,7 @@ class YtDlpEngine:
                             pass
                     raise RuntimeError(
                         "Video này chỉ có âm thanh — không có video track.\n"
-                        "TikTok product/showcase và \"template effect\" / AR effect videos"
+                        'TikTok product/showcase và "template effect" / AR effect videos'
                         " không cung cấp video track qua API (chỉ expose audio stream).\n"
                         "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
                     )
@@ -2310,7 +2296,7 @@ class YtDlpEngine:
                 task.filename = str(p)
                 logger.info("Filename from pp_hook: %s", task.filename)
             else:
-                task.filename = _final_filepath[0]   # keep path even if verify fails
+                task.filename = _final_filepath[0]  # keep path even if verify fails
                 logger.warning("pp_hook path not found on disk: %s", task.filename)
         elif task.filename and Path(task.filename).is_file():
             # Progress hook captured it and it still exists (single-format, no merge)
@@ -2319,11 +2305,12 @@ class YtDlpEngine:
             # Last resort: largest VIDEO file in output_dir (never pick thumbnails)
             try:
                 candidates = [
-                    f for f in output_dir.iterdir()
+                    f
+                    for f in output_dir.iterdir()
                     if f.suffix.lower() in _MEDIA_EXTS
                     and not f.name.endswith(".part")
                     and not f.name.endswith(".ytdl")
-                    and f.stat().st_size > 50_000      # >50KB — skip thumbnails
+                    and f.stat().st_size > 50_000  # >50KB — skip thumbnails
                 ]
                 if candidates:
                     task.filename = str(max(candidates, key=lambda f: f.stat().st_size))
@@ -2338,19 +2325,19 @@ class YtDlpEngine:
         # pipe paths.  Now that ffmpeg has finished writing, move the .ts file
         # to where the user expects it (output_dir).
         import sys as _sys_mv
+
         if is_live and _sys_mv.platform == "win32" and task.filename:
             _src = Path(task.filename)
             if _src.is_file() and _src.parent.resolve() != output_dir.resolve():
                 try:
                     import shutil as _shutil
+
                     _dst = output_dir / _src.name
                     _shutil.move(str(_src), str(_dst))
                     task.filename = str(_dst)
                     logger.info("Live recording moved to output dir: %s", task.filename)
                 except Exception as _mv_exc:
-                    logger.warning(
-                        "Failed to move live recording to output dir: %s", _mv_exc
-                    )
+                    logger.warning("Failed to move live recording to output dir: %s", _mv_exc)
 
         # BUG-LN-WIN FIX: outtmpl for Windows live uses only timestamp+id to
         # avoid Unicode named-pipe crash (BUG-BW2).  After the file is in
@@ -2361,11 +2348,13 @@ class YtDlpEngine:
             if _cur.is_file() and _cur.parent.resolve() == output_dir.resolve():
                 try:
                     from utils.helpers import sanitise_filename as _sanitise
+
                     _mi = task.media_info
                     import re as _re_ln
+
                     _uploader = (_mi.uploader if _mi and _mi.uploader else "Unknown")[:50]
-                    _title    = (_mi.title    if _mi and _mi.title    else "")[:80]
-                    _vid_id   = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
+                    _title = (_mi.title if _mi and _mi.title else "")[:80]
+                    _vid_id = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
                     # Strip synthetic/redundant titles before building filename
                     if _re_ln.match(r"(?i)tiktok-live video\b", _title):
                         # yt-dlp synthetic: "tiktok-live video #<id> <date>_<time>"
@@ -2376,9 +2365,7 @@ class YtDlpEngine:
                     else:
                         # Strip trailing timestamp yt-dlp appends to stream titles
                         # e.g. "Gift gallery 2026-05-05 09_40" -> "Gift gallery"
-                        _title = _re_ln.sub(
-                            r"\s*\d{4}-\d{2}-\d{2}[ _]\d{2}[_:]\d{2}\s*$", "", _title
-                        ).strip()
+                        _title = _re_ln.sub(r"\s*\d{4}-\d{2}-\d{2}[ _]\d{2}[_:]\d{2}\s*$", "", _title).strip()
                     _parts = [_uploader, f"[LIVE] {rec_ts}"]
                     if _title:
                         _parts.append(_title)
@@ -2477,13 +2464,11 @@ class YtDlpEngine:
         # is typically _ld (low definition) whose CDN node may return 404 while
         # the _hd stream works. Prefer highest quality to avoid this.
         _m3u8_fmts = [
-            f for f in formats
-            if f.get("protocol") in ("m3u8_native", "m3u8")
-            and f.get("url", "").startswith("http")
+            f
+            for f in formats
+            if f.get("protocol") in ("m3u8_native", "m3u8") and f.get("url", "").startswith("http")
         ]
-        _m3u8_fmts.sort(
-            key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True
-        )
+        _m3u8_fmts.sort(key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)
         _excl = _exclude_bases or frozenset()
         _excl_h = _exclude_hosts or frozenset()
         hls_url = ""
@@ -2497,7 +2482,8 @@ class YtDlpEngine:
             # FLV CDN infra (pull-flv-*) is separate from HLS (pull-hls-*),
             # so try HTTP-FLV before falling back to an already-excluded HLS path.
             _flv_fmts = [
-                f for f in formats
+                f
+                for f in formats
                 if f.get("url", "").startswith("http")
                 and (f.get("ext") == "flv" or ".flv" in f.get("url", ""))
                 and f.get("url", "").split("?")[0] not in _excl
@@ -2533,9 +2519,7 @@ class YtDlpEngine:
         if not hls_url:
             logger.debug("BUG-TT-16: no HLS URL found in formats (count=%d)", len(formats))
             return None
-        uploader = (
-            info.get("uploader") or info.get("uploader_id") or info.get("channel") or ""
-        )
+        uploader = info.get("uploader") or info.get("uploader_id") or info.get("channel") or ""
         title = info.get("title") or ""
         logger.debug("BUG-TT-16: extracted HLS URL for %s (id=%s)", task_url[:60], video_id)
         return hls_url, video_id, uploader, title
@@ -2591,20 +2575,30 @@ class YtDlpEngine:
 
         cmd = [
             ffmpeg_bin,
-            "-hide_banner", "-loglevel", "error",
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "10",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "10",
         ]
         if not _is_flv_url:
             cmd += [
-                "-reconnect_on_http_error", "403,404,503",
-                "-reconnect_at_eof", "1",
-                "-reconnect_max_retries", "10",
-                "-http_persistent", "0",
+                "-reconnect_on_http_error",
+                "403,404,503",
+                "-reconnect_at_eof",
+                "1",
+                "-reconnect_max_retries",
+                "10",
+                "-http_persistent",
+                "0",
             ]
         cmd += [
-            "-user_agent", (
+            "-user_agent",
+            (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
@@ -2625,9 +2619,7 @@ class YtDlpEngine:
                 creationflags=_CREATE_NO_WINDOW,
             )
         except FileNotFoundError as err:
-            raise RuntimeError(
-                "FFmpeg không tìm thấy. Kiểm tra cài đặt FFmpeg."
-            ) from err
+            raise RuntimeError("FFmpeg không tìm thấy. Kiểm tra cài đặt FFmpeg.") from err
         finally:
             if _cookie_temp_direct:
                 try:
@@ -2698,8 +2690,7 @@ class YtDlpEngine:
                     if _stall_seconds >= _STALL_LIMIT_S:
                         proc.kill()
                         raise RuntimeError(
-                            "FFmpeg stall watchdog: không có dữ liệu trong 120s — "
-                            "stream có thể đã kết thúc."
+                            "FFmpeg stall watchdog: không có dữ liệu trong 120s — stream có thể đã kết thúc."
                         )
 
                 if on_progress:
@@ -2714,10 +2705,7 @@ class YtDlpEngine:
         ret = proc.returncode
         if ret != 0:
             err_msg = "\n".join(_stderr_lines)[-300:]
-            raise RuntimeError(
-                f"FFmpeg exited with code {ret}.\n"
-                f"{err_msg or 'Không có thông tin lỗi.'}"
-            )
+            raise RuntimeError(f"FFmpeg exited with code {ret}.\n{err_msg or 'Không có thông tin lỗi.'}")
 
         # Mark progress done
         task.progress = 100.0
@@ -2742,13 +2730,9 @@ class YtDlpEngine:
             if status == "downloading":
                 task.status = DownloadStatus.DOWNLOADING
                 task.downloaded_bytes = d.get("downloaded_bytes") or 0
-                task.total_bytes = (
-                    d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                )
+                task.total_bytes = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 if task.total_bytes > 0:
-                    task.progress = min(
-                        99.0, task.downloaded_bytes / task.total_bytes * 100
-                    )
+                    task.progress = min(99.0, task.downloaded_bytes / task.total_bytes * 100)
                 speed = d.get("speed")
                 if speed:
                     task.speed = _fmt_speed(speed)
@@ -2816,7 +2800,7 @@ class YtDlpEngine:
                 if tok.startswith("--"):
                     key = tok[2:].replace("-", "_")
                 elif tok.startswith("-") and len(tok) == 2:
-                    key = tok[1:]   # short flag, e.g. -x → "x"
+                    key = tok[1:]  # short flag, e.g. -x → "x"
                 else:
                     i += 1
                     continue
@@ -2846,8 +2830,8 @@ class YtDlpEngine:
 
 
 def _fmt_speed(speed: float) -> str:
-    if speed >= 1024 ** 2:
-        return f"{speed / 1024 ** 2:.1f} MiB/s"
+    if speed >= 1024**2:
+        return f"{speed / 1024**2:.1f} MiB/s"
     if speed >= 1024:
         return f"{speed / 1024:.0f} KiB/s"
     return f"{speed:.0f} B/s"
@@ -2855,10 +2839,10 @@ def _fmt_speed(speed: float) -> str:
 
 def _fmt_bytes(n: int) -> str:
     """Human-readable byte count used for live recording progress display."""
-    if n >= 1024 ** 3:
-        return f"{n / 1024 ** 3:.1f} GiB"
-    if n >= 1024 ** 2:
-        return f"{n / 1024 ** 2:.1f} MiB"
+    if n >= 1024**3:
+        return f"{n / 1024**3:.1f} GiB"
+    if n >= 1024**2:
+        return f"{n / 1024**2:.1f} MiB"
     if n >= 1024:
         return f"{n / 1024:.0f} KiB"
     return f"{n} B"

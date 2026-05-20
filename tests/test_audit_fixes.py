@@ -19,6 +19,7 @@ Covers:
     - [MEDIUM] main.py reports OmniDL v16, not v15
     - [LOW]    Popen on Linux/Mac uses close_fds=True
 """
+
 from __future__ import annotations
 
 import importlib
@@ -33,10 +34,12 @@ from unittest.mock import patch
 # Helpers used across multiple test classes
 # ---------------------------------------------------------------------------
 
+
 def _make_task(title: str = "Test Video"):
     """Return a minimal DownloadTask in COMPLETED state."""
     from domain.enums.download_status import DownloadStatus
     from domain.models.download_task import DownloadTask, MediaInfo
+
     t = DownloadTask(url="https://example.com/watch?v=abc")
     t.status = DownloadStatus.COMPLETED
     t.filename = "/tmp/test.mp4"  # nosec B108 — test-only fixture, not production code
@@ -47,12 +50,14 @@ def _make_task(title: str = "Test Video"):
 
 def _make_repo(tmp_path: Path, limit: int = 5):
     from infrastructure.storage.history_repository import HistoryRepository
+
     return HistoryRepository(tmp_path / "history.jsonl", limit=limit)
 
 
 # ===========================================================================
 # SECURITY — reveal_in_explorer (CWE-78, shell=True removed)
 # ===========================================================================
+
 
 class TestRevealInExplorerSecurity:
     """
@@ -70,11 +75,12 @@ class TestRevealInExplorerSecurity:
     def _setup_win32_ctypes(mc):
         """Populate a ctypes mock with all real types + non-null PIDL values."""
         import ctypes as _r
+
         mc.c_void_p = _r.c_void_p
         mc.c_wchar_p = _r.c_wchar_p
         mc.c_uint = _r.c_uint
         mc.c_ulong = _r.c_ulong
-        mc.HRESULT = getattr(_r, 'HRESULT', _r.c_long)
+        mc.HRESULT = getattr(_r, "HRESULT", _r.c_long)
         mc.windll.shell32.ILCreateFromPathW.side_effect = [1, 1]
         mc.windll.shell32.ILFindLastID.return_value = 2
         mc.windll.shell32.SHOpenFolderAndSelectItems.return_value = 0
@@ -82,10 +88,13 @@ class TestRevealInExplorerSecurity:
     def test_windows_no_subprocess_popen(self, tmp_path):
         """Windows path must use ctypes — subprocess.Popen must not be called."""
         from utils.helpers import reveal_in_explorer
+
         fake = tmp_path / "video.mp4"
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.ctypes") as mc, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+        with (
+            patch("utils.helpers.sys") as ms,
+            patch("utils.helpers.ctypes") as mc,
+            patch("utils.helpers.subprocess.Popen") as mp,
+        ):
             ms.platform = "win32"
             self._setup_win32_ctypes(mc)
             reveal_in_explorer(fake)
@@ -97,9 +106,9 @@ class TestRevealInExplorerSecurity:
     def test_windows_uses_shell_api_not_explorer_cmdline(self, tmp_path):
         """Windows must call SHOpenFolderAndSelectItems, not explorer /select,."""
         from utils.helpers import reveal_in_explorer
+
         dangerous = tmp_path / 'video";calc.exe;echo ".mp4'
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.ctypes") as mc:
+        with patch("utils.helpers.sys") as ms, patch("utils.helpers.ctypes") as mc:
             ms.platform = "win32"
             self._setup_win32_ctypes(mc)
             reveal_in_explorer(dangerous)
@@ -109,10 +118,13 @@ class TestRevealInExplorerSecurity:
     def test_windows_metacharacter_filename_safe(self, tmp_path):
         """Shell metacharacters in filename are safe — ctypes never invokes shell."""
         from utils.helpers import reveal_in_explorer
+
         dangerous = tmp_path / 'video";calc.exe;echo ".mp4'
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.ctypes") as mc, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+        with (
+            patch("utils.helpers.sys") as ms,
+            patch("utils.helpers.ctypes") as mc,
+            patch("utils.helpers.subprocess.Popen") as mp,
+        ):
             ms.platform = "win32"
             self._setup_win32_ctypes(mc)
             reveal_in_explorer(dangerous)
@@ -121,21 +133,22 @@ class TestRevealInExplorerSecurity:
     def test_linux_uses_close_fds(self, tmp_path):
         """On Linux, close_fds=True must be set to prevent zombie accumulation."""
         from utils.helpers import reveal_in_explorer
+
         fake = tmp_path / "video.mp4"
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+        with patch("utils.helpers.sys") as ms, patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "linux"
             reveal_in_explorer(fake)
             _, kwargs = mp.call_args
-            assert kwargs.get("close_fds") is True, \
+            assert kwargs.get("close_fds") is True, (
                 "close_fds=True required on Linux to prevent zombie processes"
+            )
 
     def test_macos_uses_close_fds(self, tmp_path):
         """On macOS, close_fds=True must be set."""
         from utils.helpers import reveal_in_explorer
+
         fake = tmp_path / "video.mp4"
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+        with patch("utils.helpers.sys") as ms, patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "darwin"
             reveal_in_explorer(fake)
             _, kwargs = mp.call_args
@@ -145,6 +158,7 @@ class TestRevealInExplorerSecurity:
 # ===========================================================================
 # SECURITY — cookie_file allowlist (CWE-703, blocklist → allowlist)
 # ===========================================================================
+
 
 class TestCookieFileAllowlist:
     """
@@ -169,10 +183,10 @@ class TestCookieFileAllowlist:
         cookie.write_text("# Netscape HTTP Cookie File\n")
 
         # Patch config to return our tmp cookie and home to be tmp_path
-        with patch.object(type(cfg), "cookie_file",
-                          new_callable=lambda: property(lambda s: str(cookie))), \
-             patch("infrastructure.downloader.yt_dlp_engine.Path.home",
-                   return_value=tmp_path):
+        with (
+            patch.object(type(cfg), "cookie_file", new_callable=lambda: property(lambda s: str(cookie))),
+            patch("infrastructure.downloader.yt_dlp_engine.Path.home", return_value=tmp_path),
+        ):
             # Simulate the allowlist check inline as the engine does it
             cp = cookie.resolve()
             safe_roots = (tmp_path, cfg.config_path.parent)
@@ -209,13 +223,13 @@ class TestCookieFileAllowlist:
         cp = cookie.resolve()
         safe_roots = (tmp_path,)
         is_safe = any(str(cp).startswith(str(r.resolve())) for r in safe_roots)
-        assert is_safe, \
-            "Allowlist should permit paths containing formerly-blocked keywords"
+        assert is_safe, "Allowlist should permit paths containing formerly-blocked keywords"
 
 
 # ===========================================================================
 # DATA INTEGRITY — JSONL disk pruning (history_repository)
 # ===========================================================================
+
 
 class TestHistoryDiskPruning:
     """JSONL file on disk must never exceed the configured limit."""
@@ -233,8 +247,7 @@ class TestHistoryDiskPruning:
         for i in range(limit + 2):
             repo.add(_make_task(f"Video {i}"))
         actual = self._count_disk_lines(history_path)
-        assert actual == limit, \
-            f"Expected {limit} lines on disk after pruning, got {actual}"
+        assert actual == limit, f"Expected {limit} lines on disk after pruning, got {actual}"
 
     def test_disk_does_not_grow_unbounded(self, tmp_path):
         """Adding 3× the limit must leave only `limit` lines on disk."""
@@ -249,6 +262,7 @@ class TestHistoryDiskPruning:
     def test_load_after_pruned_rewrite_respects_limit(self, tmp_path):
         """A fresh HistoryRepository loaded from a pruned file must honour the limit."""
         from infrastructure.storage.history_repository import HistoryRepository
+
         limit = 4
         repo = _make_repo(tmp_path, limit=limit)
         history_path = tmp_path / "history.jsonl"
@@ -256,8 +270,7 @@ class TestHistoryDiskPruning:
             repo.add(_make_task(f"Video {i}"))
         # Reload from disk
         repo2 = HistoryRepository(history_path, limit=limit)
-        assert len(repo2.all()) <= limit, \
-            "Reloaded repository must not exceed configured limit"
+        assert len(repo2.all()) <= limit, "Reloaded repository must not exceed configured limit"
 
     def test_backup_file_removed_after_successful_rewrite(self, tmp_path):
         """After a successful rewrite the .backup.jsonl file must not exist."""
@@ -267,8 +280,7 @@ class TestHistoryDiskPruning:
         for i in range(limit + 2):
             repo.add(_make_task(f"Video {i}"))
         backup = history_path.with_suffix(".backup.jsonl")
-        assert not backup.exists(), \
-            "Backup file must be removed after successful rewrite"
+        assert not backup.exists(), "Backup file must be removed after successful rewrite"
 
     def test_no_rewrite_when_under_limit(self, tmp_path):
         """When under the limit, _rewrite must NOT be called (fast append path)."""
@@ -313,13 +325,13 @@ class TestHistoryDiskPruning:
             repo.add(_make_task(f"Video {i}"))
         mem_count = len(repo.all())
         disk_count = self._count_disk_lines(history_path)
-        assert mem_count == disk_count, \
-            f"Memory has {mem_count} entries but disk has {disk_count} lines"
+        assert mem_count == disk_count, f"Memory has {mem_count} entries but disk has {disk_count} lines"
 
 
 # ===========================================================================
 # CONCURRENCY — Analyze button race condition
 # ===========================================================================
+
 
 class TestAnalyzeButtonRace:
     """
@@ -343,25 +355,27 @@ class TestAnalyzeButtonRace:
         src = inspect.getsource(toolbar_module)
 
         # The no-op lambda must be gone
-        assert "lambda: None" not in src or \
-               src.count("lambda: None") == 0, \
+        assert "lambda: None" not in src or src.count("lambda: None") == 0, (
             "_safe_done must not contain a no-op 'lambda: None'"
+        )
 
-        # BUG-CRITICAL-1 FIX VERIFICATION: after(0, self._reset_btn) is a
-        # Tkinter call from a background thread — illegal on Python 3.14.
-        # The fix replaces it with _ui_queue.put(self._reset_btn).
-        # Assert that the forbidden pattern is GONE (0 occurrences).
+        # BUG-CRITICAL-1 FIX VERIFICATION: UI must not be called from a
+        # background thread. The PySide6 port replaced _ui_queue.put() with
+        # ui_bridge.post() which routes calls to the main thread via a signal.
+        # Assert the forbidden direct call is GONE.
         reset_count = src.count("after(0, self._reset_btn)")
         assert reset_count == 0, (
             f"after(0, self._reset_btn) is a Tkinter call from a background "
-            f"thread — illegal on Python 3.14. Must be replaced with "
-            f"_ui_queue.put(self._reset_btn). Found {reset_count} occurrence(s)."
+            f"thread — illegal. Found {reset_count} occurrence(s)."
         )
-        # Verify the fix is actually present: _ui_queue.put(self._reset_btn)
+        # Verify thread-safe reset is present (either PySide6 ui_bridge or
+        # CTK _ui_queue variant).
+        bridge_count = src.count("ui_bridge.post(self._reset_btn)")
         queue_count = src.count("_ui_queue.put(self._reset_btn)")
-        assert queue_count >= 2, (
-            f"Expected _ui_queue.put(self._reset_btn) in both _safe_done and "
-            f"_safe_error, found {queue_count} occurrence(s)."
+        assert bridge_count >= 2 or queue_count >= 2, (
+            f"Expected thread-safe _reset_btn dispatch in both _safe_done and "
+            f"_safe_error. Found ui_bridge.post: {bridge_count}, "
+            f"_ui_queue.put: {queue_count}."
         )
 
 
@@ -369,16 +383,18 @@ class TestAnalyzeButtonRace:
 # VERSION STRING
 # ===========================================================================
 
+
 class TestVersionString:
     """main.py must report OmniDL v17 (v17.1), not v16 or earlier."""
 
     def test_docstring_says_v17(self):
         import main  # local import required for reload test
+
         importlib.reload(main)
-        assert "v17" in (main.__doc__ or ""), \
-            "main.py module docstring must say 'v17' (currently v17.1)"
-        assert "v16" not in (main.__doc__ or ""), \
+        assert "v17" in (main.__doc__ or ""), "main.py module docstring must say 'v17' (currently v17.1)"
+        assert "v16" not in (main.__doc__ or ""), (
             "main.py module docstring must not say 'v16' — update to v17.1"
+        )
 
     def test_main_py_source_has_version_log(self):
         """Startup log must use _APP_VERSION placeholder, not a hardcoded version."""
@@ -404,11 +420,12 @@ class TestVersionString:
 # HELPERS — open_folder close_fds
 # ===========================================================================
 
+
 class TestOpenFolderClosesFds:
     def test_linux_open_folder_uses_close_fds(self, tmp_path):
         from utils.helpers import open_folder
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+
+        with patch("utils.helpers.sys") as ms, patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "linux"
             open_folder(tmp_path)
             _, kwargs = mp.call_args
@@ -416,8 +433,8 @@ class TestOpenFolderClosesFds:
 
     def test_macos_open_folder_uses_close_fds(self, tmp_path):
         from utils.helpers import open_folder
-        with patch("utils.helpers.sys") as ms, \
-             patch("utils.helpers.subprocess.Popen") as mp:
+
+        with patch("utils.helpers.sys") as ms, patch("utils.helpers.subprocess.Popen") as mp:
             ms.platform = "darwin"
             open_folder(tmp_path)
             _, kwargs = mp.call_args
@@ -427,6 +444,7 @@ class TestOpenFolderClosesFds:
 # ===========================================================================
 # Repair Patch Tests — verify post-audit fixes (March 2026)
 # ===========================================================================
+
 
 class TestSEC1PathTraversalFix:
     """SEC-1: cookie_file path containment must use Path.parents, not startswith."""
@@ -452,17 +470,28 @@ class TestSEC1PathTraversalFix:
         monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
 
         captured = {}
+
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
             def extract_info(self, url, download=False):
-                return {"title": "T", "uploader": "U", "duration": 1,
-                        "thumbnail": "", "formats": [], "is_live": False,
-                        "was_live": False, "id": "abc"}
+                return {
+                    "title": "T",
+                    "uploader": "U",
+                    "duration": 1,
+                    "thumbnail": "",
+                    "formats": [],
+                    "is_live": False,
+                    "was_live": False,
+                    "id": "abc",
+                }
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             try:
@@ -505,17 +534,28 @@ class TestSEC1PathTraversalFix:
         engine = YtDlpEngine(config)
 
         captured = {}
+
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
             def extract_info(self, url, download=False):
-                return {"title": "T", "uploader": "U", "duration": 1,
-                        "thumbnail": "", "formats": [], "is_live": False,
-                        "was_live": False, "id": "abc"}
+                return {
+                    "title": "T",
+                    "uploader": "U",
+                    "duration": 1,
+                    "thumbnail": "",
+                    "formats": [],
+                    "is_live": False,
+                    "was_live": False,
+                    "id": "abc",
+                }
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             try:
@@ -523,9 +563,7 @@ class TestSEC1PathTraversalFix:
             except Exception:
                 pass
 
-        assert "cookiefile" not in captured, (
-            "Sibling-directory bypass must be blocked by Path.parents check"
-        )
+        assert "cookiefile" not in captured, "Sibling-directory bypass must be blocked by Path.parents check"
 
     def test_file_inside_home_is_allowed(self, tmp_path, monkeypatch):
         """A cookie file inside the OmniDL data directory must be accepted."""
@@ -553,17 +591,28 @@ class TestSEC1PathTraversalFix:
         engine = YtDlpEngine(config)
 
         captured = {}
+
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
             def extract_info(self, url, download=False):
-                return {"title": "T", "uploader": "U", "duration": 1,
-                        "thumbnail": "", "formats": [], "is_live": False,
-                        "was_live": False, "id": "abc"}
+                return {
+                    "title": "T",
+                    "uploader": "U",
+                    "duration": 1,
+                    "thumbnail": "",
+                    "formats": [],
+                    "is_live": False,
+                    "was_live": False,
+                    "id": "abc",
+                }
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             try:
@@ -583,6 +632,7 @@ class TestSEC5BrowserAllowlist:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"cookies_browser": "firefox"}))
         config = ConfigManager(config_path)
@@ -592,6 +642,7 @@ class TestSEC5BrowserAllowlist:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_path = tmp_path / "config.json"
         _evil = {"cookies_browser": "evil_browser; rm -rf /"}
         config_path.write_text(json.dumps(_evil))
@@ -602,6 +653,7 @@ class TestSEC5BrowserAllowlist:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"cookies_browser": ""}))
         config = ConfigManager(config_path)
@@ -632,9 +684,11 @@ class TestSEC2RevealInExplorer:
         test_file = tmp_path / "video.mp4"
         test_file.write_bytes(b"fake")
 
-        with patch("utils.helpers.sys") as mock_sys, \
-             patch("utils.helpers.ctypes") as mock_ctypes, \
-             patch("utils.helpers.subprocess.Popen") as mock_popen:
+        with (
+            patch("utils.helpers.sys") as mock_sys,
+            patch("utils.helpers.ctypes") as mock_ctypes,
+            patch("utils.helpers.subprocess.Popen") as mock_popen,
+        ):
             mock_sys.platform = "win32"
             mock_ctypes.c_void_p = _r.c_void_p
             mock_ctypes.c_wchar_p = _r.c_wchar_p
@@ -697,12 +751,10 @@ class TestP1DebouncedSave:
         final_count = save_count[0]
 
         assert immediate_count <= 1, (
-            "Expected at most 1 immediate save"
-            f" (for _load's initial write), got {immediate_count}"
+            f"Expected at most 1 immediate save (for _load's initial write), got {immediate_count}"
         )
         assert final_count <= immediate_count + 2, (
-            f"10 rapid set() calls should trigger at most 2 total saves,"
-            f" got {final_count}"
+            f"10 rapid set() calls should trigger at most 2 total saves, got {final_count}"
         )
         # Verify the last value was persisted
         config2 = ConfigManager(config_path)
@@ -715,6 +767,7 @@ class TestSEC4ThumbnailSSRF:
     @staticmethod
     def _safe(url: str) -> bool:
         from app.services.thumbnail_service import _is_safe_thumbnail_url
+
         return _is_safe_thumbnail_url(url)
 
     # ── Scheme allowlist ──────────────────────────────────────────────────

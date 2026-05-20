@@ -636,7 +636,7 @@ class ConvertTab(QWidget):
         """)
         or_layout.addWidget(self._out_entry, 1)
 
-        browse_out_btn = QPushButton("Browse")
+        browse_out_btn = QPushButton("Duyệt...")
         browse_out_btn.setFixedSize(80, 36)
         browse_out_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 11px;"
@@ -678,7 +678,7 @@ class ConvertTab(QWidget):
         el2.setAlignment(Qt.AlignmentFlag.AlignCenter)
         el2.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
         empty_layout.addWidget(el2)
-        el3 = QLabel("Ho tro: MP4, MKV, WebM, AVI, MOV, FLV, WMV, TS, 3GP…")
+        el3 = QLabel("Hỗ trợ: MP4, MKV, WebM, AVI, MOV, FLV, WMV, TS, 3GP…")
         el3.setAlignment(Qt.AlignmentFlag.AlignCenter)
         el3.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
         empty_layout.addWidget(el3)
@@ -704,7 +704,7 @@ class ConvertTab(QWidget):
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         bar_layout.addWidget(self._status_lbl, 1)
 
-        self._convert_btn = QPushButton("Convert All")
+        self._convert_btn = QPushButton("Chuyển đổi tất cả")
         self._convert_btn.setFixedSize(160, 40)
         self._convert_btn.setStyleSheet(
             f"background: {T.primary}; color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: bold;"

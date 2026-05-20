@@ -1,21 +1,24 @@
-"""
-ui/components/toolbar.py
-Persistent top toolbar — URL input + Analyze button always accessible.
-Sits below the title bar, above the sidebar+content split.
-"""
+"""Persistent top toolbar — URL input + Analyze button always accessible."""
+
 from __future__ import annotations
 
 import logging
-import queue
 import re
 import threading
 from typing import TYPE_CHECKING, Optional
 
-try:
-    import customtkinter as ctk
-except ImportError:  # pragma: no cover — only missing in headless CI/tests
-    ctk = None  # type: ignore[assignment]
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ui.signals import ui_bridge
 from ui.themes.tokens import T
 
 if TYPE_CHECKING:
@@ -23,184 +26,199 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Spinner frames
 _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-# BUG-CB FIX: extract first URL from clipboard text.
-# Apps like Kuaishou copy a mix of text + link (e.g. "video title https://v.kuaishou.com/...").
-# Match https:// or http:// URL, strip trailing punctuation that is not part of the URL.
 _CLIPBOARD_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 _URL_TRAILING_JUNK = frozenset(".,;)\"'>]")
 
 
-_BaseFrame = ctk.CTkFrame if ctk is not None else object
-
-
-class Toolbar(_BaseFrame):  # type: ignore[misc]
-    """
-    Persistent URL bar — always visible regardless of active tab.
-    Sends analyse requests and delegates result to HomeTab.
-    """
-
-    def __init__(self, master, app: "MainWindow", **kwargs) -> None:
-        super().__init__(
-            master,
-            height=60,
-            fg_color=T.surface,
-            corner_radius=0,
-            **kwargs,
-        )
-        self.pack_propagate(False)
+class Toolbar(QWidget):
+    def __init__(self, app: "MainWindow", parent=None) -> None:
+        super().__init__(parent)
         self._app = app
         self._analysing = False
         self._spinner_idx = 0
-        self._spinner_job: Optional[str] = None
         self._analyse_token = 0
-        self._ui_queue: queue.Queue = queue.Queue()
         self._current_cancel: Optional[threading.Event] = None
 
+        self.setFixedHeight(68)
         self._build()
-        T.register(self._on_theme)
-        self._drain_ui_queue()
+        T.register(self._apply_styles)
 
-    def _drain_ui_queue(self) -> None:
-        """Drain UI queue on the main thread every 50 ms (Python 3.14 safe)."""
-        try:
-            while True:
-                fn = self._ui_queue.get_nowait()
-                try:
-                    fn()
-                except Exception as exc:
-                    logger.debug("Toolbar drain error: %s", exc)
-        except queue.Empty:
-            pass
-        if self.winfo_exists():
-            self.after(50, self._drain_ui_queue)
+        self._spinner_timer = QTimer(self)
+        self._spinner_timer.setInterval(100)
+        self._spinner_timer.timeout.connect(self._tick_spinner)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
         # Top border
-        ctk.CTkFrame(
-            self, height=1, fg_color=T.border, corner_radius=0,
-        ).pack(fill="x", side="top")
+        top_line = QFrame()
+        top_line.setFixedHeight(1)
+        top_line.setStyleSheet(f"background-color: {T.border};")
+        outer.addWidget(top_line)
 
-        inner = ctk.CTkFrame(self, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=20, pady=10)
+        # Inner row
+        inner = QWidget()
+        inner.setStyleSheet(f"background-color: {T.surface};")
+        row = QHBoxLayout(inner)
+        row.setContentsMargins(20, 12, 20, 12)
+        row.setSpacing(12)
 
-        # ── URL input ─────────────────────────────────────────────────────
-        self._url_entry = ctk.CTkEntry(
-            inner,
-            placeholder_text="  Paste video URL here and press Enter or click Analyze…",
-            font=ctk.CTkFont(size=13),
-            height=40,
-            fg_color=T.input,
-            border_color=T.border2,
-            border_width=1,
-            text_color=T.text,
-            corner_radius=8,
-        )
-        self._url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self._url_entry.bind("<Return>", lambda _: self._start_analyse())
-        self._url_entry.bind("<Control-v>", lambda _: self.after(50, self._paste_and_analyse))
-        self._url_entry.bind("<FocusIn>",  self._on_focus_in)
-        self._url_entry.bind("<FocusOut>", self._on_focus_out)
+        # URL entry
+        self._url_entry = QLineEdit()
+        self._url_entry.setPlaceholderText("Dán link video vào đây và nhấn Enter hoặc nhấp Phân tích...")
+        self._url_entry.setObjectName("url_entry")
+        self._url_entry.setFixedHeight(44)
+        self._url_entry.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {T.input};
+                color: {T.text};
+                border: 1.5px solid {T.border2};
+                border-radius: 12px;
+                padding: 0 18px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {T.primary};
+                background-color: {T.surface};
+            }}
+        """)
+        self._url_entry.returnPressed.connect(self._start_analyse)
+        self._url_entry.textChanged.connect(self._on_text_changed)
+        row.addWidget(self._url_entry, 1)
 
-        # ── Analyze button ────────────────────────────────────────────────
-        self._analyse_btn = ctk.CTkButton(
-            inner,
-            text="Analyze",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=40,
-            width=110,
-            corner_radius=8,
-            fg_color=T.primary,
-            hover_color=T.primary_hover,
-            text_color="white",
-            command=self._start_analyse,
-        )
-        self._analyse_btn.pack(side="left", padx=(0, 4))
+        # Analyze button
+        self._analyse_btn = QPushButton("Phân tích")
+        self._analyse_btn.setObjectName("primary")
+        self._analyse_btn.setFixedSize(128, 44)
+        self._analyse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.primary};
+                color: white;
+                border: 1px solid {T.primary_hover};
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+            }}
+            QPushButton:hover {{
+                background-color: {T.primary_hover};
+                border-color: {T.primary};
+            }}
+            QPushButton:disabled {{
+                background-color: {T.primary_dim};
+                color: {T.text3};
+                border-color: {T.border};
+            }}
+        """)
+        self._analyse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._analyse_btn.clicked.connect(self._start_analyse)
+        row.addWidget(self._analyse_btn)
 
-        # ── Stop button ───────────────────────────────────────────────────
-        self._stop_btn = ctk.CTkButton(
-            inner,
-            text="Stop",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=40,
-            width=70,
-            corner_radius=8,
-            fg_color=T.error if hasattr(T, "error") else "#e53935",
-            hover_color="#c62828",
-            text_color="white",
-            command=self._cancel_analyse,
-        )
-        # Hidden until analyse is in progress
-        self._stop_btn_visible = False
+        # Stop button (hidden initially)
+        self._stop_btn = QPushButton("Dừng")
+        self._stop_btn.setObjectName("danger")
+        self._stop_btn.setFixedSize(80, 44)
+        self._stop_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.error};
+                color: white;
+                border: none;
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: #c62828;
+            }}
+        """)
+        self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._stop_btn.clicked.connect(self._cancel_analyse)
+        self._stop_btn.hide()
+        row.addWidget(self._stop_btn)
 
-        # ── Quick actions ─────────────────────────────────────────────────
-        self._paste_btn = ctk.CTkButton(
-            inner,
-            text="⎘",
-            width=40, height=40,
-            corner_radius=8,
-            font=ctk.CTkFont(size=14),
-            fg_color=T.surface2,
-            hover_color=T.surface3,
-            text_color=T.text2,
-            command=self._paste_clipboard,
-        )
-        self._paste_btn.pack(side="left", padx=(0, 4))
+        # Paste button
+        self._paste_btn = QPushButton("⎘")
+        self._paste_btn.setFixedSize(40, 40)
+        self._paste_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._paste_btn.setToolTip("Dán từ clipboard")
+        self._paste_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text2};
+                border: none;
+                border-radius: 12px;
+                font-size: 14px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+                color: {T.text};
+            }}
+        """)
+        self._paste_btn.clicked.connect(self._paste_clipboard)
+        row.addWidget(self._paste_btn)
 
-        self._clear_btn = ctk.CTkButton(
-            inner,
-            text="✕",
-            width=40, height=40,
-            corner_radius=8,
-            font=ctk.CTkFont(size=12),
-            fg_color=T.surface2,
-            hover_color=T.surface3,
-            text_color=T.text3,
-            command=self._clear_url,
-        )
-        self._clear_btn.pack(side="left")
+        # Clear button
+        self._clear_btn = QPushButton("✕")
+        self._clear_btn.setFixedSize(40, 40)
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.setToolTip("Xóa URL")
+        self._clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text3};
+                border: none;
+                border-radius: 12px;
+                font-size: 13px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+                color: {T.text};
+            }}
+        """)
+        self._clear_btn.clicked.connect(self._clear_url)
+        row.addWidget(self._clear_btn)
 
-        # Status label (spinner + message)
-        self._status_lbl = ctk.CTkLabel(
-            inner, text="",
-            font=ctk.CTkFont(size=12),
-            text_color=T.text3,
-        )
-        self._status_lbl.pack(side="left", padx=(12, 0))
+        # Status label
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
+        row.addWidget(self._status_lbl)
+
+        outer.addWidget(inner, 1)
 
         # Bottom border
-        ctk.CTkFrame(
-            self, height=1, fg_color=T.border, corner_radius=0,
-        ).pack(fill="x", side="bottom")
+        bot_line = QFrame()
+        bot_line.setFixedHeight(1)
+        bot_line.setStyleSheet(f"background-color: {T.border};")
+        outer.addWidget(bot_line)
 
-    # ── Analysis flow ─────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────
 
     def set_url(self, url: str) -> None:
-        """Programmatically set the URL (called from HomeTab pass-through)."""
-        self._url_entry.delete(0, "end")
-        self._url_entry.insert(0, url)
+        self._url_entry.setText(url)
 
     def get_url(self) -> str:
-        return self._url_entry.get().strip()
+        return self._url_entry.text().strip()
+
+    def trigger_from_clipboard(self, url: str) -> None:
+        self._url_entry.setText(url)
+        self._set_status("URL từ clipboard - nhấn Enter để phân tích", T.text2)
+
+    # ── Analysis flow ─────────────────────────────────────────────────────
 
     def _start_analyse(self) -> None:
         raw = self.get_url()
         if not raw:
             return
-        # BUG-CB: extract first URL from share text typed/pasted directly into
-        # the entry (e.g. Kuaishou: "video title https://v.kuaishou.com/...").
-        # _paste_clipboard() already does this for the Paste button path;
-        # this covers Ctrl+V, drag-drop, and Remote-triggered analyse calls.
         _m = _CLIPBOARD_URL_RE.search(raw)
         url = _m.group(0).rstrip("".join(_URL_TRAILING_JUNK)) if _m else raw
 
-        # Cancel any in-flight analyse (e.g. user typed new URL while Kuaishou CDP
-        # is still running). Setting the event makes the worker exit at the next
-        # cancel check; _safe_done/_safe_error are discarded via token mismatch.
         if self._current_cancel is not None:
             self._current_cancel.set()
             self._current_cancel = None
@@ -209,68 +227,62 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
         self._analyse_token += 1
         my_token = self._analyse_token
 
+        self._analyse_btn.setText("Đang phân tích...")
+        self._analyse_btn.setEnabled(False)
+        self._stop_btn.show()
+        self._set_status("Đang tải thông tin media...", T.text2)
+        self._spinner_timer.start()
+
+        self._app.navigate_to("home")
+        home = self._app.get_tab("home")
+        if home:
+            home.on_analysis_start()
+
+        def _safe_done(info) -> None:
+            if my_token != self._analyse_token:
+                ui_bridge.post(self._reset_btn)
+                return
+            ui_bridge.post(lambda: self._on_done(info))
+
+        def _safe_error(err: str) -> None:
+            if my_token != self._analyse_token:
+                ui_bridge.post(self._reset_btn)
+                return
+            ui_bridge.post(lambda: self._on_error(err))
+
         try:
-            self._analyse_btn.configure(state="disabled", text="Analyzing…")
-            self._show_stop_btn(True)
-            self._set_status("Fetching media info…", T.text2)
-            self._start_spinner()
-
-            # Navigate to home tab immediately so user sees it loading
-            self._app.navigate_to("home")
-
-            # Notify HomeTab to clear its previous result
-            home = self._app.get_tab("home")
-            if home:
-                home.on_analysis_start()
-
-            def _safe_done(info) -> None:
-                if my_token != self._analyse_token:
-                    self._ui_queue.put(self._reset_btn)
-                    return
-                self._ui_queue.put(lambda: self._on_done(info))
-
-            def _safe_error(err: str) -> None:
-                if my_token != self._analyse_token:
-                    self._ui_queue.put(self._reset_btn)
-                    return
-                self._ui_queue.put(lambda: self._on_error(err))
-
-            cancel_event = self._app.service.analyse_url(
-                url=url, on_done=_safe_done, on_error=_safe_error)
+            cancel_event = self._app.service.analyse_url(url=url, on_done=_safe_done, on_error=_safe_error)
             self._current_cancel = cancel_event
-
         except Exception:
             self._reset_btn()
 
     def _cancel_analyse(self) -> None:
-        """Stop button handler — cancels in-flight analyse."""
         if self._current_cancel is not None:
             self._current_cancel.set()
             self._current_cancel = None
-        # Bump token so stale on_done/on_error callbacks are discarded.
         self._analyse_token += 1
-        self._set_status("Cancelled.", T.text3)
+        self._set_status("Đã hủy.", T.text3)
         self._reset_btn()
 
     def _on_done(self, info) -> None:
-        self._stop_spinner()
+        self._spinner_timer.stop()
         self._reset_btn()
         if not info or not info.title:
-            self._set_status("⚠  No media found", T.error)
-            self._app.toast("Analysis returned empty result.", "error")
+            self._set_status("Không tìm thấy media", T.error)
+            self._app.toast("Phân tích không trả về kết quả.", "error")
             return
         self._set_status(f"✓  {info.title[:50]}", T.success)
         home = self._app.get_tab("home")
         if home:
             home.on_analysis_done(info)
-        self._app.toast(f"Ready: {info.title[:44]}", "success")
+        self._app.toast(f"Sẵn sàng: {info.title[:44]}", "success")
 
     def _on_error(self, err: str) -> None:
-        self._stop_spinner()
+        self._spinner_timer.stop()
         self._reset_btn()
-        display = err[:100] if err else "Unknown error"
-        self._set_status(f"⚠  {display}", T.error)
-        self._app.toast("Analysis failed.", "error")
+        display = err[:100] if err else "Lỗi không xác định"
+        self._set_status(f"  {display}", T.error)
+        self._app.toast("Phân tích thất bại.", "error")
         home = self._app.get_tab("home")
         if home:
             home.on_analysis_error(err)
@@ -278,107 +290,108 @@ class Toolbar(_BaseFrame):  # type: ignore[misc]
     def _reset_btn(self) -> None:
         self._analysing = False
         self._current_cancel = None
-        self._show_stop_btn(False)
-        if self.winfo_exists():
-            self._analyse_btn.configure(state="normal", text="Analyze")
-
-    def _show_stop_btn(self, show: bool) -> None:
-        if not self.winfo_exists():
-            return
-        if show and not self._stop_btn_visible:
-            self._stop_btn.pack(side="left", padx=(0, 8))
-            self._stop_btn_visible = True
-        elif not show and self._stop_btn_visible:
-            self._stop_btn.pack_forget()
-            self._stop_btn_visible = False
+        self._spinner_timer.stop()
+        self._stop_btn.hide()
+        self._analyse_btn.setEnabled(True)
+        self._analyse_btn.setText("Phân tích")
 
     # ── Spinner ───────────────────────────────────────────────────────────
 
-    def _start_spinner(self) -> None:
-        self._spinner_idx = 0
-        self._tick_spinner()
-
     def _tick_spinner(self) -> None:
-        if not self._analysing or not self.winfo_exists():
+        if not self._analysing:
+            self._spinner_timer.stop()
             return
         frame = _SPINNER[self._spinner_idx % len(_SPINNER)]
-        self._analyse_btn.configure(text=f"{frame} Analyzing")
+        self._analyse_btn.setText(f"{frame} Đang phân tích")
         self._spinner_idx += 1
-        self._spinner_job = self.after(100, self._tick_spinner)
-
-    def _stop_spinner(self) -> None:
-        if self._spinner_job:
-            self.after_cancel(self._spinner_job)
-            self._spinner_job = None
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
     def _set_status(self, text: str, color: str) -> None:
-        self._status_lbl.configure(text=text, text_color=color)
-        # Auto-clear success message after 4 s
+        self._status_lbl.setText(text)
+        self._status_lbl.setStyleSheet(f"color: {color}; font-size: 12px;")
         if text.startswith("✓"):
-            self.after(4000, lambda: self._status_lbl.configure(text=""))
+            QTimer.singleShot(4000, lambda: self._status_lbl.setText(""))
+
+    def _on_text_changed(self) -> None:
+        pass  # placeholder for future URL validation
 
     def _paste_clipboard(self) -> None:
-        try:
-            text = self.clipboard_get().strip()
-            m = _CLIPBOARD_URL_RE.search(text)
-            if m:
-                url = m.group(0).rstrip("".join(_URL_TRAILING_JUNK))
-                self._url_entry.delete(0, "end")
-                self._url_entry.insert(0, url)
-                self._set_status("URL pasted", T.text2)
-                self._start_analyse()
-        except Exception:
-            pass
+        from PySide6.QtGui import QGuiApplication
 
-    def _paste_and_analyse(self) -> None:
-        # Ctrl+V path: Tkinter already committed paste text; extract URL then analyse
-        raw = self._url_entry.get().strip()
-        m = _CLIPBOARD_URL_RE.search(raw)
+        text = QGuiApplication.clipboard().text().strip()
+        m = _CLIPBOARD_URL_RE.search(text)
         if m:
             url = m.group(0).rstrip("".join(_URL_TRAILING_JUNK))
-            self._url_entry.delete(0, "end")
-            self._url_entry.insert(0, url)
+            self._url_entry.setText(url)
+            self._set_status("Đã dán URL", T.text2)
             self._start_analyse()
 
     def _clear_url(self) -> None:
-        self._url_entry.delete(0, "end")
+        self._url_entry.clear()
         self._set_status("", T.text3)
         home = self._app.get_tab("home")
         if home:
             home.clear_result()
 
-    def _on_focus_in(self, _e) -> None:
-        self._url_entry.configure(border_color=T.primary)
-
-    def _on_focus_out(self, _e) -> None:
-        self._url_entry.configure(border_color=T.border2)
-
-    # ── Clipboard monitor integration ─────────────────────────────────────
-
-    def trigger_from_clipboard(self, url: str) -> None:
-        """Called from ClipboardMonitor via _ui_queue when a new URL is detected.
-        Fills the URL entry only -- analyse runs when user pastes (Paste btn or Ctrl+V).
-        """
-        self._url_entry.delete(0, "end")
-        self._url_entry.insert(0, url)
-        self._set_status("Clipboard URL ready - paste to analyse", T.text2)
-
-    # ── Theme ──────────────────────────────────────────────────────────────
-
-    def _on_theme(self) -> None:
-        if not self.winfo_exists():
-            return
-        self.configure(fg_color=T.surface)
-        self._url_entry.configure(
-            fg_color=T.input, border_color=T.border2, text_color=T.text)
-        self._analyse_btn.configure(
-            fg_color=T.primary, hover_color=T.primary_hover)
-        self._stop_btn.configure(
-            fg_color=T.error if hasattr(T, "error") else "#e53935")
-        self._paste_btn.configure(
-            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2)
-        self._clear_btn.configure(
-            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text3)
-        self._status_lbl.configure(text_color=T.text3)
+    def _apply_styles(self) -> None:
+        self._url_entry.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {T.input};
+                color: {T.text};
+                border: 1.5px solid {T.border2};
+                border-radius: 12px;
+                padding: 0 18px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {T.primary};
+                background-color: {T.surface};
+            }}
+        """)
+        self._analyse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.primary};
+                color: white;
+                border: 1px solid {T.primary_hover};
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+            }}
+            QPushButton:hover {{
+                background-color: {T.primary_hover};
+                border-color: {T.primary};
+            }}
+            QPushButton:disabled {{
+                background-color: {T.primary_dim};
+                color: {T.text3};
+                border-color: {T.border};
+            }}
+        """)
+        self._stop_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.error};
+                color: white;
+                border: none;
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{ background-color: #c62828; }}
+        """)
+        for btn, color in ((self._paste_btn, T.text2), (self._clear_btn, T.text3)):
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {T.surface2};
+                    color: {color};
+                    border: none;
+                    border-radius: 12px;
+                    font-size: 13px;
+                    padding: 0;
+                }}
+                QPushButton:hover {{
+                    background-color: {T.surface3};
+                    color: {T.text};
+                }}
+            """)

@@ -1,34 +1,19 @@
-"""
-ui/tabs/settings/_base_panel.py
-Base class shared by every Settings sub-panel.
-
-Provides:
-  • self._app          – reference to MainWindow (config, service, toast…)
-  • self._ui_queue     – thread-safe queue for background → UI thread marshal
-  • self._drain_ui_queue() – called every 150 ms on the UI thread
-  • Render helpers: _section(), _card(), _slider_row(), _switch_row(),
-                    _add_value_label()
-  • _on_theme() stub – each subclass overrides to refresh its own widgets
-
-Design contract
-───────────────
-• Each Panel owns its widget refs and its _ui_queue — no shared mutable state
-  between panels.
-• T.register(self._on_theme) is called in __init__ so every panel
-  automatically refreshes its widgets when the user changes the app theme,
-  without any coordination from SettingsTab.
-• The only dependency injected from outside is `app` (MainWindow).
-"""
+"""Base class shared by every Settings sub-panel (PySide6)."""
 from __future__ import annotations
 
 import logging
-import queue
 from typing import TYPE_CHECKING
 
-try:
-    import customtkinter as ctk
-except ImportError:          # pragma: no cover — headless CI
-    ctk = None               # type: ignore[assignment]
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ui.themes.tokens import T
 
@@ -37,126 +22,131 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_BaseFrame = ctk.CTkFrame if ctk is not None else object
 
+class _BasePanel(QWidget):
 
-class _BasePanel(_BaseFrame):   # type: ignore[misc]
-    """
-    Lightweight base for Settings panels.
-    Subclasses call super().__init__(master, app) then build their own UI.
-    """
-
-    def __init__(self, master, app: "MainWindow") -> None:
-        super().__init__(master, fg_color="transparent")
+    def __init__(self, parent, app: "MainWindow") -> None:
+        super().__init__(parent)
         self._app = app
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
 
-        # Per-panel widget tracking lists — used by _on_theme() in each subclass
-        # to refresh colors without tree-walking (see OMNIDL_STABILITY_RULES §UI-thread).
-        self._section_labels: list = []
-        self._row_labels:     list = []
-        self._sliders:        list = []
-        self._switches:       list = []
+    def _section(self, _parent, text: str) -> None:
+        self._layout.addSpacing(28)
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wl = QHBoxLayout(wrapper)
+        wl.setContentsMargins(28, 0, 28, 6)
+        lbl = QLabel(text)
+        lbl.setObjectName("section_title")
+        wl.addWidget(lbl)
+        self._layout.addWidget(wrapper)
 
-        # Thread-safe queue: background workers post lambdas here;
-        # _drain_ui_queue runs them on the Tk main thread every 150 ms.
-        # Each panel has its OWN queue — no contention between panels.
-        self._ui_queue: queue.Queue = queue.Queue()
-        self._drain_ui_queue()
-
-        # Auto-register for theme-change callbacks.
-        # T.register() is idempotent — re-registering the same callable is safe.
-        T.register(self._on_theme)
-
-    # ── Background → UI thread bridge ────────────────────────────────────
-
-    def _drain_ui_queue(self) -> None:
-        """Drain _ui_queue every 150 ms on the UI thread (Python 3.14 safe)."""
-        if not self.winfo_exists():
-            return
-        try:
-            while True:
-                fn = self._ui_queue.get_nowait()
-                try:
-                    fn()
-                except Exception as exc:
-                    logger.warning("_BasePanel _ui_queue raised: %s", exc)
-        except queue.Empty:
-            pass
-        self.after(150, self._drain_ui_queue)
-
-    # ── Theme callback stub ───────────────────────────────────────────────
-
-    def _on_theme(self) -> None:
-        """Override in each subclass to refresh widget colors after theme change."""
-        if not self.winfo_exists():
-            return
-
-    # ── UI render helpers (shared across all panels) ──────────────────────
-
-    def _section(self, parent, text: str) -> None:
-        lbl = ctk.CTkLabel(
-            parent, text=text,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            text_color=T.text3,
+    def _card(self, _parent=None) -> QFrame:
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wl = QHBoxLayout(wrapper)
+        wl.setContentsMargins(28, 0, 28, 10)
+        card = QFrame()
+        card.setStyleSheet(
+            f"QFrame {{ background-color: {T.surface}; border: none; border-radius: 12px; }}"
         )
-        lbl.pack(anchor="w", padx=28, pady=(18, 5))
-        self._section_labels.append(lbl)
-
-    def _card(self, parent) -> ctk.CTkFrame:
-        card = ctk.CTkFrame(
-            parent, fg_color=T.surface,
-            corner_radius=10, border_width=1, border_color=T.border)
-        card.pack(fill="x", padx=28, pady=(0, 4))
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(0)
+        wl.addWidget(card)
+        self._layout.addWidget(wrapper)
         return card
 
-    def _slider_row(self, parent, label, var, lo, hi, cmd) -> None:
-        def debounced(v):
-            attr = f"_sa_{label.replace(' ', '_')}"
-            aid = getattr(self, attr, None)
-            if aid:
-                self.after_cancel(aid)
-            setattr(self, attr, self.after(500, lambda: cmd(v)))
+    def _slider_row(self, card: QFrame, label_text: str, initial_val: int,
+                    lo: int, hi: int, cmd) -> QSlider:
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(20, 14, 20, 2)
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; background: transparent;")
+        hl.addWidget(lbl, 1)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(lo, hi)
+        slider.setValue(initial_val)
+        slider.setFixedWidth(160)
+        hl.addWidget(slider)
+        card.layout().addWidget(row)
 
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=(12, 2))
-        lbl = ctk.CTkLabel(row, text=label,
-                     font=ctk.CTkFont(size=12), text_color=T.text2)
-        lbl.pack(side="left")
-        self._row_labels.append(lbl)
-        sl = ctk.CTkSlider(
-            row, from_=lo, to=hi, number_of_steps=hi - lo,
-            variable=var, command=debounced, width=160,
-            button_color=T.primary, progress_color=T.primary,
+        val_row = QWidget()
+        val_row.setStyleSheet("background: transparent;")
+        vl = QHBoxLayout(val_row)
+        vl.setContentsMargins(20, 0, 20, 6)
+        vl.addStretch()
+        val_lbl = QLabel(str(initial_val))
+        val_lbl.setStyleSheet(
+            f"color: {T.primary_text}; font-size: 11px; font-weight: 600; background: transparent;"
         )
-        sl.pack(side="right")
-        self._sliders.append(sl)
+        vl.addWidget(val_lbl)
+        card.layout().addWidget(val_row)
 
-    def _add_value_label(self, parent, var: ctk.IntVar) -> ctk.CTkLabel:
-        lbl = ctk.CTkLabel(
-            parent, textvariable=var,
-            font=ctk.CTkFont(size=11), text_color=T.primary_text)
-        lbl.pack(anchor="e", padx=16, pady=(0, 4))
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        _v = [initial_val]
+
+        def _on_change(v, _lbl=val_lbl, _vref=_v, _t=timer):
+            _lbl.setText(str(v))
+            _vref[0] = v
+            _t.stop()
+            _t.start(500)
+
+        timer.timeout.connect(lambda: cmd(_v[0]))
+        slider.valueChanged.connect(_on_change)
+        return slider
+
+    def _switch_row(self, card: QFrame, label_text: str,
+                    initial_val: bool, cmd) -> QCheckBox:
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(20, 10, 20, 10)
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; background: transparent;")
+        hl.addWidget(lbl, 1)
+        sw = QCheckBox()
+        sw.setChecked(initial_val)
+        sw.clicked.connect(cmd)
+        hl.addWidget(sw)
+        card.layout().addWidget(row)
+        return sw
+
+    def _hint(self, card: QFrame, text: str, color: str = "") -> QLabel:
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        lbl.setStyleSheet(
+            f"color: {color or T.text3}; font-size: 11px; background: transparent;"
+            " padding: 0 20px 10px;"
+        )
+        card.layout().addWidget(lbl)
         return lbl
 
-    def _switch_row(self, parent, label, var, cmd) -> None:
-        def debounced_cmd(v: bool) -> None:
-            attr = f"_sw_{label.replace(' ', '_')}"
-            aid = getattr(self, attr, None)
-            if aid:
-                self.after_cancel(aid)
-            setattr(self, attr, self.after(300, lambda: cmd(v)))
-
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=(8, 4))
-        lbl = ctk.CTkLabel(row, text=label,
-                     font=ctk.CTkFont(size=12), text_color=T.text2)
-        lbl.pack(side="left")
-        self._row_labels.append(lbl)
-        sw = ctk.CTkSwitch(
-            row, variable=var, text="",
-            command=lambda: debounced_cmd(var.get()),
-            onvalue=True, offvalue=False,
-            progress_color=T.primary, button_color=T.primary_text,
+    def _row_label(self, card: QFrame, text: str, color: str = "",
+                   wrap: bool = False) -> QLabel:
+        lbl = QLabel(text)
+        if wrap:
+            lbl.setWordWrap(True)
+        lbl.setStyleSheet(
+            f"color: {color or T.text3}; font-size: 11px; background: transparent;"
+            " padding: 4px 20px 4px;"
         )
-        sw.pack(side="right")
-        self._switches.append(sw)
+        card.layout().addWidget(lbl)
+        return lbl
+
+    def _separator(self, card: QFrame) -> None:
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {T.divider}; border: none;")
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        wl = QHBoxLayout(wrapper)
+        wl.setContentsMargins(20, 0, 20, 0)
+        wl.addWidget(sep)
+        card.layout().addWidget(wrapper)

@@ -275,31 +275,32 @@ def main() -> None:
                 _api_err,
             )
 
-    import customtkinter as ctk
-    ctk.set_default_color_theme("blue")
+    from PySide6.QtWidgets import QApplication
+    _qt_app = QApplication.instance() or QApplication(sys.argv)
 
     from ui.themes.tokens import T
-    T.set_mode(config.theme)    # sync token palette before any widget reads T.*
-    ctk.set_appearance_mode(T.ctk_base)  # map custom theme → "dark"/"light" for CTk
+    from ui.theme_qt import apply_theme
+    T.set_mode(config.theme)
+    apply_theme()
 
     from ui.main_window import MainWindow
     window = MainWindow(service=service, config=config)
+    window.show()
 
     logger.info("Entering main loop")
+    _exit_code = 0
     try:
-        window.mainloop()
+        _exit_code = _qt_app.exec()
     except KeyboardInterrupt:
         logger.info("Interrupted")
     finally:
-        manager.shutdown(wait=True)   # drain all running downloads first (PV-002)
-        service.close()               # then flush history writes
+        manager.shutdown(wait=True)
+        service.close()
         config.save()
         logger.info("OmniDL shutdown complete")
-        # Close the hidden PowerShell console so it does not linger as an
-        # orphan process after python.exe exits.  PostMessage is async and
-        # never blocks.  No-op if running without a console (frozen build).
         if sys.platform == "win32":
             _close_console()
+    sys.exit(_exit_code)
 
 
 def _clear_history_on_version_change(config, history) -> None:
@@ -344,7 +345,7 @@ def _migrate_legacy_data() -> None:
 def _check_deps() -> None:
     missing = []
     for pkg, install in [
-        ("customtkinter", "customtkinter>=5.2.2"),
+        ("PySide6",       "pyside6>=6.7"),
         ("yt_dlp",        "yt-dlp>=2025.1.1"),
         ("PIL",           "Pillow>=10.3.0"),
         ("requests",      "requests>=2.31.0"),

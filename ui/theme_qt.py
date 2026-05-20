@@ -135,12 +135,9 @@ QComboBox::drop-down {{
 }}
 QComboBox::down-arrow {{
     image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {T.text2};
     width: 0;
     height: 0;
-    margin-right: 8px;
+    border: none;
 }}
 QComboBox QAbstractItemView {{
     background-color: {T.surface2};
@@ -285,6 +282,7 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background-color: {T.primary};
     border-color: {T.primary};
+    image: url(ui/assets/check.svg);
 }}
 QCheckBox::indicator:hover {{
     border-color: {T.primary};
@@ -438,10 +436,18 @@ QPushButton#pill_tab {{
     min-height: 28px;
 }}
 QPushButton#pill_tab[active="true"] {{
-    background: {T.primary};
+    background: #6366F1;
     color: white;
     font-weight: 700;
 }}
+QPushButton#pill_tab[active="true"][tab_key="home"]        {{ background: #6366F1; }}
+QPushButton#pill_tab[active="true"][tab_key="queue"]       {{ background: #6366F1; }}
+QPushButton#pill_tab[active="true"][tab_key="batch"]       {{ background: #818CF8; }}
+QPushButton#pill_tab[active="true"][tab_key="live_monitor"]{{ background: #EF4444; }}
+QPushButton#pill_tab[active="true"][tab_key="convert"]     {{ background: #14B8A6; }}
+QPushButton#pill_tab[active="true"][tab_key="history"]     {{ background: #F59E0B; }}
+QPushButton#pill_tab[active="true"][tab_key="settings"]    {{ background: #6B7A8E; }}
+QPushButton#pill_tab[active="true"][tab_key="special_dl"]  {{ background: #A78BFA; }}
 QPushButton#pill_tab[active="false"]:hover {{
     background: {T.surface2};
     color: {T.text};

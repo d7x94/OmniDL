@@ -112,7 +112,7 @@ class BatchTab(QWidget):
         hdr.setStyleSheet("background: transparent;")
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 0)
-        title = QLabel("Batch Download")
+        title = QLabel("Tải xuống hàng loạt")
         title.setObjectName("page_title")
         hdr_layout.addWidget(title)
         self._status_lbl = QLabel("")
@@ -233,7 +233,7 @@ class BatchTab(QWidget):
         self._format_combo.setCurrentText(self._app.config.default_format)
         rh_layout.addWidget(self._format_combo)
 
-        self._retry_btn = QPushButton("Retry errors")
+        self._retry_btn = QPushButton("Thử lại lỗi")
         self._retry_btn.setFixedHeight(36)
         self._retry_btn.setEnabled(False)
         self._retry_btn.setStyleSheet(
@@ -243,7 +243,7 @@ class BatchTab(QWidget):
         self._retry_btn.clicked.connect(self._retry_errors)
         rh_layout.addWidget(self._retry_btn)
 
-        self._queue_all_btn = QPushButton("Queue All")
+        self._queue_all_btn = QPushButton("Thêm tất cả")
         self._queue_all_btn.setFixedHeight(36)
         self._queue_all_btn.setEnabled(False)
         self._queue_all_btn.setStyleSheet(

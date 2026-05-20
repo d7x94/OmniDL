@@ -60,7 +60,7 @@ class QueueTab(QWidget):
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 14)
 
-        self._title_lbl = QLabel("Download Queue")
+        self._title_lbl = QLabel("Hàng đợi tải xuống")
         self._title_lbl.setObjectName("page_title")
         hdr_layout.addWidget(self._title_lbl)
 
@@ -76,7 +76,7 @@ class QueueTab(QWidget):
         """)
         hdr_layout.addWidget(self._count_lbl)
 
-        self._clear_btn = QPushButton("Clear Finished")
+        self._clear_btn = QPushButton("Xóa đã xong")
         self._clear_btn.setFixedHeight(32)
         self._clear_btn.setStyleSheet(f"""
             QPushButton {{
@@ -111,7 +111,7 @@ class QueueTab(QWidget):
         self._items_layout.setSpacing(8)
         self._items_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self._empty_lbl = QLabel("No active downloads\nPaste a URL on the Download tab to get started")
+        self._empty_lbl = QLabel("Không có tác vụ nào\nDán URL vào tab Tải xuống để bắt đầu")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet(f"color: {T.text3}; font-size: 14px;")
         self._items_layout.addWidget(self._empty_lbl)
@@ -159,7 +159,7 @@ class QueueTab(QWidget):
         self._empty_lbl.setVisible(not has_tasks)
 
         active = sum(1 for t in tasks if t.status in DownloadStatus.active_states())
-        self._count_lbl.setText(f"  {active} active  ·  {len(tasks)} total  ")
+        self._count_lbl.setText(f"  {active} đang tải  ·  {len(tasks)} tổng  ")
 
         # Slow down poll when idle
         self._poll_timer.setInterval(500 if active else 2000)

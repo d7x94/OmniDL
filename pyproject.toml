@@ -4,7 +4,7 @@ version = "18.3.0"
 description = "Ultimate Media Downloader"
 requires-python = ">=3.11"
 dependencies = [
-    "customtkinter>=5.2.2",
+    "pyside6>=6.7",
     "yt-dlp>=2025.1.1",
     "gallery-dl>=1.32.1",
     "Pillow>=10.3.0",

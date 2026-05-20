@@ -19,6 +19,7 @@ Design constraints
 Typical call sequence (wired in DownloadService.__init__):
     bus.subscribe(EventBus.DOWNLOAD_COMPLETED, taildrop_svc.on_download_completed)
 """
+
 from __future__ import annotations
 
 import logging
@@ -56,7 +57,7 @@ _SUBPROCESS_EXTRA: dict = (
 #   • Dotted IPv4                e.g. "100.64.0.5"
 #   • FQDN form                  e.g. "iphone.tail1abc2.ts.net"
 # Rejects anything with shell metacharacters, path separators, or spaces.
-_NODE_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-\.]{0,252}[A-Za-z0-9])?$')
+_NODE_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9\-\.]{0,252}[A-Za-z0-9])?$")
 
 # Destination suffix required by Tailscale CLI file send.
 # The trailing colon tells tailscale "this is a node name, not a local path".
@@ -104,10 +105,10 @@ def _sanitize_filename(name: str) -> str:
     # 1. Preserve the extension exactly — only sanitise the stem.
     dot_idx = name.rfind(".")
     if dot_idx > 0:
-        stem   = name[:dot_idx]
-        suffix = name[dot_idx:]   # includes the leading "."
+        stem = name[:dot_idx]
+        suffix = name[dot_idx:]  # includes the leading "."
     else:
-        stem   = name
+        stem = name
         suffix = ""
 
     # 2–3. NFKD decomposition → ASCII encode/ignore.
@@ -130,6 +131,40 @@ def _sanitize_filename(name: str) -> str:
         safe = "file"
 
     return safe + suffix
+
+
+def _build_taildrop_name(filename: str, task) -> str:
+    import time as _time
+
+    dot = filename.rfind(".")
+    stem = filename[:dot] if dot > 0 else filename
+    ext = filename[dot:] if dot > 0 else ""
+
+    norm = unicodedata.normalize("NFKD", stem)
+    ascii_stem = norm.encode("ascii", errors="ignore").decode("ascii")
+
+    content_orig = re.sub(r"[\s_\-\[\]]+", "", stem)
+    content_ascii = re.sub(r"[\s_\-\[\]]+", "", ascii_stem)
+    ratio = len(content_ascii) / len(content_orig) if content_orig else 1.0
+
+    if ratio >= 0.4:
+        return _sanitize_filename(filename)
+
+    mi = getattr(task, "media_info", None)
+    platform = (getattr(mi, "platform", "") or "unknown").lower()
+
+    uid_raw = getattr(mi, "uploader_id", "") or getattr(mi, "uploader", "")
+    uid_norm = unicodedata.normalize("NFKD", uid_raw).encode("ascii", errors="ignore").decode("ascii")
+    uid_safe = re.sub(r"[^A-Za-z0-9_\-]", "_", uid_norm).strip("_-")
+
+    ts = getattr(task, "finished_at", None) or getattr(task, "created_at", 0)
+    date_str = _time.strftime("%Y-%m-%d", _time.localtime(ts))
+
+    video_id = (getattr(mi, "video_id", "") or "")[:12]
+
+    parts = [platform] + ([uid_safe] if uid_safe else []) + [date_str]
+    stem_fb = "_-_".join(parts) + (f"_[{video_id}]" if video_id else "")
+    return stem_fb + ext
 
 
 @dataclass(frozen=True)
@@ -211,7 +246,8 @@ class TaildropService:
         if file_path is None or not file_path.exists():
             logger.warning(
                 "Taildrop: skip task %s — output_path missing or file not found (%s)",
-                task.id, file_path,
+                task.id,
+                file_path,
             )
             return
 
@@ -254,18 +290,14 @@ class TaildropService:
         # silently attempt (and fail) a Taildrop send on every conversion even
         # when the user has not opted in to automatic sending.
         if self._config.taildrop_send_mode == "ask":
-            logger.debug(
-                "Taildrop convert: skip auto-send — send_mode is 'ask'"
-            )
+            logger.debug("Taildrop convert: skip auto-send — send_mode is 'ask'")
             return
         node = self._config.taildrop_target_node
         if not node:
             logger.debug("Taildrop convert: skip — target_node not configured")
             return
         if not out_path.exists():
-            logger.warning(
-                "Taildrop convert: skip — file not found: %s", out_path
-            )
+            logger.warning("Taildrop convert: skip — file not found: %s", out_path)
             return
 
         with self._lock:
@@ -276,9 +308,7 @@ class TaildropService:
                 )
                 return
             self._executor.submit(self._transfer_converted, out_path, node)
-        logger.debug(
-            "Taildrop convert: queued '%s' → %s", out_path.name, node
-        )
+        logger.debug("Taildrop convert: queued '%s' → %s", out_path.name, node)
 
     def send_now(self, task: "DownloadTask") -> None:
         """
@@ -312,7 +342,8 @@ class TaildropService:
         if file_path is None or not file_path.exists():
             logger.warning(
                 "Taildrop send_now: task %s — output_path missing or file not found (%s)",
-                task.id, file_path,
+                task.id,
+                file_path,
             )
             return
 
@@ -323,9 +354,7 @@ class TaildropService:
             self._executor.submit(self._transfer, task, file_path, node)
         logger.debug("Taildrop send_now: queued '%s' → %s", file_path.name, node)
 
-    def send_file(
-        self, file_path: Path, node: str
-    ) -> TransferResult:
+    def send_file(self, file_path: Path, node: str) -> TransferResult:
         """
         Synchronous send — primarily for testing / manual invocation.
         Use on_download_completed() for the automated pipeline.
@@ -372,17 +401,13 @@ class TaildropService:
             from a directory (e.g. after an ambiguous single-task download).
         """
         if not file_path.exists():
-            logger.warning(
-                "send_file_to_nodes: file not found: %s", file_path
-            )
+            logger.warning("send_file_to_nodes: file not found: %s", file_path)
             return
 
         safe_nodes = [n for n in nodes if _NODE_RE.match(n)]
-        skipped    = set(nodes) - set(safe_nodes)
+        skipped = set(nodes) - set(safe_nodes)
         if skipped:
-            logger.warning(
-                "send_file_to_nodes: skipped invalid node names: %s", skipped
-            )
+            logger.warning("send_file_to_nodes: skipped invalid node names: %s", skipped)
 
         if not safe_nodes:
             logger.warning("send_file_to_nodes: no valid nodes — nothing to send")
@@ -398,12 +423,12 @@ class TaildropService:
             if gdl:
                 specific_files = [Path(f) for f in gdl if Path(f).exists()]
 
+        safe_display = _build_taildrop_name(file_path.name, task) if task else None
+
         def _send_one(node: str) -> None:
-            result = self._do_send(file_path, node, specific_files=specific_files)
+            result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
             if result.success:
-                logger.info(
-                    "send_file_to_nodes: ✓ '%s' → %s", file_path.name, node
-                )
+                logger.info("send_file_to_nodes: ✓ '%s' → %s", file_path.name, node)
                 if on_node_done:
                     try:
                         on_node_done(node)
@@ -412,7 +437,9 @@ class TaildropService:
             else:
                 logger.warning(
                     "send_file_to_nodes: ✗ '%s' → %s: %s",
-                    file_path.name, node, result.error,
+                    file_path.name,
+                    node,
+                    result.error,
                 )
                 if on_node_error:
                     try:
@@ -429,7 +456,9 @@ class TaildropService:
 
         logger.debug(
             "send_file_to_nodes: queued '%s' → %s node(s): %s",
-            file_path.name, len(safe_nodes), safe_nodes,
+            file_path.name,
+            len(safe_nodes),
+            safe_nodes,
         )
 
     def list_nodes(self) -> list[str]:
@@ -460,10 +489,13 @@ class TaildropService:
     def _list_nodes_json(self, tailscale: str) -> list[str]:
         """Parse `tailscale status --json`. Returns [] on any failure."""
         import json
+
         try:
             out = subprocess.run(
                 [tailscale, "status", "--json"],
-                capture_output=True, text=True, timeout=8,
+                capture_output=True,
+                text=True,
+                timeout=8,
                 **_SUBPROCESS_EXTRA,
             )
             if out.returncode != 0:
@@ -512,7 +544,9 @@ class TaildropService:
         try:
             out = subprocess.run(
                 [tailscale, "status"],
-                capture_output=True, text=True, timeout=8,
+                capture_output=True,
+                text=True,
+                timeout=8,
                 **_SUBPROCESS_EXTRA,
             )
             if out.returncode != 0:
@@ -574,20 +608,19 @@ class TaildropService:
         if gdl is not None:
             specific_files = [Path(f) for f in gdl if Path(f).exists()]
 
-        result = self._do_send(file_path, node, specific_files=specific_files)
+        safe_display = _build_taildrop_name(file_path.name, task)
+        result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
         if result.success:
-            logger.info(
-                "Taildrop: ✅ sent '%s' → %s", file_path.name, node
-            )
+            logger.info("Taildrop: ✅ sent '%s' → %s", file_path.name, node)
             self._bus.publish_taildrop_completed(task=task, dest_node=node)
         else:
             logger.warning(
                 "Taildrop: ❌ failed '%s' → %s : %s",
-                file_path.name, node, result.error,
+                file_path.name,
+                node,
+                result.error,
             )
-            self._bus.publish_taildrop_failed(
-                task=task, dest_node=node, error=result.error
-            )
+            self._bus.publish_taildrop_failed(task=task, dest_node=node, error=result.error)
 
     def _transfer_converted(self, out_path: Path, node: str) -> None:
         """
@@ -598,23 +631,23 @@ class TaildropService:
         """
         result = self._do_send(out_path, node)
         if result.success:
-            logger.info(
-                "Taildrop convert: ✅ sent '%s' → %s", out_path.name, node
-            )
-            self._bus.publish_convert_taildrop_completed(
-                out_path=out_path, dest_node=node
-            )
+            logger.info("Taildrop convert: ✅ sent '%s' → %s", out_path.name, node)
+            self._bus.publish_convert_taildrop_completed(out_path=out_path, dest_node=node)
         else:
             logger.warning(
                 "Taildrop convert: ❌ failed '%s' → %s : %s",
-                out_path.name, node, result.error,
+                out_path.name,
+                node,
+                result.error,
             )
-            self._bus.publish_convert_taildrop_failed(
-                out_path=out_path, dest_node=node, error=result.error
-            )
+            self._bus.publish_convert_taildrop_failed(out_path=out_path, dest_node=node, error=result.error)
 
     def _do_send(
-        self, file_path: Path, node: str, specific_files: "list[Path] | None" = None
+        self,
+        file_path: Path,
+        node: str,
+        specific_files: "list[Path] | None" = None,
+        display_name: Optional[str] = None,
     ) -> TransferResult:
         """
         Core send logic. Validates inputs then calls tailscale CLI.
@@ -665,7 +698,7 @@ class TaildropService:
         #    send_path and display_name are updated; tmp_zip is cleaned up in finally.
         tmp_zip: Optional[Path] = None
         send_path = file_path
-        display_name = file_path.name
+        display_name = display_name or file_path.name
 
         try:
             if file_path.is_dir():
@@ -673,10 +706,12 @@ class TaildropService:
                 display_name = safe_stem if safe_stem.endswith(".zip") else safe_stem + ".zip"
                 logger.debug(
                     "Taildrop: '%s' is a directory — zipping as '%s'",
-                    file_path.name, display_name,
+                    file_path.name,
+                    display_name,
                 )
                 fd, tmp_str = tempfile.mkstemp(suffix=".zip", prefix="omnidl_td_")
                 import os as _os
+
                 _os.close(fd)
                 tmp_zip = Path(tmp_str)
                 with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -704,9 +739,7 @@ class TaildropService:
                             if member.is_file():
                                 zf.write(member, member.relative_to(file_path.parent))
                 send_path = tmp_zip
-                logger.debug(
-                    "Taildrop: zip ready — %d byte(s)", tmp_zip.stat().st_size
-                )
+                logger.debug("Taildrop: zip ready — %d byte(s)", tmp_zip.stat().st_size)
 
             # 5. Execute: tailscale file cp [--name <safe_name>] <send_path> <node>:
             #
@@ -724,7 +757,8 @@ class TaildropService:
                 if safe_name != display_name:
                     logger.debug(
                         "Taildrop: sanitised filename %r -> %r (using --name flag)",
-                        display_name, safe_name,
+                        display_name,
+                        safe_name,
                     )
                 cmd += ["--name", safe_name]
             cmd += [str(send_path), node + _NODE_SUFFIX]
@@ -760,6 +794,4 @@ class TaildropService:
                     tmp_zip.unlink()
                     logger.debug("Taildrop: deleted temp zip %s", tmp_zip)
                 except Exception as exc:
-                    logger.warning(
-                        "Taildrop: failed to delete temp zip %s: %s", tmp_zip, exc
-                    )
+                    logger.warning("Taildrop: failed to delete temp zip %s: %s", tmp_zip, exc)
