@@ -203,10 +203,8 @@ class MainWindow(QMainWindow):
         }
         for key, cls in tab_classes.items():
             widget = cls(self)
-            # Mark top-level frame for QSS tab accent
-            if isinstance(widget, QFrame):
-                widget.setObjectName("tab_content")
-                widget.setProperty("tab_key", key)
+            widget.setObjectName("tab_content")
+            widget.setProperty("tab_key", key)
             self._tabs[key] = widget
             self._stack.addWidget(widget)
 

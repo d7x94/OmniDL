@@ -461,14 +461,14 @@ QLabel#badge[type="error"] {{
 /* --- Per-tab content frames --- */
 # Tab accent colors are intentionally hardcoded - they identify each tab
 # visually and don't change with theme. See TAB_ACCENTS in tokens.py.
-QFrame#tab_content[tab_key="home"] {{ border-top: 3px solid #6366F1; }}
-QFrame#tab_content[tab_key="queue"] {{ border-top: 3px solid #6366F1; }}
-QFrame#tab_content[tab_key="batch"] {{ border-top: 3px solid #818CF8; }}
-QFrame#tab_content[tab_key="live_monitor"] {{ border-top: 3px solid #EF4444; }}
-QFrame#tab_content[tab_key="convert"] {{ border-top: 3px solid #14B8A6; }}
-QFrame#tab_content[tab_key="history"] {{ border-top: 3px solid #F59E0B; }}
-QFrame#tab_content[tab_key="settings"] {{ border-top: 3px solid #6B7A8E; }}
-QFrame#tab_content[tab_key="special_dl"] {{ border-top: 3px solid #A78BFA; }}
+QWidget#tab_content[tab_key="home"] {{ border-top: 3px solid #6366F1; }}
+QWidget#tab_content[tab_key="queue"] {{ border-top: 3px solid #6366F1; }}
+QWidget#tab_content[tab_key="batch"] {{ border-top: 3px solid #818CF8; }}
+QWidget#tab_content[tab_key="live_monitor"] {{ border-top: 3px solid #EF4444; }}
+QWidget#tab_content[tab_key="convert"] {{ border-top: 3px solid #14B8A6; }}
+QWidget#tab_content[tab_key="history"] {{ border-top: 3px solid #F59E0B; }}
+QWidget#tab_content[tab_key="settings"] {{ border-top: 3px solid #6B7A8E; }}
+QWidget#tab_content[tab_key="special_dl"] {{ border-top: 3px solid #A78BFA; }}
 /* --- Command palette --- */
 QDialog#command_palette {{
     background: {T.surface};
