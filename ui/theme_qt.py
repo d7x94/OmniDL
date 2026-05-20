@@ -86,7 +86,7 @@ QPushButton#danger {{
     font-weight: 600;
 }}
 QPushButton#danger:hover {{
-    background-color: #c62828;
+    background-color: {T.error};
 }}
 QPushButton#ghost {{
     background-color: transparent;
@@ -459,6 +459,8 @@ QLabel#badge[type="error"] {{
     background: {T.error};
 }}
 /* --- Per-tab content frames --- */
+# Tab accent colors are intentionally hardcoded - they identify each tab
+# visually and don't change with theme. See TAB_ACCENTS in tokens.py.
 QFrame#tab_content[tab_key="home"] {{ border-top: 3px solid #6366F1; }}
 QFrame#tab_content[tab_key="queue"] {{ border-top: 3px solid #6366F1; }}
 QFrame#tab_content[tab_key="batch"] {{ border-top: 3px solid #818CF8; }}
