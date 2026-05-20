@@ -69,6 +69,16 @@ class HomeTab(QWidget):
         self._build()
 
     def _build(self) -> None:
+        from PySide6.QtCore import QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -551,16 +561,8 @@ class HomeTab(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        from PySide6.QtCore import QPropertyAnimation
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
-
-        effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(effect)
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(150)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.start()
+        self._fade_anim.stop()
+        self._fade_anim.start()
 
     @staticmethod
     def _short_path(p: Path) -> str:

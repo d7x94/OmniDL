@@ -165,29 +165,21 @@ class StatusBar(QStatusBar):
             downloading = [t for t in tasks if t.status.name == "DOWNLOADING"]
             queued = [t for t in tasks if t.status.name == "QUEUED"]
             processing = [t for t in tasks if t.status.name == "PROCESSING"]
-            active = downloading + queued + processing
+            active_count = len(downloading) + len(queued) + len(processing)
 
-            if active:
-                parts = []
-                if downloading:
-                    parts.append(f"{len(downloading)} đang tải")
-                if processing:
-                    parts.append(f"{len(processing)} xử lý")
-                if queued:
-                    parts.append(f"{len(queued)} chờ")
-                self._active_chip.setText("↓  " + "  ·  ".join(parts))
-                self._active_chip.setStyleSheet(_chip_style(T.primary_dim, T.primary_text, T.primary))
+            total_bps = sum(_parse_speed(t.speed) for t in downloading if t.speed)
 
-                total_bps = sum(_parse_speed(t.speed) for t in downloading if t.speed)
-                if total_bps > 0:
-                    self._speed_chip.setText(f"↓  {_fmt_speed(total_bps)}")
-                    self._speed_chip.show()
-                else:
-                    self._speed_chip.hide()
-            else:
-                self._active_chip.setText("Không có tải xuống")
-                self._active_chip.setStyleSheet(_chip_style(T.surface2, T.text3, T.border))
-                self._speed_chip.hide()
+            # Aggregate progress: average of tasks that report a percent
+            progress_values = [
+                t.progress for t in downloading if hasattr(t, "progress") and t.progress is not None
+            ]
+            progress = (sum(progress_values) / len(progress_values) / 100.0) if progress_values else 0.0
+
+            # ETA: use the max eta among active downloading tasks
+            eta_values = [t.eta for t in downloading if hasattr(t, "eta") and t.eta is not None and t.eta > 0]
+            eta_s = max(eta_values) if eta_values else -1
+
+            self.update_status(active_count, total_bps, progress, eta_s)
         except Exception:
             pass
 

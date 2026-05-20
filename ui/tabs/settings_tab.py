@@ -1,4 +1,5 @@
 """Settings tab — thin orchestrator that stacks sub-panels (PySide6)."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -31,11 +32,20 @@ if TYPE_CHECKING:
 
 
 class SettingsTab(QWidget):
-
     def __init__(self, app: "MainWindow") -> None:
         super().__init__()
         self._app = app
         self._build()
+
+        from PySide6.QtCore import QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
@@ -64,11 +74,11 @@ class SettingsTab(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        self._general_panel  = GeneralPanel(content,  self._app)
-        self._network_panel  = NetworkPanel(content,  self._app)
-        self._tools_panel    = ToolsPanel(content,    self._app)
+        self._general_panel = GeneralPanel(content, self._app)
+        self._network_panel = NetworkPanel(content, self._app)
+        self._tools_panel = ToolsPanel(content, self._app)
         self._taildrop_panel = TaildropPanel(content, self._app)
-        self._api_panel      = RemoteApiPanel(content, self._app)
+        self._api_panel = RemoteApiPanel(content, self._app)
 
         for panel in (
             self._general_panel,
@@ -85,13 +95,5 @@ class SettingsTab(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        from PySide6.QtCore import QPropertyAnimation
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
-
-        effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(effect)
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(150)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.start()
+        self._fade_anim.stop()
+        self._fade_anim.start()
