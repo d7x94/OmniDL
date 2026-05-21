@@ -3,6 +3,7 @@ infrastructure/downloader/download_manager.py
 ThreadPoolExecutor-based concurrent download manager.
 Emits events via EventBus; never touches the UI directly.
 """
+
 from __future__ import annotations
 
 import logging
@@ -146,9 +147,9 @@ class DownloadManager:
         with self._lock:
             terminal = DownloadStatus.terminal_states()
             to_del = [
-                tid for tid, t in self._tasks.items()
-                if t.status in terminal
-                and (exclude_ids is None or tid not in exclude_ids)
+                tid
+                for tid, t in self._tasks.items()
+                if t.status in terminal and (exclude_ids is None or tid not in exclude_ids)
             ]
             for tid in to_del:
                 del self._tasks[tid]
@@ -174,23 +175,23 @@ class DownloadManager:
         # BUG-TT-11 FIX: bare "age" matched "webpage" in every network error
         # "Unable to download webpage: ..." causing timeouts/transport errors to
         # be classified as hard errors (no retry). Use specific yt-dlp patterns.
-        "age-restrict",     # "age-restricted content" / "age-restricted video"
-        "age gate",         # "age gate" check required
-        "confirm your age", # "Sign in to confirm your age"
-        "age verification", # "age verification required"
+        "age-restrict",  # "age-restricted content" / "age-restricted video"
+        "age gate",  # "age gate" check required
+        "confirm your age",  # "Sign in to confirm your age"
+        "age verification",  # "age verification required"
         # BUG-TT-11 FIX: bare "unavailable" matched HTTP 503 "Service Temporarily
         # Unavailable" (transient server error that SHOULD be retried).
         # Use precise yt-dlp patterns instead.
-        "video unavailable",    # "This video is unavailable"
+        "video unavailable",  # "This video is unavailable"
         "this video is unavailable",
         # TikTok / platform-specific deleted/unavailable video errors
         "currently not available",  # TikTok deleted video
-        "video does not exist",     # TikTok removed video
+        "video does not exist",  # TikTok removed video
         "this video is not available",  # TikTok region/deleted
         # Instagram-specific — account/auth issues that retrying cannot fix
-        "checkpoint",       # account checkpoint verification required
+        "checkpoint",  # account checkpoint verification required
         "challenge_required",  # two-factor / bot challenge
-        "no video in this post",   # photo-only post — retry cannot add video
+        "no video in this post",  # photo-only post — retry cannot add video
         "no video formats found",  # photo-only post (with cookies, yt-dlp >= 2024)
         # Vietnamese translations of the two photo-only yt-dlp messages above.
         # _friendly_error() in yt_dlp_engine translates them before raising, so
@@ -198,22 +199,22 @@ class DownloadManager:
         # Without these entries the task retries 4× unnecessarily.
         "bài đăng này chỉ có ảnh",  # "This post only has photos, no video"
         # Facebook-specific
-        "content not available",    # post removed or region-blocked
-        "this content isn",         # "This content isn't available"
+        "content not available",  # post removed or region-blocked
+        "this content isn",  # "This content isn't available"
         # Geographic / copyright blocks — retrying changes nothing
         "geo-restricted",
         "not available in your country",
-        "copyright",        # copyright claim block
-        "blocked",          # region/copyright blocked (from yt-dlp error text)
+        "copyright",  # copyright claim block
+        "blocked",  # region/copyright blocked (from yt-dlp error text)
         # Account-level blocks
-        "suspended",        # account suspended
-        "members only",     # paywalled content
+        "suspended",  # account suspended
+        "members only",  # paywalled content
         "subscribers only",
         # yt-dlp internal bugs — retrying the same broken extractor path
         # never helps; user must update yt-dlp to fix these.
         "extractor error",  # yt-dlp extractor crash (e.g. KeyError on shortcode)
         # Live stream offline — retrying cannot start a stream that is offline.
-        "not currently live",       # TikTok: The channel is not currently live
+        "not currently live",  # TikTok: The channel is not currently live
         "channel is not currently live",  # normalised by _friendly_error
     )
 
@@ -249,6 +250,9 @@ class DownloadManager:
         # Base output directory where yt-dlp saves files (before gallery-dl
         # creates its per-post slug subfolder).  Set when BUG-BU triggers.
         _orphan_cleanup_root: Optional[Path] = None
+        # Count consecutive "not currently live" errors. After 3 in a row the
+        # stream has ended — stop retrying rather than burning all max_retries.
+        _consecutive_not_live: int = 0
 
         for attempt in range(max_attempts):
             # Check for cancellation before each attempt (including before
@@ -261,7 +265,11 @@ class DownloadManager:
                 wait_s = min(2 ** (attempt - 1), 30)
                 logger.info(
                     "Retrying task %s (attempt %d/%d) in %d s — previous error: %s",
-                    task.id, attempt + 1, max_attempts, wait_s, last_exc,
+                    task.id,
+                    attempt + 1,
+                    max_attempts,
+                    wait_s,
+                    last_exc,
                 )
                 # Reset visible progress so the UI shows the retry clearly.
                 with task._lock:
@@ -288,9 +296,9 @@ class DownloadManager:
                     from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
                         is_kuaishou_url,
                     )
+
                     _is_ks = is_kuaishou_url(task.url) or (
-                        task.media_info is not None
-                        and task.media_info.source_engine == "kuaishou"
+                        task.media_info is not None and task.media_info.source_engine == "kuaishou"
                     )
                     if _is_ks:
                         self._kuaishou_engine.download(
@@ -311,12 +319,14 @@ class DownloadManager:
                         download_story,
                         is_facebook_story_url,
                     )
+
                     if is_facebook_story_url(task.url):
+
                         def _story_progress(pct: int, speed: str, msg: str) -> None:
                             with task._lock:
                                 task.progress = float(pct)
-                                task.speed    = speed
-                                task.eta      = msg
+                                task.speed = speed
+                                task.eta = msg
                             self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
 
                         result_path = download_story(
@@ -341,6 +351,7 @@ class DownloadManager:
                     from infrastructure.downloader.instagram_live_engine import (  # noqa: PLC0415
                         is_instagram_live_url,
                     )
+
                     _is_ig_live = is_instagram_live_url(task.url) or (
                         task.media_info is not None
                         and getattr(task.media_info, "source_engine", "") == "instagram_live"
@@ -359,8 +370,7 @@ class DownloadManager:
                 use_gallery = (
                     self._gallery_engine is not None
                     and task.media_info is not None
-                    and getattr(task.media_info, "source_engine", "yt_dlp")
-                    == "gallery_dl"
+                    and getattr(task.media_info, "source_engine", "yt_dlp") == "gallery_dl"
                 )
                 active_engine = self._gallery_engine if use_gallery else self._engine
 
@@ -405,11 +415,7 @@ class DownloadManager:
                     # slug subfolder inside it, so we need the parent to scan for
                     # yt-dlp orphaned files after the fallback succeeds.
                     _raw_od = getattr(task, "output_dir", None) or ""
-                    _orphan_cleanup_root = (
-                        Path(_raw_od).resolve()
-                        if _raw_od
-                        else self._config.download_dir
-                    )
+                    _orphan_cleanup_root = Path(_raw_od).resolve() if _raw_od else self._config.download_dir
                     break  # stop yt-dlp retries; gallery-dl attempt follows below
 
                 # BUG-CI FIX: ffmpeg exit error on a livestream task is a hard
@@ -417,14 +423,12 @@ class DownloadManager:
                 # extract_info().  Retrying the same expired URL always fails.
                 # Only treat as hard error for live tasks; VOD ffmpeg failures
                 # (e.g. merge codec mismatch) remain retryable.
-                _is_live_task = bool(
-                    task.media_info is not None and task.media_info.is_live
-                )
+                _is_live_task = bool(task.media_info is not None and task.media_info.is_live)
                 if _is_live_task and "ffmpeg exited with code" in msg:
                     logger.warning(
-                        "Hard error for live task %s (no retry — HLS URL expired "
-                        "or stream unavailable): %s",
-                        task.id, exc,
+                        "Hard error for live task %s (no retry — HLS URL expired or stream unavailable): %s",
+                        task.id,
+                        exc,
                     )
                     last_exc = exc
                     break
@@ -433,18 +437,22 @@ class DownloadManager:
                 # Exception: "not currently live" on a confirmed-live task is a
                 # transient TikTok API check failure — the stream IS live but
                 # yt-dlp re-checks at download time and gets a stale response.
-                # Allow retries so yt-dlp gets another chance to fetch the HLS URL.
-                _is_not_live_err = (
-                    "not currently live" in msg
-                    or "channel is not currently live" in msg
-                )
+                # Allow retries, but cap at 3 consecutive hits: after that the
+                # stream has genuinely ended and further retries only cause 429s.
+                _is_not_live_err = "not currently live" in msg or "channel is not currently live" in msg
                 if _is_not_live_err and _is_live_task:
+                    _consecutive_not_live += 1
                     last_exc = exc
-                    continue  # retry — transient TikTok live API race
+                    if _consecutive_not_live >= 3:
+                        logger.info(
+                            "Task %s: 3 consecutive 'not currently live' — stream ended, stopping retries",
+                            task.id,
+                        )
+                        break
+                    continue  # transient TikTok API race — retry
+                _consecutive_not_live = 0
                 if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
-                    logger.warning(
-                        "Hard error for task %s (no retry): %s", task.id, exc
-                    )
+                    logger.warning("Hard error for task %s (no retry): %s", task.id, exc)
                     last_exc = exc
                     break
 
@@ -458,11 +466,7 @@ class DownloadManager:
         # source_engine="yt_dlp" (default) instead of forwarding "gallery_dl"
         # from /api/analyse.  One attempt is enough — gallery-dl is fast and
         # a second failure is not recoverable without user action (e.g. cookies).
-        if (
-            _gallery_fallback_needed
-            and last_exc is not None
-            and not task.is_cancellation_requested
-        ):
+        if _gallery_fallback_needed and last_exc is not None and not task.is_cancellation_requested:
             logger.info(
                 "Task %s: attempting gallery-dl fallback for photo-only post",
                 task.id,
@@ -485,7 +489,8 @@ class DownloadManager:
                 last_exc = gdl_exc
                 logger.warning(
                     "gallery-dl fallback failed for task %s: %s",
-                    task.id, gdl_exc,
+                    task.id,
+                    gdl_exc,
                 )
 
         # ── BUG-BU orphan cleanup ─────────────────────────────────────────
@@ -505,8 +510,7 @@ class DownloadManager:
             and _orphan_cleanup_root.is_dir()
         ):
             _gdl_files_set: set[Path] = {
-                Path(f).resolve()
-                for f in (getattr(task, "gallery_dl_files", None) or [])
+                Path(f).resolve() for f in (getattr(task, "gallery_dl_files", None) or [])
             }
             _deleted_parents: set[Path] = set()
             try:
@@ -523,15 +527,11 @@ class DownloadManager:
                         )
                         _deleted_parents.add(_f.parent)
                 # Remove empty directories left behind (deepest first).
-                for _d in sorted(
-                    _deleted_parents, key=lambda p: len(p.parts), reverse=True
-                ):
+                for _d in sorted(_deleted_parents, key=lambda p: len(p.parts), reverse=True):
                     try:
                         if _d.is_dir() and not any(_d.iterdir()):
                             _d.rmdir()
-                            logger.debug(
-                                "BUG-BU orphan cleanup: removed empty dir %s", _d.name
-                            )
+                            logger.debug("BUG-BU orphan cleanup: removed empty dir %s", _d.name)
                     except Exception:
                         pass
             except Exception as _ce:
@@ -566,7 +566,9 @@ class DownloadManager:
                 task.finished_at = time.time()
             logger.error(
                 "Task failed after %d attempt(s) %s: %s",
-                max_attempts, task.id, last_exc,
+                max_attempts,
+                task.id,
+                last_exc,
             )
             self._bus.publish(EventBus.DOWNLOAD_FAILED, task=task)
 
@@ -580,6 +582,4 @@ class DownloadManager:
         # DEF-009: _run_task already logs errors — only surface true escapes here
         exc = future.exception()
         if exc:
-            logger.debug(
-                "Unhandled exception escaped _run_task for task %s: %s", task_id, exc
-            )
+            logger.debug("Unhandled exception escaped _run_task for task %s: %s", task_id, exc)
