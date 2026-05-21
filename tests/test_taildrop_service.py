@@ -18,22 +18,22 @@ Coverage:
 • close(): executor shuts down cleanly
 • Config typed properties: taildrop_enabled / taildrop_target_node / taildrop_send_mode
 """
+
 from __future__ import annotations
 
 import json
 import subprocess
-import threading
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.taildrop_service import TaildropService, TransferResult, _NODE_RE, _sanitize_filename
-
+from app.services.taildrop_service import _NODE_RE, TaildropService, TransferResult
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_config(enabled=False, node="iphone", mode="always"):
     cfg = MagicMock()
@@ -67,6 +67,7 @@ def _make_task(output_path: str | None = None, filename: str | None = None):
     # legacy aliases — not present on real DownloadTask (getattr → None)
     task.output_path = output_path
     task.file_path = None
+    task.media_info = None
     return task
 
 
@@ -78,6 +79,7 @@ def _make_svc(enabled=False, node="iphone") -> TaildropService:
 # _NODE_RE security tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNodeRegex:
     """Validate allowlist regex blocks injection, accepts valid names."""
 
@@ -87,18 +89,18 @@ class TestNodeRegex:
         "pixel-7",
         "100.64.0.5",
         "iphone.tail1abc2.ts.net",
-        "AB",                      # two-char minimum
+        "AB",  # two-char minimum
     ]
     INVALID = [
-        "",                        # empty
-        " iphone",                 # leading space
-        "iphone ",                 # trailing space
-        "iphone; rm -rf /",        # shell injection
-        "iphone && malware",       # shell injection
-        "../../etc/passwd",        # path traversal
+        "",  # empty
+        " iphone",  # leading space
+        "iphone ",  # trailing space
+        "iphone; rm -rf /",  # shell injection
+        "iphone && malware",  # shell injection
+        "../../etc/passwd",  # path traversal
         "iphone|cat /etc/shadow",  # pipe injection
-        "a" * 300,                 # too long
-        "-leading-dash",           # must start with alnum
+        "a" * 300,  # too long
+        "-leading-dash",  # must start with alnum
     ]
 
     @pytest.mark.parametrize("name", VALID)
@@ -109,114 +111,6 @@ class TestNodeRegex:
     def test_invalid_node_names(self, name):
         assert not _NODE_RE.match(name), f"Expected INVALID: {name!r}"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _sanitize_filename
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSanitizeFilename:
-    """
-    Unit tests for the _sanitize_filename() helper.
-
-    Every case maps a raw yt-dlp filename to the expected Tailscale-safe
-    alias.  ASCII-clean names must be returned unchanged so that the
-    common path never triggers the ``--name`` flag unnecessarily.
-    """
-
-    def test_ascii_clean_name_unchanged(self):
-        """Pure ASCII filename → returned as-is (no --name overhead)."""
-        assert _sanitize_filename("video.mp4") == "video.mp4"
-
-    def test_ascii_with_hyphens_unchanged(self):
-        assert _sanitize_filename("my-video_2024.mp4") == "my-video_2024.mp4"
-
-    def test_emoji_stripped(self):
-        """Emoji must be removed entirely (they have no ASCII counterpart)."""
-        result = _sanitize_filename("clip ❤️‍🔥 fun.mp4")
-        assert "❤" not in result
-        assert result.endswith(".mp4")
-
-    def test_vietnamese_diacritics_transliterated(self):
-        """Diacritics decompose to base ASCII letter via NFKD."""
-        result = _sanitize_filename("Ba dím.mp4")
-        assert "í" not in result
-        assert "dim" in result or "d" in result  # "í" → "i" via NFKD
-        assert result.endswith(".mp4")
-
-    def test_hashtags_replaced(self):
-        """# chars must not appear in the sanitized name."""
-        result = _sanitize_filename("#dodonhatminh #vinschool.mp4")
-        assert "#" not in result
-        assert result.endswith(".mp4")
-
-    def test_at_symbol_replaced(self):
-        assert "@" not in _sanitize_filename("@username clip.mp4")
-
-    def test_extension_preserved_exactly(self):
-        """The file extension (.mp4, .mov, …) must survive sanitization."""
-        assert _sanitize_filename("❤️video.mp4").endswith(".mp4")
-        assert _sanitize_filename("❤️video.mov").endswith(".mov")
-
-    def test_no_leading_or_trailing_underscores_in_stem(self):
-        """Outer underscores from collapsed special chars should be stripped."""
-        result = _sanitize_filename("###video###.mp4")
-        stem = result[: result.rfind(".")]
-        assert not stem.startswith("_")
-        assert not stem.endswith("_")
-
-    def test_multiple_spaces_collapsed(self):
-        """Runs of spaces/underscores → single underscore."""
-        result = _sanitize_filename("a   b    c.mp4")
-        assert "  " not in result
-        assert "__" not in result
-
-    def test_empty_stem_fallback(self):
-        """Filename composed entirely of emoji → stem becomes 'file'."""
-        result = _sanitize_filename("❤️🔥.mp4")
-        assert result == "file.mp4"
-
-    def test_no_extension(self):
-        """Filename with no dot is handled without IndexError."""
-        result = _sanitize_filename("❤️video")
-        assert "❤" not in result
-        assert "." not in result
-
-    def test_real_failing_filename_from_log(self):
-        """
-        Regression: the exact filename that caused 'invalid filename' in
-        production (task 5b467261 / 66c3fd2f from omnidl_run.log).
-
-        dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 ❤️‍🔥@Ba dím
-          #dodonhatminh  #vinschool  #edurun  #... [762213827654].mp4
-        """
-        raw = (
-            "dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 "
-            "\u2764\ufe0f\u200d\U0001f525"   # ❤️‍🔥
-            "@Ba d\xedm  "                    # @Ba dím
-            "#dodonhatminh  #vinschool  #edurun  #... "
-            "[762213827654].mp4"
-        )
-        result = _sanitize_filename(raw)
-
-        # Must be pure ASCII.
-        result.encode("ascii")  # raises UnicodeEncodeError if not
-
-        # Must keep the extension.
-        assert result.endswith(".mp4")
-
-        # Must contain key readable parts from the original.
-        assert "dodonhatminh109" in result
-        assert "2026-03-28" in result
-        assert "edurun" in result
-
-        # Must not contain any of the problematic characters.
-        for bad in ("#", "@", "❤", "🔥", "í"):
-            assert bad not in result, f"Bad char {bad!r} still present in {result!r}"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# send_file — --name flag injection
-# ─────────────────────────────────────────────────────────────────────────────
 
 class TestSendFileNameFlag:
     """
@@ -233,8 +127,10 @@ class TestSendFileNameFlag:
 
         ok = MagicMock()
         ok.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
             r = svc.send_file(f, "iphone")
 
         assert r.success
@@ -252,8 +148,10 @@ class TestSendFileNameFlag:
 
         ok = MagicMock()
         ok.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
             r = svc.send_file(f, "iphone")
 
         assert r.success
@@ -282,8 +180,10 @@ class TestSendFileNameFlag:
 
         ok = MagicMock()
         ok.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
             r = svc.send_file(f, "iphone-12-pro-max")
 
         assert r.success, f"Expected success; got error: {r.error}"
@@ -291,7 +191,7 @@ class TestSendFileNameFlag:
         assert "--name" in cmd, "Expected --name flag for non-ASCII filename"
         name_idx = cmd.index("--name")
         safe_name = cmd[name_idx + 1]
-        safe_name.encode("ascii")   # must be pure ASCII — no UnicodeEncodeError
+        safe_name.encode("ascii")  # must be pure ASCII — no UnicodeEncodeError
         assert safe_name.endswith(".mp4")
         # Original (unsafe) file path is still passed as the actual source
         assert str(f) in cmd
@@ -306,6 +206,7 @@ class TestSendFileNameFlag:
 # -----------------------------------------------------------------------------
 # Directory -> zip (BUG-BV)
 # -----------------------------------------------------------------------------
+
 
 class TestDirectoryZip:
     """
@@ -324,8 +225,10 @@ class TestDirectoryZip:
         ok = MagicMock()
         ok.returncode = 0
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
             r = svc.send_file(folder, "iphone")
 
         assert r.success
@@ -337,14 +240,13 @@ class TestDirectoryZip:
         actual_src = cmd[-2]
         assert actual_src != str(folder)
         # Temp file must be deleted after send.
-        from pathlib import Path
         assert not Path(actual_src).exists()
         svc.close()
 
     def test_directory_zip_contains_files(self, tmp_path):
         """Zip created from directory must contain expected members."""
-        import zipfile as _zf
         import shutil as _sh
+        import zipfile as _zf
 
         folder = tmp_path / "gallery"
         folder.mkdir()
@@ -360,15 +262,17 @@ class TestDirectoryZip:
 
         def capturing_run(cmd, **kwargs):
             from pathlib import Path
+
             captured_zip.append(Path(cmd[-2]))
             _sh.copy2(cmd[-2], str(cmd[-2]) + ".bak")
             return ok
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=capturing_run):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", side_effect=capturing_run),
+        ):
             svc.send_file(folder, "iphone")
 
-        from pathlib import Path
         bak = Path(str(captured_zip[0]) + ".bak")
         assert bak.exists()
         with _zf.ZipFile(bak) as zf:
@@ -394,12 +298,13 @@ class TestDirectoryZip:
         captured: list = []
 
         def capturing_run(cmd, **kwargs):
-            from pathlib import Path
             captured.append(Path(cmd[-2]))
             return fail
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=capturing_run):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", side_effect=capturing_run),
+        ):
             r = svc.send_file(folder, "iphone")
 
         assert not r.success
@@ -417,8 +322,10 @@ class TestDirectoryZip:
         ok = MagicMock()
         ok.returncode = 0
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
             svc.send_file(folder, "iphone")
 
         cmd = mock_run.call_args[0][0]
@@ -448,6 +355,7 @@ class TestTransferResult:
 # ─────────────────────────────────────────────────────────────────────────────
 # send_file
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestSendFile:
     def test_invalid_node_rejected(self, tmp_path):
@@ -484,8 +392,10 @@ class TestSendFile:
         mock_result.returncode = 1
         mock_result.stderr = "node not found"
         mock_result.stdout = ""
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             r = svc.send_file(f, "iphone")
         assert not r.success
         assert "exit 1" in r.error
@@ -497,8 +407,10 @@ class TestSendFile:
         svc = _make_svc()
         mock_result = MagicMock()
         mock_result.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=mock_result) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=mock_result) as mock_run,
+        ):
             r = svc.send_file(f, "iphone")
         assert r.success
         assert r.dest_node == "iphone"
@@ -511,8 +423,10 @@ class TestSendFile:
         f = tmp_path / "video.mp4"
         f.write_bytes(b"data")
         svc = _make_svc()
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ts", timeout=300)):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ts", timeout=300)),
+        ):
             r = svc.send_file(f, "iphone")
         assert not r.success
         assert "timed out" in r.error
@@ -522,8 +436,10 @@ class TestSendFile:
         f = tmp_path / "video.mp4"
         f.write_bytes(b"data")
         svc = _make_svc()
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=OSError("permission denied")):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", side_effect=OSError("permission denied")),
+        ):
             r = svc.send_file(f, "iphone")
         assert not r.success
         assert "permission denied" in r.error
@@ -533,6 +449,7 @@ class TestSendFile:
 # ─────────────────────────────────────────────────────────────────────────────
 # list_nodes
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestListNodes:
     def test_no_tailscale_cli(self):
@@ -546,26 +463,32 @@ class TestListNodes:
         svc = _make_svc()
         mock_result = MagicMock()
         mock_result.returncode = 1
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             nodes = svc.list_nodes()
         assert nodes == []
         svc.close()
 
     def test_parses_online_peers(self):
         svc = _make_svc()
-        status_json = json.dumps({
-            "Peer": {
-                "aaa": {"Online": True,  "HostName": "iphone", "TailscaleIPs": ["100.64.0.2"]},
-                "bbb": {"Online": False, "HostName": "macbook", "TailscaleIPs": ["100.64.0.3"]},
-                "ccc": {"Online": True,  "HostName": "ipad",   "TailscaleIPs": ["100.64.0.4"]},
+        status_json = json.dumps(
+            {
+                "Peer": {
+                    "aaa": {"Online": True, "HostName": "iphone", "TailscaleIPs": ["100.64.0.2"]},
+                    "bbb": {"Online": False, "HostName": "macbook", "TailscaleIPs": ["100.64.0.3"]},
+                    "ccc": {"Online": True, "HostName": "ipad", "TailscaleIPs": ["100.64.0.4"]},
+                }
             }
-        })
+        )
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = status_json
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             nodes = svc.list_nodes()
         # offline macbook excluded; sorted alphabetically
         assert nodes == ["ipad", "iphone"]
@@ -573,16 +496,20 @@ class TestListNodes:
 
     def test_fallback_to_ip_when_no_hostname(self):
         svc = _make_svc()
-        status_json = json.dumps({
-            "Peer": {
-                "aaa": {"Online": True, "HostName": "", "TailscaleIPs": ["100.64.0.5"]},
+        status_json = json.dumps(
+            {
+                "Peer": {
+                    "aaa": {"Online": True, "HostName": "", "TailscaleIPs": ["100.64.0.5"]},
+                }
             }
-        })
+        )
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = status_json
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             nodes = svc.list_nodes()
         assert nodes == ["100.64.0.5"]
         svc.close()
@@ -591,6 +518,7 @@ class TestListNodes:
 # ─────────────────────────────────────────────────────────────────────────────
 # on_download_completed
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestOnDownloadCompleted:
     def test_disabled_does_nothing(self, tmp_path):
@@ -681,6 +609,7 @@ class TestOnDownloadCompleted:
 # Event publishing via _transfer
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestTransferEvents:
     def test_success_publishes_completed_event(self, tmp_path):
         f = tmp_path / "video.mp4"
@@ -690,8 +619,10 @@ class TestTransferEvents:
 
         ok_result = MagicMock()
         ok_result.returncode = 0
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok_result),
+        ):
             svc._transfer(_make_task(str(f)), f, "iphone")
 
         bus.publish_taildrop_completed.assert_called_once()
@@ -708,8 +639,10 @@ class TestTransferEvents:
         fail_result.returncode = 1
         fail_result.stderr = "peer offline"
         fail_result.stdout = ""
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=fail_result):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=fail_result),
+        ):
             svc._transfer(_make_task(str(f)), f, "iphone")
 
         bus.publish_taildrop_failed.assert_called_once()
@@ -721,11 +654,13 @@ class TestTransferEvents:
 # ConfigManager typed properties
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestConfigManagerTaildropProperties:
     """Test the 3 new typed properties added to ConfigManager."""
 
     def _make_real_config(self, tmp_path, overrides=None):
         from infrastructure.config.config_manager import ConfigManager
+
         p = tmp_path / "config.json"
         cfg = ConfigManager(p)
         if overrides:
@@ -771,6 +706,7 @@ class TestConfigManagerTaildropProperties:
 # ─────────────────────────────────────────────────────────────────────────────
 # send_converted_file() — convert pipeline hook
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestSendConvertedFile:
     """
@@ -847,14 +783,14 @@ class TestSendConvertedFile:
         ok = MagicMock()
         ok.returncode = 0
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok),
+        ):
             svc.send_converted_file(f)
             svc.close()  # blocks until worker finishes
 
-        svc._bus.publish_convert_taildrop_completed.assert_called_once_with(
-            out_path=f, dest_node="iphone"
-        )
+        svc._bus.publish_convert_taildrop_completed.assert_called_once_with(out_path=f, dest_node="iphone")
         svc._bus.publish_convert_taildrop_failed.assert_not_called()
 
     def test_success_calls_correct_tailscale_command(self, tmp_path):
@@ -866,16 +802,22 @@ class TestSendConvertedFile:
         ok = MagicMock()
         ok.returncode = 0
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale") as mock_which, \
-             patch("subprocess.run", return_value=ok) as mock_run:
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
             svc.send_converted_file(f)
             svc.close()
 
+        import sys
+
+        expected_extra = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         mock_run.assert_called_once_with(
             ["/usr/bin/tailscale", "file", "cp", str(f), "my-iphone:"],
             capture_output=True,
             text=True,
             timeout=300,
+            **expected_extra,
         )
 
     # ── Failure paths ────────────────────────────────────────────────────
@@ -906,8 +848,10 @@ class TestSendConvertedFile:
         fail.stderr = "peer unreachable"
         fail.stdout = ""
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=fail):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=fail),
+        ):
             svc.send_converted_file(f)
             svc.close()
 
@@ -922,8 +866,10 @@ class TestSendConvertedFile:
         f = tmp_path / "out.mp4"
         f.write_bytes(b"data")
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=300)):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=300)),
+        ):
             svc.send_converted_file(f)
             svc.close()
 
@@ -943,8 +889,10 @@ class TestSendConvertedFile:
         ok = MagicMock()
         ok.returncode = 0
 
-        with patch("shutil.which", return_value="/usr/bin/tailscale"), \
-             patch("subprocess.run", return_value=ok):
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok),
+        ):
             svc.send_converted_file(f)
             svc.close()
 
@@ -966,6 +914,7 @@ class TestSendConvertedFile:
 # ─────────────────────────────────────────────────────────────────────────────
 # send_now() — on-demand transfer (bypasses send_mode guard)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestSendNow:
     def test_no_node_skips(self, tmp_path):

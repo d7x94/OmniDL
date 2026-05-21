@@ -15,10 +15,9 @@ root logger.  Branches tested:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -43,7 +42,6 @@ def clean_logger_state(tmp_path):
     """Always reset module-level globals before and after each test."""
     import utils.logger as _lg
     original_dir = _lg._log_dir_ref
-    original_handler = _lg._debug_handler
     _reset_logger_state()
     yield tmp_path
     _reset_logger_state()

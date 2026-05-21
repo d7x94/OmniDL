@@ -1,4 +1,5 @@
 """Post-download action bar: Convert · Send to device · Delete."""
+
 from __future__ import annotations
 
 import logging
@@ -6,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -16,12 +17,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
     QRadioButton,
     QScrollArea,
-    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -32,16 +30,15 @@ from ui.themes.tokens import T
 logger = logging.getLogger(__name__)
 
 CONVERT_FORMATS: list[tuple[str, str]] = [
-    ("mp4",    "MP4 — H.264 / AAC (iPhone, Android)"),
-    ("mp3",    "MP3 — Audio only"),
-    ("mkv",    "MKV — Lossless container"),
-    ("avi",    "AVI — Legacy compatibility"),
+    ("mp4", "MP4 — H.264 / AAC (iPhone, Android)"),
+    ("mp3", "MP3 — Audio only"),
+    ("mkv", "MKV — Lossless container"),
+    ("avi", "AVI — Legacy compatibility"),
     ("custom", "Tuỳ chỉnh (chất lượng + encoder)..."),
 ]
 
 
 class PostDownloadActions(QWidget):
-
     def __init__(
         self,
         parent=None,
@@ -53,9 +50,9 @@ class PostDownloadActions(QWidget):
     ) -> None:
         super().__init__(parent)
         self._on_convert = on_convert
-        self._on_send    = on_send
-        self._on_delete  = on_delete
-        self._compact    = compact
+        self._on_send = on_send
+        self._on_delete = on_delete
+        self._compact = compact
         self._file_path: Optional[Path] = None
         self._gallery_dl_files: Optional[list] = None
         self._converting = False
@@ -72,21 +69,27 @@ class PostDownloadActions(QWidget):
 
         self._convert_btn = QPushButton("🔄 Conv" if self._compact else "🔄 Convert")
         self._convert_btn.setFixedHeight(28)
-        self._convert_btn.setStyleSheet(f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;")
+        self._convert_btn.setStyleSheet(
+            f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
+        )
         self._convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._convert_btn.clicked.connect(self._on_convert_click)
         btn_row.addWidget(self._convert_btn)
 
         self._send_btn = QPushButton("📲 Gửi")
         self._send_btn.setFixedHeight(28)
-        self._send_btn.setStyleSheet(f"background: {T.surface2}; color: {T.text2}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;")
+        self._send_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text2}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
+        )
         self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._send_btn.clicked.connect(self._on_send_click)
         btn_row.addWidget(self._send_btn)
 
         self._delete_btn = QPushButton("🗑 Xoá")
         self._delete_btn.setFixedHeight(28)
-        self._delete_btn.setStyleSheet(f"background: {T.error_bg}; color: {T.error}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;")
+        self._delete_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
+        )
         self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_btn.clicked.connect(self._on_delete_click)
         btn_row.addWidget(self._delete_btn)
@@ -210,7 +213,9 @@ class PostDownloadActions(QWidget):
             if len(files) == 1:
                 specific_files = files
             else:
-                dlg = _FolderFilePickerDialog(self, directory=path, title="Chọn file cần gửi", confirm_text="📲  Gửi đã chọn")
+                dlg = _FolderFilePickerDialog(
+                    self, directory=path, title="Chọn file cần gửi", confirm_text="📲  Gửi đã chọn"
+                )
                 if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected:
                     return
                 specific_files = dlg.selected
@@ -242,6 +247,7 @@ class PostDownloadActions(QWidget):
 
         if gdl:
             from PySide6.QtWidgets import QMessageBox
+
             r = QMessageBox.question(self, "Xác nhận xoá", f"Xoá tất cả {len(gdl)} file của bài đăng này?")
             if r != QMessageBox.StandardButton.Yes:
                 return
@@ -262,6 +268,7 @@ class PostDownloadActions(QWidget):
             files = sorted(f for f in path.iterdir() if f.is_file())
             if not files:
                 from PySide6.QtWidgets import QMessageBox
+
                 r = QMessageBox.question(self, "Xác nhận xoá", f"Xoá thư mục rỗng '{path.name}'?")
                 if r != QMessageBox.StandardButton.Yes:
                     return
@@ -271,7 +278,9 @@ class PostDownloadActions(QWidget):
                     self._set_status(f"Không xoá được: {exc.strerror}")
                     return
             else:
-                dlg = _FolderFilePickerDialog(self, directory=path, title="Chọn file cần xoá", confirm_text="🗑  Xoá đã chọn")
+                dlg = _FolderFilePickerDialog(
+                    self, directory=path, title="Chọn file cần xoá", confirm_text="🗑  Xoá đã chọn"
+                )
                 if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected:
                     return
                 for fp in dlg.selected:
@@ -287,8 +296,10 @@ class PostDownloadActions(QWidget):
                     pass
         else:
             from PySide6.QtWidgets import QMessageBox
-            r = QMessageBox.question(self, "Xác nhận xoá",
-                                     f"Bạn có chắc muốn xoá file này?\n{path.name[:80]}")
+
+            r = QMessageBox.question(
+                self, "Xác nhận xoá", f"Bạn có chắc muốn xoá file này?\n{path.name[:80]}"
+            )
             if r != QMessageBox.StandardButton.Yes:
                 return
             try:
@@ -313,12 +324,10 @@ class PostDownloadActions(QWidget):
 
 # ── Format picker panel ──────────────────────────────────────────────────────
 
-from PySide6.QtCore import Signal as _Signal
-
 
 class _FormatPickerPanel(QFrame):
-    confirmed = _Signal(str, object)   # target_ext, encode_settings (or None)
-    cancelled = _Signal()
+    confirmed = Signal(str, object)  # target_ext, encode_settings (or None)
+    cancelled = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -338,7 +347,9 @@ class _FormatPickerPanel(QFrame):
 
         QLabel("Chọn định dạng đích:", self).setParent(None)
         lbl = QLabel("Chọn định dạng đích:")
-        lbl.setStyleSheet(f"color: {T.text2}; font-weight: bold; font-size: 11px; background: transparent; border: none;")
+        lbl.setStyleSheet(
+            f"color: {T.text2}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
+        )
         layout.addWidget(lbl)
 
         self._btn_group = QButtonGroup(self)
@@ -366,7 +377,9 @@ class _FormatPickerPanel(QFrame):
 
         cancel_btn = QPushButton("✕  Huỷ")
         cancel_btn.setFixedHeight(26)
-        cancel_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text3}; border-radius: 6px; border: none; font-size: 11px; padding: 0 8px;")
+        cancel_btn.setStyleSheet(
+            f"background: {T.surface3}; color: {T.text3}; border-radius: 6px; border: none; font-size: 11px; padding: 0 8px;"
+        )
         cancel_btn.clicked.connect(self.cancelled)
         btn_row.addWidget(cancel_btn)
 
@@ -374,7 +387,9 @@ class _FormatPickerPanel(QFrame):
         confirm_btn.setFixedHeight(26)
         confirm_btn.setObjectName("primary")
         confirm_btn.setFixedHeight(26)
-        confirm_btn.setStyleSheet(f"background: {T.primary}; color: white; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 12px;")
+        confirm_btn.setStyleSheet(
+            f"background: {T.primary}; color: white; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 12px;"
+        )
         confirm_btn.clicked.connect(self._on_confirm)
         btn_row.addWidget(confirm_btn)
 
@@ -397,7 +412,6 @@ class _FormatPickerPanel(QFrame):
 
 
 class _CustomEncodePanel(QWidget):
-
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setStyleSheet("background: transparent; border: none;")
@@ -405,6 +419,7 @@ class _CustomEncodePanel(QWidget):
 
     def _build(self) -> None:
         from app.services.ffmpeg_convert_service import SPEED_OPTIONS, get_available_encoder_options
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
@@ -428,7 +443,7 @@ class _CustomEncodePanel(QWidget):
         row2.addWidget(lbl2)
         self._quality_combo = QComboBox()
         self._quality_labels = ["Cao (CRF 18)", "Chuẩn (CRF 23)", "Nhỏ 720p (CRF 28)", "CRF tuỳ chỉnh"]
-        self._quality_keys   = ["high",         "standard",        "small",              "custom"]
+        self._quality_keys = ["high", "standard", "small", "custom"]
         self._quality_combo.addItems(self._quality_labels)
         self._quality_combo.setCurrentIndex(1)
         self._quality_combo.currentIndexChanged.connect(self._on_quality_changed)
@@ -473,6 +488,7 @@ class _CustomEncodePanel(QWidget):
 
     def get_encode_settings(self):
         from app.services.ffmpeg_convert_service import EncodeSettings
+
         enc_idx = self._encoder_combo.currentIndex()
         enc_key = self._encoder_keys[enc_idx] if enc_idx < len(self._encoder_keys) else "cpu"
         q_idx = self._quality_combo.currentIndex()
@@ -485,8 +501,8 @@ class _CustomEncodePanel(QWidget):
 
 # ── File picker dialog ────────────────────────────────────────────────────────
 
-class _FolderFilePickerDialog(QDialog):
 
+class _FolderFilePickerDialog(QDialog):
     def __init__(self, parent, *, directory: Path, title: str, confirm_text: str) -> None:
         super().__init__(parent)
         self.selected: list[Path] = []

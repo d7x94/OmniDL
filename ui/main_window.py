@@ -364,6 +364,7 @@ class MainWindow(QMainWindow):
     # ── Toast ─────────────────────────────────────────────────────────────
 
     def toast(self, message: str, kind: str = "info") -> None:
+        self._notification_panel.add_notification(kind, message)
         color_key = _TOAST_COLOR.get(kind, "primary")
         color = getattr(T, color_key)
         self._toast_lbl.setText(f"  {message}  ")

@@ -29,7 +29,6 @@ from utils.helpers import (
     sanitise_filename,
 )
 
-
 # ---------------------------------------------------------------------------
 # fmt_bytes
 # ---------------------------------------------------------------------------
@@ -294,7 +293,6 @@ class TestRevealInExplorer:
         highlighted' bug observed with Unicode/emoji/Thai filenames.
         """
         fake_file = tmp_path / "ไทย emoji 🔥 #test [1].mp4"
-        restype_calls = {}
 
         import ctypes as _r
 
@@ -544,10 +542,7 @@ class TestOpenFile:
 
             with patch("utils.helpers._SEI_cls", fake_sei_cls, create=True):
                 # Patch the inner class construction inline
-                import utils.helpers as _h
-                original_open_file = _h.open_file
 
-                thread_started = []
 
                 def _fake_open_file(path):
                     # Simulate the branch by checking queue after call
@@ -555,7 +550,6 @@ class TestOpenFile:
 
                 # Direct approach: just verify no startfile called and
                 # that the queue receives a sentinel via a real minimal call.
-                import queue as _q
                 import utils.helpers as _helpers
                 old_hwnd = _helpers._app_hwnd
                 _helpers._app_hwnd = 12345
@@ -567,7 +561,6 @@ class TestOpenFile:
                     with patch("utils.helpers.sys") as ms2:
                         ms2.platform = "win32"
 
-                        import ctypes as _real_ctypes
                         fake_struct_inst = MagicMock()
                         fake_struct_inst.hProcess = 8888  # truthy
 
@@ -584,7 +577,6 @@ class TestOpenFile:
 
                             # Patch _SEI to return our fake instance
                             import ctypes as real_ct
-                            import ctypes.wintypes as real_wt
 
                             class _FakeSEI:
                                 hProcess = 8888
@@ -604,6 +596,7 @@ class TestOpenFile:
     def test_windows_ok_hproc_queue_receives_sentinel(self, tmp_path):
         """Branch A (simplified): after watcher thread completes, queue has sentinel."""
         import threading
+
         import utils.helpers as _helpers
 
         old_hwnd = _helpers._app_hwnd
@@ -659,7 +652,6 @@ class TestOpenFile:
             with patch("utils.helpers.sys") as mock_sys:
                 mock_sys.platform = "win32"
 
-                import ctypes
                 fake_sei = MagicMock()
                 fake_sei.hProcess = None   # NULL → Branch B
 
@@ -792,9 +784,10 @@ class TestSetupLoggingOsError:
     def test_oserror_on_log_file_does_not_crash(self, tmp_path, monkeypatch):
         """setup_logging() must not raise when RotatingFileHandler raises OSError."""
         import logging
-        from unittest.mock import patch as _patch
-        from utils.logger import setup_logging
         from logging.handlers import RotatingFileHandler
+        from unittest.mock import patch as _patch
+
+        from utils.logger import setup_logging
 
         # Force RotatingFileHandler to raise OSError so the except branch runs.
         with _patch.object(
@@ -818,6 +811,7 @@ class TestSetupLoggingOsError:
 class TestIsValidUrlExceptionBranch:
     def test_urlparse_exception_returns_false(self):
         from unittest.mock import patch
+
         from utils.helpers import is_valid_url
         with patch("utils.helpers.urlparse", side_effect=Exception("boom")):
             assert is_valid_url("https://example.com") is False
@@ -840,7 +834,6 @@ class TestOpenFileWindowsBranches:
 
     def _make_shell32(self, ok: bool, hproc):
         """Return a mock shell32 whose ShellExecuteExW sets sei.hProcess=hproc."""
-        import ctypes as _ct
 
         shell32 = MagicMock()
 
@@ -858,6 +851,7 @@ class TestOpenFileWindowsBranches:
     def test_windows_branch_ok_hproc_spawns_thread(self, tmp_path):
         """Branch A: _ok=True, hProcess!=0 → watcher thread started, queue gets sentinel."""
         import ctypes as _ct
+
         import utils.helpers as _h
 
         fake_file = tmp_path / "video.mp4"
@@ -892,7 +886,7 @@ class TestOpenFileWindowsBranches:
     def test_windows_branch_ok_no_hproc_no_thread_no_startfile(self, tmp_path):
         """Branch B: _ok=True, hProcess=NULL → no thread, no startfile."""
         import ctypes as _ct
-        import utils.helpers as _h
+
 
         fake_file = tmp_path / "video.mp4"
         fake_file.touch()
@@ -914,7 +908,7 @@ class TestOpenFileWindowsBranches:
     def test_windows_branch_fail_calls_startfile(self, tmp_path):
         """Branch C: _ok=False → os.startfile fallback."""
         import ctypes as _ct
-        import utils.helpers as _h
+
 
         fake_file = tmp_path / "video.mp4"
         fake_file.touch()
@@ -936,6 +930,7 @@ class TestOpenFileWindowsBranches:
     def test_windows_duplicate_hproc_skips_second_thread(self, tmp_path):
         """Guard: same hproc already in _watch_set → no duplicate thread."""
         import ctypes as _ct
+
         import utils.helpers as _h
 
         fake_file = tmp_path / "video.mp4"

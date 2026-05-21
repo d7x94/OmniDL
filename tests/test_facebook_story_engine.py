@@ -13,6 +13,7 @@ Covers the 5 pure / I/O-only functions that require no browser or network:
 No subprocess, Playwright, requests, or browser required.
 All filesystem tests use tmp_path (pytest built-in).
 """
+
 from __future__ import annotations
 
 import struct
@@ -29,10 +30,10 @@ from infrastructure.downloader.facebook_story_engine import (
     is_facebook_story_url,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_mp4(path: Path, size: int = 200_000, magic: bytes = b"ftyp") -> Path:
     """Write a minimal fake MP4 at *path* with the given size and magic bytes.
@@ -48,6 +49,7 @@ def _make_mp4(path: Path, size: int = 200_000, magic: bytes = b"ftyp") -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 # is_facebook_story_url
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestIsFacebookStoryUrl:
     """URL pattern recognition — no network, no I/O."""
@@ -108,6 +110,7 @@ class TestIsFacebookStoryUrl:
 # _normalize_url
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNormalizeUrl:
     """view_single=1 is injected or preserved correctly."""
 
@@ -156,6 +159,7 @@ class TestNormalizeUrl:
 # ─────────────────────────────────────────────────────────────────────────────
 # _is_fb_video_url
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestIsFbVideoUrl:
     """CDN video URL recognition — regex match + thumbnail exclusion."""
@@ -227,6 +231,7 @@ class TestIsFbVideoUrl:
 # _full_video_url
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestFullVideoUrl:
     """DASH byte-range params are stripped; other params are preserved."""
 
@@ -255,8 +260,8 @@ class TestFullVideoUrl:
         result = _full_video_url(url)
         qs = self._qs(result)
         assert "bytestart" not in qs
-        assert "byteend"   not in qs
-        assert "range"     not in qs
+        assert "byteend" not in qs
+        assert "range" not in qs
         assert qs.get("efg") == ["abc"]  # non-DASH param preserved
 
     def test_preserves_unrelated_params(self):
@@ -270,7 +275,7 @@ class TestFullVideoUrl:
         url = f"{self.BASE_URL}?_nc_cat=1"
         result = _full_video_url(url)
         assert urlparse(result).netloc == urlparse(url).netloc
-        assert urlparse(result).path   == urlparse(url).path
+        assert urlparse(result).path == urlparse(url).path
 
     def test_url_without_any_params(self):
         url = self.BASE_URL
@@ -283,7 +288,7 @@ class TestFullVideoUrl:
 
     def test_idempotent(self):
         url = f"{self.BASE_URL}?bytestart=0&byteend=4095&_nc_cat=1"
-        once  = _full_video_url(url)
+        once = _full_video_url(url)
         twice = _full_video_url(once)
         assert once == twice
 
@@ -291,6 +296,7 @@ class TestFullVideoUrl:
 # ─────────────────────────────────────────────────────────────────────────────
 # _validate_mp4
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestValidateMp4:
     """MP4 magic-byte + minimum size validation."""
@@ -375,12 +381,13 @@ class TestValidateMp4:
     def test_returns_bool_not_truthy(self, tmp_path):
         p = _make_mp4(tmp_path / "video.mp4", size=200_000, magic=b"ftyp")
         result = _validate_mp4(p)
-        assert result is True   # strict identity check
+        assert result is True  # strict identity check
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _clear_crashed_flag  (filesystem — uses tmp_path)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestClearCrashedFlag:
     """Brave/Chrome Preferences crash flag is reset to Normal."""
@@ -421,17 +428,16 @@ class TestClearCrashedFlag:
         from infrastructure.downloader.facebook_story_engine import _clear_crashed_flag
 
         content = (
-            '{"exit_type": "Crashed", "crashed": true, '
-            '"session_crash_detected": true, "other": "value"}'
+            '{"exit_type": "Crashed", "crashed": true, "session_crash_detected": true, "other": "value"}'
         )
         prefs = tmp_path / "Default" / "Preferences"
         self._write_prefs(prefs, content)
         _clear_crashed_flag(tmp_path)
         result = prefs.read_text()
-        assert '"exit_type": "Normal"'           in result
-        assert '"crashed": false'                in result
+        assert '"exit_type": "Normal"' in result
+        assert '"crashed": false' in result
         assert '"session_crash_detected": false' in result
-        assert '"other": "value"'                in result
+        assert '"other": "value"' in result
 
     def test_multiple_profile_slots_patched(self, tmp_path):
         from infrastructure.downloader.facebook_story_engine import _clear_crashed_flag
@@ -471,97 +477,110 @@ class TestClearCrashedFlag:
         _clear_crashed_flag(tmp_path)
         result = prefs.read_text()
         assert '"exit_type": "Normal"' in result
-        assert '"crashed": false'      in result
+        assert '"crashed": false' in result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _find_browser_exe  (platform-specific paths)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestFindBrowserExe:
     """Browser executable lookup — mocked filesystem, no real browser needed."""
 
     def test_windows_brave_found(self, tmp_path, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "win32")
         brave_path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
         from infrastructure.downloader import facebook_story_engine as eng
-        monkeypatch.setattr(eng.Path, "exists",
-                            lambda self: str(self) == brave_path)
+
+        monkeypatch.setattr(eng.Path, "exists", lambda self: str(self) == brave_path)
         result = eng._find_browser_exe("brave")
         assert result == brave_path
 
     def test_windows_chrome_found(self, tmp_path, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "win32")
         chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         from infrastructure.downloader import facebook_story_engine as eng
-        monkeypatch.setattr(eng.Path, "exists",
-                            lambda self: str(self) == chrome_path)
+
+        monkeypatch.setattr(eng.Path, "exists", lambda self: str(self) == chrome_path)
         result = eng._find_browser_exe("chrome")
         assert result == chrome_path
 
     def test_macos_brave_found(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "darwin")
         brave_path = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
         from infrastructure.downloader import facebook_story_engine as eng
-        monkeypatch.setattr(eng.Path, "exists",
-                            lambda self: str(self) == brave_path)
+
+        monkeypatch.setattr(eng.Path, "exists", lambda self: self.as_posix() == brave_path)
         result = eng._find_browser_exe("brave")
         assert result == brave_path
 
     def test_macos_chrome_found(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "darwin")
         chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         from infrastructure.downloader import facebook_story_engine as eng
-        monkeypatch.setattr(eng.Path, "exists",
-                            lambda self: str(self) == chrome_path)
+
+        monkeypatch.setattr(eng.Path, "exists", lambda self: self.as_posix() == chrome_path)
         result = eng._find_browser_exe("chrome")
         assert result == chrome_path
 
     def test_macos_home_applications_fallback(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "darwin")
         # /Applications not present, ~/Applications is
         from infrastructure.downloader import facebook_story_engine as eng
+
         home_brave = str(Path.home() / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
-        monkeypatch.setattr(eng.Path, "exists",
-                            lambda self: str(self) == home_brave)
+        monkeypatch.setattr(eng.Path, "exists", lambda self: str(self) == home_brave)
         result = eng._find_browser_exe("brave")
         assert result == home_brave
 
     def test_windows_not_found_raises(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "win32")
         from infrastructure.downloader import facebook_story_engine as eng
+
         monkeypatch.setattr(eng.Path, "exists", lambda self: False)
         with pytest.raises(RuntimeError, match="Không tìm thấy"):
             eng._find_browser_exe("brave")
 
     def test_macos_not_found_raises(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "darwin")
         from infrastructure.downloader import facebook_story_engine as eng
+
         monkeypatch.setattr(eng.Path, "exists", lambda self: False)
         with pytest.raises(RuntimeError, match="Không tìm thấy"):
             eng._find_browser_exe("chrome")
 
     def test_linux_raises_not_supported(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "linux")
         from infrastructure.downloader import facebook_story_engine as eng
+
         with pytest.raises(RuntimeError, match="macOS"):
             eng._find_browser_exe("brave")
 
     def test_case_insensitive_browser_name(self, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "platform", "darwin")
         brave_path = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
         from infrastructure.downloader import facebook_story_engine as eng
-        monkeypatch.setattr(eng.Path, "exists",
-                            lambda self: str(self) == brave_path)
+
+        monkeypatch.setattr(eng.Path, "exists", lambda self: self.as_posix() == brave_path)
         # "BRAVE" should resolve same as "brave"
         result = eng._find_browser_exe("BRAVE")
         assert result == brave_path

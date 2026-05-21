@@ -19,7 +19,6 @@ from infrastructure.downloader.cookie_extractor import (
     extract_browser_cookies,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -370,14 +369,13 @@ class TestExtractViaCdp:
     def _mock_cdp(self, cookies: list, tmp_path: Path):
         """Return a context manager that patches all CDP internals."""
         from unittest.mock import MagicMock, patch
-        import json, subprocess
 
         patches = [
             patch("infrastructure.downloader.cookie_extractor._find_browser_exe",
                   return_value=tmp_path / "fake_brave.exe"),
             patch("infrastructure.downloader.cookie_extractor._cdp_wait_ready", return_value=True),
             patch("infrastructure.downloader.cookie_extractor._cdp_get_page_ws_url",
-                  return_value=f"ws://localhost:9223/devtools/browser/fake"),
+                  return_value="ws://localhost:9223/devtools/browser/fake"),
             patch("infrastructure.downloader.cookie_extractor._cdp_ws_connect",
                   return_value=MagicMock()),
             patch("infrastructure.downloader.cookie_extractor._cdp_get_all_cookies",
@@ -387,8 +385,9 @@ class TestExtractViaCdp:
         return patches
 
     def test_cdp_global_success(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
         from infrastructure.downloader.cookie_extractor import extract_via_cdp
-        from unittest.mock import patch, MagicMock
 
         cookies = [
             {"domain": ".tiktok.com", "path": "/", "secure": True,
@@ -420,8 +419,9 @@ class TestExtractViaCdp:
         assert "tiktok.com" in output.read_text(encoding="utf-8")
 
     def test_cdp_platform_filter(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
         from infrastructure.downloader.cookie_extractor import extract_via_cdp
-        from unittest.mock import patch, MagicMock
 
         cookies = [
             {"domain": ".tiktok.com", "path": "/", "secure": True,
@@ -456,8 +456,9 @@ class TestExtractViaCdp:
         assert "instagram.com" not in content
 
     def test_cdp_browser_not_found(self, tmp_path):
-        from infrastructure.downloader.cookie_extractor import extract_via_cdp
         from unittest.mock import patch
+
+        from infrastructure.downloader.cookie_extractor import extract_via_cdp
         output = tmp_path / "out.txt"
 
         with patch("infrastructure.downloader.cookie_extractor._find_browser_exe",
@@ -468,8 +469,9 @@ class TestExtractViaCdp:
         assert error is not None
 
     def test_cdp_timeout_returns_error(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
         from infrastructure.downloader.cookie_extractor import extract_via_cdp
-        from unittest.mock import patch, MagicMock
         output = tmp_path / "out.txt"
 
         with patch("infrastructure.downloader.cookie_extractor._find_browser_exe",
@@ -483,8 +485,9 @@ class TestExtractViaCdp:
         assert error is not None
 
     def test_cdp_empty_cookies_returns_error(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
         from infrastructure.downloader.cookie_extractor import extract_via_cdp
-        from unittest.mock import patch, MagicMock
         output = tmp_path / "out.txt"
 
         with patch("infrastructure.downloader.cookie_extractor._find_browser_exe",
@@ -504,8 +507,9 @@ class TestExtractViaCdp:
 
     def test_cdp_user_data_dir_is_real_profile(self, tmp_path):
         """When browser is NOT running, --user-data-dir must point to real profile, not a temp dir."""
+        from unittest.mock import MagicMock, patch
+
         from infrastructure.downloader.cookie_extractor import extract_via_cdp
-        from unittest.mock import patch, MagicMock
 
         launched_cmds = []
         real_profile = tmp_path / "BraveSoftware" / "User Data"
@@ -543,8 +547,9 @@ class TestExtractViaCdp:
 
     def test_cdp_returns_error_when_browser_running(self, tmp_path):
         """When browser is running, CDP must return a clear close-browser message."""
-        from infrastructure.downloader.cookie_extractor import extract_via_cdp
         from unittest.mock import patch
+
+        from infrastructure.downloader.cookie_extractor import extract_via_cdp
 
         with patch("infrastructure.downloader.cookie_extractor._find_browser_exe",
                    return_value=tmp_path / "brave.exe"), \

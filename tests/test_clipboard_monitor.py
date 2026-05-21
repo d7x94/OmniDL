@@ -11,7 +11,6 @@ import pytest
 
 from utils.clipboard_monitor import ClipboardMonitor, _extract_url
 
-
 # ── _extract_url ──────────────────────────────────────────────────────────────
 
 def test_extract_plain_url():
@@ -159,7 +158,8 @@ def test_clipboard_analyse_request_extracts_from_share_text():
 
 
 def test_clipboard_analyse_request_rejects_no_url():
-    from api.models import ClipboardAnalyseRequest
     import pydantic
+
+    from api.models import ClipboardAnalyseRequest
     with pytest.raises((pydantic.ValidationError, ValueError)):
         ClipboardAnalyseRequest(url="not a url at all")

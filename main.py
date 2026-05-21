@@ -278,8 +278,8 @@ def main() -> None:
     from PySide6.QtWidgets import QApplication
     _qt_app = QApplication.instance() or QApplication(sys.argv)
 
-    from ui.themes.tokens import T
     from ui.theme_qt import apply_theme
+    from ui.themes.tokens import T
     T.set_mode(config.theme)
     apply_theme()
 

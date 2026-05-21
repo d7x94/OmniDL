@@ -512,9 +512,10 @@ class TestFfHelpers:
 class TestAnalyseUrlInstagramLive:
     def test_instagram_live_url_returns_synthetic_media_info(self, tmp_path):
         import time
+        from unittest.mock import patch
+
         from app.event_bus import EventBus
         from app.services.download_service import DownloadService
-        from unittest.mock import patch
 
         config = MagicMock()
         config.download_dir = tmp_path

@@ -6,18 +6,14 @@ All I/O mocked.
 from __future__ import annotations
 
 import time
-import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from app.event_bus import EventBus
 from app.services.download_service import DownloadService
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.downloader.download_manager import DownloadManager
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -169,8 +165,6 @@ class TestCheckTiktokProfileLive:
 
         # The finally block does: import os as _os; _os.unlink(_tt_cookie_txt)
         # The local import binds to the real `os` module, so patch "os.unlink".
-        import os as _real_os
-        original_unlink = _real_os.unlink
 
         def capturing_unlink(p):
             unlinked.append(p)

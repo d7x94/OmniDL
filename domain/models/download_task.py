@@ -29,6 +29,7 @@ class MediaInfo:
     is_live: bool = False
     was_live: bool = False
     video_id: str = ""  # yt-dlp's internal video ID (used for filename)
+    tiktok_room_id: str = ""  # BUG-TT-25: room_id from live checker, bypasses yt-dlp unsigned room/info
     # Which engine produced this MediaInfo — routing hint for DownloadManager.
     # "yt_dlp"     → YtDlpEngine.download()   (default, all video platforms)
     # "gallery_dl" → GalleryDlEngine.download() (image/gallery platforms)

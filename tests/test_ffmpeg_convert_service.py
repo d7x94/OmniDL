@@ -352,7 +352,7 @@ class TestConvertSync:
             with patch.object(
                 svc,
                 "_fresh_encode",
-                side_effect=lambda *a, **kw: fresh_calls.append(1) or (tmp_path / "out.mp4"),
+                side_effect=lambda *a, **kw: fresh_calls.append(1) or (tmp_path / "out.mp4"),  # type: ignore[func-returns-value]
             ):
                 with patch.object(
                     svc.__class__, "_locate_ffmpeg_bin", staticmethod(lambda: tmp_path / "ffmpeg")
@@ -455,7 +455,7 @@ class TestConvertQueue:
         with patch.object(queue._svc, "_run", side_effect=fake_run):
             queue.submit(
                 source=source,
-                on_done=lambda p: (done_paths.append(p), done_event.set()),
+                on_done=lambda p: (done_paths.append(p), done_event.set()),  # type: ignore[arg-type, func-returns-value]
             )
             done_event.wait(timeout=3)
 
@@ -476,7 +476,7 @@ class TestConvertQueue:
         with patch.object(queue._svc, "_run", side_effect=fake_run):
             queue.submit(
                 source=source,
-                on_error=lambda msg: (errors.append(msg), err_event.set()),
+                on_error=lambda msg: (errors.append(msg), err_event.set()),  # type: ignore[arg-type, func-returns-value]
             )
             err_event.wait(timeout=3)
 

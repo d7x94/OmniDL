@@ -23,6 +23,7 @@ is_tiktok_profile_url(url) -> bool
 extract_tiktok_username(url) -> Optional[str]
     Extracts the username from a TikTok profile URL.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,8 +35,8 @@ logger = logging.getLogger(__name__)
 # TikTok internal web API for live status.
 # webcast/room/check_alive is the lightest endpoint -- returns live status
 # without downloading the full user profile JSON.
-_LIVE_CHECK_API  = "https://www.tiktok.com/api/live/detail/"
-_WEBCAST_API     = "https://webcast.tiktok.com/webcast/room/check_alive/"
+_LIVE_CHECK_API = "https://www.tiktok.com/api/live/detail/"
+_WEBCAST_API = "https://webcast.tiktok.com/webcast/room/check_alive/"
 _REQUEST_TIMEOUT = 15  # seconds
 
 # Profile URL pattern -- matches /@username but NOT /live/, /video/, /tag/, etc.
@@ -100,6 +101,7 @@ def _get_chrome_impersonate_target() -> "Any":
     try:
         from yt_dlp.networking._curlcffi import CurlCFFIRH as _RH  # noqa: PLC0415
         from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
+
         _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
         # Find the ImpersonateTarget key with client=='chrome'
         chrome_key = next(
@@ -133,6 +135,7 @@ def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":
     """
     try:
         from curl_cffi import requests as _cffi_req  # noqa: PLC0415
+
         _target = _get_chrome_impersonate_target()
         cffi_session: Any = _cffi_req.Session(impersonate=_target)  # type: ignore[assignment]
         if jar:
@@ -141,6 +144,7 @@ def _get_impersonate_session(jar: "Optional[Any]" = None) -> "Any":
     except Exception as exc:  # noqa: BLE001
         logger.debug("tiktok_live_checker: curl_cffi unavailable (%s), using requests", exc)
         import requests as _req  # noqa: PLC0415
+
         req_session = _req.Session()
         if jar:
             req_session.cookies.update(jar)
@@ -155,6 +159,7 @@ def extract_tiktok_username_from_live_url(url: str) -> Optional[str]:
     """
     m = _LIVE_URL_RE.match(url.strip())
     return m.group(1).lower() if m else None
+
 
 # BUG-CH FIX: TikTok short-link domains (vt.tiktok.com, vm.tiktok.com).
 # User pastes a share link like https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/
@@ -295,11 +300,13 @@ def _load_cookie_jar(cookie_file: str) -> "Optional[Any]":
     if not cookie_file:
         return None
     from pathlib import Path as _Path  # noqa: PLC0415
+
     p = _Path(cookie_file)
     if not p.is_file():
         return None
     try:
         import http.cookiejar as _cj  # noqa: PLC0415
+
         jar = _cj.MozillaCookieJar()
         jar.load(str(p), ignore_discard=True, ignore_expires=True)
         return jar
@@ -308,9 +315,7 @@ def _load_cookie_jar(cookie_file: str) -> "Optional[Any]":
         return None
 
 
-def _fetch_tiktok_profile_page(
-    username: str, proxy: str = "", cookie_file: str = ""
-) -> Optional[str]:
+def _fetch_tiktok_profile_page(username: str, proxy: str = "", cookie_file: str = "") -> Optional[str]:
     """Fetch TikTok profile page HTML. Returns page text or None on error.
 
     BUG-TT-08 FIX: use curl_cffi impersonation to bypass TLS fingerprinting.
@@ -337,9 +342,7 @@ def _fetch_tiktok_profile_page(
     }
     jar = _load_cookie_jar(cookie_file)
     if jar:
-        logger.debug(
-            "tiktok_live_checker: fetching @%s with %d cookies", username, len(list(jar))
-        )
+        logger.debug("tiktok_live_checker: fetching @%s with %d cookies", username, len(list(jar)))
     else:
         logger.debug(
             "tiktok_live_checker: fetching @%s without cookies -- liveRoomInfo may be absent",
@@ -364,26 +367,20 @@ def _fetch_tiktok_profile_page(
         raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
 
     if resp.status_code == 404:
-        raise RuntimeError(
-            f"not found: Tai khoan @{username} khong tim thay tren TikTok."
-        )
+        raise RuntimeError(f"not found: Tai khoan @{username} khong tim thay tren TikTok.")
     if resp.status_code == 429:
-        raise RuntimeError(
-            "blocked: TikTok dang rate-limit tam thoi.\n"
-            "Cho 5-10 phut roi thu lai."
-        )
+        raise RuntimeError("blocked: TikTok dang rate-limit tam thoi.\nCho 5-10 phut roi thu lai.")
     if resp.status_code not in (200, 301, 302):
         logger.debug(
             "tiktok_live_checker: unexpected status %s for @%s",
-            resp.status_code, username,
+            resp.status_code,
+            username,
         )
         return None
     return resp.text
 
 
-def _fetch_tiktok_live_page(
-    username: str, proxy: str = "", cookie_file: str = ""
-) -> "Optional[str]":
+def _fetch_tiktok_live_page(username: str, proxy: str = "", cookie_file: str = "") -> "Optional[str]":
     """Fetch TikTok live page HTML (/@username/live). Returns page text or None.
 
     BUG-TT-07 FIX: pass-2 fetch mirrors yt-dlp TikTokLiveIE pass-2.
@@ -413,7 +410,8 @@ def _fetch_tiktok_live_page(
     if resp.status_code not in (200, 301, 302):
         logger.debug(
             "tiktok_live_checker: live page status %s for @%s",
-            resp.status_code, username,
+            resp.status_code,
+            username,
         )
         return None
     return resp.text
@@ -422,6 +420,7 @@ def _fetch_tiktok_live_page(
 def _extract_json_blob(page_text: str, script_id: str) -> "Optional[dict]":
     """Extract and parse a JSON blob from a <script id="..."> tag."""
     import json as _json  # noqa: PLC0415
+
     m = re.search(
         r'<script[^>]+id="' + re.escape(script_id) + r'"[^>]*>(.*?)</script>',
         page_text,
@@ -450,6 +449,7 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional
     status_ended=True means stream is confirmed ended (status 4/5) -- caller
     should NOT fall through to pass-2 live page scraping.
     """
+
     def _valid_room_id(v: Any) -> Optional[str]:
         """Return room_id string if v is a valid non-zero numeric room ID."""
         if not v:
@@ -469,7 +469,8 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional
         if room_id:
             logger.debug(
                 "tiktok_live_checker: @%s roomId via UNIVERSAL_DATA_FOR_REHYDRATION: %s",
-                username, room_id,
+                username,
+                room_id,
             )
             return room_id, False
         # Also check liveRoomInfo path (legacy / some regions)
@@ -480,7 +481,10 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional
             if room_id and (status == 2 or status not in (4, 5)):
                 logger.debug(
                     "tiktok_live_checker: @%s liveRoomInfo via UNIVERSAL_DATA_FOR_REHYDRATION"
-                    " status=%s roomId=%s", username, status, room_id,
+                    " status=%s roomId=%s",
+                    username,
+                    status,
+                    room_id,
                 )
                 return room_id, False
             if room_id and status in (4, 5):
@@ -489,14 +493,13 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional
     # Fallback: __NEXT_DATA__ (older TikTok page format, still used in some regions)
     data = _extract_json_blob(page_text, "__NEXT_DATA__")
     if data:
-        user_info = (
-            data.get("props", {}).get("pageProps", {}).get("userInfo", {})
-        )
+        user_info = data.get("props", {}).get("pageProps", {}).get("userInfo", {})
         room_id = _valid_room_id(user_info.get("user", {}).get("roomId"))
         if room_id:
             logger.debug(
                 "tiktok_live_checker: @%s roomId via __NEXT_DATA__ user.roomId: %s",
-                username, room_id,
+                username,
+                room_id,
             )
             return room_id, False
         live_room = user_info.get("liveRoomInfo")
@@ -505,8 +508,10 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional
             status = live_room.get("status")
             if room_id and (status == 2 or status not in (4, 5)):
                 logger.debug(
-                    "tiktok_live_checker: @%s liveRoomInfo via __NEXT_DATA__"
-                    " status=%s roomId=%s", username, status, room_id,
+                    "tiktok_live_checker: @%s liveRoomInfo via __NEXT_DATA__ status=%s roomId=%s",
+                    username,
+                    status,
+                    room_id,
                 )
                 return room_id, False
             if room_id and status in (4, 5):
@@ -522,7 +527,8 @@ def _room_id_from_profile_page(page_text: str, username: str) -> "tuple[Optional
             if room_id:
                 logger.debug(
                     "tiktok_live_checker: @%s roomId via raw HTML scan: %s",
-                    username, room_id,
+                    username,
+                    room_id,
                 )
                 return room_id, False
 
@@ -538,6 +544,7 @@ def _room_id_from_live_page(page_text: str, username: str) -> "Optional[str]":
 
     BUG-TT-08 FIX: validate roomId, add raw HTML scan fallback.
     """
+
     def _valid_room_id(v: Any) -> Optional[str]:
         if not v:
             return None
@@ -546,21 +553,16 @@ def _room_id_from_live_page(page_text: str, username: str) -> "Optional[str]":
             return None
         return s
 
-    sigi = (
-        _extract_json_blob(page_text, "SIGI_STATE")
-        or _extract_json_blob(page_text, "sigi-persisted-data")
-    )
+    sigi = _extract_json_blob(page_text, "SIGI_STATE") or _extract_json_blob(page_text, "sigi-persisted-data")
     if sigi:
         room_id = _valid_room_id(
-            sigi.get("LiveRoom", {})
-                .get("liveRoomUserInfo", {})
-                .get("user", {})
-                .get("roomId")
+            sigi.get("LiveRoom", {}).get("liveRoomUserInfo", {}).get("user", {}).get("roomId")
         )
         if room_id:
             logger.debug(
                 "tiktok_live_checker: @%s roomId via SIGI_STATE LiveRoom: %s",
-                username, room_id,
+                username,
+                room_id,
             )
             return room_id
         users = sigi.get("UserModule", {}).get("users", {})
@@ -569,7 +571,8 @@ def _room_id_from_live_page(page_text: str, username: str) -> "Optional[str]":
             if room_id:
                 logger.debug(
                     "tiktok_live_checker: @%s roomId via SIGI_STATE UserModule: %s",
-                    username, room_id,
+                    username,
+                    room_id,
                 )
                 return room_id
 
@@ -579,7 +582,8 @@ def _room_id_from_live_page(page_text: str, username: str) -> "Optional[str]":
         if room_id:
             logger.debug(
                 "tiktok_live_checker: @%s roomId via live page raw HTML scan: %s",
-                username, room_id,
+                username,
+                room_id,
             )
             return room_id
 
@@ -624,7 +628,8 @@ def _verify_room_alive(
         if resp.status_code != 200:
             logger.debug(
                 "tiktok_live_checker: check_alive status %s for room %s -- assuming live",
-                resp.status_code, room_id,
+                resp.status_code,
+                room_id,
             )
             return True
         data = _json.loads(resp.text)
@@ -637,16 +642,108 @@ def _verify_room_alive(
             )
             return True
         alive = alive_list[0].get("alive", True)
-        logger.debug(
-            "tiktok_live_checker: check_alive room %s alive=%s", room_id, alive
-        )
+        logger.debug("tiktok_live_checker: check_alive room %s alive=%s", room_id, alive)
         return bool(alive)
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "tiktok_live_checker: check_alive failed for room %s: %s -- assuming live",
-            room_id, exc,
+            room_id,
+            exc,
         )
         return True
+
+
+def _fetch_hls_from_webcast_room_info(
+    room_id: str,
+    username: str,
+    proxy: str = "",
+    cookie_file: str = "",
+) -> "Optional[tuple[str, str]]":
+    """Call webcast/room/info/ with Chrome impersonation to get the HLS stream URL.
+
+    BUG-TT-25 FIX: yt-dlp TikTokLiveIE calls room/info without signing (no
+    X-Bogus/msToken). TikTok returns status=4 for unsigned requests even when
+    the stream is active. This function calls the same endpoint via curl_cffi
+    TLS impersonation, which TikTok treats as an authenticated browser request.
+
+    Returns (hls_url, room_id) if status=2 (live), None otherwise.
+    """
+    import json as _json  # noqa: PLC0415
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    headers = {
+        "User-Agent": _CHROME_UA,
+        "Accept": "application/json, */*",
+        "Referer": f"https://www.tiktok.com/@{username}/live",
+        "Origin": "https://www.tiktok.com",
+    }
+    jar = _load_cookie_jar(cookie_file)
+    session = _get_impersonate_session(jar)
+    try:
+        resp = session.get(
+            "https://webcast.tiktok.com/webcast/room/info/",
+            params={"aid": "1988", "room_id": room_id},
+            headers=headers,
+            proxies=proxies,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.debug(
+                "tiktok_live_checker: room/info HTTP %s for room %s",
+                resp.status_code,
+                room_id,
+            )
+            return None
+        data = _json.loads(resp.text)
+        room_data = data.get("data") or {}
+        status = room_data.get("status")
+        if status != 2:
+            logger.debug(
+                "tiktok_live_checker: room/info status=%s for room %s (not live)",
+                status,
+                room_id,
+            )
+            return None
+        stream_url = room_data.get("stream_url") or {}
+        hls_url = stream_url.get("hls_pull_url") or next(
+            iter((stream_url.get("hls_pull_url_map") or {}).values()), ""
+        )
+        if not hls_url:
+            logger.debug("tiktok_live_checker: room/info no HLS URL for room %s", room_id)
+            return None
+        logger.info(
+            "tiktok_live_checker: room/info @%s room %s -> HLS URL obtained",
+            username,
+            room_id,
+        )
+        return hls_url, room_id
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tiktok_live_checker: room/info failed for room %s: %s", room_id, exc)
+        return None
+
+
+_dispatcher: "Optional[Any]" = None
+_health_daemon: "Optional[Any]" = None
+
+
+def _get_dispatcher() -> "Any":
+    global _dispatcher, _health_daemon  # noqa: PLW0603
+    if _dispatcher is None:
+        from utils.tiktok_detection.dispatcher import LiveDetectionDispatcher
+        from utils.tiktok_detection.health import HealthDaemon, StrategyHealthRegistry
+        from utils.tiktok_detection.strategies import Pass0WebcastApi, Pass1ProfilePage, Pass2LivePage
+
+        strategies = [Pass0WebcastApi(), Pass1ProfilePage(), Pass2LivePage()]
+        registry = StrategyHealthRegistry()
+        _dispatcher = LiveDetectionDispatcher(strategies, registry)
+        _health_daemon = HealthDaemon(strategies, registry)
+        _health_daemon.start()
+    return _dispatcher
+
+
+def get_health_daemon() -> "Optional[Any]":
+    """Return the health daemon singleton, or None if dispatcher not yet created."""
+    return _health_daemon
 
 
 def _check_tiktok_live_with_room_id(
@@ -657,122 +754,18 @@ def _check_tiktok_live_with_room_id(
 ) -> "Optional[tuple[str, str]]":
     """Internal: returns (live_url, room_id) if live, None if not live.
 
-    BUG-TT-06 FIX: yt-dlp TikTokLiveIE scrapes the profile page to get
-    roomId, then calls webcast.tiktok.com/webcast/room/info.  TikTok now
-    frequently returns profile pages where roomId is absent even during an
-    active stream (bot-detection / schema change), causing UserNotLive.
-
-    BUG-TT-07 FIX: previous fix used wrong script tag names and wrong JSON
-    paths. Correct tags: __UNIVERSAL_DATA_FOR_REHYDRATION__ (profile page)
-    and SIGI_STATE/sigi-persisted-data (live page), mirroring yt-dlp exactly.
-
-    BUG-TT-08 FIX: added curl_cffi TLS impersonation, roomId validation
-    (reject "0"/empty), raw HTML regex scan as pass-3, and webcast
-    check_alive verification after finding a room_id.
-
-    BUG-TT-09 FIX: added pass-0 — extract sec_user_id from share_url query
-    params and call webcast room/list API directly, bypassing page scraping.
-    This works when TikTok bot-detection strips roomId from the rendered HTML.
-
-    Raises RuntimeError on network errors (propagated from _fetch_tiktok_profile_page).
+    Delegates to LiveDetectionDispatcher which runs Pass-0/1/2 in parallel.
+    Public signature unchanged for backward compatibility.
     """
-    import json as _json  # noqa: PLC0415
+    from utils.tiktok_detection.context import LiveCheckContext
 
-    def _valid_room_id_inner(v: "Any") -> "Optional[str]":
-        if not v:
-            return None
-        s = str(v).strip()
-        if not s.isdigit() or int(s) == 0:
-            return None
-        return s
-
-    # Pass 0: webcast API via sec_user_id from share URL query params.
-    # Share links embed sec_user_id — use it to call the webcast room/list API
-    # which returns roomId directly without page scraping.
-    # BUG-TT-09: This is the most reliable path when TikTok blocks page scraping.
-    if share_url:
-        _sec_m = _SEC_USER_ID_RE.search(share_url)
-        if _sec_m:
-            import urllib.parse as _urlparse  # noqa: PLC0415
-            sec_user_id = _urlparse.unquote_plus(_sec_m.group(1))
-            proxies = {"http": proxy, "https": proxy} if proxy else None
-            headers = {
-                "User-Agent": _CHROME_UA,
-                "Accept": "application/json, */*",
-                "Referer": "https://www.tiktok.com/",
-                "Origin": "https://www.tiktok.com",
-            }
-            jar = _load_cookie_jar(cookie_file)
-            session = _get_impersonate_session(jar)
-            try:
-                resp = session.get(
-                    _WEBCAST_ROOM_LIST_API,
-                    params={"aid": "1988", "sec_user_id": sec_user_id},
-                    headers=headers,
-                    proxies=proxies,
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = _json.loads(resp.text)
-                    room_list = data.get("data", {}).get("room_list") or []
-                    for room in room_list:
-                        r_id = _valid_room_id_inner(room.get("id_str") or room.get("id"))
-                        status = room.get("status")
-                        if r_id and status == 2:
-                            live_url = f"https://www.tiktok.com/@{username}/live"
-                            logger.info(
-                                "tiktok_live_checker: @%s LIVE via webcast room/list"
-                                " (pass-0) roomId=%s",
-                                username, r_id,
-                            )
-                            return live_url, r_id
-                    logger.debug(
-                        "tiktok_live_checker: @%s webcast room/list: no active room"
-                        " (rooms=%d)",
-                        username, len(room_list),
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "tiktok_live_checker: @%s webcast room/list (pass-0) failed: %s",
-                    username, exc,
-                )
-
-    # Pass 1: profile page /@username -> __UNIVERSAL_DATA_FOR_REHYDRATION__
-    page_text = _fetch_tiktok_profile_page(username, proxy=proxy, cookie_file=cookie_file)
-    if page_text is None:
-        return None
-
-    room_id, _profile_status_ended = _room_id_from_profile_page(page_text, username)
-
-    # Pass 2: live page /@username/live -> SIGI_STATE (mirrors yt-dlp pass 2)
-    # Skip if profile page already confirmed stream ended (status 4/5).
-    if not room_id and not _profile_status_ended:
-        live_page_text = _fetch_tiktok_live_page(username, proxy=proxy, cookie_file=cookie_file)
-        if live_page_text:
-            room_id = _room_id_from_live_page(live_page_text, username)
-
-    if not room_id:
-        logger.debug(
-            "tiktok_live_checker: @%s -- no roomId in profile or live page, not live",
-            username,
-        )
-        return None
-
-    # BUG-TT-08 FIX: verify via webcast API before returning.
-    # Optimistic on API failure (returns True) so we don't block valid streams.
-    if not _verify_room_alive(room_id, username, proxy=proxy, cookie_file=cookie_file):
-        logger.debug(
-            "tiktok_live_checker: @%s -- roomId=%s found but check_alive=false, not live",
-            username, room_id,
-        )
-        return None
-
-    live_url = f"https://www.tiktok.com/@{username}/live"
-    logger.info(
-        "tiktok_live_checker: @%s is LIVE -- roomId=%s -> %s",
-        username, room_id, live_url,
+    ctx = LiveCheckContext(
+        username=username,
+        proxy=proxy,
+        cookie_file=cookie_file,
+        share_url=share_url,
     )
-    return live_url, str(room_id)
+    return _get_dispatcher().check(ctx)
 
 
 def _extract_live_room_id(data: dict, username: str) -> "Optional[str]":
@@ -780,6 +773,7 @@ def _extract_live_room_id(data: dict, username: str) -> "Optional[str]":
 
     Tries the UNIVERSAL_DATA_FOR_REHYDRATION paths first, then deep-walk.
     """
+
     def _valid(v: Any) -> Optional[str]:
         if not v:
             return None
@@ -789,18 +783,11 @@ def _extract_live_room_id(data: dict, username: str) -> "Optional[str]":
     try:
         scope = data.get("__DEFAULT_SCOPE__", {})
         room_id = _valid(
-            scope.get("webapp.user-detail", {})
-                 .get("userInfo", {})
-                 .get("user", {})
-                 .get("roomId")
+            scope.get("webapp.user-detail", {}).get("userInfo", {}).get("user", {}).get("roomId")
         )
         if room_id:
             return room_id
-        live_room = (
-            scope.get("webapp.user-detail", {})
-                 .get("userInfo", {})
-                 .get("liveRoomInfo")
-        )
+        live_room = scope.get("webapp.user-detail", {}).get("userInfo", {}).get("liveRoomInfo")
         if live_room:
             status = live_room.get("status")
             room_id = _valid(live_room.get("roomId") or live_room.get("id"))

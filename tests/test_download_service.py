@@ -24,7 +24,6 @@ from app.event_bus import EventBus
 from app.services.download_service import DownloadService
 from domain.models.download_task import DownloadTask, MediaInfo
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -328,8 +327,9 @@ class TestShouldFallbackToGalleryDl:
     """app/services/download_service._should_fallback_to_gallery_dl coverage."""
 
     def test_non_gallery_url_returns_false(self):
-        from app.services.download_service import _should_fallback_to_gallery_dl
         from unittest.mock import patch
+
+        from app.services.download_service import _should_fallback_to_gallery_dl
         with patch(
             "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
             return_value=False,
@@ -337,8 +337,9 @@ class TestShouldFallbackToGalleryDl:
             assert _should_fallback_to_gallery_dl("https://youtube.com/x", "no video") is False
 
     def test_gallery_url_with_photo_error_returns_true(self):
-        from app.services.download_service import _should_fallback_to_gallery_dl, _PHOTO_ERRORS
         from unittest.mock import patch
+
+        from app.services.download_service import _PHOTO_ERRORS, _should_fallback_to_gallery_dl
         # Use the first known photo-error keyword
         error_kw = next(iter(_PHOTO_ERRORS))
         with patch(
@@ -348,8 +349,9 @@ class TestShouldFallbackToGalleryDl:
             assert _should_fallback_to_gallery_dl("https://instagram.com/p/x", error_kw) is True
 
     def test_gallery_url_without_photo_error_returns_false(self):
-        from app.services.download_service import _should_fallback_to_gallery_dl
         from unittest.mock import patch
+
+        from app.services.download_service import _should_fallback_to_gallery_dl
         with patch(
             "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
             return_value=True,
@@ -420,7 +422,9 @@ class TestAnalyseUrlGalleryDlFallback:
         return False
 
     def test_fallback_succeeds_calls_on_done(self, tmp_path):
-        from unittest.mock import patch as _patch, MagicMock
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
         from app.services.download_service import _PHOTO_ERRORS
 
         gallery_info = make_media_info(url="https://instagram.com/p/x")
@@ -452,7 +456,9 @@ class TestAnalyseUrlGalleryDlFallback:
         assert not errors
 
     def test_fallback_fails_calls_on_error(self, tmp_path):
-        from unittest.mock import patch as _patch, MagicMock
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
         from app.services.download_service import _PHOTO_ERRORS
 
         gallery_engine = MagicMock()

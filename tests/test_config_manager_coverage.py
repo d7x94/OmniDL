@@ -12,12 +12,10 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from infrastructure.config.config_manager import ConfigManager
 
 
-def _cfg(tmp_path: Path, data: dict = None) -> ConfigManager:
+def _cfg(tmp_path: Path, data: dict = None) -> ConfigManager:  # type: ignore[assignment]
     p = tmp_path / "config.json"
     if data is not None:
         p.write_text(json.dumps(data), encoding="utf-8")

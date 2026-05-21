@@ -201,9 +201,9 @@ class NotificationPanel(QFrame):
         if not isinstance(parent, QWidget):
             return
         pw = parent.width()
-        # 8px margin from right, position below top_bar (~80px from top)
+        # 8px margin from right, position below toolbar(68)+top_bar(40)+sep(1)+accent(3)+4gap
         x = pw - _PANEL_W - 8
-        y = 80
+        y = 116
         self.move(x, y)
 
     # ── Animation ──────────────────────────────────────────────────────────

@@ -29,12 +29,13 @@ import subprocess
 import sys
 import tempfile
 import threading
-import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
+
+from utils.naming import build_filename_from_task, sanitise_for_filesystem
 
 if TYPE_CHECKING:
     from app.event_bus import EventBus
@@ -62,109 +63,6 @@ _NODE_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9\-\.]{0,252}[A-Za-z0-9])?$")
 # Destination suffix required by Tailscale CLI file send.
 # The trailing colon tells tailscale "this is a node name, not a local path".
 _NODE_SUFFIX = ":"
-
-
-def _sanitize_filename(name: str) -> str:
-    """
-    Return a Tailscale-safe filename.
-
-    Tailscale's peer-side (iOS / macOS) rejects filenames that contain emoji,
-    non-ASCII characters, or certain filesystem-special characters, responding
-    with "400 Bad Request: invalid filename".  This function produces an
-    ASCII-only substitute that is safe to pass via ``tailscale file cp --name``.
-
-    Strategy
-    ────────
-    1. Split the extension from the stem; only the *stem* is cleaned so the
-       file type (e.g. ``.mp4``) is always preserved intact on the device.
-    2. NFKD-normalise the stem — decomposes accented characters, e.g.
-       ``í`` → ``i`` + combining acute accent.
-    3. Encode to ASCII (``errors="ignore"``) — drops combining marks, emoji,
-       CJK, and any remaining non-ASCII code-points.
-    4. Replace characters that are problematic for Tailscale / iOS/macOS
-       filesystems (``#``, ``@``, ``!``, ``?``, ``*``, ``|``, ``<``, ``>``,
-       ``"``, ``\\``, ``/``, ``:``, ``%``) with ``_``.
-    5. Collapse runs of whitespace or underscores to a single ``_``.
-    6. Strip leading/trailing underscores.  Guard against an empty result.
-
-    Examples
-    ────────
-    ``"video.mp4"``                                → ``"video.mp4"``   (unchanged)
-    ``"clip ❤️‍🔥@Ba dím.mp4"``                  → ``"clip__Ba_dim.mp4"``
-    ``"dodonhatminh109 - 2026-03-28 - Top 15 ... #dodonhatminh [762213827654].mp4"``
-        → ``"dodonhatminh109_-_2026-03-28_-_Top_15_edurun_2026__Ba_dim__"``
-          ``"dodonhatminh_762213827654_.mp4"``
-
-    Security note
-    ─────────────
-    This function is **pure** (no I/O, no subprocess calls).  It does not
-    rename or copy the actual file on disk — it only produces a safe alias
-    to be passed to the CLI via ``--name``.  The original file is never
-    modified.
-    """
-    # 1. Preserve the extension exactly — only sanitise the stem.
-    dot_idx = name.rfind(".")
-    if dot_idx > 0:
-        stem = name[:dot_idx]
-        suffix = name[dot_idx:]  # includes the leading "."
-    else:
-        stem = name
-        suffix = ""
-
-    # 2–3. NFKD decomposition → ASCII encode/ignore.
-    # NFKD converts e.g. "í" → "i" + U+0301 COMBINING ACUTE ACCENT.
-    # encode("ascii", "ignore") then silently drops the combining accent
-    # and anything else outside ASCII — including emoji, CJK, etc.
-    normalized = unicodedata.normalize("NFKD", stem)
-    ascii_stem = normalized.encode("ascii", errors="ignore").decode("ascii")
-
-    # 4. Replace characters that are problematic for Tailscale / iOS/macOS.
-    safe = re.sub(r'[#@!?*|<>"\\/:%]+', "_", ascii_stem)
-
-    # 5. Collapse runs of whitespace and underscores; strip outer underscores
-    #    and hyphens (e.g. when non-ASCII prefix is dropped, stem starts with
-    #    " - " which collapses to "_-_" then strips to "-_..." without this).
-    safe = re.sub(r"[\s_]+", "_", safe).strip("-_")
-
-    # 6. Fallback for degenerate case (e.g. filename was pure emoji).
-    if not safe:
-        safe = "file"
-
-    return safe + suffix
-
-
-def _build_taildrop_name(filename: str, task) -> str:
-    import time as _time
-
-    dot = filename.rfind(".")
-    stem = filename[:dot] if dot > 0 else filename
-    ext = filename[dot:] if dot > 0 else ""
-
-    norm = unicodedata.normalize("NFKD", stem)
-    ascii_stem = norm.encode("ascii", errors="ignore").decode("ascii")
-
-    content_orig = re.sub(r"[\s_\-\[\]]+", "", stem)
-    content_ascii = re.sub(r"[\s_\-\[\]]+", "", ascii_stem)
-    ratio = len(content_ascii) / len(content_orig) if content_orig else 1.0
-
-    if ratio >= 0.4:
-        return _sanitize_filename(filename)
-
-    mi = getattr(task, "media_info", None)
-    platform = (getattr(mi, "platform", "") or "unknown").lower()
-
-    uid_raw = getattr(mi, "uploader_id", "") or getattr(mi, "uploader", "")
-    uid_norm = unicodedata.normalize("NFKD", uid_raw).encode("ascii", errors="ignore").decode("ascii")
-    uid_safe = re.sub(r"[^A-Za-z0-9_\-]", "_", uid_norm).strip("_-")
-
-    ts = getattr(task, "finished_at", None) or getattr(task, "created_at", 0)
-    date_str = _time.strftime("%Y-%m-%d", _time.localtime(ts))
-
-    video_id = (getattr(mi, "video_id", "") or "")[:12]
-
-    parts = [platform] + ([uid_safe] if uid_safe else []) + [date_str]
-    stem_fb = "_-_".join(parts) + (f"_[{video_id}]" if video_id else "")
-    return stem_fb + ext
 
 
 @dataclass(frozen=True)
@@ -423,7 +321,7 @@ class TaildropService:
             if gdl:
                 specific_files = [Path(f) for f in gdl if Path(f).exists()]
 
-        safe_display = _build_taildrop_name(file_path.name, task) if task else None
+        safe_display = build_filename_from_task(task, ext=file_path.suffix.lstrip(".")) if task else None
 
         def _send_one(node: str) -> None:
             result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
@@ -608,7 +506,7 @@ class TaildropService:
         if gdl is not None:
             specific_files = [Path(f) for f in gdl if Path(f).exists()]
 
-        safe_display = _build_taildrop_name(file_path.name, task)
+        safe_display = build_filename_from_task(task, ext=file_path.suffix.lstrip("."))
         result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
         if result.success:
             logger.info("Taildrop: ✅ sent '%s' → %s", file_path.name, node)
@@ -629,7 +527,7 @@ class TaildropService:
         Analogous to _transfer() but operates on a bare Path instead of a
         DownloadTask, and emits CONVERT_TAILDROP_* events on the bus.
         """
-        result = self._do_send(out_path, node)
+        result = self._do_send(out_path, node, display_name=sanitise_for_filesystem(out_path.name))
         if result.success:
             logger.info("Taildrop convert: ✅ sent '%s' → %s", out_path.name, node)
             self._bus.publish_convert_taildrop_completed(out_path=out_path, dest_node=node)
@@ -702,7 +600,7 @@ class TaildropService:
 
         try:
             if file_path.is_dir():
-                safe_stem = _sanitize_filename(file_path.name)
+                safe_stem = sanitise_for_filesystem(file_path.name)
                 display_name = safe_stem if safe_stem.endswith(".zip") else safe_stem + ".zip"
                 logger.debug(
                     "Taildrop: '%s' is a directory — zipping as '%s'",
@@ -748,7 +646,14 @@ class TaildropService:
             # characters, or certain special characters (#, @, diacritics, ...).
             # The --name flag passes an ASCII-safe alias without altering the
             # file on disk.
-            safe_name = _sanitize_filename(display_name)
+            safe_name = sanitise_for_filesystem(display_name)
+            # Tailscale rejects non-ASCII filenames on iOS/macOS receivers.
+            if not safe_name.isascii():
+                from pathlib import Path as _Path
+
+                _stem = _Path(safe_name).stem.encode("ascii", "ignore").decode().strip() or "file"
+                _suffix = _Path(safe_name).suffix
+                safe_name = _stem + _suffix
             cmd = [tailscale, "file", "cp"]
             # Always supply --name for zipped dirs (send_path is a tempfile with
             # an opaque name); also supply it for regular files when sanitisation
@@ -756,7 +661,7 @@ class TaildropService:
             if tmp_zip is not None or safe_name != file_path.name:
                 if safe_name != display_name:
                     logger.debug(
-                        "Taildrop: sanitised filename %r -> %r (using --name flag)",
+                        "Taildrop: adjusted filename %r -> %r (using --name flag)",
                         display_name,
                         safe_name,
                     )

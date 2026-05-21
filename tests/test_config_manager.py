@@ -4,16 +4,22 @@ Unit tests for infrastructure/config/config_manager.py
 
 Issue fixed: #10 (HIGH) — zero tests in the entire codebase.
 """
+
 import json
+import sys
 import threading
 from pathlib import Path
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def make_config(tmp_path, overrides=None):
     from infrastructure.config.config_manager import ConfigManager
+
     cfg_file = tmp_path / "config.json"
     if overrides:
         cfg_file.write_text(json.dumps(overrides), encoding="utf-8")
@@ -23,6 +29,7 @@ def make_config(tmp_path, overrides=None):
 # ---------------------------------------------------------------------------
 # tests
 # ---------------------------------------------------------------------------
+
 
 class TestConfigManagerDefaults:
     def test_default_download_dir_is_not_empty(self, tmp_path):
@@ -43,6 +50,7 @@ class TestConfigManagerDefaults:
         assert cfg.download_dir != Path("")
         assert cfg.download_dir.is_absolute()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix absolute paths only")
     def test_explicit_download_dir_is_honoured(self, tmp_path):
         cfg = make_config(tmp_path, {"download_dir": "/tmp/omnidl_test"})  # nosec B108
         assert cfg.download_dir == Path("/tmp/omnidl_test")  # nosec B108
@@ -62,6 +70,7 @@ class TestConfigManagerPersistence:
         cfg.set("max_concurrent", 7)
         # Re-load from the same file
         from infrastructure.config.config_manager import ConfigManager
+
         cfg2 = ConfigManager(tmp_path / "config.json")
         assert cfg2.max_concurrent == 7
 
@@ -69,13 +78,14 @@ class TestConfigManagerPersistence:
         cfg = make_config(tmp_path)
         cfg.update({"max_concurrent": 5, "max_retries": 2})
         from infrastructure.config.config_manager import ConfigManager
+
         cfg2 = ConfigManager(tmp_path / "config.json")
         assert cfg2.max_concurrent == 5
         assert cfg2.max_retries == 2
 
     def test_save_does_not_raise(self, tmp_path):
         cfg = make_config(tmp_path)
-        cfg.save()   # should not raise
+        cfg.save()  # should not raise
 
 
 class TestConfigManagerThreadSafety:

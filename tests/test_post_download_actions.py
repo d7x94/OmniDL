@@ -26,19 +26,16 @@ Unit tests for the new post-download features:
     - set_taildrop_target_nodes persists list and syncs legacy scalar
     - set_taildrop_target_nodes with empty list clears legacy scalar too
 """
+
 from __future__ import annotations
 
-import os
-import threading
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-import pytest
-
+from unittest.mock import MagicMock, patch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers / Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_tmp_file(tmp_path: Path, name: str = "video.mp4") -> Path:
     """Create a non-empty temporary file and return its path."""
@@ -51,11 +48,13 @@ def _make_tmp_file(tmp_path: Path, name: str = "video.mp4") -> Path:
 # ConfigManager — multi-node accessor tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestConfigManagerMultiNode:
     """Tests for taildrop_target_nodes property and set_taildrop_target_nodes."""
 
-    def _make_cfg(self, tmp_path: Path, overrides: dict = None):
+    def _make_cfg(self, tmp_path: Path, overrides: dict = None):  # type: ignore[assignment]
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         if overrides:
             for k, v in overrides.items():
@@ -113,29 +112,33 @@ class TestConfigManagerMultiNode:
 # TaildropService.send_file_to_nodes
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestSendFileToNodes:
     """Tests for TaildropService.send_file_to_nodes()."""
 
     def _make_service(self, tmp_path: Path):
         """Return a TaildropService with a no-op event bus."""
-        from app.services.taildrop_service import TaildropService, TransferResult
+        from app.services.taildrop_service import TaildropService
+
         bus = MagicMock()
         bus.subscribe = MagicMock()
 
         cfg = MagicMock()
-        cfg.taildrop_enabled     = True
+        cfg.taildrop_enabled = True
         cfg.taildrop_target_node = "iphone"
-        cfg.taildrop_send_mode   = "always"
+        cfg.taildrop_send_mode = "always"
 
         svc = TaildropService(config=cfg, event_bus=bus)
         return svc
 
     def _ok_result(self, node="iphone"):
         from app.services.taildrop_service import TransferResult
+
         return TransferResult(success=True, dest_node=node, error="")
 
     def _fail_result(self, node="iphone", msg="timeout"):
         from app.services.taildrop_service import TransferResult
+
         return TransferResult(success=False, dest_node=node, error=msg)
 
     # ── Basic delivery ─────────────────────────────────────────────────────
@@ -165,7 +168,8 @@ class TestSendFileToNodes:
 
         with patch.object(svc, "_do_send", return_value=self._ok_result()):
             svc.send_file_to_nodes(
-                file_path, ["iphone", "macbook"],
+                file_path,
+                ["iphone", "macbook"],
                 on_node_done=done_nodes.append,
             )
             svc.close()
@@ -179,11 +183,13 @@ class TestSendFileToNodes:
 
         def _fail_result_for(node):
             from app.services.taildrop_service import TransferResult
+
             return TransferResult(success=False, dest_node=node, error="timeout")
 
         with patch.object(svc, "_do_send", side_effect=lambda fp, n, **kw: _fail_result_for(n)):
             svc.send_file_to_nodes(
-                file_path, ["iphone"],
+                file_path,
+                ["iphone"],
                 on_node_error=lambda n, e: errors.update({n: e}),
             )
             svc.close()
@@ -271,7 +277,8 @@ class TestSendFileToNodes:
 
         with patch.object(svc, "_do_send", return_value=self._ok_result()) as mock_send:
             svc.send_file_to_nodes(
-                file_path, ["iphone"],
+                file_path,
+                ["iphone"],
                 on_node_done=done.append,
                 specific_files_override=[extra, missing],
             )
@@ -286,6 +293,7 @@ class TestSendFileToNodes:
 # ─────────────────────────────────────────────────────────────────────────────
 # PostDownloadActions — pure-logic tests (no Tkinter)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestPostDownloadActionsLogic:
     """
@@ -304,7 +312,6 @@ class TestPostDownloadActionsLogic:
         # are created.  This is identical to the pattern in test_audit_fixes.py.
         import ui.components.post_download_actions as mod
 
-        original_base = mod._BaseFrame
         mock_frame = MagicMock()
         mock_frame.__init_subclass__ = classmethod(lambda cls, **kw: None)
 
@@ -316,15 +323,13 @@ class TestPostDownloadActionsLogic:
         # Rebind the real handler methods onto _FakePDA instances.
         obj = _FakePDA()
         obj._on_convert = on_convert
-        obj._on_send    = on_send
-        obj._on_delete  = on_delete
-        obj._file_path  = None
+        obj._on_send = on_send
+        obj._on_delete = on_delete
+        obj._file_path = None
         obj._converting = False
 
         # Bind the real methods we want to test.
-        obj._on_post_convert_call = lambda path, ext: (
-            mod.PostDownloadActions._on_convert_click
-        )
+        obj._on_post_convert_call = lambda path, ext: mod.PostDownloadActions._on_convert_click
         return obj, mod
 
     # ── Delete logic (pure Python — no Tk required) ─────────────────────────
@@ -342,22 +347,12 @@ class TestPostDownloadActionsLogic:
         obj._gallery_dl_files = None
         obj._on_delete = deleted_paths.append
 
-        # Simulate what _on_delete_click does (without the dialog — inject
-        # confirmed=True via monkeypatching _ConfirmDeleteDialog).
         import ui.components.post_download_actions as pda_mod
 
-        class _AlwaysConfirm:
-            confirmed = True
-            def __init__(self, parent, **kw): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-
-        with patch.object(pda_mod, "_ConfirmDeleteDialog", _AlwaysConfirm):
-            # Also stub wait_window and winfo_exists so the method runs fully.
-            obj.wait_window = MagicMock()
-            obj.winfo_exists = MagicMock(return_value=True)
-            obj.hide = MagicMock()
-            obj._set_status = MagicMock()
+        obj.hide = MagicMock()
+        obj._set_status = MagicMock()
+        with patch("PySide6.QtWidgets.QMessageBox") as MockQMB:
+            MockQMB.question.return_value = MockQMB.StandardButton.Yes
             pda_mod.PostDownloadActions._on_delete_click(obj)
 
         assert not file_path.exists(), "File should have been deleted"
@@ -366,8 +361,8 @@ class TestPostDownloadActionsLogic:
 
     def test_delete_cancelled_leaves_file(self, tmp_path):
         """When the user cancels the dialog, the file must NOT be deleted."""
-        from ui.components.post_download_actions import PostDownloadActions
         import ui.components.post_download_actions as pda_mod
+        from ui.components.post_download_actions import PostDownloadActions
 
         file_path = _make_tmp_file(tmp_path)
         deleted_paths = []
@@ -377,12 +372,8 @@ class TestPostDownloadActionsLogic:
         obj._gallery_dl_files = None
         obj._on_delete = deleted_paths.append
 
-        class _NeverConfirm:
-            confirmed = False
-            def __init__(self, parent, **kw): pass
-
-        with patch.object(pda_mod, "_ConfirmDeleteDialog", _NeverConfirm):
-            obj.wait_window = MagicMock()
+        with patch("PySide6.QtWidgets.QMessageBox"):
+            # Default mock return value != StandardButton.Yes → cancel path
             pda_mod.PostDownloadActions._on_delete_click(obj)
 
         assert file_path.exists(), "File must still exist when user cancels"
@@ -390,8 +381,8 @@ class TestPostDownloadActionsLogic:
 
     def test_delete_already_gone_does_not_raise(self, tmp_path):
         """If the file disappeared before deletion, log a warning but don't crash."""
-        from ui.components.post_download_actions import PostDownloadActions
         import ui.components.post_download_actions as pda_mod
+        from ui.components.post_download_actions import PostDownloadActions
 
         ghost = tmp_path / "ghost.mp4"  # never created
 
@@ -400,15 +391,10 @@ class TestPostDownloadActionsLogic:
         obj._gallery_dl_files = None
         obj._on_delete = MagicMock()
 
-        class _AlwaysConfirm:
-            confirmed = True
-            def __init__(self, parent, **kw): pass
-
-        with patch.object(pda_mod, "_ConfirmDeleteDialog", _AlwaysConfirm):
-            obj.wait_window = MagicMock()
-            obj.winfo_exists = MagicMock(return_value=True)
-            obj.hide = MagicMock()
-            obj._set_status = MagicMock()
+        obj.hide = MagicMock()
+        obj._set_status = MagicMock()
+        with patch("PySide6.QtWidgets.QMessageBox") as MockQMB:
+            MockQMB.question.return_value = MockQMB.StandardButton.Yes
             pda_mod.PostDownloadActions._on_delete_click(obj)
 
         # on_delete must still fire even when file was already absent.
@@ -417,8 +403,8 @@ class TestPostDownloadActionsLogic:
     # ── notify helpers ─────────────────────────────────────────────────────
 
     def test_notify_convert_done_clears_converting_flag(self, tmp_path):
-        from ui.components.post_download_actions import PostDownloadActions
         import ui.components.post_download_actions as pda_mod
+        from ui.components.post_download_actions import PostDownloadActions
 
         output = _make_tmp_file(tmp_path, "out.mp4")
 
@@ -433,11 +419,11 @@ class TestPostDownloadActionsLogic:
 
         assert obj._converting is False
         assert obj._file_path == output
-        obj._convert_btn.configure.assert_called()
+        obj._convert_btn.setText.assert_called()
 
     def test_notify_convert_error_re_enables_button(self, tmp_path):
-        from ui.components.post_download_actions import PostDownloadActions
         import ui.components.post_download_actions as pda_mod
+        from ui.components.post_download_actions import PostDownloadActions
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._converting = True
@@ -449,26 +435,26 @@ class TestPostDownloadActionsLogic:
         pda_mod.PostDownloadActions.notify_convert_error(obj, "ffmpeg crashed")
 
         assert obj._converting is False
-        obj._convert_btn.configure.assert_called()
+        obj._convert_btn.setText.assert_called()
 
     # ── on_send passthrough ────────────────────────────────────────────────
 
     def test_on_send_calls_callback_with_path_and_restore(self, tmp_path):
-        from ui.components.post_download_actions import PostDownloadActions
         import ui.components.post_download_actions as pda_mod
+        from ui.components.post_download_actions import PostDownloadActions
 
         file_path = _make_tmp_file(tmp_path)
-        received  = {}
+        received = {}
 
         def _fake_send(path, restore):
-            received["path"]    = path
+            received["path"] = path
             received["restore"] = restore
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._file_path = file_path
-        obj._on_send   = _fake_send
-        obj._compact   = False
-        obj._send_btn  = MagicMock()
+        obj._on_send = _fake_send
+        obj._compact = False
+        obj._send_btn = MagicMock()
         obj.winfo_exists = MagicMock(return_value=True)
 
         pda_mod.PostDownloadActions._on_send_click(obj)
@@ -477,16 +463,16 @@ class TestPostDownloadActionsLogic:
         assert callable(received["restore"])
 
     def test_on_send_no_callback_does_not_crash(self, tmp_path):
-        from ui.components.post_download_actions import PostDownloadActions
         import ui.components.post_download_actions as pda_mod
+        from ui.components.post_download_actions import PostDownloadActions
 
         file_path = _make_tmp_file(tmp_path)
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._file_path = file_path
-        obj._on_send   = None
-        obj._compact   = False
-        obj._send_btn  = MagicMock()
+        obj._on_send = None
+        obj._compact = False
+        obj._send_btn = MagicMock()
         obj.winfo_exists = MagicMock(return_value=True)
 
         # Must not raise.
@@ -496,14 +482,17 @@ class TestPostDownloadActionsLogic:
 
     def test_convert_formats_has_mp4_first(self):
         from ui.components.post_download_actions import CONVERT_FORMATS
+
         assert CONVERT_FORMATS[0][0] == "mp4"
 
     def test_convert_formats_contains_required_extensions(self):
         from ui.components.post_download_actions import CONVERT_FORMATS
+
         exts = {ext for ext, _ in CONVERT_FORMATS}
         assert {"mp4", "mp3", "mkv", "avi"}.issubset(exts)
 
     def test_convert_formats_all_have_labels(self):
         from ui.components.post_download_actions import CONVERT_FORMATS
+
         for ext, label in CONVERT_FORMATS:
             assert ext and label, f"Empty ext or label for entry ({ext!r}, {label!r})"

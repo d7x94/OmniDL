@@ -34,7 +34,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # UI stubs — must run before any ui.* import
 # Mirrors the pattern in test_queue_open_folder_fix.py
@@ -558,6 +557,7 @@ class TestDownloadServiceTiktok:
     def test_spawns_daemon_thread_for_valid_url(self):
         """Valid TikTok URL → a daemon thread is started."""
         import threading
+
         from app.services.download_service import DownloadService
 
         svc = DownloadService.__new__(DownloadService)
@@ -565,7 +565,6 @@ class TestDownloadServiceTiktok:
         svc._config.proxy = ""
 
         threads_started = []
-        original_start = threading.Thread.start
 
         def fake_start(self_thread):
             threads_started.append(self_thread)
@@ -655,6 +654,7 @@ class TestShortLinkResolution:
     def test_short_link_resolve_network_error_returns_false(self):
         """If HEAD request fails, short link is not mistaken for a profile."""
         import requests as req
+
         from utils.tiktok_live_checker import is_tiktok_profile_url
         with patch("requests.head", side_effect=req.exceptions.ConnectionError("fail")):
             # Falls back to original URL which doesn't match _PROFILE_RE -> False
@@ -685,3 +685,102 @@ class TestShortLinkResolution:
             is_tiktok_profile_url("https://vt.tiktok.com/ABCD/", proxy="http://127.0.0.1:8080")
         _, kwargs = mock_head.call_args
         assert kwargs.get("proxies", {}).get("http") == "http://127.0.0.1:8080"
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher: first-success wins
+# ---------------------------------------------------------------------------
+
+class TestDispatcherFirstSuccess:
+    def test_dispatcher_returns_first_success(self):
+        """pass1 succeeds immediately; pass2 has a 5s delay -- result arrives < 2s."""
+        import time
+        from unittest.mock import MagicMock
+
+        from utils.tiktok_detection.context import LiveCheckContext, LiveCheckResult
+        from utils.tiktok_detection.dispatcher import LiveDetectionDispatcher
+        from utils.tiktok_detection.health import StrategyHealthRegistry
+
+        fast = MagicMock()
+        fast.name = "fast"
+        fast.can_run.return_value = True
+        fast.check.return_value = LiveCheckResult(
+            live_url="https://www.tiktok.com/@u/live",
+            room_id="1234567890",
+            strategy_name="fast",
+        )
+
+        def _slow_check(ctx):
+            time.sleep(5)
+            return None
+
+        slow = MagicMock()
+        slow.name = "slow"
+        slow.can_run.return_value = True
+        slow.check.side_effect = _slow_check
+
+        registry = StrategyHealthRegistry()
+        dispatcher = LiveDetectionDispatcher([fast, slow], registry)
+
+        ctx = LiveCheckContext(username="u")
+        t0 = time.monotonic()
+        result = dispatcher.check(ctx)
+        elapsed = time.monotonic() - t0
+
+        assert result == ("https://www.tiktok.com/@u/live", "1234567890")
+        assert elapsed < 2.0, f"Expected result < 2s but took {elapsed:.2f}s"
+
+
+# ---------------------------------------------------------------------------
+# Health daemon: disables broken strategy
+# ---------------------------------------------------------------------------
+
+class TestHealthDaemonDisablesBrokenStrategy:
+    def test_health_daemon_disables_broken_strategy(self):
+        """After 2 probe failures, registry marks strategy disabled."""
+        from utils.tiktok_detection.health import StrategyHealthRegistry
+
+        registry = StrategyHealthRegistry()
+        assert registry.is_enabled("pass0_webcast_api") is True
+
+        registry.record_probe_failure("pass0_webcast_api")
+        assert registry.is_enabled("pass0_webcast_api") is True  # 1 failure, not yet disabled
+
+        registry.record_probe_failure("pass0_webcast_api")
+        assert registry.is_enabled("pass0_webcast_api") is False  # 2 failures -> disabled
+
+    def test_health_registry_reenables_on_success(self):
+        """A probe success re-enables a disabled strategy."""
+        from utils.tiktok_detection.health import StrategyHealthRegistry
+
+        registry = StrategyHealthRegistry()
+        registry.record_probe_failure("pass1_profile_page")
+        registry.record_probe_failure("pass1_profile_page")
+        assert registry.is_enabled("pass1_profile_page") is False
+
+        registry.record_probe_success("pass1_profile_page")
+        assert registry.is_enabled("pass1_profile_page") is True
+
+    def test_dispatcher_skips_disabled_strategy(self):
+        """Dispatcher does not call a strategy the registry has disabled."""
+        from unittest.mock import MagicMock
+
+        from utils.tiktok_detection.context import LiveCheckContext
+        from utils.tiktok_detection.dispatcher import LiveDetectionDispatcher
+        from utils.tiktok_detection.health import StrategyHealthRegistry
+
+        broken = MagicMock()
+        broken.name = "broken"
+        broken.can_run.return_value = True
+        broken.check.return_value = None
+
+        registry = StrategyHealthRegistry()
+        registry.record_probe_failure("broken")
+        registry.record_probe_failure("broken")
+
+        dispatcher = LiveDetectionDispatcher([broken], registry)
+        ctx = LiveCheckContext(username="u")
+        result = dispatcher.check(ctx)
+
+        assert result is None
+        broken.check.assert_not_called()

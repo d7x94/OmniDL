@@ -6,13 +6,9 @@ and get_deno_env() under all three search paths plus the not-found path.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -83,7 +79,7 @@ class TestLocateDenoSourceMode:
 
         with patch.object(_mod.Path, "__new__", side_effect=Path.__new__):
             # Direct approach: patch the module-level __file__ resolution
-            original = _mod.locate_deno.__wrapped__ if hasattr(_mod.locate_deno, "__wrapped__") else None
+            _mod.locate_deno.__wrapped__ if hasattr(_mod.locate_deno, "__wrapped__") else None
 
         # Simpler: just verify the function logic by calling _find_deno_in directly
         from utils.deno_locator import _find_deno_in

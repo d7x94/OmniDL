@@ -10,23 +10,21 @@ Covers the root-cause scenario:
 
 Run with:  pytest tests/test_queue_open_path.py -v
 """
+
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.downloader.download_manager import DownloadManager
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_config(tmp_path: Path):
     cfg = MagicMock()
@@ -46,14 +44,13 @@ def _wait_terminal(task: DownloadTask, timeout: float = 5.0) -> None:
     deadline = time.time() + timeout
     while task.status not in DownloadStatus.terminal_states():
         time.sleep(0.02)
-        assert time.time() < deadline, (
-            f"Task never reached terminal state (current: {task.status})"
-        )
+        assert time.time() < deadline, f"Task never reached terminal state (current: {task.status})"
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestQueueOpenPath:
     """
@@ -85,8 +82,7 @@ class TestQueueOpenPath:
         engine.download.side_effect = fake_download
         bus = MagicMock()
 
-        mgr = DownloadManager(config=_make_config(tmp_path), engine=engine,
-                              event_bus=bus)
+        mgr = DownloadManager(config=_make_config(tmp_path), engine=engine, event_bus=bus)
         mgr.start()
         try:
             task = _make_task(tmp_path)
@@ -116,14 +112,15 @@ class TestQueueOpenPath:
         final_file = custom_dir / "video.mp4"
         final_file.write_bytes(b"\x00" * 1024)
 
-        task = _make_task(tmp_path)          # output_dir = tmp_path (default)
-        task.filename = str(final_file)       # file is actually in custom_dir
+        task = _make_task(tmp_path)  # output_dir = tmp_path (default)
+        task.filename = str(final_file)  # file is actually in custom_dir
         task.status = DownloadStatus.COMPLETED
 
         opened_paths: list[Path] = []
 
         # Patch open_folder to capture the target instead of launching Finder
         import ui.components.download_item_widget as mod
+
         original_open_folder = mod.open_folder
         original_reveal = mod.reveal_in_explorer
 
@@ -134,11 +131,11 @@ class TestQueueOpenPath:
         mod.reveal_in_explorer = lambda p: False  # stub: no file-manager on CI
         try:
             from ui.components.download_item_widget import DownloadItemWidget
-            # Build a minimal widget without a real Tk root (unit-test safe)
-            widget = object.__new__(DownloadItemWidget)
+
+            widget = MagicMock()
             widget.task = task
             widget._completed_path = str(final_file)
-            widget._open_folder()
+            DownloadItemWidget._open_folder(widget)
 
             assert opened_paths, "_open_folder did not call open_folder at all"
             assert opened_paths[0] == custom_dir, (
@@ -166,18 +163,28 @@ class TestQueueOpenPath:
         # Re-create exactly what the patched _capturing_pp_hook does when
         # info_dict["filepath"] is present and the file passes _MEDIA_EXTS.
         from pathlib import Path as _Path
-        _MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
-                       ".m4v", ".mp3", ".m4a", ".opus", ".aac", ".flac", ".wav"}
+
+        _MEDIA_EXTS = {
+            ".mp4",
+            ".mkv",
+            ".webm",
+            ".mov",
+            ".avi",
+            ".flv",
+            ".m4v",
+            ".mp3",
+            ".m4a",
+            ".opus",
+            ".aac",
+            ".flac",
+            ".wav",
+        }
         _final_filepath: list[str] = []
 
         def _capturing_pp_hook(d: dict) -> None:
             if d.get("status") == "finished":
                 info = d.get("info_dict") or {}
-                fp = (
-                    info.get("filepath")
-                    or info.get("__real_download_filename")
-                    or ""
-                )
+                fp = info.get("filepath") or info.get("__real_download_filename") or ""
                 if fp:
                     p = _Path(fp)
                     if p.suffix.lower() in _MEDIA_EXTS and not fp.endswith(".part"):
@@ -188,17 +195,18 @@ class TestQueueOpenPath:
                             task.filename = fp
 
         # Fire the hook as yt-dlp would after FFmpegMerger finishes
-        _capturing_pp_hook({
-            "status": "finished",
-            "info_dict": {"filepath": str(final_file)},
-        })
+        _capturing_pp_hook(
+            {
+                "status": "finished",
+                "info_dict": {"filepath": str(final_file)},
+            }
+        )
 
         assert task.filename == str(final_file), (
             "task.filename was not updated by _capturing_pp_hook synchronously.\n"
             "Queue 'Open' would use an incorrect path."
         )
         assert _Path(task.filename).parent == tmp_path
-
 
     def test_relative_filename_anchored_to_output_dir(self, tmp_path):
         """
@@ -222,23 +230,24 @@ class TestQueueOpenPath:
         bare_name = "video.mp4"
 
         task = _make_task(tmp_path)
-        task.output_dir = str(download_dir)   # correct download directory
-        task.filename = bare_name              # bare name — PyInstaller scenario
+        task.output_dir = str(download_dir)  # correct download directory
+        task.filename = bare_name  # bare name — PyInstaller scenario
         task.status = DownloadStatus.COMPLETED
 
         opened_paths: list[Path] = []
 
         import ui.components.download_item_widget as mod
+
         original_open_folder = mod.open_folder
         original_reveal = mod.reveal_in_explorer
 
         mod.open_folder = lambda p: opened_paths.append(p)
         mod.reveal_in_explorer = lambda p: False
         try:
-            widget = object.__new__(mod.DownloadItemWidget)
+            widget = MagicMock()
             widget.task = task
             widget._completed_path = bare_name
-            widget._open_folder()
+            mod.DownloadItemWidget._open_folder(widget)
 
             assert opened_paths, "_open_folder did not call open_folder"
             assert opened_paths[0] == download_dir, (
@@ -248,6 +257,7 @@ class TestQueueOpenPath:
         finally:
             mod.open_folder = original_open_folder
             mod.reveal_in_explorer = original_reveal
+
     def test_fallback_to_output_dir_when_filename_empty(self, tmp_path):
         """
         When task.filename is empty, _open_folder must open task.output_dir
@@ -260,6 +270,7 @@ class TestQueueOpenPath:
         opened_paths: list[Path] = []
 
         import ui.components.download_item_widget as mod
+
         original_open_folder = mod.open_folder
 
         def spy_open_folder(path: Path) -> None:
@@ -267,10 +278,10 @@ class TestQueueOpenPath:
 
         mod.open_folder = spy_open_folder
         try:
-            widget = object.__new__(mod.DownloadItemWidget)
+            widget = MagicMock()
             widget.task = task
             widget._completed_path = ""
-            widget._open_folder()
+            mod.DownloadItemWidget._open_folder(widget)
 
             assert opened_paths, "_open_folder did not open anything when filename is empty"
             assert opened_paths[0] == Path(tmp_path), (

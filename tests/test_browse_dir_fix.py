@@ -14,6 +14,7 @@ FIX-BROWSE-3: type(ctypes.byref(x)) == CArgObject has no from_param method,
 Cross-platform: all tests that exercise Windows COM paths mock ctypes.windll
   so they pass on Linux/macOS CI as well.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -30,14 +31,25 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 # Import helpers — general_panel imports customtkinter which may be absent in CI
 # ---------------------------------------------------------------------------
 
+
 def _import_module():
     """Import general_panel, stubbing customtkinter if absent."""
     ctk_stub = None
     if "customtkinter" not in sys.modules:
         ctk_stub = types.ModuleType("customtkinter")
-        for attr in ("CTkFrame", "CTkLabel", "CTkButton", "CTkFont",
-                     "CTkOptionMenu", "CTkSwitch", "IntVar", "BooleanVar",
-                     "StringVar", "CTkSlider", "set_appearance_mode"):
+        for attr in (
+            "CTkFrame",
+            "CTkLabel",
+            "CTkButton",
+            "CTkFont",
+            "CTkOptionMenu",
+            "CTkSwitch",
+            "IntVar",
+            "BooleanVar",
+            "StringVar",
+            "CTkSlider",
+            "set_appearance_mode",
+        ):
             setattr(ctk_stub, attr, MagicMock())
         sys.modules["customtkinter"] = ctk_stub
 
@@ -46,18 +58,34 @@ def _import_module():
         if mod not in sys.modules:
             stub = types.ModuleType(mod)
             if mod == "ui.tabs.settings._base_panel":
+
                 class _BasePanel:
-                    def __init__(self, master, app): pass
+                    def __init__(self, master, app):
+                        pass
+
                     _section_labels = []
                     _row_labels = []
                     _sliders = []
                     _switches = []
-                    def _section(self, *a, **k): pass
-                    def _card(self, *a, **k): return MagicMock()
-                    def _slider_row(self, *a, **k): pass
-                    def _switch_row(self, *a, **k): pass
-                    def _add_value_label(self, *a, **k): pass
-                    def winfo_exists(self): return True
+
+                    def _section(self, *a, **k):
+                        pass
+
+                    def _card(self, *a, **k):
+                        return MagicMock()
+
+                    def _slider_row(self, *a, **k):
+                        pass
+
+                    def _switch_row(self, *a, **k):
+                        pass
+
+                    def _add_value_label(self, *a, **k):
+                        pass
+
+                    def winfo_exists(self):
+                        return True
+
                 stub._BasePanel = _BasePanel
             elif mod == "ui.themes.tokens":
                 stub.T = MagicMock()
@@ -65,6 +93,7 @@ def _import_module():
             sys.modules[mod] = stub
 
     import importlib
+
     if "ui.tabs.settings.general_panel" in sys.modules:
         del sys.modules["ui.tabs.settings.general_panel"]
     return importlib.import_module("ui.tabs.settings.general_panel")
@@ -73,6 +102,7 @@ def _import_module():
 # ---------------------------------------------------------------------------
 # Tests for _CANCELLED sentinel
 # ---------------------------------------------------------------------------
+
 
 class TestCancelledSentinel:
     """_CANCELLED must be a distinct non-None, non-string object."""
@@ -99,6 +129,7 @@ class TestCancelledSentinel:
 # Tests for _pick_folder_win32
 # ---------------------------------------------------------------------------
 
+
 class TestPickFolderWin32:
     """Tests for _pick_folder_win32 with mocked Windows COM layer."""
 
@@ -121,7 +152,6 @@ class TestPickFolderWin32:
 
         def fake_co_create(clsid, outer, ctx, iid, ppv):
             # Write a non-zero pointer into ppv to simulate success
-            import ctypes
             ppv._obj.value = dialog_ptr
             return co_create_hr
 
@@ -146,8 +176,7 @@ class TestPickFolderWin32:
         function must return the _CANCELLED sentinel, not None and not raise.
         This prevents _browse_dir from opening tkinter as a second dialog.
         """
-        import ctypes
-        fn = self._get_fn()
+        self._get_fn()
         _CANCELLED = self._get_cancelled()
 
         windll, ole32, shell32 = self._make_windll()
@@ -171,11 +200,11 @@ class TestPickFolderWin32:
         # byref wraps an object and exposes ._obj
         c = ctypes.c_void_p(42)
         bref = ctypes.byref(c)
-        assert hasattr(bref, '_obj'), "byref() must expose ._obj (CPython invariant)"
+        assert hasattr(bref, "_obj"), "byref() must expose ._obj (CPython invariant)"
 
         # Plain ctypes types do NOT have ._obj
         for val in (ctypes.c_uint(1), ctypes.c_long(2), ctypes.c_wchar_p("x")):
-            assert not hasattr(val, '_obj'), f"{type(val)} should not have ._obj"
+            assert not hasattr(val, "_obj"), f"{type(val)} should not have ._obj"
 
     def test_argtype_byref_mapped_to_void_p(self):
         """
@@ -189,18 +218,16 @@ class TestPickFolderWin32:
         if not hasattr(ctypes, "WINFUNCTYPE"):
             pytest.skip("WINFUNCTYPE not available on this platform")
 
-        import ctypes.wintypes as wt
-
         c = ctypes.c_void_p(0)
         bref = ctypes.byref(c)
 
         def _argtype(a):
-            return ctypes.c_void_p if hasattr(a, '_obj') else type(a)
+            return ctypes.c_void_p if hasattr(a, "_obj") else type(a)
 
         # Building WINFUNCTYPE with c_void_p for a byref arg must not raise
         arg_types = [ctypes.c_void_p, _argtype(bref)]
         try:
-            proto = ctypes.WINFUNCTYPE(ctypes.c_long, *arg_types)
+            ctypes.WINFUNCTYPE(ctypes.c_long, *arg_types)
         except TypeError as exc:
             pytest.fail(f"WINFUNCTYPE rejected fixed argtypes: {exc}")
 
@@ -226,6 +253,7 @@ class TestPickFolderWin32:
 # Tests for _browse_dir cancel behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestBrowseDirCancelBehaviour:
     """
     Verify that when _pick_folder_win32 returns _CANCELLED, _browse_dir
@@ -237,122 +265,91 @@ class TestBrowseDirCancelBehaviour:
         app.config.download_dir = str(tmp_path)
         return app
 
-    def _stub_tkinter(self, askdir_side_effect=None):
-        """Return a context manager that pre-stubs tkinter.filedialog."""
-        import contextlib, types as _types
-
-        @contextlib.contextmanager
-        def _ctx():
-            fd_mod = _types.ModuleType("tkinter.filedialog")
-            tk_mod = _types.ModuleType("tkinter")
-            tk_mod.filedialog = fd_mod
-
-            mock_askdir = MagicMock(side_effect=askdir_side_effect)
-            fd_mod.askdirectory = mock_askdir
-
-            prev_tk = sys.modules.get("tkinter")
-            prev_fd = sys.modules.get("tkinter.filedialog")
-            sys.modules["tkinter"] = tk_mod
-            sys.modules["tkinter.filedialog"] = fd_mod
-            try:
-                yield mock_askdir
-            finally:
-                if prev_tk is None:
-                    sys.modules.pop("tkinter", None)
-                else:
-                    sys.modules["tkinter"] = prev_tk
-                if prev_fd is None:
-                    sys.modules.pop("tkinter.filedialog", None)
-                else:
-                    sys.modules["tkinter.filedialog"] = prev_fd
-
-        return _ctx()
-
     def test_no_tkinter_on_cancelled(self, tmp_path):
         """
-        FIX-BROWSE-2: _browse_dir must return without calling askdirectory
+        FIX-BROWSE-2: _browse_dir must return without calling QFileDialog
         when _pick_folder_win32 returns _CANCELLED.
         """
         gp_mod = _import_module()
-        panel = object.__new__(gp_mod.GeneralPanel)
+        panel = MagicMock()
         panel._app = self._make_app(tmp_path)
         panel._dir_lbl = MagicMock()
 
-        with self._stub_tkinter(askdir_side_effect=lambda **k: "") as mock_ask, \
-             patch.object(gp_mod, "_pick_folder_win32",
-                          return_value=gp_mod._CANCELLED), \
-             patch("sys.platform", "win32"):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "QFileDialog") as mock_qfd,
+            patch.object(gp_mod, "_pick_folder_win32", return_value=gp_mod._CANCELLED),
+            patch("sys.platform", "win32"),
+        ):
+            gp_mod.GeneralPanel._browse_dir(panel)
 
-        mock_ask.assert_not_called(), (
-            "tkinter.filedialog.askdirectory must NOT be called when "
-            "_pick_folder_win32 returns _CANCELLED (FIX-BROWSE-2)"
-        )
+        mock_qfd.getExistingDirectory.assert_not_called()
 
     def test_tkinter_fallback_on_none(self, tmp_path):
         """
         When _pick_folder_win32 returns None (COM setup failed), _browse_dir
-        MUST open the tkinter fallback dialog.
+        MUST open QFileDialog.
         """
         gp_mod = _import_module()
-        panel = object.__new__(gp_mod.GeneralPanel)
+        panel = MagicMock()
         panel._app = self._make_app(tmp_path)
         panel._dir_lbl = MagicMock()
 
         new_dir = str(tmp_path)
 
-        with self._stub_tkinter(askdir_side_effect=lambda **k: new_dir) as mock_ask, \
-             patch.object(gp_mod, "_pick_folder_win32", return_value=None), \
-             patch("sys.platform", "win32"):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "QFileDialog") as mock_qfd,
+            patch.object(gp_mod, "_pick_folder_win32", return_value=None),
+            patch("sys.platform", "win32"),
+        ):
+            mock_qfd.getExistingDirectory.return_value = new_dir
+            gp_mod.GeneralPanel._browse_dir(panel)
 
-        mock_ask.assert_called_once(), (
-            "tkinter fallback must open when _pick_folder_win32 returns None"
-        )
+        mock_qfd.getExistingDirectory.assert_called_once()
 
     def test_config_not_updated_on_cancel(self, tmp_path):
         """
         After user cancels via COM dialog, config.download_dir must not change.
         """
         gp_mod = _import_module()
-        panel = object.__new__(gp_mod.GeneralPanel)
+        panel = MagicMock()
         panel._app = self._make_app(tmp_path)
         panel._dir_lbl = MagicMock()
 
-        with self._stub_tkinter(), \
-             patch.object(gp_mod, "_pick_folder_win32",
-                          return_value=gp_mod._CANCELLED), \
-             patch("sys.platform", "win32"):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "_pick_folder_win32", return_value=gp_mod._CANCELLED),
+            patch("sys.platform", "win32"),
+        ):
+            gp_mod.GeneralPanel._browse_dir(panel)
 
-        panel._app.config.set.assert_not_called(), (
-            "config.set must not be called when user cancels (FIX-BROWSE-2)"
-        )
+        panel._app.config.set.assert_not_called()
 
     def test_non_windows_uses_tkinter_directly(self, tmp_path):
         """On non-Windows platforms, _browse_dir must skip _pick_folder_win32."""
         gp_mod = _import_module()
-        panel = object.__new__(gp_mod.GeneralPanel)
+        panel = MagicMock()
         panel._app = self._make_app(tmp_path)
         panel._dir_lbl = MagicMock()
 
         new_dir = str(tmp_path)
         win32_called = []
 
-        with self._stub_tkinter(askdir_side_effect=lambda **k: new_dir), \
-             patch.object(gp_mod, "_pick_folder_win32",
-                          side_effect=lambda d: win32_called.append(True) or None), \
-             patch("sys.platform", "linux"):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "QFileDialog") as mock_qfd,
+            patch.object(
+                gp_mod, "_pick_folder_win32", side_effect=lambda d: win32_called.append(True) or None
+            ),
+            patch("sys.platform", "linux"),
+        ):
+            mock_qfd.getExistingDirectory.return_value = new_dir
+            gp_mod.GeneralPanel._browse_dir(panel)
 
-        assert not win32_called, (
-            "_pick_folder_win32 must not be called on non-Windows"
-        )
+        assert not win32_called
 
 
 # ---------------------------------------------------------------------------
 # Tests for FIX-BROWSE-4: _resolve_com_rename + no-mkdir for COM paths
 # ---------------------------------------------------------------------------
+
 
 class TestResolveComRename:
     """
@@ -402,6 +399,7 @@ class TestResolveComRename:
     def test_returns_most_recently_created(self, tmp_path):
         """When multiple recent dirs exist, the one with the latest ctime wins."""
         import time
+
         fn = _import_module()._resolve_com_rename
         older = tmp_path / "OlderDir"
         older.mkdir()
@@ -429,7 +427,7 @@ class TestBrowseDirNoMkdirForComPath:
     """
 
     def _make_panel(self, gp_mod, tmp_path):
-        panel = object.__new__(gp_mod.GeneralPanel)
+        panel = MagicMock()
         panel._app = MagicMock()
         panel._app.config.download_dir = str(tmp_path)
         panel._dir_lbl = MagicMock()
@@ -443,12 +441,13 @@ class TestBrowseDirNoMkdirForComPath:
         existing.mkdir()
 
         mkdir_calls = []
-        original_mkdir = existing.__class__.mkdir
 
-        with patch.object(gp_mod, "_pick_folder_win32", return_value=str(existing)), \
-             patch("sys.platform", "win32"), \
-             patch("pathlib.Path.mkdir", side_effect=lambda *a, **k: mkdir_calls.append(True)):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "_pick_folder_win32", return_value=str(existing)),
+            patch("sys.platform", "win32"),
+            patch("pathlib.Path.mkdir", side_effect=lambda *a, **k: mkdir_calls.append(True)),
+        ):
+            gp_mod.GeneralPanel._browse_dir(panel)
 
         assert not mkdir_calls, "mkdir must NOT be called for COM dialog result"
 
@@ -464,14 +463,14 @@ class TestBrowseDirNoMkdirForComPath:
         actual_path = tmp_path / "MyDownloads"
         actual_path.mkdir()
 
-        with patch.object(gp_mod, "_pick_folder_win32", return_value=str(stale_path)), \
-             patch("sys.platform", "win32"):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "_pick_folder_win32", return_value=str(stale_path)),
+            patch("sys.platform", "win32"),
+        ):
+            gp_mod.GeneralPanel._browse_dir(panel)
 
         # Config must be saved with the resolved name, not "New Folder"
-        panel._app.config.set.assert_called_with(
-            "download_dir", str(actual_path.resolve())
-        )
+        panel._app.config.set.assert_called_with("download_dir", str(actual_path.resolve()))
 
     def test_stale_com_path_no_candidate_shows_toast(self, tmp_path):
         """
@@ -483,34 +482,23 @@ class TestBrowseDirNoMkdirForComPath:
 
         stale_path = tmp_path / "New Folder"  # doesn't exist, no candidates
 
-        with patch.object(gp_mod, "_pick_folder_win32", return_value=str(stale_path)), \
-             patch("sys.platform", "win32"):
-            panel._browse_dir()
+        with (
+            patch.object(gp_mod, "_pick_folder_win32", return_value=str(stale_path)),
+            patch("sys.platform", "win32"),
+        ):
+            gp_mod.GeneralPanel._browse_dir(panel)
 
         panel._app.config.set.assert_not_called()
         panel._app.toast.assert_called()
 
     def test_tkinter_fallback_still_calls_mkdir(self, tmp_path):
         """
-        Tkinter fallback path must still call mkdir (user may type new paths).
+        QFileDialog fallback path must still call mkdir (user may type new paths).
         """
-        import types as _types
-
         gp_mod = _import_module()
         panel = self._make_panel(gp_mod, tmp_path)
 
         new_dir = tmp_path / "NewDir"  # doesn't exist yet
-
-        # Stub tkinter.filedialog in sys.modules (headless CI compatible)
-        fd_mod = _types.ModuleType("tkinter.filedialog")
-        fd_mod.askdirectory = MagicMock(return_value=str(new_dir))
-        prev_fd = sys.modules.get("tkinter.filedialog")
-        prev_tk = sys.modules.get("tkinter")
-        tk_stub = _types.ModuleType("tkinter")
-        tk_stub.filedialog = fd_mod
-        sys.modules["tkinter"] = tk_stub
-        sys.modules["tkinter.filedialog"] = fd_mod
-
         mkdir_calls = []
         original_mkdir = type(new_dir).mkdir
 
@@ -518,19 +506,15 @@ class TestBrowseDirNoMkdirForComPath:
             mkdir_calls.append(str(self_path))
             original_mkdir(self_path, *a, **k)
 
-        try:
-            with patch.object(gp_mod, "_pick_folder_win32", return_value=None), \
-                 patch("sys.platform", "win32"), \
-                 patch.object(type(new_dir), "mkdir", capturing_mkdir):
-                panel._browse_dir()
-        finally:
-            sys.modules.pop("tkinter", None)
-            sys.modules.pop("tkinter.filedialog", None)
-            if prev_tk is not None:
-                sys.modules["tkinter"] = prev_tk
-            if prev_fd is not None:
-                sys.modules["tkinter.filedialog"] = prev_fd
+        with (
+            patch.object(gp_mod, "QFileDialog") as mock_qfd,
+            patch.object(gp_mod, "_pick_folder_win32", return_value=None),
+            patch("sys.platform", "win32"),
+            patch.object(type(new_dir), "mkdir", capturing_mkdir),
+        ):
+            mock_qfd.getExistingDirectory.return_value = str(new_dir)
+            gp_mod.GeneralPanel._browse_dir(panel)
 
-        assert any(str(new_dir.resolve()) in c for c in mkdir_calls), \
-            "mkdir must still be called for tkinter fallback path"
-
+        assert any(str(new_dir.resolve()) in c for c in mkdir_calls), (
+            "mkdir must still be called for QFileDialog fallback path"
+        )

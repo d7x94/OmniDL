@@ -19,7 +19,6 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -168,8 +167,9 @@ class TestCancellationDetection:
     def test_cancelled_task_does_not_become_failed(self):
         """When the task is cancelled, download() should re-raise DownloadError
         (letting _run_task set CANCELLED), not RuntimeError (FAILED)."""
-        import infrastructure.downloader.yt_dlp_engine as mod
         import yt_dlp as real_yt_dlp
+
+        import infrastructure.downloader.yt_dlp_engine as mod
 
         cfg = make_config()
         engine = YtDlpEngine(cfg)
@@ -192,8 +192,9 @@ class TestCancellationDetection:
 
     def test_genuine_error_raises_runtime_error(self):
         """Non-cancellation errors must become RuntimeError with friendly message."""
-        import infrastructure.downloader.yt_dlp_engine as mod
         import yt_dlp as real_yt_dlp
+
+        import infrastructure.downloader.yt_dlp_engine as mod
 
         cfg = make_config()
         engine = YtDlpEngine(cfg)
@@ -858,7 +859,9 @@ class TestTikTokShortUrlRegex:
 
     def test_youtube_does_not_match_any_tiktok_re(self):
         from infrastructure.downloader.yt_dlp_engine import (
-            _TIKTOK_SHORT_RE, _TIKTOK_VOD_RE, _TIKTOK_LIVE_RE,
+            _TIKTOK_LIVE_RE,
+            _TIKTOK_SHORT_RE,
+            _TIKTOK_VOD_RE,
         )
         yt_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         assert not _TIKTOK_SHORT_RE.search(yt_url)

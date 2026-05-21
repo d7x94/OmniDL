@@ -3,6 +3,7 @@ app/services/download_service.py
 Application service — the only entry point the UI is allowed to call.
 Orchestrates use-cases, wires infrastructure, never touches CTk widgets.
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,6 +50,7 @@ def _should_fallback_to_gallery_dl(url: str, error_msg: str) -> bool:
     Auth / rate-limit errors won't be helped by gallery-dl — don't fall back.
     """
     from infrastructure.downloader.gallery_dl_engine import is_gallery_dl_url
+
     if not is_gallery_dl_url(url):
         return False
     return any(k in error_msg.lower() for k in _PHOTO_ERRORS)
@@ -120,9 +122,7 @@ class DownloadService:
             source=src,
             encode_settings=EncodeSettings(encoder_key="auto"),
             on_done=self._taildrop.send_converted_file,
-            on_error=lambda err: logger.warning(
-                "Auto-convert TikTok live failed: %s - %s", src.name, err
-            ),
+            on_error=lambda err: logger.warning("Auto-convert TikTok live failed: %s - %s", src.name, err),
         )
 
     # ── Analysis (async) ──────────────────────────────────────────────────
@@ -155,8 +155,10 @@ class DownloadService:
                 from infrastructure.downloader.instagram_live_engine import (  # noqa: PLC0415
                     is_instagram_live_url,
                 )
+
                 if is_instagram_live_url(url):
                     import re as _re  # noqa: PLC0415
+
                     _m = _re.search(r"instagram\.com/([A-Za-z0-9._]+)/live", url, _re.I)
                     _username = _m.group(1) if _m else ""
                     info = MediaInfo(
@@ -175,10 +177,12 @@ class DownloadService:
                 from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
                     is_kuaishou_url,
                 )
+
                 if is_kuaishou_url(url):
                     from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
                         KuaishouEngine,
                     )
+
                     _ks_engine = KuaishouEngine(self._config)
                     info = _ks_engine.extract_info(url, cancel_event=cancel_event)
                 else:
@@ -211,33 +215,30 @@ class DownloadService:
                 # TikTokLiveIE accepts this pattern and uses room_id directly,
                 # bypassing the profile-page scrape entirely.
                 import re as _re  # noqa: PLC0415
+
                 _tiktok_any_live_re = _re.compile(
                     r"(?:(?:vt|vm)\.tiktok\.com/|tiktok\.com/@[A-Za-z0-9_.]+/live)",
                     _re.I,
                 )
                 if (
-                    ("not currently live" in err_l or "channel is not currently live" in err_l)
-                    and _tiktok_any_live_re.search(url)
-                ):
+                    "not currently live" in err_l or "channel is not currently live" in err_l
+                ) and _tiktok_any_live_re.search(url):
                     try:
                         from utils.tiktok_live_checker import (  # noqa: PLC0415
                             _check_tiktok_live_with_room_id,
                             _resolve_short_link,
                         )
+
                         proxy = getattr(self._config, "proxy", "") or ""
                         # BUG-TT-07 FIX: resolve TikTok cookie and pass it to
                         # _check_tiktok_live_with_room_id so the profile page
                         # fetch carries a valid session cookie.  TikTok now
                         # strips liveRoomInfo for unauthenticated requests.
-                        _tt_cookie_raw = _resolve_cookie(
-                            "https://www.tiktok.com/", self._config
-                        ) or ""
+                        _tt_cookie_raw = _resolve_cookie("https://www.tiktok.com/", self._config) or ""
                         _tt_cookie_txt = ""
                         _tt_cookie_is_temp = False
                         if _tt_cookie_raw:
-                            _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(
-                                _tt_cookie_raw
-                            )
+                            _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(_tt_cookie_raw)
                         # Resolve short link first if needed.
                         # BUG-TT-09: keep the resolved URL (which contains
                         # sec_user_id in its query string) so pass-0 webcast
@@ -246,9 +247,7 @@ class DownloadService:
                         if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
                             resolved = _resolve_short_link(url, proxy=proxy)
 
-                        _tiktok_live_re = _re.compile(
-                            r"tiktok\.com/@([A-Za-z0-9_.]+)/live", _re.I
-                        )
+                        _tiktok_live_re = _re.compile(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", _re.I)
                         m = _tiktok_live_re.search(resolved)
                         if m:
                             _username = m.group(1)
@@ -273,7 +272,8 @@ class DownloadService:
                                 logger.info(
                                     "BUG-TT-06: TikTok live @%s roomId=%s"
                                     " -- using canonical live URL for download",
-                                    _username, _room_id,
+                                    _username,
+                                    _room_id,
                                 )
                                 info = MediaInfo(
                                     url=_download_url,
@@ -282,6 +282,7 @@ class DownloadService:
                                     platform="TikTok",
                                     source_engine="yt_dlp",
                                     is_live=True,
+                                    tiktok_room_id=_room_id,
                                 )
                                 self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
                                 on_done(info)
@@ -293,12 +294,14 @@ class DownloadService:
                                 # of inconsistency can last 30-90s; retry checker
                                 # + extract_info up to 3 times with backoff.
                                 import time as _time_tt19  # noqa: PLC0415
+
                                 for _retry_delay in (10, 20, 30):
                                     logger.info(
                                         "TikTok live checker: @%s -- roomId not found"
                                         " (bot-detection or API race);"
                                         " waiting %ds, retrying",
-                                        _username, _retry_delay,
+                                        _username,
+                                        _retry_delay,
                                     )
                                     _time_tt19.sleep(_retry_delay)
                                     _room_result2 = _check_tiktok_live_with_room_id(
@@ -310,9 +313,10 @@ class DownloadService:
                                     if _room_result2:
                                         _live_url2, _room_id2 = _room_result2
                                         logger.info(
-                                            "BUG-TT-19: checker succeeded on %ds"
-                                            " retry @%s roomId=%s",
-                                            _retry_delay, _username, _room_id2,
+                                            "BUG-TT-19: checker succeeded on %ds retry @%s roomId=%s",
+                                            _retry_delay,
+                                            _username,
+                                            _room_id2,
                                         )
                                         _info2 = MediaInfo(
                                             url=_live_url2,
@@ -321,35 +325,31 @@ class DownloadService:
                                             platform="TikTok",
                                             source_engine="yt_dlp",
                                             is_live=True,
+                                            tiktok_room_id=_room_id2,
                                         )
-                                        self._bus.publish(
-                                            EventBus.ANALYSIS_DONE, info=_info2
-                                        )
+                                        self._bus.publish(EventBus.ANALYSIS_DONE, info=_info2)
                                         on_done(_info2)
                                         return
                                     try:
                                         _retry_info = self._engine.extract_info(url)
-                                        self._bus.publish(
-                                            EventBus.ANALYSIS_DONE, info=_retry_info
-                                        )
+                                        self._bus.publish(EventBus.ANALYSIS_DONE, info=_retry_info)
                                         on_done(_retry_info)
                                         return
                                     except Exception as _retry_exc:
                                         logger.debug(
-                                            "BUG-TT-19: retry after %ds also"
-                                            " failed: %s",
-                                            _retry_delay, _retry_exc,
+                                            "BUG-TT-19: retry after %ds also failed: %s",
+                                            _retry_delay,
+                                            _retry_exc,
                                         )
                                 # fall through to on_error() below
                     except Exception as _tt_exc:
-                        logger.debug(
-                            "TikTok live short-link resolve failed: %s", _tt_exc
-                        )
+                        logger.debug("TikTok live short-link resolve failed: %s", _tt_exc)
                     finally:
                         # BUG-TT-07: clean up decrypted temp cookie file
                         if _tt_cookie_is_temp and _tt_cookie_txt:
                             try:
                                 import os as _os  # noqa: PLC0415
+
                                 _os.unlink(_tt_cookie_txt)
                             except OSError:
                                 pass
@@ -359,8 +359,7 @@ class DownloadService:
                 # the correct MediaInfo (source_engine="gallery_dl").
                 if self._gallery_engine and _should_fallback_to_gallery_dl(url, err):
                     logger.info(
-                        "yt-dlp returned no video formats for %s — "
-                        "falling back to gallery-dl",
+                        "yt-dlp returned no video formats for %s — falling back to gallery-dl",
                         url,
                     )
                     try:
@@ -397,11 +396,11 @@ class DownloadService:
         """
         # Duplicate guard: only block active (not terminal) duplicates.
         for existing in self._manager.get_all_tasks():
-            if (existing.url == url
-                    and existing.status in DownloadStatus.active_states()):
+            if existing.url == url and existing.status in DownloadStatus.active_states():
                 logger.info(
                     "Duplicate URL ignored — task %s already active: %s",
-                    existing.id, url,
+                    existing.id,
+                    url,
                 )
                 return existing
 
@@ -475,8 +474,12 @@ class DownloadService:
             by_platform[p] = by_platform.get(p, 0) + 1
             by_status[s] = by_status.get(s, 0) + 1
             total_bytes += e.get("downloaded_bytes", 0)
-        return {"total": len(entries), "total_bytes": total_bytes,
-                "by_platform": by_platform, "by_status": by_status}
+        return {
+            "total": len(entries),
+            "total_bytes": total_bytes,
+            "by_platform": by_platform,
+            "by_status": by_status,
+        }
 
     @property
     def taildrop(self) -> "TaildropService":
@@ -567,10 +570,9 @@ class DownloadService:
         # Use Instagram-specific cookie when available — instagram_live_checker
         # requires a valid sessionid from Instagram (not from another platform).
         from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
-        cookie_file = (
-            _resolve_cookie("https://www.instagram.com/", self._config) or ""
-        )
-        proxy       = self._config.proxy
+
+        cookie_file = _resolve_cookie("https://www.instagram.com/", self._config) or ""
+        proxy = self._config.proxy
 
         def _worker() -> None:
             try:
@@ -634,6 +636,7 @@ class DownloadService:
                 if _tt_cookie_is_temp and _tt_cookie_txt:
                     try:
                         import os as _os  # noqa: PLC0415
+
                         _os.unlink(_tt_cookie_txt)
                     except OSError:
                         pass
@@ -652,6 +655,11 @@ class DownloadService:
         # Taildrop must close first: its executor may still be sending a
         # file triggered by the last DOWNLOAD_COMPLETED event.
         self._taildrop.close()
+        from utils.tiktok_live_checker import get_health_daemon as _get_hd  # noqa: PLC0415
+
+        daemon = _get_hd()
+        if daemon is not None:
+            daemon.stop()
         self._history_executor.shutdown(wait=True)
 
     # ── Internal ──────────────────────────────────────────────────────────

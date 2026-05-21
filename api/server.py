@@ -1355,11 +1355,8 @@ def create_app(
             path=str(target),
             media_type=mime,
             filename=target.name,
-            headers={
-                "Content-Disposition": 'inline; filename="{}"'.format(
-                    "".join(c if c >= " " and c != '"' else "_" for c in target.name)
-                )
-            },
+            content_disposition_type="inline",
+            headers={"Accept-Ranges": "bytes"},
         )
 
     @app.post(

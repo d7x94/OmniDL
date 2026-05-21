@@ -279,7 +279,7 @@ class TestSettingsTabBrowserVar:
     @pytest.fixture(autouse=True)
     def _src(self):
         repo_root = pathlib.Path(__file__).parent.parent
-        self.src = (repo_root / "ui" / "tabs" / "settings" / "network_panel.py").read_text()
+        self.src = (repo_root / "ui" / "tabs" / "settings" / "network_panel.py").read_text(encoding="utf-8")
 
     def test_browser_var_attribute_exists(self):
         """NetworkPanel must define self._browser_combo."""

@@ -16,12 +16,9 @@ Covers:
 """
 from __future__ import annotations
 
-import io
 import tempfile
 import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
-from http.cookiejar import MozillaCookieJar
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -91,7 +88,7 @@ class TestCSRFTokenHeader:
 
     def test_csrftoken_empty_string_when_cookie_absent(self, tmp_path):
         """If csrftoken not in jar, header should be '' (not KeyError)."""
-        cookie_path = _make_cookie_file()  # has csrftoken by default
+        _make_cookie_file()  # has csrftoken by default
         # Manually write a cookie file without csrftoken
         no_csrf = tmp_path / "no_csrf.txt"
         no_csrf.write_text(
@@ -381,7 +378,7 @@ class TestRecoverStuckChecksMethod:
     def test_method_exists(self):
         from ui.tabs.live_monitor_tab import LiveMonitorTab
         assert hasattr(LiveMonitorTab, "_recover_stuck_checks")
-        assert callable(getattr(LiveMonitorTab, "_recover_stuck_checks"))
+        assert callable(LiveMonitorTab._recover_stuck_checks)
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +406,7 @@ class TestCheckErrorEscalation:
         hard_keywords = ["private", "not found", "404", "login", "checkpoint",
                          "unsupported url", "removed"]
         from ui.tabs.live_monitor_tab import _MonitorItem
-        item = _MonitorItem(url="https://www.instagram.com/u/")
+        _MonitorItem(url="https://www.instagram.com/u/")
         for kw in hard_keywords:
             err_l = kw.lower()
             is_hard = any(k in err_l for k in (
@@ -420,7 +417,7 @@ class TestCheckErrorEscalation:
 
     def test_escalation_threshold(self):
         """After MAX_CONSECUTIVE_FAILURES, item should be in ERROR state."""
-        from ui.tabs.live_monitor_tab import _MonitorItem, _MonitorState, MAX_CONSECUTIVE_FAILURES
+        from ui.tabs.live_monitor_tab import MAX_CONSECUTIVE_FAILURES, _MonitorItem
         item = _MonitorItem(url="https://www.instagram.com/u/")
         item.consecutive_failures = MAX_CONSECUTIVE_FAILURES - 1
         # One more transient failure should trigger escalation
@@ -446,7 +443,7 @@ class TestRecoverStuckChecksLogic:
 
     def test_checking_timeout_constant_used_correctly(self):
         """An item stuck in CHECKING for > _CHECKING_TIMEOUT_S should be recoverable."""
-        from ui.tabs.live_monitor_tab import _MonitorItem, _MonitorState, _CHECKING_TIMEOUT_S
+        from ui.tabs.live_monitor_tab import _CHECKING_TIMEOUT_S, _MonitorItem, _MonitorState
 
         item = _MonitorItem(url="https://www.instagram.com/u/")
         item.state = _MonitorState.CHECKING
@@ -460,7 +457,7 @@ class TestRecoverStuckChecksLogic:
 
     def test_non_stuck_checking_not_affected(self):
         """An item that just started checking should NOT be timed out."""
-        from ui.tabs.live_monitor_tab import _MonitorItem, _MonitorState, _CHECKING_TIMEOUT_S
+        from ui.tabs.live_monitor_tab import _CHECKING_TIMEOUT_S, _MonitorItem, _MonitorState
 
         item = _MonitorItem(url="https://www.instagram.com/u/")
         item.state = _MonitorState.CHECKING

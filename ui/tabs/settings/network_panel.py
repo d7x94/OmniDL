@@ -57,7 +57,8 @@ _PC_PLATFORMS = [
     ("kuaishou", "Kuaishou"),
 ]
 
-_INPUT_SS = lambda border_color="": (
+def _INPUT_SS(border_color=""):
+    return (
     f"QLineEdit {{ background: {T.input}; color: {T.text}; border: 1px solid "
     f"{border_color or T.border2}; border-radius: 8px; padding: 6px 12px; }}"
 )

@@ -15,21 +15,19 @@ All filesystem and FFmpeg calls are mocked — no real subprocess or disk I/O.
 """
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services.remote_convert_service import (
-    MAX_JOBS,
-    RemoteConvertService,
     _VALID_ENCODERS,
     _VALID_QUALITIES,
     _VALID_SPEEDS,
+    MAX_JOBS,
+    RemoteConvertService,
 )
 from domain.models.conversion_job import ConversionJob, ConversionStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -357,7 +355,6 @@ class TestStartConvertCallbacks:
         svc._bus.publish_convert_progress.assert_called()
 
     def test_on_done_sets_completed_status(self, tmp_path):
-        from pathlib import Path
         _, job, cbs = self._capture_callbacks(tmp_path)
         out = tmp_path / "out.mp4"
         out.write_bytes(b"\x00" * 8)
@@ -377,7 +374,6 @@ class TestStartConvertCallbacks:
 
     def test_on_done_with_taildrop(self, tmp_path):
         """on_done calls taildrop.send_converted_file when taildrop is set."""
-        from pathlib import Path
         config = MagicMock()
         config.download_dir = str(tmp_path)
         event_bus = MagicMock()
@@ -401,7 +397,6 @@ class TestStartConvertCallbacks:
 
     def test_on_done_taildrop_exception_swallowed(self, tmp_path):
         """Taildrop exception in on_done must not propagate."""
-        from pathlib import Path
         config = MagicMock()
         config.download_dir = str(tmp_path)
         event_bus = MagicMock()
@@ -488,7 +483,8 @@ class TestCancelConvertBranches:
         """cancel_convert() must invoke _cancel_fn when set."""
         svc = _make_service(tmp_path)
         cancel_called = []
-        fake_cancel = lambda: cancel_called.append(True)
+        def fake_cancel():
+            return cancel_called.append(True)
 
         with patch.object(svc._queue, "submit", return_value=fake_cancel):
             job = svc.start_convert("tid", _dummy_file(tmp_path))

@@ -16,23 +16,21 @@ Each test is tagged with the original audit finding it covers:
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── CRIT-1: get_task() present on DownloadService ─────────────────────────────
 
 def test_download_service_has_get_task(tmp_path):
     """DownloadService must expose get_task() — absence caused an AttributeError
     crash in QueueTab every time a task was inspected or cancelled by ID."""
+    from app.services.download_service import DownloadService
     from infrastructure.config.config_manager import ConfigManager
     from infrastructure.downloader.download_manager import DownloadManager
     from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
     from infrastructure.storage.history_repository import HistoryRepository
-    from app.services.download_service import DownloadService
 
     cfg = ConfigManager(tmp_path / "config.json")
     engine = YtDlpEngine(cfg)
@@ -57,11 +55,11 @@ def test_download_service_has_get_task(tmp_path):
 def test_service_facade_get_task_round_trips(tmp_path):
     """ServiceFacade.get_task() must delegate to DownloadService.get_task()
     without raising."""
+    from app.services.download_service import DownloadService
     from infrastructure.config.config_manager import ConfigManager
     from infrastructure.downloader.download_manager import DownloadManager
     from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
     from infrastructure.storage.history_repository import HistoryRepository
-    from app.services.download_service import DownloadService
 
     cfg = ConfigManager(tmp_path / "config.json")
     engine = YtDlpEngine(cfg)
@@ -171,10 +169,9 @@ class TestInstallYtdlpFrozenSha256:
     def test_sha256_mismatch_raises(self, tmp_path):
         """A wheel whose digest does not match the PyPI metadata must be
         rejected with a RuntimeError before any extraction occurs."""
-        import json
         import hashlib
-        from unittest.mock import patch, MagicMock
-        import io
+        import json
+        from unittest.mock import MagicMock
 
         fake_meta = self._make_fake_meta(sha256="expected_hash_abc")
         fake_whl_content = b"PK\x03\x04fake_wheel_content"
@@ -208,7 +205,6 @@ class TestInstallYtdlpFrozenSha256:
                     with patch("pathlib.Path.read_bytes", return_value=fake_whl_content):
                         with patch("pathlib.Path.unlink"):
                             with patch("pathlib.Path.mkdir"):
-                                import sys
                                 # Import the function from the module
                                 import importlib
                                 settings_mod = importlib.import_module("ui.tabs.settings_tab")
@@ -219,7 +215,7 @@ class TestInstallYtdlpFrozenSha256:
         """If PyPI returns a release without a SHA-256 digest, the update must
         be aborted with a clear RuntimeError."""
         import json
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
 
         # Release entry missing the 'digests' key
         fake_meta = {
@@ -294,6 +290,7 @@ def test_logger_uses_rotating_file_handler(tmp_path):
     FileHandler, so log files do not grow without bound."""
     import logging
     from logging.handlers import RotatingFileHandler
+
     from utils.logger import setup_logging
 
     # Use a separate logger to avoid polluting the root logger for other tests
@@ -335,6 +332,7 @@ def test_eventbus_uses_rlock():
     """EventBus._lock must be an RLock, not a plain Lock.
     A handler that calls subscribe() during publish() would deadlock with Lock."""
     import threading
+
     from app.event_bus import EventBus
 
     bus = EventBus()
@@ -405,7 +403,7 @@ def test_open_folder_logs_on_failure(tmp_path, caplog):
     """open_folder() must log a debug message when the OS call fails instead
     of silently swallowing the exception."""
     import logging
-    from unittest.mock import patch
+
     from utils.helpers import open_folder
 
     with patch("subprocess.Popen", side_effect=OSError("no such program")):

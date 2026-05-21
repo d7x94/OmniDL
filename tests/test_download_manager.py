@@ -18,7 +18,6 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.downloader.download_manager import DownloadManager
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -297,7 +296,7 @@ class TestProgressAndFutureDone:
     def test_on_future_done_logs_escaped_exception(self):
         """_on_future_done must log unhandled exceptions that escape _run_task."""
         import concurrent.futures
-        from app.event_bus import EventBus
+
         bus = make_bus()
         mgr = DownloadManager(config=make_config(), engine=make_engine(), event_bus=bus)
         mgr.start()
@@ -316,6 +315,7 @@ class TestCancelBeforeFirstAttempt:
     def test_cancel_while_queued_skips_download(self):
         """Cancelling a task before the first attempt must hit the break at line 213."""
         import time
+
         from domain.enums.download_status import DownloadStatus
 
         engine = MagicMock()
@@ -430,6 +430,7 @@ class TestPauseResumeCancelGetAll:
 
     def test_clear_terminal_removes_completed(self):
         import time
+
         from domain.enums.download_status import DownloadStatus
         engine = make_engine()
         engine.download.return_value = None  # instant success
@@ -449,6 +450,7 @@ class TestPauseResumeCancelGetAll:
 
     def test_clear_terminal_respects_exclude_ids(self):
         import time
+
         from domain.enums.download_status import DownloadStatus
         engine = make_engine()
         engine.download.return_value = None

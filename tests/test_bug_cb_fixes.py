@@ -10,6 +10,7 @@ Covers:
 - no impersonate key when curl_cffi unavailable
 - allow_unplayable_formats not regressed (was dropped in a prior edit)
 """
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -22,19 +23,20 @@ from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 # Helpers (mirrors make_config / make_task from test_yt_dlp_engine.py)
 # ---------------------------------------------------------------------------
 
+
 def _make_config(**kwargs):
     cfg = MagicMock()
-    cfg.extra_args        = kwargs.get("extra_args", "")
-    cfg.proxy             = kwargs.get("proxy", "")
-    cfg.use_cookies       = kwargs.get("use_cookies", False)
-    cfg.cookies_browser   = kwargs.get("cookies_browser", "chrome")
-    cfg.max_retries       = kwargs.get("max_retries", 3)
-    cfg.embed_thumbnail   = kwargs.get("embed_thumbnail", False)
-    cfg.embed_metadata    = kwargs.get("embed_metadata", False)
-    cfg.download_dir      = kwargs.get("download_dir", Path("/tmp"))  # nosec B108
-    cfg.cookie_file       = ""
-    cfg.platform_cookies  = {}
-    cfg.config_path       = Path("/tmp/config.json")  # nosec B108
+    cfg.extra_args = kwargs.get("extra_args", "")
+    cfg.proxy = kwargs.get("proxy", "")
+    cfg.use_cookies = kwargs.get("use_cookies", False)
+    cfg.cookies_browser = kwargs.get("cookies_browser", "chrome")
+    cfg.max_retries = kwargs.get("max_retries", 3)
+    cfg.embed_thumbnail = kwargs.get("embed_thumbnail", False)
+    cfg.embed_metadata = kwargs.get("embed_metadata", False)
+    cfg.download_dir = kwargs.get("download_dir", Path("/tmp"))  # nosec B108
+    cfg.cookie_file = ""
+    cfg.platform_cookies = {}
+    cfg.config_path = Path("/tmp/config.json")  # nosec B108
     return cfg
 
 
@@ -114,6 +116,7 @@ class TestClipboardUrlExtraction:
 # curl_cffi opts injection — extract_info path
 # ---------------------------------------------------------------------------
 
+
 class TestCurlCffiExtractInfoOpts:
     """BUG-CB — impersonate must appear in extract_info opts iff curl_cffi available."""
 
@@ -125,10 +128,13 @@ class TestCurlCffiExtractInfoOpts:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
             def extract_info(self, url, download=False):
                 return {
                     "id": "abc",
@@ -141,22 +147,26 @@ class TestCurlCffiExtractInfoOpts:
                     "is_live": False,
                     "was_live": False,
                 }
-            def add_default_info_extractors(self): pass
+
+            def add_default_info_extractors(self):
+                pass
 
         cfg = _make_config()
         engine = YtDlpEngine(cfg)
 
         fake_target = MagicMock()
         fake_target.client = "chrome"
-        fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"
+        fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"  # type: ignore[method-assign, misc, assignment]
 
         # Use a non-Kuaishou URL so extract_info does NOT route to kuaishou_engine
         # (which never constructs YoutubeDL and would leave `captured` empty).
         test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        with patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available), \
-             patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None), \
-             patch.object(mod, "_check_unsupported_url", return_value=None), \
-             patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+        with (
+            patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available),
+            patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None),
+            patch.object(mod, "_check_unsupported_url", return_value=None),
+            patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL),
+        ):
             try:
                 engine.extract_info(test_url)
             except Exception:
@@ -175,14 +185,13 @@ class TestCurlCffiExtractInfoOpts:
 
     def test_impersonate_absent_when_curl_cffi_unavailable(self):
         opts = self._captured_extract_opts(curl_available=False)
-        assert "impersonate" not in opts, (
-            "impersonate must not be set when _CURL_CFFI_AVAILABLE=False"
-        )
+        assert "impersonate" not in opts, "impersonate must not be set when _CURL_CFFI_AVAILABLE=False"
 
 
 # ---------------------------------------------------------------------------
 # curl_cffi opts injection — download path
 # ---------------------------------------------------------------------------
+
 
 class TestCurlCffiDownloadOpts:
     """BUG-CB — impersonate must appear in download opts iff curl_cffi available."""
@@ -195,10 +204,13 @@ class TestCurlCffiDownloadOpts:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
             def download(self, urls):
                 pass
 
@@ -208,11 +220,13 @@ class TestCurlCffiDownloadOpts:
 
         fake_target = MagicMock()
         fake_target.client = "chrome"
-        fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"
+        fake_target.__str__ = lambda s: "ImpersonateTarget(client='chrome')"  # type: ignore[method-assign, misc, assignment]
 
-        with patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available), \
-             patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None), \
-             patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+        with (
+            patch.object(mod, "_CURL_CFFI_AVAILABLE", curl_available),
+            patch.object(mod, "_IMPERSONATE_TARGET", fake_target if curl_available else None),
+            patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL),
+        ):
             engine.download(task)
 
         return captured
@@ -248,6 +262,7 @@ class TestCurlCffiDownloadOpts:
 # BUG-CC: TLS hard-stop and friendly error
 # ---------------------------------------------------------------------------
 
+
 class TestBugCcTlsHardStop:
     """BUG-CC: TLS errors must not retry (hard-stop) and must produce a friendly message."""
 
@@ -267,9 +282,13 @@ class TestBugCcTlsHardStop:
         )
 
         sleep_calls = []
-        with patch.object(mod.yt_dlp, "YoutubeDL") as FakeYDL, \
-             patch("infrastructure.downloader.yt_dlp_engine.time.sleep",
-                   side_effect=lambda s: sleep_calls.append(s)):
+        with (
+            patch.object(mod.yt_dlp, "YoutubeDL") as FakeYDL,
+            patch(
+                "infrastructure.downloader.yt_dlp_engine.time.sleep",
+                side_effect=lambda s: sleep_calls.append(s),
+            ),
+        ):
             instance = MagicMock()
             instance.__enter__ = lambda s: s
             instance.__exit__ = MagicMock(return_value=False)
@@ -277,7 +296,7 @@ class TestBugCcTlsHardStop:
             FakeYDL.return_value = instance
 
             with pytest.raises(RuntimeError):
-                engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
+                engine.extract_info("https://www.youtube.com/watch?v=test")
 
         # hard-stop: no sleep means no retry
         assert sleep_calls == [], "TLS error must not trigger retries"
@@ -292,14 +311,16 @@ class TestBugCcTlsHardStop:
         cfg = _make_config()
         engine = YtDlpEngine(cfg)
 
-        tls_exc = yt_dlp.utils.DownloadError(
-            "Failed to perform, curl: (35) TLS connect error"
-        )
+        tls_exc = yt_dlp.utils.DownloadError("Failed to perform, curl: (35) TLS connect error")
 
         sleep_calls = []
-        with patch.object(mod.yt_dlp, "YoutubeDL") as FakeYDL, \
-             patch("infrastructure.downloader.yt_dlp_engine.time.sleep",
-                   side_effect=lambda s: sleep_calls.append(s)):
+        with (
+            patch.object(mod.yt_dlp, "YoutubeDL") as FakeYDL,
+            patch(
+                "infrastructure.downloader.yt_dlp_engine.time.sleep",
+                side_effect=lambda s: sleep_calls.append(s),
+            ),
+        ):
             instance = MagicMock()
             instance.__enter__ = lambda s: s
             instance.__exit__ = MagicMock(return_value=False)
@@ -307,19 +328,23 @@ class TestBugCcTlsHardStop:
             FakeYDL.return_value = instance
 
             with pytest.raises(RuntimeError):
-                engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
+                engine.extract_info("https://www.youtube.com/watch?v=test")
 
         assert sleep_calls == [], "TLS error must not trigger retries"
 
     def test_friendly_error_ssl_routines(self):
         from infrastructure.downloader.yt_dlp_engine import _friendly_error
-        msg = ("ERROR: [generic] Unable to download webpage: curl: (35) TLS connect error: "
-               "error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER")
+
+        msg = (
+            "ERROR: [generic] Unable to download webpage: curl: (35) TLS connect error: "
+            "error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER"
+        )
         result = _friendly_error(msg)
         assert "curl_cffi" in result or "TLS" in result or "curl-cffi" in result
 
     def test_friendly_error_curl_35(self):
         from infrastructure.downloader.yt_dlp_engine import _friendly_error
+
         result = _friendly_error("curl: (35) SSL connect error")
         assert "curl_cffi" in result or "TLS" in result or "curl-cffi" in result
 
@@ -328,19 +353,23 @@ class TestBugCcTlsHardStop:
 # BUG-CC: Kuaishou short URL pre-resolver
 # ---------------------------------------------------------------------------
 
+
 class TestKuaishhouPreResolver:
     """BUG-CC: _resolve_kuaishou_url and _KUAISHOU_SHORT_RE."""
 
     def test_regex_matches_v_kuaishou(self):
         from infrastructure.downloader.yt_dlp_engine import _KUAISHOU_SHORT_RE
+
         assert _KUAISHOU_SHORT_RE.search("https://v.kuaishou.com/nsLRaZq3")
 
     def test_regex_matches_www_short_video(self):
         from infrastructure.downloader.yt_dlp_engine import _KUAISHOU_SHORT_RE
+
         assert _KUAISHOU_SHORT_RE.search("https://www.kuaishou.com/short-video/abc123")
 
     def test_regex_does_not_match_other(self):
         from infrastructure.downloader.yt_dlp_engine import _KUAISHOU_SHORT_RE
+
         assert not _KUAISHOU_SHORT_RE.search("https://www.youtube.com/watch?v=abc")
         assert not _KUAISHOU_SHORT_RE.search("https://v.tiktok.com/abc")
 
@@ -358,8 +387,10 @@ class TestKuaishhouPreResolver:
         fake_requests.head.return_value = fake_resp
         fake_requests.get.return_value = fake_resp
 
-        with patch.object(mod, "_CURL_CFFI_AVAILABLE", True), \
-             patch.object(curl_cffi, "requests", fake_requests):
+        with (
+            patch.object(mod, "_CURL_CFFI_AVAILABLE", True),
+            patch.object(curl_cffi, "requests", fake_requests),
+        ):
             result = mod._resolve_kuaishou_url("https://v.kuaishou.com/nsLRaZq3")
 
         assert result == "https://www.kuaishou.com/short-video/abc123xyz"
@@ -374,8 +405,7 @@ class TestKuaishhouPreResolver:
         fake_cffi = MagicMock()
         fake_cffi.head.side_effect = Exception("DNS failure")
 
-        with patch.object(mod, "_CURL_CFFI_AVAILABLE", True), \
-             patch.object(curl_cffi, "requests", fake_cffi):
+        with patch.object(mod, "_CURL_CFFI_AVAILABLE", True), patch.object(curl_cffi, "requests", fake_cffi):
             original = "https://v.kuaishou.com/nsLRaZq3"
             result = mod._resolve_kuaishou_url(original)
             assert result == original
@@ -401,17 +431,28 @@ class TestKuaishhouPreResolver:
         engine = mod.YtDlpEngine(cfg)
 
         fake_info = {
-            "id": "resolved123", "title": "Test", "url": resolved,
-            "ext": "mp4", "duration": 30, "thumbnail": "",
+            "id": "resolved123",
+            "title": "Test",
+            "url": resolved,
+            "ext": "mp4",
+            "duration": 30,
+            "thumbnail": "",
             "formats": [{"format_id": "best", "ext": "mp4", "url": resolved}],
-            "is_live": False, "was_live": False,
+            "is_live": False,
+            "was_live": False,
         }
         captured_urls = []
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 captured_urls.append(url)
                 return fake_info
@@ -419,11 +460,13 @@ class TestKuaishhouPreResolver:
         import re as _re
 
         import infrastructure.downloader.kuaishou_engine as ks_mod
-        with patch.object(mod, "_KUAISHOU_SHORT_RE",
-                          mod.re.compile(r"v\.kuaishou\.com/", mod.re.I)), \
-             patch.object(mod, "_resolve_kuaishou_url", return_value=resolved) as mock_resolve, \
-             patch.object(ks_mod, "_KUAISHOU_RE", _re.compile(r"(?!)")), \
-             patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+
+        with (
+            patch.object(mod, "_KUAISHOU_SHORT_RE", mod.re.compile(r"v\.kuaishou\.com/", mod.re.I)),
+            patch.object(mod, "_resolve_kuaishou_url", return_value=resolved) as mock_resolve,
+            patch.object(ks_mod, "_KUAISHOU_RE", _re.compile(r"(?!)")),
+            patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL),
+        ):
             engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
 
         mock_resolve.assert_called_once_with("https://v.kuaishou.com/nsLRaZq3")
