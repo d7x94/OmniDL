@@ -9,6 +9,7 @@ import logging
 import re
 import shlex
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -109,6 +110,30 @@ from infrastructure.config.config_manager import ConfigManager
 from utils.ffmpeg_locator import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
+
+
+class _TikTokRateLimiter:
+    """Minimum-interval rate limiter for TikTok API requests, shared across threads."""
+
+    def __init__(self, min_interval: float = 2.0) -> None:
+        self.min_interval = min_interval
+        self._lock = threading.Lock()
+        self._last_t: float = 0.0
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            gap = self._last_t + self.min_interval - now
+            if gap > 0:
+                time.sleep(gap)
+            self._last_t = time.monotonic()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._last_t = 0.0
+
+
+_tiktok_rl = _TikTokRateLimiter(min_interval=2.0)
 
 
 def _validate_cookie_path(config: "ConfigManager") -> str | None:
@@ -828,6 +853,11 @@ class YtDlpEngine:
                 except Exception:
                     pass
             return self._extract_playlist_flat(url, opts)
+
+        # Rate-limit TikTok requests to avoid HTTP 429 when analyse and download
+        # fire concurrently (shared limiter with _extract_tiktok_live_hls_url).
+        if (_urlparse(url).hostname or "").lower().endswith("tiktok.com"):
+            _tiktok_rl.acquire()
 
         # Retry up to 2 times on transient errors (rate limit, network blip).
         last_exc: Exception | None = None
@@ -1752,7 +1782,8 @@ class YtDlpEngine:
         if _is_tiktok_live_for_direct:
             import sys as _sys_tt16
 
-            _hls_result = self._extract_tiktok_live_hls_url(task.url)
+            _room_id_hint = (task.media_info.tiktok_room_id if task.media_info else "") or ""
+            _hls_result = self._extract_tiktok_live_hls_url(task.url, room_id=_room_id_hint)
             if _hls_result:
                 _hls_url, _hls_vid_id, _hls_uploader, _hls_title = _hls_result
                 _live_vid_id = _hls_vid_id
@@ -1873,7 +1904,7 @@ class YtDlpEngine:
                                     _tt16_attempt + 1,
                                     _MAX_HLS_RETRIES,
                                 )
-                                _fresh = self._extract_tiktok_live_hls_url(task.url)
+                                _fresh = self._extract_tiktok_live_hls_url(task.url, room_id=_room_id_hint)
                                 if _fresh:
                                     _tt16_current_hls = _fresh[0]
                                     _tt16_attempt += 1
@@ -1916,6 +1947,7 @@ class YtDlpEngine:
                                         task.url,
                                         _exclude_bases=frozenset(_tt16_bad_bases),
                                         _exclude_hosts=frozenset(_tt16_bad_hosts),
+                                        room_id=_room_id_hint,
                                     )
                                     _base_new = _fresh0[0].split("?")[0] if _fresh0 else ""
                                     if _fresh0 and _base_new not in _tt16_bad_bases:
@@ -1939,6 +1971,7 @@ class YtDlpEngine:
                                         task.url,
                                         _exclude_bases=frozenset(_tt16_bad_bases),
                                         _exclude_hosts=frozenset(_tt16_bad_hosts),
+                                        room_id=_room_id_hint,
                                     )
                                     _base_new2 = _fresh1[0].split("?")[0] if _fresh1 else ""
                                     if _fresh1 and _base_new2 not in _tt16_bad_bases:
@@ -2347,32 +2380,19 @@ class YtDlpEngine:
             _cur = Path(task.filename)
             if _cur.is_file() and _cur.parent.resolve() == output_dir.resolve():
                 try:
-                    from utils.helpers import sanitise_filename as _sanitise
+                    from utils.naming import build_filename as _build_fn
 
                     _mi = task.media_info
-                    import re as _re_ln
-
-                    _uploader = (_mi.uploader if _mi and _mi.uploader else "Unknown")[:50]
-                    _title = (_mi.title if _mi and _mi.title else "")[:80]
+                    _uploader = _mi.uploader if _mi and _mi.uploader else "Unknown"
+                    _title = _mi.title if _mi and _mi.title else ""
                     _vid_id = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
-                    # Strip synthetic/redundant titles before building filename
-                    if _re_ln.match(r"(?i)tiktok-live video\b", _title):
-                        # yt-dlp synthetic: "tiktok-live video #<id> <date>_<time>"
-                        _title = ""
-                    elif _title.lstrip("@").lower().startswith(_uploader.lower()):
-                        # download_service synthetic: "@username -- TikTok Live"
-                        _title = ""
-                    else:
-                        # Strip trailing timestamp yt-dlp appends to stream titles
-                        # e.g. "Gift gallery 2026-05-05 09_40" -> "Gift gallery"
-                        _title = _re_ln.sub(r"\s*\d{4}-\d{2}-\d{2}[ _]\d{2}[_:]\d{2}\s*$", "", _title).strip()
-                    _parts = [_uploader, f"[LIVE] {rec_ts}"]
-                    if _title:
-                        _parts.append(_title)
-                    if _vid_id:
-                        _parts.append(f"[{_vid_id}]")
-                    _new_stem = _sanitise(" ".join(_parts), max_len=180)
-                    _new_name = _new_stem + ".ts"
+                    _new_name = _build_fn(
+                        uploader=_uploader,
+                        date_label=f"[LIVE] {rec_ts}",
+                        title=_title,
+                        video_id=_vid_id,
+                        ext="ts",
+                    )
                     _new_path = output_dir / _new_name
                     if _new_path != _cur:
                         _cur.rename(_new_path)
@@ -2414,6 +2434,7 @@ class YtDlpEngine:
         task_url: str,
         _exclude_bases: "frozenset[str] | None" = None,
         _exclude_hosts: "frozenset[str] | None" = None,
+        room_id: str = "",
     ) -> "tuple[str, str, str, str] | None":
         """Extract (hls_url, video_id, uploader, title) from TikTok live via yt-dlp skip_download.
 
@@ -2443,10 +2464,51 @@ class YtDlpEngine:
             opts_ei["cookiefile"] = _usable
             if _is_temp:
                 _cookie_temp = _usable
+        _tiktok_rl.acquire()
         try:
             with yt_dlp.YoutubeDL(opts_ei) as ydl:
                 info = ydl.extract_info(task_url, download=False)
         except Exception as exc:
+            exc_str = str(exc)
+            # BUG-TT-25 FIX: yt-dlp TikTokLiveIE calls room/info without signing
+            # (no X-Bogus/msToken) -- TikTok returns status=4 even for live streams.
+            # When we have a known room_id (from the live checker), call room/info
+            # directly with curl_cffi Chrome impersonation to bypass the unsigned path.
+            if room_id and (
+                "not currently live" in exc_str.lower() or "channel is not currently live" in exc_str.lower()
+            ):
+                import re as _re_tt25  # noqa: PLC0415
+
+                _m25 = _re_tt25.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task_url, _re_tt25.I)
+                if _m25:
+                    from utils.tiktok_live_checker import (  # noqa: PLC0415
+                        _fetch_hls_from_webcast_room_info,
+                    )
+
+                    _u25 = _m25.group(1)
+                    _c25_raw = _resolve_cookie(task_url, self._config) or ""
+                    _c25_txt, _c25_is_temp = "", False
+                    if _c25_raw:
+                        _c25_txt, _c25_is_temp = _prepare_cookie_for_use(_c25_raw)
+                    _direct25 = _fetch_hls_from_webcast_room_info(
+                        room_id,
+                        _u25,
+                        proxy=self._config.proxy or "",
+                        cookie_file=_c25_txt,
+                    )
+                    if _c25_is_temp:
+                        try:
+                            Path(_c25_txt).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    if _direct25:
+                        _hls25, _rid25 = _direct25
+                        logger.info(
+                            "BUG-TT-25: room/info direct HLS URL for %s"
+                            " (bypassed yt-dlp unsigned room/info call)",
+                            task_url[:60],
+                        )
+                        return _hls25, _rid25, _u25, ""
             logger.debug("BUG-TT-16: HLS extract failed: %s", exc)
             return None
         finally:

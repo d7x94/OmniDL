@@ -20,7 +20,6 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _detect_platform
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -348,6 +347,7 @@ class TestCookieFileBoundary:
     def _make_real_config(self, config_path, cookie_file=""):
         """Create a real ConfigManager so config_path.parent is a genuine Path."""
         import json
+
         from infrastructure.config.config_manager import ConfigManager
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps({}))
@@ -1407,3 +1407,43 @@ class TestBugTtProd:
                     engine.download(task)
 
         assert call_count[0] == 2, "BUG-TT-SHOP-3: must attempt retry before raising"
+
+
+# ---------------------------------------------------------------------------
+# Tests — _TikTokRateLimiter
+# ---------------------------------------------------------------------------
+
+
+def test_tiktok_rate_limiter_enforces_interval():
+    """Two rapid calls must be spaced by at least min_interval seconds."""
+    import time
+
+    from infrastructure.downloader.yt_dlp_engine import _tiktok_rl
+
+    _tiktok_rl.reset()
+
+    t0 = time.monotonic()
+    _tiktok_rl.acquire()
+    _tiktok_rl.acquire()
+    elapsed = time.monotonic() - t0
+
+    assert elapsed >= _tiktok_rl.min_interval - 0.05, (
+        f"Expected >= {_tiktok_rl.min_interval}s gap, got {elapsed:.2f}s"
+    )
+
+
+def test_tiktok_rate_limiter_reset_allows_immediate():
+    """After reset(), first acquire() must not sleep."""
+    import time
+
+    from infrastructure.downloader.yt_dlp_engine import _tiktok_rl
+
+    _tiktok_rl.reset()
+
+    t0 = time.monotonic()
+    _tiktok_rl.acquire()
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < _tiktok_rl.min_interval * 0.5, (
+        f"First call after reset should not sleep, took {elapsed:.2f}s"
+    )
