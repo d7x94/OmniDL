@@ -4,9 +4,9 @@ Unit tests for infrastructure/downloader/cookie_storage.py
 
 All DPAPI calls are mocked — tests run headless on any platform.
 """
+
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,13 +14,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from infrastructure.downloader.cookie_storage import (
+    _TEMP_PREFIX,
     ENCRYPTED_SUFFIX,
     cleanup_leftover_temp_files,
     cleanup_stale_cookies,
     decrypt_to_tempfile,
     encrypt_cookie_file,
     is_encrypted,
-    _TEMP_PREFIX,
 )
 
 SAMPLE_COOKIES = b"# Netscape HTTP Cookie File\n.tiktok.com\tTRUE\t/\tTRUE\t999999\tsid\tabc\n"
@@ -31,6 +31,7 @@ SAMPLE_ENCRYPTED = b"\x00DPAPI_MOCK_ENCRYPTED_DATA\x00"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _write_txt(path: Path, content: bytes = SAMPLE_COOKIES) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
@@ -40,6 +41,7 @@ def _write_txt(path: Path, content: bytes = SAMPLE_COOKIES) -> Path:
 # ---------------------------------------------------------------------------
 # Tests — is_encrypted
 # ---------------------------------------------------------------------------
+
 
 class TestIsEncrypted:
     def test_enc_suffix_detected(self, tmp_path):
@@ -56,8 +58,8 @@ class TestIsEncrypted:
 # Tests — encrypt_cookie_file
 # ---------------------------------------------------------------------------
 
-class TestEncryptCookieFile:
 
+class TestEncryptCookieFile:
     def test_returns_original_on_non_windows(self, tmp_path):
         """On non-Windows, encryption is a no-op and original path returned."""
         txt = _write_txt(tmp_path / "c.txt")
@@ -69,11 +71,13 @@ class TestEncryptCookieFile:
     def test_encrypts_on_windows_mock(self, tmp_path):
         """On Windows (mocked), .txt becomes .enc and plaintext deleted."""
         txt = _write_txt(tmp_path / "c.txt")
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_encrypt",
-                 return_value=SAMPLE_ENCRYPTED,
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_encrypt",
+                return_value=SAMPLE_ENCRYPTED,
+            ),
+        ):
             result = encrypt_cookie_file(txt)
 
         assert result == txt.with_suffix(ENCRYPTED_SUFFIX)
@@ -84,15 +88,17 @@ class TestEncryptCookieFile:
     def test_fallback_when_dpapi_fails(self, tmp_path):
         """If DPAPI returns None, original plaintext file is kept intact."""
         txt = _write_txt(tmp_path / "c.txt")
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_encrypt",
-                 return_value=None,
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_encrypt",
+                return_value=None,
+            ),
+        ):
             result = encrypt_cookie_file(txt)
 
-        assert result == txt   # unchanged path
-        assert txt.exists()    # plaintext preserved
+        assert result == txt  # unchanged path
+        assert txt.exists()  # plaintext preserved
 
     def test_returns_original_if_file_missing(self, tmp_path):
         """Missing input file returns the path unchanged without crashing."""
@@ -109,14 +115,16 @@ class TestEncryptCookieFile:
             written.append(path)
             Path(path).write_bytes(data)
 
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_encrypt",
-                 return_value=SAMPLE_ENCRYPTED,
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_encrypt",
+                return_value=SAMPLE_ENCRYPTED,
+            ),
+        ):
             result = encrypt_cookie_file(txt)
 
-        assert result.exists()   # .enc written
+        assert result.exists()  # .enc written
         assert not txt.exists()  # .txt deleted
 
 
@@ -124,8 +132,8 @@ class TestEncryptCookieFile:
 # Tests — decrypt_to_tempfile
 # ---------------------------------------------------------------------------
 
-class TestDecryptToTempfile:
 
+class TestDecryptToTempfile:
     def test_plaintext_returned_as_is(self, tmp_path):
         """Non-.enc file is returned unchanged — no temp file created."""
         txt = _write_txt(tmp_path / "c.txt")
@@ -137,11 +145,13 @@ class TestDecryptToTempfile:
         enc = tmp_path / "c.enc"
         enc.write_bytes(SAMPLE_ENCRYPTED)
 
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_decrypt",
-                 return_value=SAMPLE_COOKIES,
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_decrypt",
+                return_value=SAMPLE_COOKIES,
+            ),
+        ):
             tmp = decrypt_to_tempfile(enc)
 
         try:
@@ -164,11 +174,13 @@ class TestDecryptToTempfile:
         """Corrupt or wrong-user .enc raises RuntimeError."""
         enc = tmp_path / "c.enc"
         enc.write_bytes(b"corrupted")
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_decrypt",
-                 return_value=None,
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_decrypt",
+                return_value=None,
+            ),
+        ):
             with pytest.raises(RuntimeError, match="decryption failed"):
                 decrypt_to_tempfile(enc)
 
@@ -176,11 +188,13 @@ class TestDecryptToTempfile:
         """Temp file must be created next to the .enc file (same filesystem)."""
         enc = tmp_path / "c.enc"
         enc.write_bytes(SAMPLE_ENCRYPTED)
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_decrypt",
-                 return_value=SAMPLE_COOKIES,
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_decrypt",
+                return_value=SAMPLE_COOKIES,
+            ),
+        ):
             tmp = decrypt_to_tempfile(enc)
 
         try:
@@ -188,18 +202,87 @@ class TestDecryptToTempfile:
         finally:
             tmp.unlink(missing_ok=True)
 
+    def test_cache_skips_second_dpapi_call(self, tmp_path):
+        """Second decrypt_to_tempfile call for the same file must not invoke DPAPI."""
+        import infrastructure.downloader.cookie_storage as cs
+
+        cs._cookie_cache.clear()
+
+        enc = tmp_path / "c.enc"
+        enc.write_bytes(SAMPLE_ENCRYPTED)
+
+        decrypt_calls = []
+
+        def fake_dpapi(data):
+            decrypt_calls.append(1)
+            return SAMPLE_COOKIES
+
+        with (
+            patch("sys.platform", "win32"),
+            patch("infrastructure.downloader.cookie_storage._dpapi_decrypt", fake_dpapi),
+        ):
+            t1 = decrypt_to_tempfile(enc)
+            t2 = decrypt_to_tempfile(enc)
+
+        try:
+            assert len(decrypt_calls) == 1, "DPAPI must be called only once"
+            assert t1.read_bytes() == SAMPLE_COOKIES
+            assert t2.read_bytes() == SAMPLE_COOKIES
+        finally:
+            t1.unlink(missing_ok=True)
+            t2.unlink(missing_ok=True)
+
+    def test_cache_invalidates_on_mtime_change(self, tmp_path):
+        """Cache must be bypassed when the .enc file is replaced (mtime changes)."""
+        import infrastructure.downloader.cookie_storage as cs
+
+        cs._cookie_cache.clear()
+
+        enc = tmp_path / "c.enc"
+        enc.write_bytes(SAMPLE_ENCRYPTED)
+
+        payload_v1 = b"cookie-v1"
+        payload_v2 = b"cookie-v2"
+        decrypt_calls = []
+
+        def fake_dpapi(data):
+            n = len(decrypt_calls)
+            decrypt_calls.append(1)
+            return payload_v1 if n == 0 else payload_v2
+
+        with (
+            patch("sys.platform", "win32"),
+            patch("infrastructure.downloader.cookie_storage._dpapi_decrypt", fake_dpapi),
+        ):
+            t1 = decrypt_to_tempfile(enc)
+            # Simulate cookie re-extraction: overwrite file (new mtime)
+            import time as _time
+
+            _time.sleep(0.01)
+            enc.write_bytes(b"new_encrypted")
+            t2 = decrypt_to_tempfile(enc)
+
+        try:
+            assert len(decrypt_calls) == 2, "DPAPI must be called again after file change"
+            assert t1.read_bytes() == payload_v1
+            assert t2.read_bytes() == payload_v2
+        finally:
+            t1.unlink(missing_ok=True)
+            t2.unlink(missing_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # Tests — cleanup_stale_cookies
 # ---------------------------------------------------------------------------
 
-class TestCleanupStaleCookies:
 
+class TestCleanupStaleCookies:
     def test_deletes_old_txt_files(self, tmp_path):
         old = _write_txt(tmp_path / "old_cookies.txt")
         # Set mtime to 40 days ago
         old_time = time.time() - 40 * 86400
         import os
+
         os.utime(old, (old_time, old_time))
 
         deleted = cleanup_stale_cookies(tmp_path, max_age_days=30)
@@ -211,6 +294,7 @@ class TestCleanupStaleCookies:
         enc.write_bytes(SAMPLE_ENCRYPTED)
         old_time = time.time() - 35 * 86400
         import os
+
         os.utime(enc, (old_time, old_time))
 
         deleted = cleanup_stale_cookies(tmp_path, max_age_days=30)
@@ -221,6 +305,7 @@ class TestCleanupStaleCookies:
         recent = _write_txt(tmp_path / "recent.txt")
         # Recent = 5 days old
         import os
+
         recent_time = time.time() - 5 * 86400
         os.utime(recent, (recent_time, recent_time))
 
@@ -235,6 +320,7 @@ class TestCleanupStaleCookies:
         # Make them very old
         old_time = time.time() - 100 * 86400
         import os
+
         for f in (tmp_file, dec_file):
             os.utime(f, (old_time, old_time))
 
@@ -252,8 +338,8 @@ class TestCleanupStaleCookies:
 # Tests — cleanup_leftover_temp_files
 # ---------------------------------------------------------------------------
 
-class TestCleanupLeftoverTempFiles:
 
+class TestCleanupLeftoverTempFiles:
     def test_deletes_omnidl_dec_files(self, tmp_path):
         leftover = _write_txt(tmp_path / f"{_TEMP_PREFIX}xyz.txt")
         cleanup_leftover_temp_files(tmp_path)
@@ -268,19 +354,17 @@ class TestCleanupLeftoverTempFiles:
         cleanup_leftover_temp_files(tmp_path / "nonexistent")  # must not raise
 
 
-
 # ---------------------------------------------------------------------------
 # Tests — macOS Keychain + Fernet
 # ---------------------------------------------------------------------------
 
-class TestMacosKeychain:
 
+class TestMacosKeychain:
     def test_get_or_create_key_creates_new_when_absent(self, tmp_path):
         """First call creates a 32-byte key and stores it in Keychain (mocked)."""
         from infrastructure.downloader.cookie_storage import _macos_get_or_create_key
 
-        with patch("keyring.get_password", return_value=None), \
-             patch("keyring.set_password") as mock_set:
+        with patch("keyring.get_password", return_value=None), patch("keyring.set_password") as mock_set:
             key = _macos_get_or_create_key()
 
         assert isinstance(key, bytes)
@@ -290,6 +374,7 @@ class TestMacosKeychain:
     def test_get_or_create_key_returns_existing(self):
         """Second call returns the same key stored in Keychain (mocked)."""
         import base64
+
         from infrastructure.downloader.cookie_storage import _macos_get_or_create_key
 
         stored_key = b"\x01" * 32
@@ -304,8 +389,7 @@ class TestMacosKeychain:
         """Corrupted Keychain entry triggers key regeneration."""
         from infrastructure.downloader.cookie_storage import _macos_get_or_create_key
 
-        with patch("keyring.get_password", return_value="!!not_base64!!"), \
-             patch("keyring.set_password"):
+        with patch("keyring.get_password", return_value="!!not_base64!!"), patch("keyring.set_password"):
             key = _macos_get_or_create_key()
 
         assert len(key) == 32  # new key generated
@@ -314,17 +398,19 @@ class TestMacosKeychain:
         """RuntimeError raised if Keychain write fails (permission denied)."""
         from infrastructure.downloader.cookie_storage import _macos_get_or_create_key
 
-        with patch("keyring.get_password", return_value=None), \
-             patch("keyring.set_password", side_effect=Exception("Keychain locked")):
+        with (
+            patch("keyring.get_password", return_value=None),
+            patch("keyring.set_password", side_effect=Exception("Keychain locked")),
+        ):
             with pytest.raises(RuntimeError, match="Keychain"):
                 _macos_get_or_create_key()
 
 
 class TestMacosEncryptDecrypt:
-
     def _mock_keychain(self, stored_key: bytes):
         """Context manager that mocks keyring with a fixed key."""
         import base64
+
         encoded = base64.urlsafe_b64encode(stored_key).decode()
         return patch("keyring.get_password", return_value=encoded)
 
@@ -345,7 +431,7 @@ class TestMacosEncryptDecrypt:
     def test_decrypt_on_macos(self, tmp_path):
         """Encrypt then decrypt on macOS (mocked) recovers original bytes."""
         txt = _write_txt(tmp_path / "rt.txt", SAMPLE_COOKIES)
-        key = b"\xAB" * 32
+        key = b"\xab" * 32
 
         with patch("sys.platform", "darwin"), self._mock_keychain(key):
             enc = encrypt_cookie_file(txt)
@@ -359,8 +445,8 @@ class TestMacosEncryptDecrypt:
     def test_decrypt_fails_with_wrong_key(self, tmp_path):
         """Decrypting with a different key raises RuntimeError."""
         txt = _write_txt(tmp_path / "c.txt", SAMPLE_COOKIES)
-        key_a = b"\xAA" * 32
-        key_b = b"\xBB" * 32
+        key_a = b"\xaa" * 32
+        key_b = b"\xbb" * 32
 
         with patch("sys.platform", "darwin"), self._mock_keychain(key_a):
             enc = encrypt_cookie_file(txt)
@@ -375,6 +461,7 @@ class TestMacosEncryptDecrypt:
         txt = _write_txt(tmp_path / "c.txt")
 
         import builtins
+
         real_import = builtins.__import__
 
         def fake_import(name, *args, **kwargs):
@@ -410,21 +497,23 @@ class TestMacosEncryptDecrypt:
 # Integration — encrypt then decrypt round-trip (mocked DPAPI)
 # ---------------------------------------------------------------------------
 
-class TestRoundTrip:
 
+class TestRoundTrip:
     def test_encrypt_then_decrypt_roundtrip(self, tmp_path):
         """encrypt_cookie_file → decrypt_to_tempfile must recover original bytes."""
         txt = _write_txt(tmp_path / "rt.txt", SAMPLE_COOKIES)
 
-        with patch("sys.platform", "win32"), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_encrypt",
-                 side_effect=lambda data: b"ENC:" + data,
-             ), \
-             patch(
-                 "infrastructure.downloader.cookie_storage._dpapi_decrypt",
-                 side_effect=lambda data: data[4:],  # strip "ENC:" prefix
-             ):
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_encrypt",
+                side_effect=lambda data: b"ENC:" + data,
+            ),
+            patch(
+                "infrastructure.downloader.cookie_storage._dpapi_decrypt",
+                side_effect=lambda data: data[4:],  # strip "ENC:" prefix
+            ),
+        ):
             enc_path = encrypt_cookie_file(txt)
             assert enc_path.suffix == ENCRYPTED_SUFFIX
             assert not txt.exists()
@@ -440,11 +529,13 @@ class TestRoundTrip:
 # _cookie_file_candidates helper
 # ---------------------------------------------------------------------------
 
+
 class TestCookieFileCandidates:
     """Unit tests for the _cookie_file_candidates helper in network_panel."""
 
     def _candidates(self, path_str: str):
         from ui.tabs.settings.network_panel import _cookie_file_candidates
+
         return _cookie_file_candidates(path_str)
 
     def test_txt_path_includes_enc_variant(self, tmp_path):
@@ -472,15 +563,19 @@ class TestCookieFileCandidates:
 # _clear_platform_cookie deletes file on disk
 # ---------------------------------------------------------------------------
 
+
 class TestClearPlatformCookieDeletesFile:
     """Verify _clear_platform_cookie removes the .enc file from disk."""
 
     def _make_config(self, tmp_path, enc_path):
         """Minimal config-like stub."""
+
         class _Cfg:
             config_path = tmp_path / "config.json"
+
             def get_cookie_for_platform(self, key):
                 return str(enc_path)
+
             def set_cookie_for_platform(self, key, val):
                 pass
 
@@ -497,14 +592,14 @@ class TestClearPlatformCookieDeletesFile:
         app = self._make_config(tmp_path, enc)
 
         # Patch CTkLabel so there's no Tkinter dependency
-        from unittest.mock import MagicMock
         lbl = MagicMock()
 
         from ui.tabs.settings.network_panel import NetworkPanel
+
         # Call the method directly without instantiating the full panel
-        panel = object.__new__(NetworkPanel)
+        panel = MagicMock()
         panel._app = app
-        panel._clear_platform_cookie.__func__(panel, "facebook", lbl)  # type: ignore[attr-defined]
+        NetworkPanel._clear_platform_cookie(panel, "facebook", lbl)
 
         assert not enc.exists(), "Encrypted cookie file must be deleted on clear"
 
@@ -517,19 +612,21 @@ class TestClearPlatformCookieDeletesFile:
 
         class _Cfg:
             config_path = tmp_path / "config.json"
+
             def get_cookie_for_platform(self, key):
                 return str(txt)  # config stores .txt path
+
             def set_cookie_for_platform(self, key, val):
                 pass
 
         class _App:
             config = _Cfg()
 
-        from unittest.mock import MagicMock
         from ui.tabs.settings.network_panel import NetworkPanel
-        panel = object.__new__(NetworkPanel)
+
+        panel = MagicMock()
         panel._app = _App()
-        panel._clear_platform_cookie.__func__(panel, "instagram", MagicMock())  # type: ignore[attr-defined]
+        NetworkPanel._clear_platform_cookie(panel, "instagram", MagicMock())
 
         assert not txt.exists(), ".txt file must be deleted"
         assert not enc.exists(), ".enc file must be deleted"
@@ -545,16 +642,18 @@ class TestClearPlatformCookieDeletesFile:
 
         class _Cfg:
             config_path = safe_dir / "config.json"
+
             def get_cookie_for_platform(self, key):
                 return str(outside)
+
             def set_cookie_for_platform(self, key, val):
                 pass
 
-        from unittest.mock import MagicMock
         from ui.tabs.settings.network_panel import NetworkPanel
-        panel = object.__new__(NetworkPanel)
+
+        panel = MagicMock()
         panel._app = type("_App", (), {"config": _Cfg()})()
-        panel._clear_platform_cookie.__func__(panel, "facebook", MagicMock())  # type: ignore[attr-defined]
+        NetworkPanel._clear_platform_cookie(panel, "facebook", MagicMock())
 
         assert outside.exists(), "File outside safe_dir must NOT be deleted (CWE-22)"
 
@@ -564,14 +663,16 @@ class TestClearPlatformCookieDeletesFile:
 
         class _Cfg:
             config_path = tmp_path / "config.json"
+
             def get_cookie_for_platform(self, key):
                 return str(nonexistent)
+
             def set_cookie_for_platform(self, key, val):
                 pass
 
-        from unittest.mock import MagicMock
         from ui.tabs.settings.network_panel import NetworkPanel
-        panel = object.__new__(NetworkPanel)
+
+        panel = MagicMock()
         panel._app = type("_App", (), {"config": _Cfg()})()
         # Must not raise
-        panel._clear_platform_cookie.__func__(panel, "facebook", MagicMock())  # type: ignore[attr-defined]
+        NetworkPanel._clear_platform_cookie(panel, "facebook", MagicMock())

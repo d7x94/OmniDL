@@ -30,18 +30,25 @@ Thread safety
 ─────────────
 All functions are pure (no shared state) and safe to call from any thread.
 """
+
 from __future__ import annotations
 
 import atexit
 import logging
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 ENCRYPTED_SUFFIX = ".enc"
 _TEMP_PREFIX = "omnidl_dec_"
+
+# In-memory plaintext cache: path_str -> (plaintext_bytes, enc_mtime)
+# Avoids repeated DPAPI/Fernet syscalls for the same cookie file within a session.
+_cookie_cache: dict[str, tuple[bytes, float]] = {}
+_cookie_cache_lock = threading.Lock()
 
 _KEYCHAIN_SERVICE = "OmniDL"
 _KEYCHAIN_ACCOUNT = "cookie_encryption_key_v1"
@@ -62,21 +69,20 @@ def is_encrypted(path: Path) -> bool:
 
 # ── Windows — DPAPI ───────────────────────────────────────────────────────────
 
+
 def _dpapi_encrypt(data: bytes) -> "bytes | None":
     import ctypes
     import ctypes.wintypes
 
     class _B(ctypes.Structure):
-        _fields_ = [("cbData", ctypes.wintypes.DWORD),
-                    ("pbData", ctypes.POINTER(ctypes.c_char))]
+        _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
     buf = ctypes.create_string_buffer(data)
     ib, ob = _B(len(data), buf), _B()
     if not ctypes.windll.crypt32.CryptProtectData(  # type: ignore[attr-defined]
         ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob)
     ):
-        logger.warning("CryptProtectData failed (%d)",
-                       ctypes.windll.kernel32.GetLastError())  # type: ignore[attr-defined]
+        logger.warning("CryptProtectData failed (%d)", ctypes.windll.kernel32.GetLastError())  # type: ignore[attr-defined]
         return None
     result = bytes(ob.pbData[: ob.cbData])
     ctypes.windll.kernel32.LocalFree(ob.pbData)  # type: ignore[attr-defined]
@@ -88,16 +94,14 @@ def _dpapi_decrypt(data: bytes) -> "bytes | None":
     import ctypes.wintypes
 
     class _B(ctypes.Structure):
-        _fields_ = [("cbData", ctypes.wintypes.DWORD),
-                    ("pbData", ctypes.POINTER(ctypes.c_char))]
+        _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
     buf = ctypes.create_string_buffer(data)
     ib, ob = _B(len(data), buf), _B()
     if not ctypes.windll.crypt32.CryptUnprotectData(  # type: ignore[attr-defined]
         ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob)
     ):
-        logger.warning("CryptUnprotectData failed (%d)",
-                       ctypes.windll.kernel32.GetLastError())  # type: ignore[attr-defined]
+        logger.warning("CryptUnprotectData failed (%d)", ctypes.windll.kernel32.GetLastError())  # type: ignore[attr-defined]
         return None
     result = bytes(ob.pbData[: ob.cbData])
     ctypes.windll.kernel32.LocalFree(ob.pbData)  # type: ignore[attr-defined]
@@ -105,6 +109,7 @@ def _dpapi_decrypt(data: bytes) -> "bytes | None":
 
 
 # ── macOS — Keychain + Fernet ─────────────────────────────────────────────────
+
 
 def _macos_get_or_create_key() -> bytes:
     """Return the 32-byte Fernet key from macOS Keychain, creating one if absent.
@@ -119,8 +124,7 @@ def _macos_get_or_create_key() -> bytes:
         import keyring
     except ImportError as exc:
         raise RuntimeError(
-            "macOS cookie encryption requires the `keyring` package.\n"
-            "Run: pip install keyring"
+            "macOS cookie encryption requires the `keyring` package.\nRun: pip install keyring"
         ) from exc
 
     stored = keyring.get_password(_KEYCHAIN_SERVICE, _KEYCHAIN_ACCOUNT)
@@ -150,6 +154,7 @@ def _macos_fernet(key: bytes):
     import base64
 
     from cryptography.fernet import Fernet
+
     return Fernet(base64.urlsafe_b64encode(key))
 
 
@@ -170,6 +175,7 @@ def _macos_decrypt(data: bytes) -> "bytes | None":
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def encrypt_cookie_file(txt_path: Path) -> Path:
     """Encrypt *txt_path* → sibling .enc file.
@@ -192,6 +198,7 @@ def encrypt_cookie_file(txt_path: Path) -> Path:
         # protection available.
         try:
             import os
+
             os.chmod(txt_path, 0o600)
         except OSError as exc:
             logger.warning("encrypt_cookie_file: chmod 0o600 failed for %s — %s", txt_path, exc)
@@ -209,9 +216,7 @@ def encrypt_cookie_file(txt_path: Path) -> Path:
         encrypted, method = _macos_encrypt(plaintext), "Fernet/Keychain"
 
     if encrypted is None:
-        logger.warning(
-            "encrypt_cookie_file: %s failed — keeping plaintext %s", method, txt_path
-        )
+        logger.warning("encrypt_cookie_file: %s failed — keeping plaintext %s", method, txt_path)
         return txt_path
 
     enc_path = txt_path.with_suffix(ENCRYPTED_SUFFIX)
@@ -233,7 +238,8 @@ def encrypt_cookie_file(txt_path: Path) -> Path:
             logger.error(
                 "encrypt_cookie_file: plaintext cookie %s could not be deleted or zeroed"
                 " — session cookies may remain readable on disk (%s)",
-                txt_path.name, exc2,
+                txt_path.name,
+                exc2,
             )
 
     logger.info("Cookie file encrypted (%s): %s → %s", method, txt_path.name, enc_path.name)
@@ -258,37 +264,52 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
             "Delete the .enc file and re-extract cookies."
         )
 
+    # ── Cache check: skip DPAPI/Fernet if plaintext is already in memory ────
+    _cache_key = str(enc_path)
     try:
-        ciphertext = enc_path.read_bytes()
+        _enc_mtime = enc_path.stat().st_mtime
     except OSError as exc:
         raise RuntimeError(f"Cannot read encrypted cookie file: {exc}") from exc
 
-    if plat == "windows":
-        plaintext = _dpapi_decrypt(ciphertext)
-        if plaintext is None:
-            raise RuntimeError(
-                f"DPAPI decryption failed for {enc_path.name}.\n"
-                "Cookies may have been extracted under a different Windows user account.\n"
-                "Please re-extract cookies on this account."
-            )
-    else:  # macos
-        plaintext = _macos_decrypt(ciphertext)
-        if plaintext is None:
-            raise RuntimeError(
-                f"Fernet decryption failed for {enc_path.name}.\n"
-                "The Keychain key may have been lost (e.g. after a Keychain reset).\n"
-                "Please re-extract cookies."
-            )
+    with _cookie_cache_lock:
+        _cached = _cookie_cache.get(_cache_key)
+        plaintext: bytes | None = _cached[0] if (_cached and _cached[1] == _enc_mtime) else None
 
-    tmp_fd, tmp_str = tempfile.mkstemp(
-        suffix=".txt", prefix=_TEMP_PREFIX, dir=enc_path.parent
-    )
+    if plaintext is None:
+        try:
+            ciphertext = enc_path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"Cannot read encrypted cookie file: {exc}") from exc
+
+        if plat == "windows":
+            plaintext = _dpapi_decrypt(ciphertext)
+            if plaintext is None:
+                raise RuntimeError(
+                    f"DPAPI decryption failed for {enc_path.name}.\n"
+                    "Cookies may have been extracted under a different Windows user account.\n"
+                    "Please re-extract cookies on this account."
+                )
+        else:  # macos
+            plaintext = _macos_decrypt(ciphertext)
+            if plaintext is None:
+                raise RuntimeError(
+                    f"Fernet decryption failed for {enc_path.name}.\n"
+                    "The Keychain key may have been lost (e.g. after a Keychain reset).\n"
+                    "Please re-extract cookies."
+                )
+
+        with _cookie_cache_lock:
+            _cookie_cache[_cache_key] = (plaintext, _enc_mtime)
+
+    tmp_fd, tmp_str = tempfile.mkstemp(suffix=".txt", prefix=_TEMP_PREFIX, dir=enc_path.parent)
     tmp_path = Path(tmp_str)
     try:
         import os
+
         os.write(tmp_fd, plaintext)
     finally:
         import os
+
         os.close(tmp_fd)
         # Restrict temp file permissions immediately after close so the
         # plaintext window is as narrow as possible (mode 0o600 = rw-------).
@@ -319,8 +340,7 @@ def cleanup_stale_cookies(safe_dir: Path, max_age_days: int = 30) -> int:
             if age_days > max_age_days:
                 f.unlink()
                 deleted += 1
-                logger.info("Auto-deleted stale cookie file: %s (%.0f days old)",
-                            f.name, age_days)
+                logger.info("Auto-deleted stale cookie file: %s (%.0f days old)", f.name, age_days)
         except OSError:
             pass
     if deleted:
@@ -345,8 +365,7 @@ def encrypt_plaintext_cookies(safe_dir: Path) -> int:
             result = encrypt_cookie_file(f)
             if result != f:
                 encrypted_count += 1
-                logger.info("Startup: encrypted legacy plaintext cookie: %s -> %s",
-                            f.name, result.name)
+                logger.info("Startup: encrypted legacy plaintext cookie: %s -> %s", f.name, result.name)
         except Exception as exc:
             logger.warning("Startup: failed to encrypt %s - %s", f.name, exc)
     return encrypted_count
