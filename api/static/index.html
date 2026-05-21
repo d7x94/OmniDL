@@ -1382,13 +1382,14 @@ async function doDownload() {
     ? analysedInfo.url
     : url;
   const body = {
-    url:           dlUrl,
+    url:            dlUrl,
     format_id,
     output_ext,
-    title:         analysedInfo?.title         || null,
-    platform:      analysedInfo?.platform      || null,
-    source_engine: analysedInfo?.source_engine || null,
-    is_live:       isLive,
+    title:          analysedInfo?.title          || null,
+    platform:       analysedInfo?.platform       || null,
+    source_engine:  analysedInfo?.source_engine  || null,
+    is_live:        isLive,
+    tiktok_room_id: analysedInfo?.tiktok_room_id || null,
   };
 
   const btn = document.getElementById('dl-btn');

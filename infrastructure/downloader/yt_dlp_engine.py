@@ -2509,6 +2509,37 @@ class YtDlpEngine:
                             task_url[:60],
                         )
                         return _hls25, _rid25, _u25, ""
+                    # BUG-TT-26 FIX: webcast.tiktok.com unreachable or returned
+                    # non-live status even though stream is active. Fall back to
+                    # fetching the live page HTML and extracting HLS from SIGI_STATE.
+                    from utils.tiktok_live_checker import (  # noqa: PLC0415
+                        _fetch_hls_from_live_page,
+                    )
+
+                    _c26_raw = _resolve_cookie(task_url, self._config) or ""
+                    _c26_txt, _c26_is_temp = "", False
+                    if _c26_raw:
+                        _c26_txt, _c26_is_temp = _prepare_cookie_for_use(_c26_raw)
+                    try:
+                        _direct26 = _fetch_hls_from_live_page(
+                            _u25,
+                            proxy=self._config.proxy or "",
+                            cookie_file=_c26_txt,
+                        )
+                    finally:
+                        if _c26_is_temp:
+                            try:
+                                Path(_c26_txt).unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                    if _direct26:
+                        _hls26, _rid26 = _direct26
+                        logger.info(
+                            "BUG-TT-26: live page SIGI_STATE HLS URL for %s"
+                            " (webcast API bypassed via page scrape)",
+                            task_url[:60],
+                        )
+                        return _hls26, _rid26, _u25, ""
             logger.debug("BUG-TT-16: HLS extract failed: %s", exc)
             return None
         finally:

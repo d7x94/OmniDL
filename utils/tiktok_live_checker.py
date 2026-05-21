@@ -722,6 +722,57 @@ def _fetch_hls_from_webcast_room_info(
         return None
 
 
+def _fetch_hls_from_live_page(
+    username: str,
+    proxy: str = "",
+    cookie_file: str = "",
+) -> "Optional[tuple[str, str]]":
+    """Extract HLS URL from the live page SIGI_STATE (no webcast API needed).
+
+    BUG-TT-26 FIX: when webcast.tiktok.com is unreachable or returns non-live
+    status, fall back to fetching www.tiktok.com/@username/live with Chrome
+    impersonation and extracting the stream URL embedded in SIGI_STATE.
+    TikTok embeds hls_pull_url directly in the page for authenticated sessions.
+
+    Returns (hls_url, room_id) or None.
+    """
+    page_text = _fetch_tiktok_live_page(username, proxy=proxy, cookie_file=cookie_file)
+    if not page_text:
+        return None
+
+    sigi = _extract_json_blob(page_text, "SIGI_STATE") or _extract_json_blob(
+        page_text, "sigi-persisted-data"
+    )
+    if not sigi:
+        logger.debug("tiktok_live_checker: BUG-TT-26 no SIGI_STATE on live page for @%s", username)
+        return None
+
+    live_room = (
+        sigi.get("LiveRoom", {}).get("liveRoomUserInfo", {}).get("liveRoom", {})
+    )
+    if not live_room:
+        return None
+
+    rid = str(live_room.get("roomId") or live_room.get("id") or "")
+    if not rid or not rid.isdigit() or int(rid) == 0:
+        return None
+
+    stream_url = live_room.get("streamUrl") or {}
+    hls_url = stream_url.get("hls_pull_url") or next(
+        iter((stream_url.get("hls_pull_url_map") or {}).values()), ""
+    )
+    if not hls_url:
+        logger.debug("tiktok_live_checker: BUG-TT-26 no HLS URL in SIGI_STATE for @%s", username)
+        return None
+
+    logger.info(
+        "tiktok_live_checker: BUG-TT-26 live page HLS URL for @%s room %s",
+        username,
+        rid,
+    )
+    return hls_url, rid
+
+
 _dispatcher: "Optional[Any]" = None
 _health_daemon: "Optional[Any]" = None
 

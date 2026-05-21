@@ -565,6 +565,7 @@ def create_app(
             is_live=info.is_live,
             playlist_count=len(info.playlist_entries),
             source_engine=info.source_engine,
+            tiktok_room_id=info.tiktok_room_id,
         )
 
     # ── Download ──────────────────────────────────────────────────────────
@@ -582,6 +583,7 @@ def create_app(
             platform=body.platform or "unknown",
             source_engine=body.source_engine or "yt_dlp",
             is_live=bool(body.is_live),  # forwarded from /api/analyse — avoids a second extract_info
+            tiktok_room_id=body.tiktok_room_id or "",  # BUG-TT-25: enables signed room/info fallback
         )
         try:
             task = service.start_download(

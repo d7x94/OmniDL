@@ -54,6 +54,9 @@ class DownloadRequest(BaseModel):
     # MediaInfo.is_live without a second extract_info call.  Optional so
     # existing clients that don't send this field keep working (defaults False).
     is_live: Optional[bool] = False
+    # Echo back tiktok_room_id from AnalyseResponse so the download engine
+    # can run BUG-TT-25 (signed room/info) without a second live check.
+    tiktok_room_id: Optional[str] = None
 
     @field_validator("url")
     @classmethod
@@ -98,6 +101,10 @@ class AnalyseResponse(BaseModel):
     # Fix: expose source_engine so Remote clients (iOS app, etc.) can echo it
     # back in DownloadRequest.source_engine and route correctly.
     source_engine: str = "yt_dlp"  # "yt_dlp" | "gallery_dl"
+    # BUG-TT-25: tiktok_room_id found during analyse (via BUG-TT-06 live checker)
+    # must be forwarded to /api/download so the engine can use the signed
+    # room/info API instead of yt-dlp's unsigned path (which returns "not live").
+    tiktok_room_id: str = ""
 
 
 class TaskResponse(BaseModel):
