@@ -36,7 +36,7 @@ NAV_ITEMS = [
     ("home", "↓", "Tải xuống", "TẢI XUỐNG"),
     ("queue", "≡", "Hàng đợi", "TẢI XUỐNG"),
     ("batch", "⊞", "Hàng loạt", "TẢI XUỐNG"),
-    ("live_monitor", "◉", "Live Monitor", "TẢI XUỐNG"),
+    ("live_monitor", "◉", "Trực tiếp", "TẢI XUỐNG"),
     ("convert", "⇄", "Chuyển đổi", "CÔNG CỤ"),
     ("history", "◷", "Lịch sử", "THƯ VIỆN"),
     ("settings", "⊙", "Cài đặt", "HỆ THỐNG"),

@@ -145,7 +145,7 @@ class LiveMonitorTab(QWidget):
         hdr.setStyleSheet("background: transparent;")
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 0)
-        title = QLabel("Live Monitor")
+        title = QLabel("Theo dõi trực tiếp")
         title.setObjectName("page_title")
         hdr_layout.addWidget(title)
         self._status_lbl = QLabel("")
@@ -254,7 +254,7 @@ class LiveMonitorTab(QWidget):
         clear_all_btn = QPushButton("Xóa tất cả")
         clear_all_btn.setFixedSize(90, 28)
         clear_all_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px; font-size: 11px;"
+            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 11px;"
         )
         clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_all_btn.clicked.connect(self._clear_all)
@@ -400,7 +400,7 @@ class LiveMonitorTab(QWidget):
             QFrame#monitorRow {{
                 background-color: {T.surface};
                 border: 1px solid {T.border};
-                border-radius: 10px;
+                border-radius: 12px;
             }}
         """)
         row.setObjectName("monitorRow")
@@ -476,20 +476,20 @@ class LiveMonitorTab(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
 
-        cancel_btn = QPushButton("Stop")
+        cancel_btn = QPushButton("Dừng")
         cancel_btn.setFixedSize(46, 28)
         cancel_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px; font-size: 12px;"
+            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 12px;"
         )
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(lambda _=False, i=item: self._cancel_item(i))
         right_layout.addWidget(cancel_btn)
         item.cancel_btn = cancel_btn
 
-        open_folder_btn = QPushButton("Open")
+        open_folder_btn = QPushButton("Mở")
         open_folder_btn.setFixedSize(46, 28)
         open_folder_btn.setStyleSheet(
-            f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 6px; font-size: 12px;"
+            f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 8px; font-size: 12px;"
         )
         open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_folder_btn.clicked.connect(lambda _=False, i=item: self._open_folder_for_item(i))
@@ -508,10 +508,10 @@ class LiveMonitorTab(QWidget):
         right_layout.addWidget(mp4_btn)
         item.mp4_btn = mp4_btn
 
-        send_to_conv_btn = QPushButton("Conv")
+        send_to_conv_btn = QPushButton("Chuyển")
         send_to_conv_btn.setFixedSize(46, 28)
         send_to_conv_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 6px; font-size: 13px;"
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 13px;"
         )
         send_to_conv_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_to_conv_btn.clicked.connect(lambda _=False, i=item: self._send_to_convert_tab(i))
@@ -522,7 +522,7 @@ class LiveMonitorTab(QWidget):
         remove_btn = QPushButton("x")
         remove_btn.setFixedSize(28, 28)
         remove_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px; font-size: 12px;"
+            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 12px;"
         )
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remove_btn.clicked.connect(lambda _=False, i=item: self._remove_item(i))
@@ -576,12 +576,12 @@ class LiveMonitorTab(QWidget):
             if state == _MonitorState.RECORDING:
                 item.cancel_btn.setEnabled(True)
                 item.cancel_btn.setStyleSheet(
-                    f"background: {T.surface2}; color: {T.warning}; border: none; border-radius: 6px; font-size: 12px;"
+                    f"background: {T.surface2}; color: {T.warning}; border: none; border-radius: 8px; font-size: 12px;"
                 )
             else:
                 item.cancel_btn.setEnabled(False)
                 item.cancel_btn.setStyleSheet(
-                    f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px; font-size: 12px;"
+                    f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 12px;"
                 )
 
         if item.open_folder_btn:
