@@ -762,7 +762,7 @@
     <div class="logo">Omni<span>DL</span> Remote</div>
     <div id="conn-badge" onclick="openSettings()">
       <div id="conn-dot"></div>
-      <span id="conn-label">Connecting…</span>
+      <span id="conn-label">Đang kết nối…</span>
     </div>
   </header>
 
@@ -891,7 +891,7 @@
 <div id="preview-overlay">
   <div id="preview-title"></div>
   <div id="preview-content"></div>
-  <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()">✕ Close</button>
+  <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()">✕ Đóng</button>
 </div>
 
 <!-- Convert bottom sheet -->
@@ -981,8 +981,8 @@
       </div>
       <div style="font-size:12px; color:var(--text3); margin-top:6px;">Find the token in OmniDL Settings → Remote API.</div>
     </div>
-    <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:8px;">Save &amp; Connect</button>
-    <button class="btn btn-secondary" onclick="closeSettings()" style="margin-top:8px;">Cancel</button>
+    <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:8px;">Lưu & Kết nối</button>
+    <button class="btn btn-secondary" onclick="closeSettings()" style="margin-top:8px;">Huỷ</button>
   </div>
 </div>
 
@@ -1156,7 +1156,7 @@ function setConnected(ok) {
   const dot   = document.getElementById('conn-dot');
   const label = document.getElementById('conn-label');
   dot.className = ok ? 'ok' : 'err';
-  label.textContent = ok ? 'Connected' : 'Disconnected';
+  label.textContent = ok ? 'Đã kết nối' : 'Ngắt kết nối';
   if (ok) {
     document.getElementById('dl-btn').disabled = false;
     loadNodes();
@@ -1450,13 +1450,13 @@ function queueItemHtml(t) {
 
   let controls = '';
   if (isActive && t.status !== 'QUEUED') {
-    controls = `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">Pause</button>
-                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
+    controls = `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">Tạm dừng</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
   } else if (isPaused) {
-    controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">Resume</button>
-                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
+    controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">Tiếp tục</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
   } else if (t.status === 'QUEUED') {
-    controls = `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
+    controls = `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
   }
 
   // ── File-action buttons (only when original file still exists on disk) ──
