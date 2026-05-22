@@ -231,7 +231,7 @@ class HomeTab(QWidget):
         meta_sub.addWidget(self._duration_lbl)
         self._live_badge = QLabel("  🔴 LIVE  ")
         self._live_badge.setStyleSheet(
-            "background-color: #EF4444; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 0;"
+            f"background-color: {T.error}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 0;"
         )
         self._live_badge.hide()
         meta_sub.addWidget(self._live_badge)
@@ -258,7 +258,7 @@ class HomeTab(QWidget):
         q_layout.setContentsMargins(0, 0, 0, 0)
         q_layout.setSpacing(8)
 
-        qlbl = QLabel("QUALITY")
+        qlbl = QLabel("CHẤT LƯỢNG")
         qlbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; font-weight: bold; background: transparent;")
         q_layout.addWidget(qlbl)
 
@@ -297,7 +297,7 @@ class HomeTab(QWidget):
         opts = QHBoxLayout()
         opts.setSpacing(8)
 
-        opts.addWidget(QLabel("Format"))
+        opts.addWidget(QLabel("Định dạng"))
         self._format_combo = QComboBox()
         self._format_combo.addItems(FORMATS)
         self._format_combo.setFixedWidth(90)
@@ -305,12 +305,12 @@ class HomeTab(QWidget):
 
         opts.addSpacing(16)
 
-        opts.addWidget(QLabel("Folder"))
+        opts.addWidget(QLabel("Thư mục"))
         self._folder_lbl = QLabel(self._short_path(self._app.service.get_download_dir()))
         self._folder_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 11px; background: transparent;")
         opts.addWidget(self._folder_lbl)
 
-        browse_btn = QPushButton("Browse")
+        browse_btn = QPushButton("Duyệt")
         browse_btn.setFixedSize(72, 34)
         browse_btn.clicked.connect(self._browse_folder)
         opts.addWidget(browse_btn)
@@ -499,7 +499,7 @@ class HomeTab(QWidget):
                 on_error=lambda _, t=token: ui_bridge.post(lambda: self._apply_thumb_error(t)),
             )
         else:
-            self._thumb_lbl.setText("No Preview")
+            self._thumb_lbl.setText("Không có xem trước")
 
     def _apply_thumb(self, img, token: int) -> None:
         if token != self._thumb_token:
@@ -518,12 +518,12 @@ class HomeTab(QWidget):
             self._thumb_lbl.setPixmap(scaled)
             self._thumb_lbl.setText("")
         except Exception:
-            self._thumb_lbl.setText("No Preview")
+            self._thumb_lbl.setText("Không có xem trước")
 
     def _apply_thumb_error(self, token: int) -> None:
         if token != self._thumb_token:
             return
-        self._thumb_lbl.setText("No Preview")
+        self._thumb_lbl.setText("Không có xem trước")
 
     def _add_to_queue(self) -> None:
         if not self._media_info:
@@ -548,7 +548,7 @@ class HomeTab(QWidget):
     def _browse_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
             self,
-            "Select download folder",
+            "Chọn thư mục tải",
             str(self._app.service.get_download_dir()),
         )
         if chosen:
