@@ -133,7 +133,7 @@ class Toolbar(QWidget):
                 font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: #c62828;
+                background-color: #c62828;  /* no error_hover token */
             }}
         """)
         self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -378,7 +378,7 @@ class Toolbar(QWidget):
                 font-size: 13px;
                 font-weight: 600;
             }}
-            QPushButton:hover {{ background-color: #c62828; }}
+            QPushButton:hover {{ background-color: #c62828; }}  /* no error_hover token */
         """)
         for btn, color in ((self._paste_btn, T.text2), (self._clear_btn, T.text3)):
             btn.setStyleSheet(f"""

@@ -86,7 +86,7 @@ class DownloadItemWidget(QFrame):
         self._live_badge = QLabel("LIVE")
         self._live_badge.setObjectName("live_badge")
         self._live_badge.setStyleSheet(
-            "background: #e53935; color: #fff; font-size: 10px; font-weight: 700;"
+            f"background: {T.error}; color: #fff; font-size: 10px; font-weight: 700;"
             "border-radius: 4px; padding: 1px 6px; letter-spacing: 0.5px;"
         )
         self._live_badge.setVisible(False)
