@@ -41,6 +41,7 @@ QFrame#card {{
 }}
 QFrame#card:hover {{
     border-color: {T.border2};
+    background-color: {T.card_hover};
 }}
 /* --- Buttons --- */
 QPushButton {{
@@ -95,6 +96,9 @@ QPushButton#ghost {{
 QPushButton#ghost:hover {{
     background-color: {T.surface2};
     color: {T.text};
+}}
+QPushButton#ghost:pressed {{
+    background-color: {T.surface2};
 }}
 /* --- Inputs --- */
 QLineEdit {{

@@ -70,7 +70,7 @@ class QueueTab(QWidget):
         self._count_lbl.setStyleSheet(f"""
             color: {T.text2};
             background-color: {T.surface2};
-            border-radius: 6px;
+            border-radius: 8px;
             font-size: 11px;
             padding: 4px 12px;
         """)
