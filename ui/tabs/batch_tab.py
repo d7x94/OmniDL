@@ -629,10 +629,10 @@ class BatchTab(QWidget):
         ready = sum(1 for i in self._items if i.state == _ItemState.READY and i.checked)
         if ready == 0:
             self._queue_all_btn.setEnabled(False)
-            self._queue_all_btn.setText("Queue All")
+            self._queue_all_btn.setText("Thêm tất cả")
         else:
             self._queue_all_btn.setEnabled(True)
-            self._queue_all_btn.setText(f"Queue {ready} video")
+            self._queue_all_btn.setText(f"Thêm {ready} video")
 
     def _remove_item(self, item: _BatchItem) -> None:
         if item.row_frame:
@@ -644,7 +644,7 @@ class BatchTab(QWidget):
         if not self._items:
             self._add_empty_label()
             self._queue_all_btn.setEnabled(False)
-            self._queue_all_btn.setText("Queue All")
+            self._queue_all_btn.setText("Thêm tất cả")
             self._status_lbl.setText("")
         self._update_queue_btn_count()
 
@@ -730,7 +730,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setEnabled(False)
         self._analyse_btn.setText("Phân tích")
         self._queue_all_btn.setEnabled(False)
-        self._queue_all_btn.setText("Queue All")
+        self._queue_all_btn.setText("Thêm tất cả")
         self._retry_btn.setEnabled(False)
         self._retry_btn.setText("Retry errors")
         self._url_count_lbl.setText("")
