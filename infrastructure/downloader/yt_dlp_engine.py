@@ -6,6 +6,7 @@ Thin wrapper around yt-dlp: metadata extraction + download execution.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import shlex
 import tempfile
@@ -112,8 +113,8 @@ from utils.ffmpeg_locator import get_ffmpeg_path
 logger = logging.getLogger(__name__)
 
 
-class _TikTokRateLimiter:
-    """Minimum-interval rate limiter for TikTok API requests, shared across threads."""
+class _PlatformRateLimiter:
+    """Minimum-interval rate limiter for platform API requests, shared across threads."""
 
     def __init__(self, min_interval: float = 2.0) -> None:
         self.min_interval = min_interval
@@ -133,7 +134,7 @@ class _TikTokRateLimiter:
             self._last_t = 0.0
 
 
-_tiktok_rl = _TikTokRateLimiter(min_interval=2.0)
+_TT_RL = _PlatformRateLimiter(2.0)
 
 
 def _validate_cookie_path(config: "ConfigManager") -> str | None:
@@ -226,6 +227,33 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("kwai.com", "kuaishou"),
     ("v.kuaishou.com", "kuaishou"),
 ]
+
+_IG_RL = _PlatformRateLimiter(1.5)
+_FB_RL = _PlatformRateLimiter(1.0)
+_TW_RL = _PlatformRateLimiter(0.8)
+
+_PLATFORM_RL_MAP: dict[str, _PlatformRateLimiter] = {
+    "tiktok": _TT_RL,
+    "instagram": _IG_RL,
+    "facebook": _FB_RL,
+    "twitter": _TW_RL,
+}
+
+
+def platform_for_url(url: str) -> str | None:
+    try:
+        hostname = (_urlparse(url).hostname or "").lower()
+    except Exception:
+        return None
+    for domain, key in _COOKIE_PLATFORM_MAP:
+        if hostname == domain or hostname.endswith("." + domain):
+            return key
+    return None
+
+
+def _get_platform_rl(url: str) -> "_PlatformRateLimiter | None":
+    key = platform_for_url(url)
+    return _PLATFORM_RL_MAP.get(key) if key else None
 
 
 def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
@@ -854,10 +882,11 @@ class YtDlpEngine:
                     pass
             return self._extract_playlist_flat(url, opts)
 
-        # Rate-limit TikTok requests to avoid HTTP 429 when analyse and download
-        # fire concurrently (shared limiter with _extract_tiktok_live_hls_url).
-        if (_urlparse(url).hostname or "").lower().endswith("tiktok.com"):
-            _tiktok_rl.acquire()
+        # Rate-limit per-platform to reduce HTTP 429 risk when analyse and download
+        # fire concurrently (shared per-platform limiter with _extract_tiktok_live_hls_url).
+        _rl = _get_platform_rl(url)
+        if _rl is not None:
+            _rl.acquire()
 
         # Retry up to 2 times on transient errors (rate limit, network blip).
         last_exc: Exception | None = None
@@ -1439,11 +1468,11 @@ class YtDlpEngine:
             # without making Stop/Cancel unresponsive. yt-dlp's per-fragment
             # backoff (sleep_interval) keeps retry churn low.
             "fragment_retries": 3 if is_live else self._config.max_retries,
-            # Exponential backoff between retries (sleep_interval doubles up to
-            # max_sleep_interval) prevents hammering CDNs on HTTP 429 / 503.
-            "sleep_interval": 2,
-            "max_sleep_interval": 30,
-            "sleep_interval_requests": 1,
+            # Jittered backoff between retries prevents bot-like fixed-interval
+            # patterns that trigger platform rate-limit detection.
+            "sleep_interval": random.uniform(1.0, 3.0),
+            "max_sleep_interval": random.uniform(20.0, 40.0),
+            "sleep_interval_requests": random.uniform(0.3, 1.2),
             "concurrent_fragment_downloads": 4,
             "writethumbnail": False,
             "embedthumbnail": False,
@@ -1859,6 +1888,26 @@ class YtDlpEngine:
                                         _tt16_attempt,
                                         _ap_exc,
                                     )
+                            # BUG-TT-28 FIX: TikTok CDN ends HLS sessions with
+                            # #EXT-X-ENDLIST when the signed URL expires (~9-15 min),
+                            # causing FFmpeg to exit cleanly (code 0) even though the
+                            # broadcaster is still live. Re-extract to verify.
+                            if _tt16_attempt < _MAX_HLS_RETRIES:
+                                _tt28_fresh = self._extract_tiktok_live_hls_url(
+                                    task.url, room_id=_room_id_hint
+                                )
+                                if _tt28_fresh:
+                                    logger.info(
+                                        "BUG-TT-28: FFmpeg exited cleanly but stream"
+                                        " still live — re-extracting HLS"
+                                        " (attempt %d/%d)",
+                                        _tt16_attempt + 1,
+                                        _MAX_HLS_RETRIES,
+                                    )
+                                    _tt16_current_hls = _tt28_fresh[0]
+                                    _tt16_attempt += 1
+                                    time.sleep(2)
+                                    continue
                             _direct_ffmpeg_ok = True
                             break
                         except yt_dlp.utils.DownloadError:
@@ -2464,7 +2513,7 @@ class YtDlpEngine:
             opts_ei["cookiefile"] = _usable
             if _is_temp:
                 _cookie_temp = _usable
-        _tiktok_rl.acquire()
+        _TT_RL.acquire()
         try:
             with yt_dlp.YoutubeDL(opts_ei) as ydl:
                 info = ydl.extract_info(task_url, download=False)

@@ -7,6 +7,8 @@ Emits events via EventBus; never touches the UI directly.
 from __future__ import annotations
 
 import logging
+import random
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -18,7 +20,7 @@ from app.event_bus import bus as global_bus
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager
-from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
+from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, platform_for_url
 
 if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
@@ -37,6 +39,15 @@ class DownloadManager:
     3. Publishes EventBus events on progress / completion / failure
     4. Routes to GalleryDlEngine when task.media_info.source_engine == "gallery_dl"
     """
+
+    # Max simultaneous downloads per platform. Caps concurrent authenticated
+    # requests to a single account, reducing HTTP 429 and account flag risk.
+    _PLATFORM_CONCURRENCY: dict[str, int] = {
+        "instagram": 2,
+        "tiktok": 2,
+        "facebook": 3,
+        "twitter": 2,
+    }
 
     def __init__(
         self,
@@ -70,6 +81,9 @@ class DownloadManager:
         self._futures: dict[str, Future] = {}
         self._executor: Optional[ThreadPoolExecutor] = None
         self._running = False
+        self._platform_sems: dict[str, threading.Semaphore] = {
+            p: threading.Semaphore(n) for p, n in self._PLATFORM_CONCURRENCY.items()
+        }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -109,7 +123,9 @@ class DownloadManager:
             if not self._running or not self._executor:
                 raise RuntimeError("DownloadManager is not running.")
             self._tasks[task.id] = task
-            future = self._executor.submit(self._run_task, task)
+            _platform = platform_for_url(task.url)
+            _sem = self._platform_sems.get(_platform or "")
+            future = self._executor.submit(self._gated_run, task, _sem)
             self._futures[task.id] = future
         future.add_done_callback(lambda f: self._on_future_done(task.id, f))
         logger.info("Enqueued task %s — %s", task.id, task.title)
@@ -160,6 +176,44 @@ class DownloadManager:
     def _get_task(self, task_id: str) -> Optional[DownloadTask]:
         with self._lock:
             return self._tasks.get(task_id)
+
+    def _gated_run(self, task: DownloadTask, sem: Optional[threading.Semaphore]) -> None:
+        if sem is not None:
+            sem.acquire()
+        try:
+            self._run_task(task)
+        finally:
+            if sem is not None:
+                sem.release()
+
+    def _tt29_live_recheck(self, task: DownloadTask, room_id: str) -> bool:
+        m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task.url, re.I)
+        if not m:
+            return False
+        username = m.group(1)
+        logger.info(
+            "Task %s: 3x 'not live' but room_id=%s — sleeping 15s then re-checking via live page",
+            task.id,
+            room_id,
+        )
+        for _ in range(15):
+            if task.is_cancellation_requested:
+                return False
+            time.sleep(1)
+        if task.is_cancellation_requested:
+            return False
+        from utils.tiktok_live_checker import _fetch_hls_from_live_page  # noqa: PLC0415
+
+        try:
+            still_live = bool(_fetch_hls_from_live_page(username, proxy=self._config.proxy or ""))
+        except Exception:
+            still_live = False
+        if still_live:
+            logger.info(
+                "BUG-TT-29: live page confirms @%s still live — resetting retry counter",
+                username,
+            )
+        return still_live
 
     # Keywords that identify unrecoverable errors — retrying these wastes time
     # and may trigger platform rate-limiting or account flags.
@@ -253,6 +307,7 @@ class DownloadManager:
         # Count consecutive "not currently live" errors. After 3 in a row the
         # stream has ended — stop retrying rather than burning all max_retries.
         _consecutive_not_live: int = 0
+        _not_live_recheck_done: bool = False  # BUG-TT-29: one live re-verify allowed
 
         for attempt in range(max_attempts):
             # Check for cancellation before each attempt (including before
@@ -261,10 +316,20 @@ class DownloadManager:
                 break
 
             if attempt > 0:
-                # Exponential back-off: 1 s, 2 s, 4 s, …  capped at 30 s.
-                wait_s = min(2 ** (attempt - 1), 30)
+                # Respect Retry-After header from 429 responses; otherwise use
+                # jittered exponential back-off to avoid predictable bot patterns.
+                _retry_after = 0
+                if last_exc is not None:
+                    _m = re.search(r"retry.after[:\s]+(\d+)", str(last_exc), re.I)
+                    if _m:
+                        _retry_after = int(_m.group(1))
+                wait_s = (
+                    float(_retry_after)
+                    if _retry_after
+                    else min(2 ** (attempt - 1), 30) * random.uniform(0.8, 1.5)
+                )
                 logger.info(
-                    "Retrying task %s (attempt %d/%d) in %d s — previous error: %s",
+                    "Retrying task %s (attempt %d/%d) in %.1f s — previous error: %s",
                     task.id,
                     attempt + 1,
                     max_attempts,
@@ -444,6 +509,17 @@ class DownloadManager:
                     _consecutive_not_live += 1
                     last_exc = exc
                     if _consecutive_not_live >= 3:
+                        # BUG-TT-29: one scrape re-verify before giving up.
+                        _room_id_tt29 = (
+                            task.media_info.tiktok_room_id
+                            if task.media_info and not _not_live_recheck_done
+                            else ""
+                        )
+                        if _room_id_tt29:
+                            _not_live_recheck_done = True
+                            if self._tt29_live_recheck(task, _room_id_tt29):
+                                _consecutive_not_live = 0
+                                continue
                         logger.info(
                             "Task %s: 3 consecutive 'not currently live' — stream ended, stopping retries",
                             task.id,
