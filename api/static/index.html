@@ -22,7 +22,7 @@
       --surface3:  #2a2a2a;
       --border:    #2e2e2e;
       --border2:   #3a3a3a;
-      --accent:    #3b82f6;
+      --accent:    #6366F1;
       --accent-dk: #1d4ed8;
       --accent-bg: rgba(59,130,246,.1);
       --success:   #22c55e;
@@ -31,8 +31,8 @@
       --text:      #f0f0f0;
       --text2:     #9ca3af;
       --text3:     #6b7280;
-      --radius:    14px;
-      --radius-sm: 9px;
+      --radius:    12px;
+      --radius-sm: 8px;
       --shadow:    0 1px 3px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
       --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
       --safe-top:    env(safe-area-inset-top, 0px);
@@ -325,7 +325,7 @@
       text-transform: uppercase;
       letter-spacing: .6px;
       padding: 3px 8px;
-      border-radius: 5px;
+      border-radius: 4px;
       background: var(--surface2);
       border: 1px solid var(--border);
       color: var(--text3);
@@ -770,20 +770,20 @@
   <nav>
     <button class="tab-btn active" onclick="switchTab('download',this)" id="tab-download">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Download
+      Tải xuống
     </button>
     <button class="tab-btn" onclick="switchTab('queue',this)" id="tab-queue">
       <span id="queue-badge"></span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-      Queue
+      Hàng đợi
     </button>
     <button class="tab-btn" onclick="switchTab('history',this)" id="tab-history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      History
+      Lịch sử
     </button>
     <button class="tab-btn" onclick="switchTab('files',this)" id="tab-files">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-      Files
+      Tệp tin
     </button>
   </nav>
 
@@ -793,7 +793,7 @@
     <!-- ── Download tab ──────────────────────────────────────────────── -->
     <div class="tab-panel active" id="panel-download">
       <div class="card">
-        <label>Paste URL</label>
+        <label>Dán URL vào đây...</label>
         <div id="url-wrap">
           <input type="url" id="url-input" placeholder="https://…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
           <button id="url-paste" onclick="pasteUrl()">Paste & Analyse</button>
@@ -808,7 +808,7 @@
 
         <div class="format-row" id="format-row">
           <div>
-            <label>Quality</label>
+            <label>Chất lượng</label>
             <select id="format-sel">
               <option value="bestvideo+bestaudio/best">Best quality</option>
               <option value="bestvideo[height<=1080]+bestaudio/best[height<=1080]">1080p</option>
@@ -818,7 +818,7 @@
             </select>
           </div>
           <div>
-            <label>Format</label>
+            <label>Định dạng</label>
             <select id="ext-sel">
               <option value="mp4">MP4</option>
               <option value="mp3">MP3</option>
@@ -839,7 +839,7 @@
 
         <button class="btn btn-secondary" id="analyse-btn" onclick="doAnalyse()" style="margin-top:12px;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-          Analyse URL
+          Phân tích
         </button>
         <button class="btn btn-danger btn-sm" id="analyse-cancel-btn" onclick="cancelAnalyse()" style="margin-top:12px; display:none;">
           ✕ Cancel
@@ -848,7 +848,7 @@
 
         <button class="btn btn-primary" id="dl-btn" onclick="doDownload()" style="margin-top:12px;" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Add to Queue
+          Thêm vào hàng đợi
         </button>
       </div>
     </div>
@@ -856,7 +856,7 @@
     <!-- ── Queue tab ─────────────────────────────────────────────────── -->
     <div class="tab-panel" id="panel-queue">
       <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-        <button class="btn btn-secondary btn-sm" onclick="clearFinished()">Clear finished</button>
+        <button class="btn btn-secondary btn-sm" onclick="clearFinished()">Xóa đã xong</button>
       </div>
       <div id="queue-list"></div>
     </div>
@@ -969,7 +969,7 @@
 <div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
   <div id="settings-sheet">
     <div class="sheet-handle"></div>
-    <h2>⚙ Connection</h2>
+    <h2>⚙ Kết nối</h2>
     <div class="setting-row">
       <label>Server Address</label>
       <input type="text" id="cfg-host" placeholder="http://192.168.1.x:7799" />
@@ -1355,7 +1355,7 @@ async function doAnalyse() {
   } finally {
     _analyseAbortCtrl = null;
     btn.disabled = false;
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Analyse URL';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Phân tích';
     cancelBt.style.display = 'none';
     if (!analysedInfo) {
       document.getElementById('format-row').style.display  = '';
@@ -1416,7 +1416,7 @@ async function doDownload() {
     toast('Error: ' + err.message);
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Add to Queue';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Thêm vào hàng đợi';
   }
 }
 
@@ -1455,6 +1455,8 @@ function queueItemHtml(t) {
   } else if (isPaused) {
     controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">Resume</button>
                 <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
+  } else if (t.status === 'QUEUED') {
+    controls = `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Cancel</button>`;
   }
 
   // ── File-action buttons (only when original file still exists on disk) ──
