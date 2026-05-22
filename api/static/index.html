@@ -796,7 +796,7 @@
         <label>Dán URL vào đây...</label>
         <div id="url-wrap">
           <input type="url" id="url-input" placeholder="https://…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-          <button id="url-paste" onclick="pasteUrl()">Paste & Analyse</button>
+          <button id="url-paste" onclick="pasteUrl()">Dán & Phân tích</button>
         </div>
 
         <!-- Metadata preview (shown after analyse) -->
@@ -810,11 +810,11 @@
           <div>
             <label>Chất lượng</label>
             <select id="format-sel">
-              <option value="bestvideo+bestaudio/best">Best quality</option>
+              <option value="bestvideo+bestaudio/best">Chất lượng cao nhất</option>
               <option value="bestvideo[height<=1080]+bestaudio/best[height<=1080]">1080p</option>
               <option value="bestvideo[height<=720]+bestaudio/best[height<=720]">720p</option>
               <option value="bestvideo[height<=480]+bestaudio/best[height<=480]">480p</option>
-              <option value="bestaudio/best">Audio only</option>
+              <option value="bestaudio/best">Chỉ âm thanh</option>
             </select>
           </div>
           <div>
@@ -832,9 +832,9 @@
         <div id="live-banner" style="display:none; margin-top:10px; padding:10px 12px;
              background:var(--danger,#e53e3e)22; border:1px solid var(--danger,#e53e3e)66;
              border-radius:8px; font-size:13px; color:var(--danger,#e53e3e); line-height:1.4;">
-          ⏺ <strong>Livestream detected</strong> — format &amp; quality selectors are
-          disabled. The stream will be recorded as <code>.ts</code> (MPEG-TS) from
-          this moment forward.
+          ⏺ <strong>Phát trực tiếp được phát hiện</strong> — bộ chọn định dạng &amp; chất lượng
+          bị vô hiệu hóa. Luồng sẽ được ghi lại dưới dạng <code>.ts</code> (MPEG-TS) từ
+          thời điểm này trở đi.
         </div>
 
         <button class="btn btn-secondary" id="analyse-btn" onclick="doAnalyse()" style="margin-top:12px;">
@@ -842,7 +842,7 @@
           Phân tích
         </button>
         <button class="btn btn-danger btn-sm" id="analyse-cancel-btn" onclick="cancelAnalyse()" style="margin-top:12px; display:none;">
-          ✕ Cancel
+          ✕ Huỷ
         </button>
         <div id="analyse-status"></div>
 
@@ -1601,7 +1601,7 @@ async function cancelTask(id) {
     if (e.name !== 'AbortError') {
       toast(e.message);
       // Re-enable button on real error so user can retry
-      if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Huỷ'; }
     }
     // On AbortError (timeout / iOS background kill): leave button disabled —
     // the server-side cancel may still go through; SSE will update the UI.
