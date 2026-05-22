@@ -167,7 +167,7 @@ class BatchTab(QWidget):
         btn_row_layout.setContentsMargins(0, 0, 0, 0)
         btn_row_layout.setSpacing(8)
 
-        import_btn = QPushButton("Import .txt")
+        import_btn = QPushButton("Nhập .txt")
         import_btn.setFixedHeight(34)
         import_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 12px; padding: 0 12px;"
@@ -212,11 +212,12 @@ class BatchTab(QWidget):
         rh_layout.setSpacing(8)
 
         rl = QLabel("Kết quả phân tích")
+        rl.setObjectName("section_title")
         rl.setStyleSheet(f"color: {T.text2}; font-size: 13px; font-weight: bold;")
         rh_layout.addWidget(rl)
         rh_layout.addStretch()
 
-        ql = QLabel("Quality:")
+        ql = QLabel("Chất lượng:")
         ql.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         rh_layout.addWidget(ql)
         self._quality_combo = QComboBox()
@@ -224,7 +225,7 @@ class BatchTab(QWidget):
         self._quality_combo.setFixedSize(90, 30)
         rh_layout.addWidget(self._quality_combo)
 
-        fl = QLabel("Format:")
+        fl = QLabel("Định dạng:")
         fl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         rh_layout.addWidget(fl)
         self._format_combo = QComboBox()
@@ -518,7 +519,7 @@ class BatchTab(QWidget):
 
     def _build_item_row(self, item: _BatchItem) -> None:
         row = QFrame()
-        row.setStyleSheet(f"QFrame {{ background-color: {T.surface2}; border-radius: 8px; }}")
+        row.setStyleSheet(f"QFrame {{ background-color: {T.surface2}; border-radius: 12px; }}")
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(10, 6, 6, 6)
         row_layout.setSpacing(6)
@@ -569,20 +570,20 @@ class BatchTab(QWidget):
         state = item.state
 
         if state == _ItemState.PENDING:
-            item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.surface2}; border-radius: 8px; }}")
+            item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.surface2}; border-radius: 12px; }}")
             item.state_lbl.setText("…")
             item.state_lbl.setStyleSheet(f"color: {T.text3}; font-size: 14px; background: transparent;")
             item.title_lbl.setText(self._short_url(item.url))
             item.title_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px; background: transparent;")
 
         elif state == _ItemState.ANALYSING:
-            item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.surface2}; border-radius: 8px; }}")
+            item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.surface2}; border-radius: 12px; }}")
             item.title_lbl.setText(self._short_url(item.url))
             item.title_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; background: transparent;")
 
         elif state == _ItemState.READY:
             item.row_frame.setStyleSheet(
-                f"QFrame {{ background-color: {T.success_bg}; border-radius: 8px; }}"
+                f"QFrame {{ background-color: {T.success_bg}; border-radius: 12px; }}"
             )
             item.state_lbl.setText("✓")
             item.state_lbl.setStyleSheet(f"color: {T.success}; font-size: 14px; background: transparent;")
@@ -595,7 +596,7 @@ class BatchTab(QWidget):
                 item.check_box.setEnabled(True)
 
         elif state == _ItemState.ERROR:
-            item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.error_bg}; border-radius: 8px; }}")
+            item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.error_bg}; border-radius: 12px; }}")
             item.state_lbl.setText("✗")
             item.state_lbl.setStyleSheet(f"color: {T.error}; font-size: 14px; background: transparent;")
             short_url = self._short_url(item.url, 65)
@@ -608,7 +609,7 @@ class BatchTab(QWidget):
 
         elif state == _ItemState.QUEUED:
             item.row_frame.setStyleSheet(
-                f"QFrame {{ background-color: {T.primary_dim}; border-radius: 8px; }}"
+                f"QFrame {{ background-color: {T.primary_dim}; border-radius: 12px; }}"
             )
             item.state_lbl.setText("⬇")
             item.state_lbl.setStyleSheet(
