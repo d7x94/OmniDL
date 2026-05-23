@@ -331,7 +331,9 @@ class DownloadService:
                                         on_done(_info2)
                                         return
                                     try:
-                                        _retry_info = self._engine.extract_info(url)
+                                        # BUG-TT-19: use resolved (canonical @user/live) not the
+                                        # original short URL -- avoids 429 from vm.tiktok re-expansion
+                                        _retry_info = self._engine.extract_info(resolved)
                                         self._bus.publish(EventBus.ANALYSIS_DONE, info=_retry_info)
                                         on_done(_retry_info)
                                         return

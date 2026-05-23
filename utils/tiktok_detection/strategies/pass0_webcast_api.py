@@ -69,8 +69,9 @@ class Pass0WebcastApi(LiveDetectionStrategy):
                 return LiveCheckResult(live_url=live_url, room_id=r_id, strategy_name=self.name)
 
         logger.debug(
-            "tiktok_detection: @%s pass-0 no active room (rooms=%d)",
+            "tiktok_detection: @%s pass-0 no active room (rooms=%d) body=%.200s",
             ctx.username,
             len(room_list),
+            resp.text,
         )
         return None

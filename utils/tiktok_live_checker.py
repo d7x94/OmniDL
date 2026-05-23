@@ -782,9 +782,14 @@ def _get_dispatcher() -> "Any":
     if _dispatcher is None:
         from utils.tiktok_detection.dispatcher import LiveDetectionDispatcher
         from utils.tiktok_detection.health import HealthDaemon, StrategyHealthRegistry
-        from utils.tiktok_detection.strategies import Pass0WebcastApi, Pass1ProfilePage, Pass2LivePage
+        from utils.tiktok_detection.strategies import (
+            Pass0WebcastApi,
+            Pass1ProfilePage,
+            Pass2LivePage,
+            Pass3UserApi,
+        )
 
-        strategies = [Pass0WebcastApi(), Pass1ProfilePage(), Pass2LivePage()]
+        strategies = [Pass0WebcastApi(), Pass1ProfilePage(), Pass2LivePage(), Pass3UserApi()]
         registry = StrategyHealthRegistry()
         _dispatcher = LiveDetectionDispatcher(strategies, registry)
         _health_daemon = HealthDaemon(strategies, registry)
