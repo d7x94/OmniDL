@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from typing import TYPE_CHECKING, Optional
 
@@ -26,9 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from ui.components.url_utils import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK
+
 _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-_CLIPBOARD_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
-_URL_TRAILING_JUNK = frozenset(".,;)\"'>]")
 
 
 class Toolbar(QWidget):

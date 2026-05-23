@@ -52,7 +52,7 @@ def _make_task(url="https://v.kuaishou.com/K9Zu4Iez") -> DownloadTask:
 
 # Import regex and junk set directly from the module under test so we don't
 # duplicate the definition in the test.
-from ui.components.toolbar import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK  # type: ignore[import]  # noqa: E402
+from ui.components.url_utils import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK  # noqa: E402
 
 
 def _extract(text: str) -> str | None:
