@@ -490,6 +490,7 @@ def create_app(
                             "is_live": info.is_live,
                             "playlist_count": len(info.playlist_entries),
                             "source_engine": info.source_engine,
+                            "tiktok_room_id": info.tiktok_room_id or "",
                         }
                     )
                     yield f"event: result\ndata: {payload}\n\n"
@@ -577,13 +578,30 @@ def create_app(
         A minimal MediaInfo is constructed from the request so the job can
         be queued immediately — yt-dlp fills in the real title during download.
         """
+        # BUG-TT-DOWNLOAD-CANONICAL: iOS shortcuts send the original short URL
+        # (vt.tiktok.com/ZSxxx) to /api/download even after /api/analyse resolved
+        # it to a canonical @user/live URL. Without this lookup, task.url stays as
+        # the short URL → [vm.tiktok] extractor re-resolves it → HTTP 429.
+        # Fix: look up the analyse cache for the canonical URL and tiktok_room_id.
+        _info_url = body.url
+        _info_room_id = body.tiktok_room_id or ""
+        with _analyse_cache_lock:
+            _cached = _analyse_cache.get(body.url)
+            if _cached is not None and _cached["done"].is_set():
+                _ci = _cached.get("result", {}).get("info")
+                if _ci is not None:
+                    if _ci.url and _ci.url.startswith("http"):
+                        _info_url = _ci.url
+                    if _ci.tiktok_room_id and not _info_room_id:
+                        _info_room_id = _ci.tiktok_room_id
+
         info = MediaInfo(
-            url=body.url,
+            url=_info_url,
             title=body.title or body.url[:80],
             platform=body.platform or "unknown",
             source_engine=body.source_engine or "yt_dlp",
             is_live=bool(body.is_live),  # forwarded from /api/analyse — avoids a second extract_info
-            tiktok_room_id=body.tiktok_room_id or "",  # BUG-TT-25: enables signed room/info fallback
+            tiktok_room_id=_info_room_id,  # BUG-TT-25: enables signed room/info fallback
         )
         try:
             task = service.start_download(
@@ -960,7 +978,7 @@ def create_app(
                     j = remote_convert.start_convert(
                         source_task_id=task_id,
                         file_path=vf,
-                        encoder_key=body.encoder_key or "cpu",
+                        encoder_key=body.encoder_key or "auto",
                         quality=body.quality or "standard",
                         speed_preset=body.speed_preset or "balanced",
                         custom_crf=body.custom_crf if body.custom_crf is not None else 23,
@@ -976,7 +994,7 @@ def create_app(
             job = remote_convert.start_convert(
                 source_task_id=task_id,
                 file_path=file_path,
-                encoder_key=body.encoder_key or "cpu",
+                encoder_key=body.encoder_key or "auto",
                 quality=body.quality or "standard",
                 speed_preset=body.speed_preset or "balanced",
                 custom_crf=body.custom_crf if body.custom_crf is not None else 23,
@@ -1268,7 +1286,7 @@ def create_app(
         try:
             job = remote_convert.start_convert_from_path(
                 file_path=file_path,
-                encoder_key=body.encoder_key or "cpu",
+                encoder_key=body.encoder_key or "auto",
                 quality=body.quality or "standard",
                 speed_preset=body.speed_preset or "balanced",
                 custom_crf=body.custom_crf if body.custom_crf is not None else 23,

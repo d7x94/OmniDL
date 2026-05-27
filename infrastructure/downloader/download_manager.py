@@ -20,7 +20,8 @@ from app.event_bus import bus as global_bus
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager
-from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, platform_for_url
+from infrastructure.downloader.account_pool import TikTokAccount, TikTokAccountPool
+from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _prepare_cookie_for_use, platform_for_url
 
 if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
@@ -84,6 +85,18 @@ class DownloadManager:
         self._platform_sems: dict[str, threading.Semaphore] = {
             p: threading.Semaphore(n) for p, n in self._PLATFORM_CONCURRENCY.items()
         }
+        self._tiktok_pool: Optional[TikTokAccountPool] = self._build_tiktok_pool()
+
+    def _build_tiktok_pool(self) -> "Optional[TikTokAccountPool]":
+        entries = self._config.tiktok_account_pool
+        if not entries:
+            return None
+        accounts = [TikTokAccount.from_dict(d) for d in entries]
+        return TikTokAccountPool(accounts) if accounts else None
+
+    def rebuild_tiktok_pool(self) -> None:
+        """Rebuild the pool from current config — call after UI adds/removes accounts."""
+        self._tiktok_pool = self._build_tiktok_pool()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -124,8 +137,11 @@ class DownloadManager:
                 raise RuntimeError("DownloadManager is not running.")
             self._tasks[task.id] = task
             _platform = platform_for_url(task.url)
-            _sem = self._platform_sems.get(_platform or "")
-            future = self._executor.submit(self._gated_run, task, _sem)
+            if _platform == "tiktok" and self._tiktok_pool and len(self._tiktok_pool) > 0:
+                future = self._executor.submit(self._gated_run_tiktok, task)
+            else:
+                _sem = self._platform_sems.get(_platform or "")
+                future = self._executor.submit(self._gated_run, task, _sem)
             self._futures[task.id] = future
         future.add_done_callback(lambda f: self._on_future_done(task.id, f))
         logger.info("Enqueued task %s — %s", task.id, task.title)
@@ -186,6 +202,12 @@ class DownloadManager:
             if sem is not None:
                 sem.release()
 
+    def _gated_run_tiktok(self, task: DownloadTask) -> None:
+        assert self._tiktok_pool is not None  # caller checked
+        with self._tiktok_pool.acquire() as account:
+            task._cookie_override = account.cookie_file
+            self._run_task(task)
+
     def _tt29_live_recheck(self, task: DownloadTask, room_id: str) -> bool:
         m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task.url, re.I)
         if not m:
@@ -204,10 +226,24 @@ class DownloadManager:
             return False
         from utils.tiktok_live_checker import _fetch_hls_from_live_page  # noqa: PLC0415
 
+        _raw_cookie = task._cookie_override or self._config.get_cookie_for_platform("tiktok") or ""
+        _cookie_txt, _cookie_is_temp = "", False
+        if _raw_cookie:
+            _cookie_txt, _cookie_is_temp = _prepare_cookie_for_use(_raw_cookie)
         try:
-            still_live = bool(_fetch_hls_from_live_page(username, proxy=self._config.proxy or ""))
+            still_live = bool(
+                _fetch_hls_from_live_page(username, proxy=self._config.proxy or "", cookie_file=_cookie_txt)
+            )
         except Exception:
             still_live = False
+        finally:
+            if _cookie_is_temp and _cookie_txt:
+                try:
+                    from pathlib import Path as _Path  # noqa: PLC0415
+
+                    _Path(_cookie_txt).unlink(missing_ok=True)
+                except OSError:
+                    pass
         if still_live:
             logger.info(
                 "BUG-TT-29: live page confirms @%s still live — resetting retry counter",

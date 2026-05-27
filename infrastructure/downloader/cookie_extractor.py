@@ -27,6 +27,7 @@ Thread safety
 All public functions are pure (no shared state) and safe to call from a
 background thread.  UI updates must go through _ui_queue.put() in the caller.
 """
+
 from __future__ import annotations
 
 import http.cookiejar
@@ -44,13 +45,13 @@ logger = logging.getLogger(__name__)
 _PLATFORM_DOMAINS: dict[str, tuple[str, ...]] = {
     # YouTube: needs both youtube.com (session) and google.com (account/age-verify)
     # Without google.com auth cookies, age-restricted content is blocked.
-    "youtube":   ("youtube.com", "youtu.be", "google.com"),
-    "tiktok":    ("tiktok.com",),
+    "youtube": ("youtube.com", "youtu.be", "google.com"),
+    "tiktok": ("tiktok.com",),
     "instagram": ("instagram.com",),
-    "facebook":  ("facebook.com", "fb.com"),
-    "twitter":   ("twitter.com", "x.com"),
-    "threads":   ("threads.net", "threads.com", "instagram.com"),   # threads.com = new domain
-    "kuaishou":  ("kuaishou.com", "kwai.com"),
+    "facebook": ("facebook.com", "fb.com"),
+    "twitter": ("twitter.com", "x.com"),
+    "threads": ("threads.net", "threads.com", "instagram.com"),  # threads.com = new domain
+    "kuaishou": ("kuaishou.com", "kwai.com"),
 }
 
 
@@ -97,15 +98,18 @@ def extract_browser_cookies(
         #   __init__ → _setup_opener() → loads browser cookies into self.cookiejar
         #   __exit__ → close() → self.cookiejar.save(cookiefile)
         # Result: tmp_path receives a Netscape-format file with browser cookies.
-        with yt_dlp.YoutubeDL({
-            "cookiesfrombrowser": (browser,),
-            "cookiefile": str(tmp_path),
-            "quiet": True,
-            "no_warnings": True,
-        }) as _ydl:
+        with yt_dlp.YoutubeDL(
+            {
+                "cookiesfrombrowser": (browser,),
+                "cookiefile": str(tmp_path),
+                "quiet": True,
+                "no_warnings": True,
+            }
+        ) as _ydl:
             pass  # cookies loaded in __init__, saved in __exit__
 
         if not tmp_path.exists() or tmp_path.stat().st_size < 20:
+            tmp_path.unlink(missing_ok=True)
             return 0, (
                 "Không thể đọc cookies — trình duyệt có thể chưa đăng nhập "
                 "hoặc cơ sở dữ liệu bị khóa. Hãy thử đóng trình duyệt hoàn toàn."
@@ -121,10 +125,7 @@ def extract_browser_cookies(
             count = 0
             for cookie in src_jar:
                 raw_domain = cookie.domain.lstrip(".")
-                if any(
-                    raw_domain == d or raw_domain.endswith("." + d)
-                    for d in domains
-                ):
+                if any(raw_domain == d or raw_domain.endswith("." + d) for d in domains):
                     out_jar.set_cookie(cookie)
                     count += 1
 
@@ -139,10 +140,14 @@ def extract_browser_cookies(
             out_jar.save(ignore_discard=True, ignore_expires=True)
             # Encrypt at rest using DPAPI
             from infrastructure.downloader.cookie_storage import encrypt_cookie_file
+
             output_path = encrypt_cookie_file(output_path)
             logger.info(
                 "Extracted %d %s cookies from %s → %s",
-                count, platform_key, browser, output_path,
+                count,
+                platform_key,
+                browser,
+                output_path,
             )
             return count, None
 
@@ -153,18 +158,18 @@ def extract_browser_cookies(
 
         if count == 0:
             tmp_path.unlink(missing_ok=True)
-            return 0, (
-                "Trình duyệt không có cookie nào. "
-                "Hãy đăng nhập vào các trang bạn muốn tải trước."
-            )
+            return 0, ("Trình duyệt không có cookie nào. Hãy đăng nhập vào các trang bạn muốn tải trước.")
 
         tmp_path.replace(output_path)
         # Encrypt at rest using DPAPI so plaintext only lives in memory
         from infrastructure.downloader.cookie_storage import encrypt_cookie_file
+
         output_path = encrypt_cookie_file(output_path)
         logger.info(
             "Extracted %d cookies (global) from %s → %s",
-            count, browser, output_path,
+            count,
+            browser,
+            output_path,
         )
         return count, None
 
@@ -179,6 +184,7 @@ def _check_keyring_installed() -> bool:
     """Return True if the `keyring` package is importable (needed for Brave/Chrome 127+)."""
     try:
         import keyring  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -257,15 +263,9 @@ def _friendly_extract_error(msg: str) -> str:
             "bạn đang dùng (ví dụ: Brave ≠ Chrome)."
         )
     if "permission" in msg_l or "access denied" in msg_l:
-        return (
-            "Bị từ chối truy cập file cookie của trình duyệt.\n"
-            "Thử chạy OmniDL với quyền Administrator."
-        )
+        return "Bị từ chối truy cập file cookie của trình duyệt.\nThử chạy OmniDL với quyền Administrator."
     if "unsupported" in msg_l or "not supported" in msg_l:
-        return (
-            "Trình duyệt này chưa được yt-dlp hỗ trợ.\n"
-            "Hãy thử Chrome, Firefox hoặc Edge."
-        )
+        return "Trình duyệt này chưa được yt-dlp hỗ trợ.\nHãy thử Chrome, Firefox hoặc Edge."
     # Generic fallback — cap at 150 chars so it fits in the status label
     return msg[:150]
 
@@ -296,7 +296,7 @@ _CHROME_EXE_CANDIDATES: list[str] = [
     r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe",
 ]
 
-_CDP_DEFAULT_PORT = 9223   # avoid clashing with user's own debugging session on 9222
+_CDP_DEFAULT_PORT = 9223  # avoid clashing with user's own debugging session on 9222
 
 # Known default profile directories for Brave and Chrome on Windows
 _BRAVE_PROFILE_CANDIDATES: list[str] = [
@@ -310,10 +310,8 @@ _CHROME_PROFILE_CANDIDATES: list[str] = [
 def _find_browser_profile(browser: str) -> "Path | None":
     """Return the default user-data-dir for *browser*, or None if not found."""
     import os
-    candidates = (
-        _BRAVE_PROFILE_CANDIDATES if "brave" in browser.lower()
-        else _CHROME_PROFILE_CANDIDATES
-    )
+
+    candidates = _BRAVE_PROFILE_CANDIDATES if "brave" in browser.lower() else _CHROME_PROFILE_CANDIDATES
     for template in candidates:
         p = Path(os.path.expandvars(template))
         if p.is_dir():
@@ -329,13 +327,15 @@ def _is_browser_running(browser: str) -> bool:
     """
     import subprocess
     import sys
+
     if sys.platform != "win32":
         return False
     exe_name = f"{browser.lower()}.exe"
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/NH", "/FO", "CSV"],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
         # Parse CSV output: each line is "name","pid","session",...
         # Exact first-field match avoids false positives from similarly named
@@ -352,10 +352,8 @@ def _is_browser_running(browser: str) -> bool:
 
 def _find_browser_exe(browser: str) -> "Path | None":
     import os
-    candidates = (
-        _BRAVE_EXE_CANDIDATES if "brave" in browser.lower()
-        else _CHROME_EXE_CANDIDATES
-    )
+
+    candidates = _BRAVE_EXE_CANDIDATES if "brave" in browser.lower() else _CHROME_EXE_CANDIDATES
     for template in candidates:
         p = Path(os.path.expandvars(template))
         if p.is_file():
@@ -366,6 +364,7 @@ def _find_browser_exe(browser: str) -> "Path | None":
 def _cdp_wait_ready(port: int, timeout: float = 20.0) -> bool:
     import http.client
     import time
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -431,6 +430,7 @@ def _cdp_ws_connect(port: int, path: str):
     import base64
     import os
     import socket
+
     key = base64.b64encode(os.urandom(16)).decode()
     handshake = (
         f"GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\n"
@@ -453,6 +453,7 @@ def _cdp_ws_connect(port: int, path: str):
 def _cdp_ws_send(sock, message: str) -> None:
     import os
     import struct
+
     payload = message.encode()
     n = len(payload)
     mask = os.urandom(4)
@@ -472,6 +473,7 @@ def _cdp_ws_send(sock, message: str) -> None:
 
 def _cdp_ws_recv(sock) -> str:
     import struct
+
     def _exact(n):
         buf = b""
         while len(buf) < n:
@@ -480,6 +482,7 @@ def _cdp_ws_recv(sock) -> str:
                 raise RuntimeError("WebSocket: connection closed mid-frame")
             buf += chunk
         return buf
+
     h = _exact(2)
     n = h[1] & 0x7F
     if n == 126:
@@ -540,11 +543,14 @@ def _cdp_cookies_to_netscape(cookies: "list[dict]") -> str:
     for c in cookies:
         domain = c.get("domain", "")
         subdomain_flag = "TRUE" if domain.startswith(".") else "FALSE"
-        path      = c.get("path", "/")
-        secure    = "TRUE" if c.get("secure", False) else "FALSE"
-        expires   = max(0, int(c.get("expires", 0)))
-        name      = c.get("name", "")
-        value     = c.get("value", "")
+        path = c.get("path", "/")
+        secure = "TRUE" if c.get("secure", False) else "FALSE"
+        expires = max(0, int(c.get("expires", 0)))
+        # Strip tab/CR/LF from name and value — these are valid in Set-Cookie
+        # headers but break Netscape format which uses \t as field separator
+        # and \n as line terminator.
+        name = c.get("name", "").replace("\t", " ").replace("\r", "").replace("\n", "")
+        value = c.get("value", "").replace("\t", " ").replace("\r", "").replace("\n", "")
         lines.append(f"{domain}\t{subdomain_flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}")
     return "\n".join(lines) + "\n"
 
@@ -552,6 +558,7 @@ def _cdp_cookies_to_netscape(cookies: "list[dict]") -> str:
 def _find_free_port() -> int:
     """Return an available unprivileged port chosen by the OS (random each call)."""
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -583,10 +590,7 @@ def extract_via_cdp(
 
     exe = _find_browser_exe(browser)
     if exe is None:
-        return 0, (
-            f"Không tìm thấy {browser.title()} trên máy.\n"
-            "Kiểm tra Brave/Chrome đã cài đặt chưa."
-        )
+        return 0, (f"Không tìm thấy {browser.title()} trên máy.\nKiểm tra Brave/Chrome đã cài đặt chưa.")
 
     # Check if port is already responding (e.g. previous OmniDL run left it open)
     port_busy = False
@@ -633,7 +637,7 @@ def extract_via_cdp(
                 str(exe),
                 f"--remote-debugging-port={port}",
                 "--remote-debugging-address=127.0.0.1",  # bind to localhost only
-                f"--user-data-dir={profile_dir}",        # real profile with actual cookies
+                f"--user-data-dir={profile_dir}",  # real profile with actual cookies
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-extensions-except=",
@@ -645,7 +649,8 @@ def extract_via_cdp(
             ]
             logger.info(
                 "Launching %s with real profile for CDP extraction on port %d",
-                browser, port,
+                browser,
+                port,
             )
             # CREATE_NO_WINDOW suppresses the console window that Brave/Chrome
             # would briefly create and show to the user.
@@ -678,19 +683,16 @@ def extract_via_cdp(
                 pass
 
         if not raw_cookies:
-            return 0, (
-                "Trình duyệt trả về 0 cookies.\n"
-                "Hãy đăng nhập vào các trang trước khi lấy cookies."
-            )
+            return 0, ("Trình duyệt trả về 0 cookies.\nHãy đăng nhập vào các trang trước khi lấy cookies.")
 
         # Platform filter
         if platform_key:
             domains = _PLATFORM_DOMAINS.get(platform_key, ())
             raw_cookies = [
-                c for c in raw_cookies
+                c
+                for c in raw_cookies
                 if any(
-                    c.get("domain", "").lstrip(".") == d
-                    or c.get("domain", "").lstrip(".").endswith("." + d)
+                    c.get("domain", "").lstrip(".") == d or c.get("domain", "").lstrip(".").endswith("." + d)
                     for d in domains
                 )
             ]
@@ -703,10 +705,14 @@ def extract_via_cdp(
         output_path.write_text(_cdp_cookies_to_netscape(raw_cookies), encoding="utf-8")
         # Encrypt at rest using DPAPI
         from infrastructure.downloader.cookie_storage import encrypt_cookie_file
+
         output_path = encrypt_cookie_file(output_path)
         logger.info(
             "CDP: extracted %d cookies from %s (platform=%s) → %s",
-            len(raw_cookies), browser, platform_key or "all", output_path,
+            len(raw_cookies),
+            browser,
+            platform_key or "all",
+            output_path,
         )
         return len(raw_cookies), None
 
@@ -727,22 +733,12 @@ def extract_via_cdp(
                     pass
 
 
-
 def _friendly_cdp_error(msg: str) -> str:
     msg_l = msg.lower()
     if "connection refused" in msg_l or "timed out" in msg_l or "timeout" in msg_l:
-        return (
-            "Không kết nối được vào trình duyệt.\n"
-            "Thử lại — lần đầu có thể cần vài giây để khởi động."
-        )
+        return "Không kết nối được vào trình duyệt.\nThử lại — lần đầu có thể cần vài giây để khởi động."
     if "websocket" in msg_l or "handshake" in msg_l or "upgrade" in msg_l:
-        return (
-            "Lỗi kết nối WebSocket với trình duyệt.\n"
-            "Hãy thử lại hoặc khởi động lại OmniDL."
-        )
+        return "Lỗi kết nối WebSocket với trình duyệt.\nHãy thử lại hoặc khởi động lại OmniDL."
     if "0 cookies" in msg_l or "no response" in msg_l:
-        return (
-            "Không nhận được cookies từ trình duyệt. "
-            "Hãy đăng nhập vào các trang rồi thử lại."
-        )
+        return "Không nhận được cookies từ trình duyệt. Hãy đăng nhập vào các trang rồi thử lại."
     return msg[:150]

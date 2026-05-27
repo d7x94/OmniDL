@@ -59,15 +59,27 @@ class Pass3UserApi(LiveDetectionStrategy):
                 timeout=10,
             )
         except Exception as exc:
-            raise RuntimeError(f"pass3 network error: {exc}") from exc
+            logger.debug("tiktok_detection: @%s pass-3 network error: %s", ctx.username, exc)
+            return None
 
         if resp.status_code != 200:
-            raise RuntimeError(f"pass3 HTTP {resp.status_code}")
+            logger.debug(
+                "tiktok_detection: @%s pass-3 HTTP %s (not authoritative, returning None)",
+                ctx.username,
+                resp.status_code,
+            )
+            return None
 
         try:
             data = json.loads(resp.text)
         except ValueError as exc:
-            logger.debug("tiktok_detection: @%s pass-3 JSON parse error: %s", ctx.username, exc)
+            if not resp.text.strip():
+                logger.debug(
+                    "tiktok_detection: @%s pass-3 empty response body (bot-detection suspected)",
+                    ctx.username,
+                )
+            else:
+                logger.debug("tiktok_detection: @%s pass-3 JSON parse error: %s", ctx.username, exc)
             return None
 
         status_code = data.get("statusCode", -1)

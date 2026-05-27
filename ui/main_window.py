@@ -251,6 +251,9 @@ class MainWindow(QMainWindow):
     def get_tab(self, key: str) -> Optional[QWidget]:
         return self._tabs.get(key)
 
+    def rebuild_tiktok_pool(self) -> None:
+        self._service.rebuild_tiktok_pool()
+
     def get_toolbar(self):
         return getattr(self, "_toolbar", None)
 

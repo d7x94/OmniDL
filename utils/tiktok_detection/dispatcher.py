@@ -41,37 +41,40 @@ class LiveDetectionDispatcher:
             futures = {ex.submit(s.check, ctx): s for s in runnable}
             done, pending = wait(futures, return_when=FIRST_COMPLETED, timeout=20.0)
 
+            # Positive result wins over StreamConfirmedEndedError: profile page
+            # caching can return status=4/5 while the stream is still live, so
+            # we must not cancel pending strategies on the basis of that signal
+            # alone. Collect results from all completed futures first; only
+            # respect confirmed-ended if no strategy returned a live URL.
+            confirmed_ended = False
             for f in done:
                 try:
                     r = f.result()
+                    if r is not None:
+                        for p in pending:
+                            p.cancel()
+                        return r.live_url, r.room_id
                 except StreamConfirmedEndedError:
-                    for p in pending:
-                        p.cancel()
-                    return None
+                    confirmed_ended = True
                 except RuntimeError as exc:
                     last_error = exc
-                    continue
                 except Exception as exc:
                     logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
-                    continue
-                if r is not None:
-                    for p in pending:
-                        p.cancel()
-                    return r.live_url, r.room_id
 
             for f in as_completed(pending, timeout=10.0):
                 try:
                     r = f.result()
+                    if r is not None:
+                        return r.live_url, r.room_id
                 except StreamConfirmedEndedError:
-                    return None
+                    confirmed_ended = True
                 except RuntimeError as exc:
                     last_error = exc
-                    continue
                 except Exception as exc:
                     logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
-                    continue
-                if r is not None:
-                    return r.live_url, r.room_id
+
+            if confirmed_ended:
+                return None
 
         if last_error is not None:
             raise last_error

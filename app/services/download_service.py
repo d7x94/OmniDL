@@ -42,6 +42,8 @@ _PHOTO_ERRORS = (
     "no formats found",
 )
 
+_tt_bughxx_until: dict[str, float] = {}
+
 
 def _should_fallback_to_gallery_dl(url: str, error_msg: str) -> bool:
     """
@@ -220,9 +222,12 @@ class DownloadService:
                     r"(?:(?:vt|vm)\.tiktok\.com/|tiktok\.com/@[A-Za-z0-9_.]+/live)",
                     _re.I,
                 )
-                if (
-                    "not currently live" in err_l or "channel is not currently live" in err_l
-                ) and _tiktok_any_live_re.search(url):
+                if _tiktok_any_live_re.search(url) and (
+                    "not currently live" in err_l
+                    or "channel is not currently live" in err_l
+                    or "429" in err_l
+                    or "too many requests" in err_l
+                ):
                     try:
                         from utils.tiktok_live_checker import (  # noqa: PLC0415
                             _check_tiktok_live_with_room_id,
@@ -235,6 +240,22 @@ class DownloadService:
                         # fetch carries a valid session cookie.  TikTok now
                         # strips liveRoomInfo for unauthenticated requests.
                         _tt_cookie_raw = _resolve_cookie("https://www.tiktok.com/", self._config) or ""
+                        if not _tt_cookie_raw:
+                            # BUG-TT-30 FIX: when the user has cleared the configured
+                            # TikTok cookie, fall back to a pool account cookie so
+                            # detection still runs with valid session cookies.
+                            try:
+                                _pool30 = getattr(self._manager, "_tiktok_pool", None)
+                                if _pool30 is not None:
+                                    _acct30 = _pool30._pick_account()
+                                    if _acct30 and _acct30.cookie_file:
+                                        _tt_cookie_raw = _acct30.cookie_file
+                                        logger.debug(
+                                            "BUG-TT-30: main cookie absent -- using pool account '%s' for detection",
+                                            _acct30.name,
+                                        )
+                            except Exception:
+                                pass
                         _tt_cookie_txt = ""
                         _tt_cookie_is_temp = False
                         if _tt_cookie_raw:
@@ -290,12 +311,13 @@ class DownloadService:
                             else:
                                 # BUG-TT-19 FIX: checker returned None -- could be
                                 # bot-detection blocking the page scrape, not a
-                                # confirmed "not live" signal. TikTok API windows
-                                # of inconsistency can last 30-90s; retry checker
-                                # + extract_info up to 3 times with backoff.
+                                # confirmed "not live" signal. One 20s retry to
+                                # handle brief TikTok API race; then BUG-TT-XX.
                                 import time as _time_tt19  # noqa: PLC0415
 
-                                for _retry_delay in (10, 20, 30):
+                                for _retry_delay in (30, 90):
+                                    if _time_tt19.monotonic() < _tt_bughxx_until.get(_username, 0.0):
+                                        break
                                     logger.info(
                                         "TikTok live checker: @%s -- roomId not found"
                                         " (bot-detection or API race);"
@@ -343,7 +365,29 @@ class DownloadService:
                                             _retry_delay,
                                             _retry_exc,
                                         )
-                                # fall through to on_error() below
+                                # BUG-TT-XX: Detection fully blocked by bot-detection
+                                # on all 4 strategies + yt-dlp.  Instead of on_error(),
+                                # proceed optimistically — download phase (BUG-TT-16)
+                                # uses pool cookies and can succeed when analysis cookies
+                                # are rate-limited. If stream is truly dead the download
+                                # task fails quickly; if live the download succeeds.
+                                _tt_bughxx_until[_username] = _time_tt19.monotonic() + 60.0
+                                logger.info(
+                                    "BUG-TT-XX: detection fully blocked @%s"
+                                    " -- optimistic download with pool cookies",
+                                    _username,
+                                )
+                                _opt_info = MediaInfo(
+                                    url=f"https://www.tiktok.com/@{_username}/live",
+                                    title=f"@{_username} -- TikTok Live",
+                                    uploader=_username,
+                                    platform="TikTok",
+                                    source_engine="yt_dlp",
+                                    is_live=True,
+                                )
+                                self._bus.publish(EventBus.ANALYSIS_DONE, info=_opt_info)
+                                on_done(_opt_info)
+                                return
                     except Exception as _tt_exc:
                         logger.debug("TikTok live short-link resolve failed: %s", _tt_exc)
                     finally:
@@ -443,6 +487,9 @@ class DownloadService:
 
     def clear_finished(self, exclude_ids: "frozenset[str] | None" = None) -> None:
         self._manager.clear_terminal(exclude_ids=exclude_ids)
+
+    def rebuild_tiktok_pool(self) -> None:
+        self._manager.rebuild_tiktok_pool()
 
     # ── Query ─────────────────────────────────────────────────────────────
 

@@ -786,9 +786,17 @@ class FfmpegConvertService:
 
         duration_s = self._probe_duration(ffmpeg_bin, source)
 
-        # Clean up any stale .part files from previous interrupted jobs on this source.
+        # Clean up stale .part files from previous interrupted jobs on this source.
+        # UUID-format files ({stem}_iPhone_{8hex}.part.mp4) may belong to a concurrent
+        # job that is actively writing; only delete those older than 1 hour.
+        # Non-UUID files ({stem}_iPhone.part.mp4) are from the old pre-UUID code path
+        # and are safe to delete immediately.
+        _UUID_PART_RE = re.compile(r"_[0-9a-f]{8}\.part\.mp4$")
+        _now = time.time()
         for _stale in dest_dir.glob(f"{source.stem}_iPhone*.part.mp4"):
             try:
+                if _UUID_PART_RE.search(_stale.name) and _now - _stale.stat().st_mtime <= 3600:
+                    continue  # possibly an active concurrent job — leave it alone
                 _stale.unlink(missing_ok=True)
                 logger.info("Deleted stale .part file before restart: %s", _stale.name)
             except OSError:
@@ -928,13 +936,7 @@ class FfmpegConvertService:
                 exc,
             )
             _encoder_cache_invalidate()
-            cpu_settings = EncodeSettings(
-                encoder_key="cpu",
-                quality=encode_settings.quality,  # type: ignore[union-attr]
-                speed_preset=encode_settings.speed_preset,  # type: ignore[union-attr]
-                custom_quality=encode_settings.custom_quality,  # type: ignore[union-attr]
-                output_codec=encode_settings.output_codec,  # type: ignore[union-attr]
-            )
+            encode_settings.encoder_key = "cpu"  # type: ignore[union-attr]
             return self._fresh_encode(
                 ffmpeg_bin,
                 source,
@@ -943,7 +945,7 @@ class FfmpegConvertService:
                 duration_s,
                 preset,
                 on_progress,
-                encode_settings=cpu_settings,
+                encode_settings=encode_settings,
                 cancel_event=cancel_event,
                 target_ext=target_ext,
             )
@@ -1182,7 +1184,25 @@ class FfmpegConvertService:
         # recover by parsing NALUs directly from the bitstream.
         # -fflags +genpts fixes DTS/PTS gaps common in IDM live captures.
         if is_flv_ts:
-            cmd += ["-analyzeduration", "200M", "-probesize", "200M", "-fflags", "+genpts+igndts"]
+            # +discardcorrupt silently drops corrupt packets at segment boundaries
+            # (from TikTok live token-rotation TS concat) instead of decoding errors.
+            # 30M (30s) is sufficient for SPS/PPS detection; 200M caused 5-min analysis
+            # stalls on TikTok live files with large DTS discontinuities.
+            # +igndts removed: it caused FFmpeg to use PTS regenerated from broken DTS,
+            # which carried mid-stream timestamp jumps → 1000+ duplicate frames inserted.
+            cmd += [
+                "-analyzeduration",
+                "30M",
+                "-probesize",
+                "200M",
+                "-fflags",
+                "+genpts+discardcorrupt",
+            ]
+            # Regenerate timestamps from frame counter: N/FRAME_RATE/TB assigns
+            # PTS = 0, 1/fps, 2/fps, ... regardless of source DTS/PTS discontinuities.
+            # Fixes TikTok live TS where DTS wrap-around causes output duration to
+            # inflate from ~4 min to ~49 min when -fps_mode cfr fills the fake gaps.
+            vf_parts.insert(0, "setpts=N/FRAME_RATE/TB")
 
         if seek > 0:
             cmd += ["-ss", f"{seek:.3f}"]
@@ -1255,6 +1275,9 @@ class FfmpegConvertService:
         # picks when the container has non-standard stream ordering.
         # 0:a? makes audio optional — handles video-only FLV without crashing.
         if is_flv_ts:
+            # aresample=async=1000: insert/drop samples to maintain A/V sync when
+            # audio also has timestamp discontinuities (up to 1000ms correction).
+            cmd += ["-af", "aresample=async=1000,asetpts=PTS-STARTPTS"]
             cmd += ["-map", "0:v:0", "-map", "0:a?"]
         cmd += [str(output)]
         return cmd
@@ -1324,6 +1347,7 @@ class FfmpegConvertService:
 
         def _drain_stdout() -> None:
             assert proc.stdout is not None  # noqa: S101
+            last_heartbeat = time.monotonic()
             for raw in proc.stdout:
                 _last_stdout_activity[0] = time.monotonic()
                 line = raw.decode("utf-8", errors="replace").rstrip()
@@ -1340,6 +1364,13 @@ class FfmpegConvertService:
                                 # t=30s→32%, t=60s→48%, t=120s→65%, t=300s→82%
                                 pct = 95.0 * elapsed_s / (elapsed_s + 65.0)
                             on_progress(pct)
+                        else:
+                            # Analysis phase (out_time_ms=N/A): send heartbeat every 5s
+                            # so the iPhone knows the job is alive even at 0% progress.
+                            now = time.monotonic()
+                            if now - last_heartbeat >= 5.0:
+                                on_progress(0.0)
+                                last_heartbeat = now
             _stdout_done.set()
 
         def _watchdog() -> None:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,13 @@ logger = logging.getLogger(__name__)
 _LIVE_CHECK_API = "https://www.tiktok.com/api/live/detail/"
 _WEBCAST_API = "https://webcast.tiktok.com/webcast/room/check_alive/"
 _REQUEST_TIMEOUT = 15  # seconds
+
+# Cache successful room_id extractions to survive IP rate-limit windows.
+# When all 4 detection passes fail (TikTok serving minimal HTML), a cached
+# room_id lets us call check_alive directly -- which uses a lighter endpoint
+# that isn't affected by the same HTML-scraping rate limit.
+_ROOM_ID_CACHE: dict[str, tuple[str, float]] = {}  # username -> (room_id, ts)
+_ROOM_ID_CACHE_TTL = 5400.0  # 90 minutes (covers typical live session duration)
 
 # Profile URL pattern -- matches /@username but NOT /live/, /video/, /tag/, etc.
 # TikTok usernames: letters, digits, underscores, dots (1-24 chars).
@@ -576,6 +584,22 @@ def _room_id_from_live_page(page_text: str, username: str) -> "Optional[str]":
                 )
                 return room_id
 
+    # BUG-TT-26B ALIGN: live page migrated from SIGI_STATE to URD format.
+    # _fetch_hls_from_live_page already checks this path; backport here so
+    # Pass-2 room_id detection is consistent with HLS extraction.
+    urd = _extract_json_blob(page_text, "__UNIVERSAL_DATA_FOR_REHYDRATION__")
+    if urd:
+        scope = urd.get("__DEFAULT_SCOPE__", {})
+        lr_info = scope.get("webapp.user-detail", {}).get("userInfo", {}).get("liveRoomInfo") or {}
+        room_id = _valid_room_id(lr_info.get("roomId") or lr_info.get("id"))
+        if room_id:
+            logger.debug(
+                "tiktok_live_checker: @%s roomId via live page URD liveRoomInfo: %s",
+                username,
+                room_id,
+            )
+            return room_id
+
     # BUG-TT-08 FIX: raw regex fallback on live page too
     for m in _ROOM_ID_RE.finditer(page_text):
         room_id = _valid_room_id(m.group(1))
@@ -634,7 +658,13 @@ def _verify_room_alive(
             return True
         data = _json.loads(resp.text)
         # check_alive returns {"data": [{"room_id": "...", "alive": true/false}]}
+        # BUG-TT-CHECKALIVE-DICT FIX: API sometimes returns a dict instead of a
+        # list for the "data" field.  alive_list[0] on a dict raises KeyError(0)
+        # (str == "0"), which the except handler caught and treated as "assuming
+        # live" -- silently masking a confirmed-not-live result.
         alive_list = data.get("data") or []
+        if isinstance(alive_list, dict):
+            alive_list = [alive_list]
         if not alive_list:
             logger.debug(
                 "tiktok_live_checker: check_alive empty response for room %s -- assuming live",
@@ -658,6 +688,7 @@ def _fetch_hls_from_webcast_room_info(
     username: str,
     proxy: str = "",
     cookie_file: str = "",
+    exclude_bases: "frozenset[str]" = frozenset(),
 ) -> "Optional[tuple[str, str]]":
     """Call webcast/room/info/ with Chrome impersonation to get the HLS stream URL.
 
@@ -696,6 +727,12 @@ def _fetch_hls_from_webcast_room_info(
             return None
         data = _json.loads(resp.text)
         room_data = data.get("data") or {}
+        # BUG-TT-ROOMINFO-NESTED FIX: TikTok sometimes nests room data under
+        # a "room" key: {"data": {"room": {"status": 2, "stream_url": {...}}}}
+        # instead of the flat {"data": {"status": 2, ...}} structure.
+        _nested = room_data.get("room")
+        if isinstance(_nested, dict):
+            room_data = _nested
         status = room_data.get("status")
         if status != 2:
             logger.debug(
@@ -705,18 +742,36 @@ def _fetch_hls_from_webcast_room_info(
             )
             return None
         stream_url = room_data.get("stream_url") or {}
-        hls_url = stream_url.get("hls_pull_url") or next(
-            iter((stream_url.get("hls_pull_url_map") or {}).values()), ""
-        )
-        if not hls_url:
+        # Collect all CDN variants: primary first, then hls_pull_url_map entries.
+        # Different quality variants (HD/SD/LD) may be on different CDN nodes —
+        # when the primary CDN stalls, a lower-quality variant may still serve data.
+        _hls_map = stream_url.get("hls_pull_url_map") or {}
+        _candidates: list[str] = []
+        _primary = stream_url.get("hls_pull_url", "")
+        if _primary:
+            _candidates.append(_primary)
+        for _u in _hls_map.values():
+            if _u and _u not in _candidates:
+                _candidates.append(_u)
+        if not _candidates:
             logger.debug("tiktok_live_checker: room/info no HLS URL for room %s", room_id)
             return None
-        logger.info(
-            "tiktok_live_checker: room/info @%s room %s -> HLS URL obtained",
-            username,
+        # Return first URL whose CDN base is not in the caller's exclude list.
+        for _url in _candidates:
+            if _url.split("?")[0] not in exclude_bases:
+                logger.info(
+                    "tiktok_live_checker: room/info @%s room %s -> HLS URL obtained",
+                    username,
+                    room_id,
+                )
+                return _url, room_id
+        # All known bases excluded — return primary anyway as last resort.
+        logger.debug(
+            "tiktok_live_checker: room/info all %d HLS variants excluded for room %s — returning primary",
+            len(_candidates),
             room_id,
         )
-        return hls_url, room_id
+        return _candidates[0], room_id
     except Exception as exc:  # noqa: BLE001
         logger.debug("tiktok_live_checker: room/info failed for room %s: %s", room_id, exc)
         return None
@@ -727,12 +782,15 @@ def _fetch_hls_from_live_page(
     proxy: str = "",
     cookie_file: str = "",
 ) -> "Optional[tuple[str, str]]":
-    """Extract HLS URL from the live page SIGI_STATE (no webcast API needed).
+    """Extract HLS URL from the live page (no webcast API needed).
 
     BUG-TT-26 FIX: when webcast.tiktok.com is unreachable or returns non-live
     status, fall back to fetching www.tiktok.com/@username/live with Chrome
-    impersonation and extracting the stream URL embedded in SIGI_STATE.
-    TikTok embeds hls_pull_url directly in the page for authenticated sessions.
+    impersonation and extracting the stream URL from the page.
+
+    BUG-TT-26B FIX: TikTok migrated live page data from SIGI_STATE to
+    UNIVERSAL_DATA_FOR_REHYDRATION. Tries SIGI_STATE first (legacy), then
+    URD, then __NEXT_DATA__ (older regions).
 
     Returns (hls_url, room_id) or None.
     """
@@ -740,37 +798,59 @@ def _fetch_hls_from_live_page(
     if not page_text:
         return None
 
-    sigi = _extract_json_blob(page_text, "SIGI_STATE") or _extract_json_blob(
-        page_text, "sigi-persisted-data"
-    )
-    if not sigi:
-        logger.debug("tiktok_live_checker: BUG-TT-26 no SIGI_STATE on live page for @%s", username)
-        return None
+    def _hls_from_live_room(lr: dict) -> "Optional[tuple[str, str]]":
+        rid = str(lr.get("roomId") or lr.get("id") or "")
+        if not rid or not rid.isdigit() or int(rid) == 0:
+            return None
+        su = lr.get("streamUrl") or lr.get("stream_url") or {}
+        url = su.get("hls_pull_url") or next(iter((su.get("hls_pull_url_map") or {}).values()), "")
+        return (url, rid) if url else None
 
-    live_room = (
-        sigi.get("LiveRoom", {}).get("liveRoomUserInfo", {}).get("liveRoom", {})
-    )
-    if not live_room:
-        return None
+    # Path 1: SIGI_STATE (legacy, still used in some regions)
+    sigi = _extract_json_blob(page_text, "SIGI_STATE") or _extract_json_blob(page_text, "sigi-persisted-data")
+    if sigi:
+        live_room = sigi.get("LiveRoom", {}).get("liveRoomUserInfo", {}).get("liveRoom", {})
+        result = _hls_from_live_room(live_room) if live_room else None
+        if result:
+            logger.info(
+                "tiktok_live_checker: BUG-TT-26 live page HLS URL for @%s room %s",
+                username,
+                result[1],
+            )
+            return result
 
-    rid = str(live_room.get("roomId") or live_room.get("id") or "")
-    if not rid or not rid.isdigit() or int(rid) == 0:
-        return None
+    # BUG-TT-26B FIX: TikTok live page now puts room data in UNIVERSAL_DATA_FOR_REHYDRATION.
+    # Same JSON blob that pass-1 profile scrape reads successfully for roomId detection.
+    urd = _extract_json_blob(page_text, "__UNIVERSAL_DATA_FOR_REHYDRATION__")
+    if urd:
+        scope = urd.get("__DEFAULT_SCOPE__", {})
+        lr_info = scope.get("webapp.user-detail", {}).get("userInfo", {}).get("liveRoomInfo") or {}
+        result = _hls_from_live_room(lr_info) if lr_info else None
+        if result:
+            logger.info(
+                "tiktok_live_checker: BUG-TT-26B live page URD HLS URL for @%s room %s",
+                username,
+                result[1],
+            )
+            return result
 
-    stream_url = live_room.get("streamUrl") or {}
-    hls_url = stream_url.get("hls_pull_url") or next(
-        iter((stream_url.get("hls_pull_url_map") or {}).values()), ""
-    )
-    if not hls_url:
-        logger.debug("tiktok_live_checker: BUG-TT-26 no HLS URL in SIGI_STATE for @%s", username)
-        return None
+    # Path 3: __NEXT_DATA__ (older TikTok page format, some regions)
+    next_data = _extract_json_blob(page_text, "__NEXT_DATA__")
+    if next_data:
+        lr_info = (
+            next_data.get("props", {}).get("pageProps", {}).get("userInfo", {}).get("liveRoomInfo") or {}
+        )
+        result = _hls_from_live_room(lr_info) if lr_info else None
+        if result:
+            logger.info(
+                "tiktok_live_checker: BUG-TT-26B live page NEXT_DATA HLS URL for @%s room %s",
+                username,
+                result[1],
+            )
+            return result
 
-    logger.info(
-        "tiktok_live_checker: BUG-TT-26 live page HLS URL for @%s room %s",
-        username,
-        rid,
-    )
-    return hls_url, rid
+    logger.debug("tiktok_live_checker: BUG-TT-26 no HLS URL in SIGI_STATE/URD for @%s", username)
+    return None
 
 
 _dispatcher: "Optional[Any]" = None
@@ -821,7 +901,30 @@ def _check_tiktok_live_with_room_id(
         cookie_file=cookie_file,
         share_url=share_url,
     )
-    return _get_dispatcher().check(ctx)
+    result = _get_dispatcher().check(ctx)
+
+    if result is not None:
+        _ROOM_ID_CACHE[username] = (result[1], time.monotonic())
+        return result
+
+    # All passes failed (IP rate-limit serving minimal HTML).
+    # If we have a recent cached room_id, verify via check_alive -- that
+    # endpoint is not affected by the same HTML-scraping rate limit.
+    cached = _ROOM_ID_CACHE.get(username)
+    if cached:
+        cached_room_id, ts = cached
+        if time.monotonic() - ts < _ROOM_ID_CACHE_TTL:
+            if _verify_room_alive(cached_room_id, username, proxy=proxy, cookie_file=cookie_file):
+                logger.info(
+                    "tiktok_live_checker: @%s LIVE via cached roomId=%s (detection blocked)",
+                    username,
+                    cached_room_id,
+                )
+                return (f"https://www.tiktok.com/@{username}/live", cached_room_id)
+            # check_alive confirmed not live -- evict stale cache entry
+            del _ROOM_ID_CACHE[username]
+
+    return None
 
 
 def _extract_live_room_id(data: dict, username: str) -> "Optional[str]":

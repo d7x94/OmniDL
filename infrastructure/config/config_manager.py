@@ -2,6 +2,7 @@
 infrastructure/config/config_manager.py
 JSON-backed configuration with typed accessors and thread-safe writes.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,17 +16,29 @@ logger = logging.getLogger(__name__)
 # Allowlist of browser names accepted by yt-dlp's cookiesfrombrowser option
 # (CWE-20: Improper Input Validation).  Rejects arbitrary strings that could
 # cause yt-dlp to attempt reading an unexpected browser profile path.
-_VALID_BROWSERS: frozenset[str] = frozenset({
-    "chrome", "firefox", "safari", "edge", "opera",
-    "brave", "chromium", "vivaldi",
-})
+_VALID_BROWSERS: frozenset[str] = frozenset(
+    {
+        "chrome",
+        "firefox",
+        "safari",
+        "edge",
+        "opera",
+        "brave",
+        "chromium",
+        "vivaldi",
+    }
+)
 
 # Accepted URI schemes for the proxy setting.  Rejecting arbitrary schemes
 # prevents a tampered config.json from routing all traffic through an
 # attacker-controlled proxy (e.g. a file:// or data: URI).
 _VALID_PROXY_SCHEMES: tuple[str, ...] = (
-    "http://", "https://", "socks4://", "socks4a://",
-    "socks5://", "socks5h://",
+    "http://",
+    "https://",
+    "socks4://",
+    "socks4a://",
+    "socks5://",
+    "socks5h://",
 )
 
 _DEFAULTS: dict[str, Any] = {
@@ -37,7 +50,7 @@ _DEFAULTS: dict[str, Any] = {
     "proxy": "",
     "use_cookies": False,
     "cookies_browser": "chrome",
-    "cookie_file": "",        # path to a Netscape-format .txt cookie file (global fallback)
+    "cookie_file": "",  # path to a Netscape-format .txt cookie file (global fallback)
     # Per-platform cookie files — take priority over cookie_file for each platform.
     # Keys: "tiktok", "instagram", "facebook", "twitter", "threads"
     # Values: absolute path to a Netscape-format .txt file (empty = not set)
@@ -53,25 +66,31 @@ _DEFAULTS: dict[str, Any] = {
     # Enable via Settings → Remote API to start the FastAPI server.
     # api_token is auto-generated on first enable; paste it into the PWA.
     "api_enabled": False,
-    "api_host":    "0.0.0.0",   # listens on all LAN interfaces  # nosec B104
-    "api_port":    7799,
-    "api_token":   "",           # auto-populated by api/server.py
+    "api_host": "0.0.0.0",  # listens on all LAN interfaces  # nosec B104
+    "api_port": 7799,
+    "api_token": "",  # auto-populated by api/server.py
     # ── Tailscale HTTPS Profile (optional HTTPS reverse proxy) ───────────
     # When enabled, OmniDL runs `tailscale serve` to proxy HTTPS:443 to a
     # random internal port, giving a clean https://<hostname>.ts.net URL.
-    "api_ts_https_enabled":       False,  # True = HTTPS profile active
-    "api_ts_https_internal_port": 0,      # random port 50000-65000; 0 = not yet assigned
-    "api_ts_https_dns_name":      "",     # cached MagicDNS FQDN, e.g. "my-laptop.tail1abc2.ts.net"
+    "api_ts_https_enabled": False,  # True = HTTPS profile active
+    "api_ts_https_internal_port": 0,  # random port 50000-65000; 0 = not yet assigned
+    "api_ts_https_dns_name": "",  # cached MagicDNS FQDN, e.g. "my-laptop.tail1abc2.ts.net"
     # ── Taildrop — send completed files to iPhone via Tailscale ──────────
     # Requires: Tailscale installed on PC + Taildrop enabled on iPhone.
     # target_node: Tailscale node name or IP of the iPhone (e.g. "iphone").
-    "taildrop_enabled":     False,
+    "taildrop_enabled": False,
     "taildrop_target_node": "",
-    "taildrop_send_mode":   "ask",     # "always" | "ask"  — "ask" shows action buttons in Remote UI
+    "taildrop_send_mode": "ask",  # "always" | "ask"  — "ask" shows action buttons in Remote UI
     # List of node names / IPs selected in Settings → Taildrop → multi-device picker.
     # When non-empty, takes priority over the legacy taildrop_target_node scalar.
     # Each entry must match _NODE_RE in taildrop_service.py (letters, digits, hyphens, dots).
     "taildrop_target_nodes": [],
+    # ── TikTok account pool ────────────────────────────────────────────────
+    # List of TikTok accounts used as a download pool.  Each entry:
+    #   {id, name, cookie_file, max_slots (1-5), enabled}
+    # When non-empty, replaces the single platform_cookies["tiktok"] entry
+    # and allows parallel downloads across multiple accounts.
+    "tiktok_account_pool": [],
     # ── Debug logging ──────────────────────────────────────────────────────
     # When True, the root logger level is lowered to DEBUG so that detailed
     # trace output (CDP poll steps, ffmpeg args, cookie resolution paths, …)
@@ -135,6 +154,7 @@ class ConfigManager:
 
     def _save(self) -> None:
         import io as _io
+
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp.json")
         try:
@@ -204,7 +224,7 @@ class ConfigManager:
             return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
+        with self._lock:  # DEF-006: snapshot inside lock to prevent TOCTOU race
             self._data[key] = value
             _snapshot = dict(self._data)
         path_key = str(self._path.resolve())
@@ -213,7 +233,7 @@ class ConfigManager:
         self._schedule_save()
 
     def update(self, values: dict[str, Any]) -> None:
-        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
+        with self._lock:  # DEF-006: snapshot inside lock to prevent TOCTOU race
             self._data.update(values)
             _snapshot = dict(self._data)
         path_key = str(self._path.resolve())
@@ -270,9 +290,9 @@ class ConfigManager:
         if any(val.lower().startswith(scheme) for scheme in _VALID_PROXY_SCHEMES):
             return val
         logger.warning(
-            "proxy value %r has an unrecognised scheme — ignored. "
-            "Valid schemes: %s",
-            val, ", ".join(_VALID_PROXY_SCHEMES),
+            "proxy value %r has an unrecognised scheme — ignored. Valid schemes: %s",
+            val,
+            ", ".join(_VALID_PROXY_SCHEMES),
         )
         return ""
 
@@ -290,7 +310,8 @@ class ConfigManager:
             logger.warning(
                 "cookies_browser %r is not in the allowed browser list — "
                 "defaulting to 'chrome'.  Valid values: %s",
-                val, ", ".join(sorted(_VALID_BROWSERS)),
+                val,
+                ", ".join(sorted(_VALID_BROWSERS)),
             )
             return "chrome"
         return val
@@ -349,18 +370,60 @@ class ConfigManager:
         """
         return self.platform_cookies.get(platform_key, "")
 
+    def _is_safe_cookie_path(self, path: str) -> bool:
+        """Return True if *path* is inside the OmniDL data directory (CWE-22).
+
+        Mirrors the check in yt_dlp_engine._validate_cookie_path so paths are
+        validated at write time, not only at download time.
+        """
+        if not path:
+            return True  # empty = clearing the field, always allowed
+        try:
+            cp = Path(path).resolve()
+            safe_root = self._path.parent.resolve()
+            return cp == safe_root or safe_root in cp.parents
+        except Exception:
+            return False
+
     def set_cookie_for_platform(self, platform_key: str, path: str) -> None:
         """Set or clear the cookie path for *platform_key*.
 
         Reads the current dict, modifies the key, writes back atomically.
         Thread-safe: uses config.set() which holds self._lock.
         """
-        d = dict(self.platform_cookies)   # copy
+        if path and not self._is_safe_cookie_path(path):
+            logger.warning(
+                "set_cookie_for_platform: path rejected — not inside data directory: %s",
+                path,
+            )
+            return
+        d = dict(self.platform_cookies)  # copy
         if path:
             d[platform_key] = path
         else:
             d.pop(platform_key, None)
         self.set("platform_cookies", d)
+
+    @property
+    def tiktok_account_pool(self) -> "list[dict]":
+        val = self.get("tiktok_account_pool", [])
+        if not isinstance(val, list):
+            return []
+        return val
+
+    def set_tiktok_account_pool(self, accounts: "list[dict]") -> None:
+        safe = []
+        for acc in accounts:
+            cookie_file = acc.get("cookie_file", "") if isinstance(acc, dict) else ""
+            if cookie_file and not self._is_safe_cookie_path(cookie_file):
+                logger.warning(
+                    "set_tiktok_account_pool: cookie_file rejected for account '%s': %s",
+                    acc.get("name", "?") if isinstance(acc, dict) else "?",
+                    cookie_file,
+                )
+                continue
+            safe.append(acc)
+        self.set("tiktok_account_pool", safe)
 
     # ── Remote API properties ─────────────────────────────────────────────
 
@@ -404,6 +467,7 @@ class ConfigManager:
         # 1. Try keyring first
         try:
             import keyring as _kr
+
             stored = _kr.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
             if stored:
                 # One-time cleanup: scrub plaintext copy from config.json
@@ -429,19 +493,17 @@ class ConfigManager:
 
         try:
             import keyring as _kr
+
             _kr.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, token)
             # Scrub plaintext from config.json (set to empty sentinel)
             if self.get("api_token", ""):
                 self.set("api_token", "")
                 self.save()
-            logger.info(
-                "OmniDL API token stored in OS credential store (keyring)."
-            )
+            logger.info("OmniDL API token stored in OS credential store (keyring).")
             return
         except Exception as exc:
             logger.warning(
-                "keyring unavailable — API token stored in config.json "
-                "(plaintext fallback): %s", exc
+                "keyring unavailable — API token stored in config.json (plaintext fallback): %s", exc
             )
 
         # Fallback: store in config.json

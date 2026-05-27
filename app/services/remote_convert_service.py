@@ -29,6 +29,7 @@ Typical lifecycle
       → FFmpeg watchdog kills process          → ConversionCancelledError
       → EventBus.publish_convert_cancelled()  → iPhone shows ⊘
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,8 +82,8 @@ class RemoteConvertService:
         event_bus: "EventBus",
         taildrop: "Optional[TaildropService]" = None,
     ) -> None:
-        self._config   = config
-        self._bus      = event_bus
+        self._config = config
+        self._bus = event_bus
         # Optional TaildropService — when provided, send_converted_file() is
         # called after each successful conversion so the iPhone receives the
         # output automatically (subject to send_mode / taildrop_enabled guards
@@ -92,9 +93,9 @@ class RemoteConvertService:
         # Dedicated queue — completely separate from desktop ConvertQueue.
         # max_workers=2: allows two simultaneous remote conversions without
         # overwhelming CPU on a typical laptop.
-        self._queue    = ConvertQueue(max_concurrent=2)
+        self._queue = ConvertQueue(max_concurrent=2)
         self._jobs: dict[str, ConversionJob] = {}
-        self._lock     = threading.RLock()
+        self._lock = threading.RLock()
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -102,11 +103,11 @@ class RemoteConvertService:
         self,
         source_task_id: str,
         file_path: Path,
-        encoder_key:  str = "cpu",
-        quality:      str = "standard",
+        encoder_key: str = "auto",
+        quality: str = "standard",
         speed_preset: str = "balanced",
-        custom_crf:   int = 23,
-        target_ext:   str = "mp4",
+        custom_crf: int = 23,
+        target_ext: str = "mp4",
         output_codec: str = "h264",
     ) -> ConversionJob:
         """
@@ -126,24 +127,18 @@ class RemoteConvertService:
         # ── Parameter validation ──────────────────────────────────────────
         if encoder_key not in _VALID_ENCODERS:
             raise ValueError(
-                f"encoder_key '{encoder_key}' is not allowed. "
-                f"Valid values: {sorted(_VALID_ENCODERS)}"
+                f"encoder_key '{encoder_key}' is not allowed. Valid values: {sorted(_VALID_ENCODERS)}"
             )
         if quality not in _VALID_QUALITIES:
-            raise ValueError(
-                f"quality '{quality}' is not allowed. "
-                f"Valid values: {sorted(_VALID_QUALITIES)}"
-            )
+            raise ValueError(f"quality '{quality}' is not allowed. Valid values: {sorted(_VALID_QUALITIES)}")
         if speed_preset not in _VALID_SPEEDS:
             raise ValueError(
-                f"speed_preset '{speed_preset}' is not allowed. "
-                f"Valid values: {sorted(_VALID_SPEEDS)}"
+                f"speed_preset '{speed_preset}' is not allowed. Valid values: {sorted(_VALID_SPEEDS)}"
             )
         custom_crf = max(_CRF_MIN, min(_CRF_MAX, int(custom_crf)))
         if output_codec not in _VALID_CODECS:
             raise ValueError(
-                f"output_codec '{output_codec}' is not allowed. "
-                f"Valid values: {sorted(_VALID_CODECS)}"
+                f"output_codec '{output_codec}' is not allowed. Valid values: {sorted(_VALID_CODECS)}"
             )
 
         # Resolve "auto" → best available GPU encoder, fallback to CPU
@@ -154,14 +149,14 @@ class RemoteConvertService:
 
         # ── Create job ────────────────────────────────────────────────────
         job = ConversionJob(
-            source_task_id  = source_task_id,
-            source_filename = str(file_path),
-            encoder_key     = encoder_key,
-            quality         = quality,
-            speed_preset    = speed_preset,
-            custom_crf      = custom_crf,
-            output_codec    = output_codec,
-            status          = ConversionStatus.PENDING,
+            source_task_id=source_task_id,
+            source_filename=str(file_path),
+            encoder_key=encoder_key,
+            quality=quality,
+            speed_preset=speed_preset,
+            custom_crf=custom_crf,
+            output_codec=output_codec,
+            status=ConversionStatus.PENDING,
         )
 
         with self._lock:
@@ -170,16 +165,16 @@ class RemoteConvertService:
 
         # ── Dispatch ──────────────────────────────────────────────────────
         encode_settings = EncodeSettings(
-            encoder_key   = encoder_key,
-            quality       = quality,
-            speed_preset  = speed_preset,
-            custom_quality= custom_crf,
-            output_codec  = output_codec,
+            encoder_key=encoder_key,
+            quality=quality,
+            speed_preset=speed_preset,
+            custom_quality=custom_crf,
+            output_codec=output_codec,
         )
 
         def _on_start() -> None:
             with job._lock:
-                job.status   = ConversionStatus.CONVERTING
+                job.status = ConversionStatus.CONVERTING
                 job.progress = 0.0
             self._bus.publish_convert_started(job=job)
             logger.info("RemoteConvert: started job %s (%s)", job.job_id, file_path.name)
@@ -191,14 +186,16 @@ class RemoteConvertService:
 
         def _on_done(output_path: Path) -> None:
             with job._lock:
-                job.status          = ConversionStatus.COMPLETED
-                job.progress        = 100.0
+                job.status = ConversionStatus.COMPLETED
+                job.progress = 100.0
                 job.output_filename = str(output_path)
-                job.finished_at     = time.time()
+                job.finished_at = time.time()
+                job.encoder_key = encode_settings.encoder_key
             self._bus.publish_convert_completed(job=job)
             logger.info(
                 "RemoteConvert: completed job %s → %s",
-                job.job_id, output_path.name,
+                job.job_id,
+                output_path.name,
             )
             # ── Auto-send converted file to iPhone via Taildrop ─────────────────
             # send_converted_file() is a no-op when taildrop_enabled=False,
@@ -220,7 +217,7 @@ class RemoteConvertService:
                 if cancelled:
                     job.status = ConversionStatus.CANCELLED
                 else:
-                    job.status    = ConversionStatus.FAILED
+                    job.status = ConversionStatus.FAILED
                     job.error_msg = err
                 job.finished_at = time.time()
             if cancelled:
@@ -233,15 +230,15 @@ class RemoteConvertService:
         # ConvertQueue.submit() stores the cancel callable returned, wiring
         # it to the job's own cancel_event so _on_error can detect cancellation.
         _cancel_fn = self._queue.submit(
-            source          = file_path,
-            quality         = quality,        # type: ignore[arg-type]
-            output_dir      = file_path.parent,
-            on_progress     = _on_progress,
-            on_done         = _on_done,
-            on_error        = _on_error,
-            on_start        = _on_start,
-            encode_settings = encode_settings,
-            target_ext      = target_ext,
+            source=file_path,
+            quality=quality,  # type: ignore[arg-type]
+            output_dir=file_path.parent,
+            on_progress=_on_progress,
+            on_done=_on_done,
+            on_error=_on_error,
+            on_start=_on_start,
+            encode_settings=encode_settings,
+            target_ext=target_ext,
         )
         # Store the ConvertQueue cancel callable so cancel_convert() can
         # call it.  We also wire the job's own cancel_event to it so the
@@ -253,11 +250,11 @@ class RemoteConvertService:
     def start_convert_from_path(
         self,
         file_path: Path,
-        encoder_key:  str = "cpu",
-        quality:      str = "standard",
+        encoder_key: str = "auto",
+        quality: str = "standard",
         speed_preset: str = "balanced",
-        custom_crf:   int = 23,
-        target_ext:   str = "mp4",
+        custom_crf: int = 23,
+        target_ext: str = "mp4",
         output_codec: str = "h264",
     ) -> ConversionJob:
         """
@@ -268,14 +265,14 @@ class RemoteConvertService:
         POST /api/files/convert endpoint after path-traversal validation.
         """
         return self.start_convert(
-            source_task_id = "",
-            file_path      = file_path,
-            encoder_key    = encoder_key,
-            quality        = quality,
-            speed_preset   = speed_preset,
-            custom_crf     = custom_crf,
-            target_ext     = target_ext,
-            output_codec   = output_codec,
+            source_task_id="",
+            file_path=file_path,
+            encoder_key=encoder_key,
+            quality=quality,
+            speed_preset=speed_preset,
+            custom_crf=custom_crf,
+            target_ext=target_ext,
+            output_codec=output_codec,
         )
 
     def auto_convert_tiktok_live(self, task, **kwargs) -> None:
@@ -295,9 +292,7 @@ class RemoteConvertService:
         except Exception:
             logger.exception("Auto-convert failed for %s", src.name)
 
-    def delete_convert_file(
-        self, job_id: str, allowed_dir: Path
-    ) -> tuple[bool, str]:
+    def delete_convert_file(self, job_id: str, allowed_dir: Path) -> tuple[bool, str]:
         """
         Delete the converted output file from disk for a COMPLETED job.
 
@@ -332,7 +327,7 @@ class RemoteConvertService:
         # ── Path-traversal guard ──────────────────────────────────────────
         try:
             out_path = Path(job.output_filename).resolve()
-            allowed  = allowed_dir.resolve()
+            allowed = allowed_dir.resolve()
         except Exception as exc:
             return False, f"Path resolution error: {exc}"
 
@@ -341,7 +336,8 @@ class RemoteConvertService:
             # because it indicates a misconfiguration or tampering attempt.
             logger.warning(
                 "delete_convert_file: SECURITY — '%s' is outside allowed_dir '%s'",
-                out_path, allowed,
+                out_path,
+                allowed,
             )
             return False, "Output file is outside the allowed download directory"
 
@@ -355,9 +351,7 @@ class RemoteConvertService:
         try:
             out_path.unlink()
         except OSError as exc:
-            logger.error(
-                "delete_convert_file: failed to delete '%s': %s", out_path, exc
-            )
+            logger.error("delete_convert_file: failed to delete '%s': %s", out_path, exc)
             return False, str(exc)
 
         with job._lock:
@@ -365,7 +359,8 @@ class RemoteConvertService:
 
         logger.info(
             "RemoteConvert: deleted output file '%s' for job %s",
-            out_path.name, job_id,
+            out_path.name,
+            job_id,
         )
         return True, ""
 
@@ -379,9 +374,7 @@ class RemoteConvertService:
         job = self.get_job(job_id)
         if job is None:
             return False
-        if job.status in (ConversionStatus.COMPLETED,
-                          ConversionStatus.FAILED,
-                          ConversionStatus.CANCELLED):
+        if job.status in (ConversionStatus.COMPLETED, ConversionStatus.FAILED, ConversionStatus.CANCELLED):
             return False
         job.request_cancel()
         cancel_fn = getattr(job, "_cancel_fn", None)
@@ -412,16 +405,15 @@ class RemoteConvertService:
         Must be called with self._lock held.
         """
         terminal = [
-            j for j in self._jobs.values()
-            if j.status in (ConversionStatus.COMPLETED,
-                            ConversionStatus.FAILED,
-                            ConversionStatus.CANCELLED)
+            j
+            for j in self._jobs.values()
+            if j.status in (ConversionStatus.COMPLETED, ConversionStatus.FAILED, ConversionStatus.CANCELLED)
         ]
         if len(self._jobs) < MAX_JOBS:
             return
         # Sort by finished_at ascending, remove oldest first
         terminal.sort(key=lambda j: j.finished_at)
-        to_remove = terminal[:max(1, len(terminal) // 2)]
+        to_remove = terminal[: max(1, len(terminal) // 2)]
         if not to_remove:
             logger.warning(
                 "_purge_old_jobs: registry at %d jobs but all are active - cannot purge",

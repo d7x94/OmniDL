@@ -152,6 +152,7 @@ class QueueTab(QWidget):
                 )
                 self._items_layout.insertWidget(self._items_layout.count() - 1, w)
                 self._widgets[task.id] = w
+                w.refresh(task)
             else:
                 self._widgets[task.id].refresh(task)
 

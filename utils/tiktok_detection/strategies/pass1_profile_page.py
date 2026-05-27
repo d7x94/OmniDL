@@ -26,6 +26,7 @@ class Pass1ProfilePage(LiveDetectionStrategy):
 
         page_text = _fetch_tiktok_profile_page(ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file)
         if page_text is None:
+            logger.debug("tiktok_detection: @%s pass-1 profile page fetch failed", ctx.username)
             return None
 
         room_id, status_ended = _room_id_from_profile_page(page_text, ctx.username)
@@ -35,6 +36,10 @@ class Pass1ProfilePage(LiveDetectionStrategy):
             raise StreamConfirmedEndedError(f"@{ctx.username} stream status=4/5")
 
         if not room_id:
+            logger.debug(
+                "tiktok_detection: @%s pass-1 no roomId in profile page (cookies expired or not live)",
+                ctx.username,
+            )
             return None
 
         if not _verify_room_alive(room_id, ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file):

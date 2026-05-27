@@ -107,16 +107,21 @@ class DownloadItemWidget(QFrame):
 
         # Button box (right side)
         self._btn_box = QWidget()
-        self._btn_box.setStyleSheet("background: transparent;")
+        self._btn_box.setObjectName("btn_box")
+        self._btn_box.setStyleSheet("#btn_box { background: transparent; }")
         btn_row = QHBoxLayout(self._btn_box)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(4)
 
         self._pause_btn = QPushButton("⏸")
         self._pause_btn.setFixedSize(30, 30)
-        self._pause_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text2}; border-radius: 10px; border: none; font-size: 12px;"
-        )
+        self._pause_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {T.primary_dim}; color: {T.primary_text};
+                border-radius: 10px; border: 1.5px solid {T.primary}; font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {T.primary}; color: white; }}
+        """)
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pause_btn.setToolTip("Tạm dừng / Tiếp tục")
         self._pause_btn.clicked.connect(lambda: self._on_pause(self.task.id))
@@ -124,9 +129,13 @@ class DownloadItemWidget(QFrame):
 
         self._cancel_btn = QPushButton("✕")
         self._cancel_btn.setFixedSize(30, 30)
-        self._cancel_btn.setStyleSheet(
-            f"background: {T.error_bg}; color: {T.error_text}; border-radius: 10px; border: none; font-size: 12px;"
-        )
+        self._cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {T.error_bg}; color: {T.error_text};
+                border-radius: 10px; border: 1.5px solid {T.error}; font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {T.error}; color: white; }}
+        """)
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.setToolTip("Hủy tải xuống")
         self._cancel_btn.clicked.connect(lambda: self._on_cancel(self.task.id))
@@ -319,6 +328,20 @@ class DownloadItemWidget(QFrame):
             color: {s_color}; background-color: {s_bg};
             border-radius: 8px; font-size: 10px; font-weight: 600;
             padding: 3px 10px; letter-spacing: 0.2px;
+        """)
+        self._pause_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {T.primary_dim}; color: {T.primary_text};
+                border-radius: 10px; border: 1.5px solid {T.primary}; font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {T.primary}; color: white; }}
+        """)
+        self._cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {T.error_bg}; color: {T.error_text};
+                border-radius: 10px; border: 1.5px solid {T.error}; font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {T.error}; color: white; }}
         """)
 
     def _open_preview(self) -> None:

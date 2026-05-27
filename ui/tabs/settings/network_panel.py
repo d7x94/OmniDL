@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -49,19 +51,20 @@ def _cookie_file_candidates(path_str: str) -> list[Path]:
 
 _PC_PLATFORMS = [
     ("youtube", "YouTube"),
-    ("tiktok", "TikTok"),
     ("instagram", "Instagram"),
+    ("tiktok", "TikTok"),
     ("facebook", "Facebook"),
     ("twitter", "Twitter / X"),
     ("threads", "Threads"),
     ("kuaishou", "Kuaishou"),
 ]
 
+
 def _INPUT_SS(border_color=""):
     return (
-    f"QLineEdit {{ background: {T.input}; color: {T.text}; border: 1px solid "
-    f"{border_color or T.border2}; border-radius: 8px; padding: 6px 12px; }}"
-)
+        f"QLineEdit {{ background: {T.input}; color: {T.text}; border: 1px solid "
+        f"{border_color or T.border2}; border-radius: 8px; padding: 6px 12px; }}"
+    )
 
 
 class NetworkPanel(_BasePanel):
@@ -277,7 +280,398 @@ class NetworkPanel(_BasePanel):
             pc_card, "🔄 = yt-dlp (Firefox/Opera).  🦁 = CDP (Brave/Chrome 127+, không cần đóng trình duyệt)."
         )
 
+        self._build_tiktok_accounts_section()
         self._layout.addSpacing(20)
+
+    # ── TikTok Account Pool UI ─────────────────────────────────────────────
+
+    def _build_tiktok_accounts_section(self) -> None:
+        self._section(None, "🎵   TIKTOK ACCOUNTS   — Pool tài khoản để tải song song")
+        self._tt_card = self._card()
+
+        self._row_label(
+            self._tt_card,
+            "Mỗi account được gán tối đa N slot tải đồng thời.\n"
+            "Khi pool trống, app dùng 'Per-Platform TikTok cookie' ở trên.",
+            wrap=True,
+        )
+
+        # Container rebuilt by _refresh_tiktok_accounts_list()
+        self._tt_list_container = QWidget()
+        self._tt_list_container.setStyleSheet("background: transparent;")
+        self._tt_list_vbox = QVBoxLayout(self._tt_list_container)
+        self._tt_list_vbox.setContentsMargins(0, 0, 0, 0)
+        self._tt_list_vbox.setSpacing(0)
+        self._tt_card.layout().addWidget(self._tt_list_container)
+
+        self._separator(self._tt_card)
+
+        # "Add Account" button
+        add_row = QWidget()
+        add_row.setStyleSheet("background: transparent;")
+        add_hl = QHBoxLayout(add_row)
+        add_hl.setContentsMargins(16, 8, 16, 8)
+        self._tt_add_btn = QPushButton("+ Thêm account")
+        self._tt_add_btn.setFixedHeight(30)
+        self._tt_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tt_add_btn.setStyleSheet(
+            f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none;"
+            " font-size: 12px; padding: 0 12px;"
+        )
+        self._tt_add_btn.clicked.connect(self._show_tiktok_add_form)
+        add_hl.addWidget(self._tt_add_btn)
+        add_hl.addStretch()
+        self._tt_card.layout().addWidget(add_row)
+
+        # Inline add-account form (hidden by default)
+        self._tt_add_form = QWidget()
+        self._tt_add_form.setStyleSheet(f"background: {T.surface2}; border-radius: 8px;")
+        self._tt_add_form.hide()
+        form_vbox = QVBoxLayout(self._tt_add_form)
+        form_vbox.setContentsMargins(16, 10, 16, 10)
+        form_vbox.setSpacing(6)
+
+        name_row = QWidget()
+        name_row.setStyleSheet("background: transparent;")
+        name_hl = QHBoxLayout(name_row)
+        name_hl.setContentsMargins(0, 0, 0, 0)
+        name_hl.addWidget(QLabel("Tên:"))
+        self._tt_add_name = QLineEdit()
+        self._tt_add_name.setPlaceholderText("Account 1")
+        self._tt_add_name.setFixedHeight(28)
+        self._tt_add_name.setStyleSheet(
+            f"QLineEdit {{ background: {T.input}; color: {T.text}; border: 1px solid {T.border2};"
+            " border-radius: 6px; padding: 0 8px; }"
+        )
+        name_hl.addWidget(self._tt_add_name, 1)
+        form_vbox.addWidget(name_row)
+
+        cookie_row = QWidget()
+        cookie_row.setStyleSheet("background: transparent;")
+        cookie_hl = QHBoxLayout(cookie_row)
+        cookie_hl.setContentsMargins(0, 0, 0, 0)
+        _btn_ss = "font-size: 11px; font-weight: 600; border: none; border-radius: 6px; padding: 2px 6px;"
+        self._tt_add_cdp_btn = QPushButton("CDP")
+        self._tt_add_cdp_btn.setFixedSize(48, 28)
+        self._tt_add_cdp_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
+        self._tt_add_cdp_btn.clicked.connect(self._add_form_extract_cdp)
+        cookie_hl.addWidget(self._tt_add_cdp_btn)
+
+        self._tt_add_ytdlp_btn = QPushButton("yt-dlp")
+        self._tt_add_ytdlp_btn.setFixedSize(54, 28)
+        self._tt_add_ytdlp_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
+        self._tt_add_ytdlp_btn.clicked.connect(self._add_form_extract_ytdlp)
+        cookie_hl.addWidget(self._tt_add_ytdlp_btn)
+
+        self._tt_add_browse_btn = QPushButton("Chon")
+        self._tt_add_browse_btn.setFixedSize(48, 28)
+        self._tt_add_browse_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
+        self._tt_add_browse_btn.clicked.connect(self._add_form_browse)
+        cookie_hl.addWidget(self._tt_add_browse_btn)
+
+        self._tt_add_cookie_lbl = QLabel("Chua chon cookie")
+        self._tt_add_cookie_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        cookie_hl.addWidget(self._tt_add_cookie_lbl, 1)
+        form_vbox.addWidget(cookie_row)
+
+        btn_row = QWidget()
+        btn_row.setStyleSheet("background: transparent;")
+        btn_hl = QHBoxLayout(btn_row)
+        btn_hl.setContentsMargins(0, 4, 0, 0)
+        self._tt_add_save_btn = QPushButton("Luu")
+        self._tt_add_save_btn.setFixedHeight(28)
+        self._tt_add_save_btn.setEnabled(False)
+        self._tt_add_save_btn.setStyleSheet(
+            f"background: {T.primary}; color: white; border-radius: 6px; border: none;"
+            " font-size: 12px; font-weight: 600; padding: 0 12px;"
+        )
+        self._tt_add_save_btn.clicked.connect(self._save_new_tiktok_account)
+        btn_hl.addStretch()
+        cancel_btn = QPushButton("Huy")
+        cancel_btn.setFixedHeight(28)
+        cancel_btn.setStyleSheet(
+            f"background: {T.surface3}; color: {T.text2}; border-radius: 6px; border: none;"
+            " font-size: 12px; padding: 0 12px;"
+        )
+        cancel_btn.clicked.connect(self._hide_tiktok_add_form)
+        btn_hl.addWidget(cancel_btn)
+        btn_hl.addWidget(self._tt_add_save_btn)
+        form_vbox.addWidget(btn_row)
+
+        self._tt_card.layout().addWidget(self._tt_add_form)
+
+        # Pending cookie path for the add form
+        self._tt_add_pending_cookie: str = ""
+
+        self._refresh_tiktok_accounts_list()
+
+    def _refresh_tiktok_accounts_list(self) -> None:
+        # Clear existing rows
+        while self._tt_list_vbox.count():
+            item = self._tt_list_vbox.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        accounts = self._app.config.tiktok_account_pool
+        if not accounts:
+            empty_lbl = QLabel("Chua co account nao. Nhan '+ Them account' de them.")
+            empty_lbl.setStyleSheet(
+                f"color: {T.text3}; font-size: 11px; background: transparent; padding: 8px 16px 4px;"
+            )
+            self._tt_list_vbox.addWidget(empty_lbl)
+            return
+
+        _btn_ss = "font-size: 11px; font-weight: 600; border: none; border-radius: 6px; padding: 2px 6px;"
+        for acc in accounts:
+            acc_id = acc.get("id", "")
+            row = QWidget()
+            row.setStyleSheet("background: transparent;")
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(16, 4, 16, 4)
+
+            name_lbl = QLabel(acc.get("name", "Account"))
+            name_lbl.setFixedWidth(110)
+            name_lbl.setStyleSheet(f"color: {T.text}; font-size: 12px; background: transparent;")
+            hl.addWidget(name_lbl)
+
+            enabled = bool(acc.get("enabled", True))
+            cookie_set = bool(acc.get("cookie_file", ""))
+            if not cookie_set:
+                dot, dot_color = "●", T.error
+            elif not enabled:
+                dot, dot_color = "⏸", T.warning_text
+            else:
+                dot, dot_color = "●", T.success
+            status_lbl = QLabel(dot)
+            status_lbl.setFixedWidth(18)
+            status_lbl.setStyleSheet(f"color: {dot_color}; font-size: 13px; background: transparent;")
+            hl.addWidget(status_lbl)
+
+            cookie_path = acc.get("cookie_file", "")
+            cookie_lbl = QLabel(self._short_cookie_path(cookie_path))
+            cookie_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px; background: transparent;")
+            hl.addWidget(cookie_lbl, 1)
+
+            slots_spin = QSpinBox()
+            slots_spin.setRange(1, 5)
+            slots_spin.setValue(max(1, min(5, int(acc.get("max_slots", 1)))))
+            slots_spin.setFixedSize(52, 26)
+            slots_spin.setToolTip("So download toi da cung luc cho account nay")
+            slots_spin.setStyleSheet(
+                f"QSpinBox {{ background: {T.input}; color: {T.text}; border: 1px solid {T.border2};"
+                " border-radius: 5px; padding: 0 4px; font-size: 11px; }"
+            )
+            slots_spin.valueChanged.connect(lambda v, aid=acc_id: self._set_tiktok_account_slots(aid, v))
+            hl.addWidget(slots_spin)
+
+            pause_lbl = "Resume" if not enabled else "Pause"
+            pause_btn = QPushButton(pause_lbl)
+            pause_btn.setFixedSize(60, 26)
+            pause_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
+            pause_btn.clicked.connect(
+                lambda _, aid=acc_id, en=enabled: self._toggle_tiktok_account(aid, not en)
+            )
+            hl.addWidget(pause_btn)
+
+            del_btn = QPushButton("Xoa")
+            del_btn.setFixedSize(40, 26)
+            del_btn.setStyleSheet(f"background: {T.error_bg}; color: {T.error}; {_btn_ss}")
+            del_btn.clicked.connect(lambda _, aid=acc_id: self._remove_tiktok_account(aid))
+            hl.addWidget(del_btn)
+
+            self._tt_list_vbox.addWidget(row)
+
+    # ── TikTok account pool handlers ──────────────────────────────────────
+
+    def _show_tiktok_add_form(self) -> None:
+        self._tt_add_pending_cookie = ""
+        self._tt_add_name.setText("")
+        self._tt_add_cookie_lbl.setText("Chua chon cookie")
+        self._tt_add_cookie_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        self._tt_add_save_btn.setEnabled(False)
+        self._tt_add_form.show()
+        self._tt_add_btn.hide()
+
+    def _hide_tiktok_add_form(self) -> None:
+        self._tt_add_form.hide()
+        self._tt_add_btn.show()
+        self._tt_add_pending_cookie = ""
+
+    def _add_form_set_cookie(self, path: str) -> None:
+        self._tt_add_pending_cookie = path
+        self._tt_add_cookie_lbl.setText(self._short_cookie_path(path))
+        self._tt_add_cookie_lbl.setStyleSheet(
+            f"color: {T.success}; font-size: 11px; background: transparent;"
+        )
+        self._tt_add_save_btn.setEnabled(True)
+
+    def _add_form_browse(self) -> None:
+        import shutil
+
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "Chon cookie file TikTok (Netscape format)", "", "Cookie files (*.txt);;All files (*.*)"
+        )
+        if not chosen:
+            return
+        src = Path(chosen)
+        if not src.is_file() or not _is_netscape_cookie_file(src):
+            self._app.toast("File khong phai dinh dang Netscape cookie.", "error")
+            return
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        safe_dir.mkdir(parents=True, exist_ok=True)
+        import uuid as _uuid
+
+        dest = safe_dir / f"tiktok_pool_{_uuid.uuid4().hex[:6]}_{src.name}"
+        try:
+            shutil.copy2(src, dest)
+        except OSError as exc:
+            self._app.toast(f"Khong the sao chep file: {exc}", "error")
+            return
+        from infrastructure.downloader.cookie_storage import encrypt_cookie_file
+
+        dest = encrypt_cookie_file(dest)
+        self._add_form_set_cookie(str(dest))
+
+    def _add_form_extract_cdp(self) -> None:
+        browser = self._browser_combo.currentText()
+        if browser not in ("brave", "chrome", "chromium", "edge"):
+            self._app.toast("CDP chi ho tro Brave/Chrome/Edge.", "error")
+            return
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        import uuid as _uuid
+
+        output_path = safe_dir / f"tiktok_pool_{_uuid.uuid4().hex[:6]}_{browser}_cdp.txt"
+        for btn in (self._tt_add_cdp_btn, self._tt_add_ytdlp_btn, self._tt_add_browse_btn):
+            btn.setEnabled(False)
+        self._tt_add_cookie_lbl.setText(f"Dang khoi dong {browser.title()}...")
+
+        def _worker():
+            try:
+                from infrastructure.downloader.cookie_extractor import extract_via_cdp
+
+                count, error = extract_via_cdp(output_path, platform_key="tiktok", browser=browser)
+            except Exception as exc:
+                error = str(exc)
+                count = 0
+            if error:
+                ui_bridge.post(
+                    lambda e=error: (
+                        self._tt_add_cookie_lbl.setText(f"CDP that bai: {e[:50]}"),
+                        self._tt_add_cookie_lbl.setStyleSheet(
+                            f"color: {T.error}; font-size: 11px; background: transparent;"
+                        ),
+                    )
+                )
+            else:
+                path_str = self._resolve_saved_cookie_path(output_path)
+                ui_bridge.post(lambda ps=path_str, c=count: self._add_form_set_cookie(ps))
+                ui_bridge.post(lambda c=count: self._app.toast(f"CDP: da lay {c} cookies TikTok.", "success"))
+            ui_bridge.post(
+                lambda: [
+                    btn.setEnabled(True)
+                    for btn in (self._tt_add_cdp_btn, self._tt_add_ytdlp_btn, self._tt_add_browse_btn)
+                ]
+            )
+
+        threading.Thread(target=_worker, daemon=True, name="omnidl-tt-pool-cdp").start()
+
+    def _add_form_extract_ytdlp(self) -> None:
+        browser = self._browser_combo.currentText()
+        safe_dir = self._app.config.config_path.parent / "cookies"
+        import uuid as _uuid
+
+        output_path = safe_dir / f"tiktok_pool_{_uuid.uuid4().hex[:6]}_{browser}.txt"
+        for btn in (self._tt_add_cdp_btn, self._tt_add_ytdlp_btn, self._tt_add_browse_btn):
+            btn.setEnabled(False)
+        self._tt_add_cookie_lbl.setText(f"Dang doc cookies TikTok tu {browser}...")
+
+        def _worker():
+            try:
+                from infrastructure.downloader.cookie_extractor import extract_browser_cookies
+
+                count, error = extract_browser_cookies(browser, output_path, platform_key="tiktok")
+            except Exception as exc:
+                error = str(exc)
+                count = 0
+            if error:
+                ui_bridge.post(
+                    lambda e=error: (
+                        self._tt_add_cookie_lbl.setText(f"That bai: {e[:50]}"),
+                        self._tt_add_cookie_lbl.setStyleSheet(
+                            f"color: {T.error}; font-size: 11px; background: transparent;"
+                        ),
+                    )
+                )
+            else:
+                path_str = self._resolve_saved_cookie_path(output_path)
+                ui_bridge.post(lambda ps=path_str: self._add_form_set_cookie(ps))
+                ui_bridge.post(lambda c=count: self._app.toast(f"Da lay {c} cookies TikTok.", "success"))
+            ui_bridge.post(
+                lambda: [
+                    btn.setEnabled(True)
+                    for btn in (self._tt_add_cdp_btn, self._tt_add_ytdlp_btn, self._tt_add_browse_btn)
+                ]
+            )
+
+        threading.Thread(target=_worker, daemon=True, name="omnidl-tt-pool-ytdlp").start()
+
+    def _save_new_tiktok_account(self) -> None:
+        name = self._tt_add_name.text().strip()
+        if not name:
+            accounts = self._app.config.tiktok_account_pool
+            name = f"Account {len(accounts) + 1}"
+        cookie_path = self._tt_add_pending_cookie
+        if not cookie_path:
+            return
+        import uuid as _uuid
+
+        from infrastructure.downloader.account_pool import TikTokAccount
+
+        new_acc = TikTokAccount(
+            id=_uuid.uuid4().hex[:8],
+            name=name,
+            cookie_file=cookie_path,
+            max_slots=1,
+            enabled=True,
+        )
+        pool = list(self._app.config.tiktok_account_pool)
+        pool.append(new_acc.to_dict())
+        self._app.config.set_tiktok_account_pool(pool)
+        self._hide_tiktok_add_form()
+        self._refresh_tiktok_accounts_list()
+        self._rebuild_pool()
+        self._app.toast(f"Da them account '{name}'.", "success")
+
+    def _remove_tiktok_account(self, account_id: str) -> None:
+        pool = [a for a in self._app.config.tiktok_account_pool if a.get("id") != account_id]
+        self._app.config.set_tiktok_account_pool(pool)
+        self._refresh_tiktok_accounts_list()
+        self._rebuild_pool()
+
+    def _toggle_tiktok_account(self, account_id: str, enabled: bool) -> None:
+        pool = []
+        for a in self._app.config.tiktok_account_pool:
+            entry = dict(a)
+            if entry.get("id") == account_id:
+                entry["enabled"] = enabled
+            pool.append(entry)
+        self._app.config.set_tiktok_account_pool(pool)
+        self._refresh_tiktok_accounts_list()
+        self._rebuild_pool()
+
+    def _set_tiktok_account_slots(self, account_id: str, n: int) -> None:
+        pool = []
+        for a in self._app.config.tiktok_account_pool:
+            entry = dict(a)
+            if entry.get("id") == account_id:
+                entry["max_slots"] = max(1, min(5, n))
+            pool.append(entry)
+        self._app.config.set_tiktok_account_pool(pool)
+        self._rebuild_pool()
+
+    def _rebuild_pool(self) -> None:
+        if hasattr(self._app, "rebuild_tiktok_pool"):
+            self._app.rebuild_tiktok_pool()
 
     # ── Handlers — Network ────────────────────────────────────────────────
 

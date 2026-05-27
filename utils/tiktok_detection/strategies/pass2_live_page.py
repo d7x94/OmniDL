@@ -23,11 +23,20 @@ class Pass2LivePage(LiveDetectionStrategy):
 
         live_page_text = _fetch_tiktok_live_page(ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file)
         if not live_page_text:
+            logger.debug("tiktok_detection: @%s pass-2 live page fetch failed", ctx.username)
             return None
 
         room_id = _room_id_from_live_page(live_page_text, ctx.username)
         if not room_id:
-            return None
+            logger.debug("tiktok_detection: @%s pass-2 no roomId in live page", ctx.username)
+            # With cookies, TikTok may serve a SPA variant that strips SIGI_STATE LiveRoom.
+            # Retry without cookies to get the standard pre-rendered page.
+            if ctx.cookie_file:
+                live_page_nc = _fetch_tiktok_live_page(ctx.username, proxy=ctx.proxy, cookie_file="")
+                if live_page_nc:
+                    room_id = _room_id_from_live_page(live_page_nc, ctx.username)
+            if not room_id:
+                return None
 
         if not _verify_room_alive(room_id, ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file):
             logger.debug(

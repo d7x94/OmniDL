@@ -92,6 +92,12 @@ class DownloadTask:
     started_at: float = 0.0
     finished_at: float = 0.0
 
+    # ── Pool-assigned cookie (not serialised) ────────────────────────────
+    # Set by TikTokAccountPool.acquire() before _run_task executes.
+    # Overrides _resolve_cookie() so the assigned account's cookie is used
+    # for the full lifetime of this download.
+    _cookie_override: str | None = field(default=None, compare=False, repr=False)
+
     # ── Control primitives (not serialised) ──────────────────────────────
     _cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
     _pause_event: threading.Event = field(default_factory=_set_event, compare=False, repr=False)

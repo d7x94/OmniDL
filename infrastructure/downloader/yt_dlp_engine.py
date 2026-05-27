@@ -256,10 +256,11 @@ def _get_platform_rl(url: str) -> "_PlatformRateLimiter | None":
     return _PLATFORM_RL_MAP.get(key) if key else None
 
 
-def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
+def _resolve_cookie(url: str, config: "ConfigManager", override: "str | None" = None) -> "str | None":
     """Return the validated cookie file path for *url*, or None.
 
     Resolution order (first non-empty validated path wins):
+      0. override                                 — pool-assigned account cookie
       1. config.platform_cookies[platform_key]   — per-platform (most specific)
       2. config.cookie_file                       — global fallback
       3. None                                     — no cookie configured
@@ -271,6 +272,13 @@ def _resolve_cookie(url: str, config: "ConfigManager") -> str | None:
     Security: every candidate path is validated by _validate_cookie_path_raw()
     (same CWE-22 logic as _validate_cookie_path()) before being returned.
     """
+    # ── Step 0: pool-assigned account cookie (highest priority) ──────────
+    if override:
+        validated = _validate_cookie_path_raw(override, config)
+        if validated:
+            logger.debug("Using pool-assigned cookie override: %s", Path(override).name)
+            return validated
+
     # ── Step 1: detect platform from URL hostname ─────────────────────────
     platform_key: str | None = None
     try:
@@ -524,6 +532,14 @@ def _friendly_error(msg: str) -> str:
         return (
             "This content is for members/subscribers only.\n"
             "Make sure you are logged in via cookies in Settings."
+        )
+    # TikTok API status 10231 — API parameter issue, video still accessible in browser
+    if "status code 10231" in msg_l:
+        return (
+            "TikTok API từ chối request (status 10231) dù video vẫn xem được.\n"
+            "Thử:\n"
+            "  1. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok\n"
+            "  2. Bật proxy/VPN trong Settings → Network → Proxy URL"
         )
     # TikTok / platform deleted or unavailable video
     if (
@@ -891,6 +907,7 @@ class YtDlpEngine:
         # Retry up to 2 times on transient errors (rate limit, network blip).
         last_exc: Exception | None = None
         info = None
+        _saw_10231 = False  # BUG-TT-10231: track across all attempts (last_exc may be 429)
         # Regex for Instagram photo/reel/TV shortcode extraction from URL.
         # Used to build a synthetic MediaInfo when yt-dlp raises "no video in
         # this post" — photo posts have no video stream but ARE downloadable
@@ -905,6 +922,8 @@ class YtDlpEngine:
             except yt_dlp.utils.DownloadError as exc:
                 msg = str(exc)
                 msg_l = msg.lower()
+                if "status code 10231" in msg_l:
+                    _saw_10231 = True
 
                 # FIX-A: Instagram photo posts raise one of two errors during
                 # extract_info depending on the yt-dlp version and whether
@@ -988,6 +1007,29 @@ class YtDlpEngine:
                 if attempt < 2:
                     time.sleep(2**attempt)
         if info is None:
+            # BUG-TT-10231: TikTok web extraction returns status 10231 for some videos.
+            # Use _saw_10231 (not just last_exc) — last retry may have been a 429.
+            # Fix: use app_info (not app_name) to trigger _extract_aweme_app() (Android
+            # mobile API). app_name alone is ignored by TikTokIE when app_info is absent:
+            # _KNOWN_APP_INFO stays [] → yt-dlp skips app API → web extraction → 10231.
+            if _saw_10231 or (last_exc and "status code 10231" in str(last_exc)):
+                for _fb_app_info in (
+                    "/trill/35.1.3/2023501030/1180",
+                    "/musical_ly/35.1.3/2023501030/1233",
+                    "/aweme/35.1.3/2023501030/1128",
+                ):
+                    _tt_opts = dict(opts)
+                    _tt_opts["extractor_args"] = {"tiktok": {"app_info": [_fb_app_info]}}
+                    try:
+                        with yt_dlp.YoutubeDL(_tt_opts) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                        logger.debug("BUG-TT-10231: %s retry succeeded for %s", _fb_app_info, url)
+                        break
+                    except Exception as _tt_exc:
+                        logger.debug("BUG-TT-10231: %s retry failed: %s", _fb_app_info, _tt_exc)
+                        last_exc = _tt_exc
+
+        if info is None:
             msg = str(last_exc) if last_exc else "No response from server"
             if any(k in msg.lower() for k in ("rate", "429", "too many")):
                 platform = _detect_platform(url)
@@ -1036,10 +1078,29 @@ class YtDlpEngine:
             except Exception:
                 pass
 
+        # BUG-TT-28 FIX: store the canonical webpage_url (e.g. @user/live) so that
+        # BUG-TT-27's _extract_url selection matches _TIKTOK_LIVE_RE at download time.
+        # Short links (vm/vt.tiktok.com) resolved by yt-dlp carry the canonical URL
+        # in info["webpage_url"] but not in the original `url` parameter.
+        _canonical_url = info.get("webpage_url") or url
+        _uploader = info.get("uploader") or info.get("uploader_id") or info.get("channel") or ""
+        # BUG-TT-28 FIX: yt-dlp's [vm.tiktok] extractor leaves uploader empty for live
+        # streams even when webpage_url is the canonical @user/live URL.  Extract the
+        # username from that URL so Windows post-download rename doesn't fall back to
+        # "Unknown".
+        if not _uploader:
+            _m_upl = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)", _canonical_url, re.I)
+            if _m_upl:
+                _uploader = _m_upl.group(1)
+        # BUG-TT-30 FIX: for TikTok live, yt-dlp sets info["id"] to the room_id.
+        # Store it so _extract_tiktok_live_hls_url can use BUG-TT-25/26/29 fallbacks.
+        _tt_room_id = ""
+        if is_live_resolved and _TIKTOK_LIVE_RE.search(_canonical_url or ""):
+            _tt_room_id = info.get("id") or ""
         return MediaInfo(
-            url=url,
+            url=_canonical_url,
             title=info.get("title") or "Unknown",
-            uploader=info.get("uploader") or info.get("uploader_id") or info.get("channel") or "",
+            uploader=_uploader,
             uploader_id=info.get("uploader_id", "") or "",
             duration=int(info.get("duration") or 0),
             thumbnail=info.get("thumbnail") or "",
@@ -1048,6 +1109,7 @@ class YtDlpEngine:
             is_live=is_live_resolved,
             was_live=bool(info.get("was_live")),
             video_id=info.get("id") or "",
+            tiktok_room_id=_tt_room_id,
             # playlist_entries always empty here — profile URLs returned early
         )
 
@@ -1659,10 +1721,11 @@ class YtDlpEngine:
 
         if self._config.proxy:
             opts["proxy"] = self._config.proxy
-        # Cookie resolution: per-platform first, global fallback second.
+        # Cookie resolution: pool override first, per-platform second, global fallback third.
         # _resolve_cookie() applies CWE-22 guard via _validate_cookie_path_raw().
         # If cookie is DPAPI-encrypted (.enc), decrypt to temp file for this download.
-        _cookie_path = _resolve_cookie(task.url, self._config)
+        _task_cookie_override = getattr(task, "_cookie_override", None)
+        _cookie_path = _resolve_cookie(task.url, self._config, _task_cookie_override)
         _cookie_temp_dl: str | None = None  # temp file to clean up in finally
         if _cookie_path:
             _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
@@ -1808,11 +1871,32 @@ class YtDlpEngine:
         )
         _live_vid_id = ""
         _direct_ffmpeg_ok = False
+        _hls_confirmed_ended = False
         if _is_tiktok_live_for_direct:
             import sys as _sys_tt16
 
             _room_id_hint = (task.media_info.tiktok_room_id if task.media_info else "") or ""
-            _hls_result = self._extract_tiktok_live_hls_url(task.url, room_id=_room_id_hint)
+            _username_hint = (task.media_info.uploader if task.media_info else "") or ""
+            # BUG-TT-27 FIX: task.url may still be the original short link (vt/vm.tiktok.com)
+            # when the user pasted a short URL. _extract_tiktok_live_hls_url passes task_url to
+            # yt-dlp which then uses the [vm.tiktok] extractor → HTTP 429, and the BUG-TT-25
+            # username regex r"tiktok\.com/@user/live" fails on short links so BUG-TT-25/26 are
+            # skipped entirely. Use the canonical @user/live URL from media_info when available.
+            _extract_url = (
+                task.media_info.url
+                if task.media_info
+                and task.media_info.url
+                and _TIKTOK_LIVE_RE.search(task.media_info.url or "")
+                else task.url
+            )
+            _hls_result = self._extract_tiktok_live_hls_url(
+                _extract_url,
+                room_id=_room_id_hint,
+                cookie_override=_task_cookie_override,
+                username=_username_hint,
+            )
+            # () means all fallbacks (BUG-TT-25 + BUG-TT-26) were tried and exhausted
+            _hls_confirmed_ended = _hls_result is not None and not _hls_result
             if _hls_result:
                 _hls_url, _hls_vid_id, _hls_uploader, _hls_title = _hls_result
                 _live_vid_id = _hls_vid_id
@@ -1838,10 +1922,15 @@ class YtDlpEngine:
                     _direct_out_dir = output_dir
                 _direct_out_path = str(_direct_out_dir / f"live_{rec_ts}_{_hls_vid_id[:20]}.ts")
                 task.filename = _direct_out_path
-                _tt16_cookie = _resolve_cookie(task.url, self._config) or ""
+                _tt16_cookie = _resolve_cookie(task.url, self._config, _task_cookie_override) or ""
+                _dl_method = (
+                    "curl_cffi Chrome impersonation"
+                    if _CURL_CFFI_AVAILABLE
+                    else "direct FFmpeg with reconnect"
+                )
                 logger.info(
-                    "BUG-TT-16: TikTok live using direct FFmpeg with reconnect "
-                    "(bypassing yt-dlp FFmpegFD) for task %s",
+                    "BUG-TT-16: TikTok live using %s (bypassing yt-dlp FFmpegFD) for task %s",
+                    _dl_method,
                     task.id,
                 )
                 # BUG-TT-17 FIX: TikTok HLS URLs are signed (~18-25s TTL).
@@ -1855,6 +1944,13 @@ class YtDlpEngine:
                 _tt16_current_hls = _hls_url
                 _tt16_bad_bases: set[str] = set()
                 _tt16_bad_hosts: set[str] = set()
+                # BUG-TT-STALL2 FIX: track consecutive stalls per CDN base.
+                # After _STALL_BASE_THRESHOLD stalls on the same base, add it to
+                # bad_bases so _fetch_hls_from_webcast_room_info returns a different
+                # quality variant (SD/LD from hls_pull_url_map) instead of retrying
+                # the same dead CDN path with a refreshed token indefinitely.
+                _tt16_stall_counts: dict[str, int] = {}
+                _STALL_BASE_THRESHOLD = 2
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
                         _seg_path = (
@@ -1863,13 +1959,22 @@ class YtDlpEngine:
                             else (_direct_out_path + f".seg{_tt16_attempt}")
                         )
                         try:
-                            self._download_tiktok_live_direct(
-                                _tt16_current_hls,
-                                _seg_path,
-                                task,
-                                _tt16_cookie,
-                                on_progress,
-                            )
+                            if _CURL_CFFI_AVAILABLE:
+                                self._download_tiktok_live_hls_curl(
+                                    _tt16_current_hls,
+                                    _seg_path,
+                                    task,
+                                    _tt16_cookie,
+                                    on_progress,
+                                )
+                            else:
+                                self._download_tiktok_live_direct(
+                                    _tt16_current_hls,
+                                    _seg_path,
+                                    task,
+                                    _tt16_cookie,
+                                    on_progress,
+                                )
                             # FFmpeg exited cleanly — stream ended
                             if _tt16_attempt > 0:
                                 # Append segment to main file then delete
@@ -1894,7 +1999,10 @@ class YtDlpEngine:
                             # broadcaster is still live. Re-extract to verify.
                             if _tt16_attempt < _MAX_HLS_RETRIES:
                                 _tt28_fresh = self._extract_tiktok_live_hls_url(
-                                    task.url, room_id=_room_id_hint
+                                    task.url,
+                                    room_id=_room_id_hint,
+                                    cookie_override=_task_cookie_override,
+                                    username=_username_hint,
                                 )
                                 if _tt28_fresh:
                                     logger.info(
@@ -1953,7 +2061,12 @@ class YtDlpEngine:
                                     _tt16_attempt + 1,
                                     _MAX_HLS_RETRIES,
                                 )
-                                _fresh = self._extract_tiktok_live_hls_url(task.url, room_id=_room_id_hint)
+                                _fresh = self._extract_tiktok_live_hls_url(
+                                    task.url,
+                                    room_id=_room_id_hint,
+                                    cookie_override=_task_cookie_override,
+                                    username=_username_hint,
+                                )
                                 if _fresh:
                                     _tt16_current_hls = _fresh[0]
                                     _tt16_attempt += 1
@@ -1989,14 +2102,36 @@ class YtDlpEngine:
                                     # the bad base as excluded so a lower-quality
                                     # variant (_sd, _ld) on a different CDN path
                                     # can be tried instead.
-                                    _bad_base = _tt16_current_hls.split("?")[0]
-                                    _tt16_bad_bases.add(_bad_base)
-                                    _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
+                                    # BUG-TT-STALL FIX: stall watchdog fires when
+                                    # FFmpeg gets no data (not necessarily a CDN
+                                    # 404). BUG-TT-25 may return the same CDN
+                                    # base with a fresh token that will work.
+                                    # Only exclude the base for 404/403 failures,
+                                    # not stalls — so BUG-TT-25 URLs aren't
+                                    # rejected by the base-exclusion check below.
+                                    # BUG-TT-STALL2 FIX: after _STALL_BASE_THRESHOLD
+                                    # consecutive stalls on the same CDN base, that
+                                    # base is dead — exclude it to force trying an
+                                    # alternative quality variant (SD/LD).
+                                    _is_stall = "stall watchdog" in str(_seg_exc)
+                                    _stall_base0 = _tt16_current_hls.split("?")[0]
+                                    if not _is_stall:
+                                        _tt16_bad_bases.add(_stall_base0)
+                                        _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
+                                    else:
+                                        _tt16_stall_counts[_stall_base0] = (
+                                            _tt16_stall_counts.get(_stall_base0, 0) + 1
+                                        )
+                                        if _tt16_stall_counts[_stall_base0] >= _STALL_BASE_THRESHOLD:
+                                            _tt16_bad_bases.add(_stall_base0)
+                                            _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
                                     _fresh0 = self._extract_tiktok_live_hls_url(
                                         task.url,
                                         _exclude_bases=frozenset(_tt16_bad_bases),
                                         _exclude_hosts=frozenset(_tt16_bad_hosts),
                                         room_id=_room_id_hint,
+                                        cookie_override=_task_cookie_override,
+                                        username=_username_hint,
                                     )
                                     _base_new = _fresh0[0].split("?")[0] if _fresh0 else ""
                                     if _fresh0 and _base_new not in _tt16_bad_bases:
@@ -2013,14 +2148,25 @@ class YtDlpEngine:
                                 # this base too and try one more CDN path before
                                 # falling back to yt-dlp (BUG-TT-22).
                                 if _main_size == 0:
-                                    _bad_base2 = _tt16_current_hls.split("?")[0]
-                                    _tt16_bad_bases.add(_bad_base2)
-                                    _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
+                                    _is_stall2 = "stall watchdog" in str(_seg_exc)
+                                    _stall_base2 = _tt16_current_hls.split("?")[0]
+                                    if not _is_stall2:
+                                        _tt16_bad_bases.add(_stall_base2)
+                                        _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
+                                    else:
+                                        _tt16_stall_counts[_stall_base2] = (
+                                            _tt16_stall_counts.get(_stall_base2, 0) + 1
+                                        )
+                                        if _tt16_stall_counts[_stall_base2] >= _STALL_BASE_THRESHOLD:
+                                            _tt16_bad_bases.add(_stall_base2)
+                                            _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
                                     _fresh1 = self._extract_tiktok_live_hls_url(
                                         task.url,
                                         _exclude_bases=frozenset(_tt16_bad_bases),
                                         _exclude_hosts=frozenset(_tt16_bad_hosts),
                                         room_id=_room_id_hint,
+                                        cookie_override=_task_cookie_override,
+                                        username=_username_hint,
                                     )
                                     _base_new2 = _fresh1[0].split("?")[0] if _fresh1 else ""
                                     if _fresh1 and _base_new2 not in _tt16_bad_bases:
@@ -2072,7 +2218,13 @@ class YtDlpEngine:
                     # Reset to the main output file which has all segments merged.
                     task.filename = _direct_out_path
             else:
-                logger.debug("BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp")
+                if _hls_confirmed_ended:
+                    logger.debug(
+                        "BUG-TT-16: HLS URL extraction confirmed stream ended"
+                        " (all fallbacks exhausted) -- falling back to yt-dlp (no BUG-TT-12 retry)"
+                    )
+                else:
+                    logger.debug("BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp")
 
         if not _direct_ffmpeg_ok:
             # BUG-YTDLP-PROGRESS FIX: yt-dlp's FFmpegFD for live streams may
@@ -2157,6 +2309,14 @@ class YtDlpEngine:
                         or "usernotlive" in _exc_l
                     )
                     and not task.is_cancellation_requested
+                    # BUG-TT-HLS-CONFIRMED-ENDED FIX: if HLS extraction already
+                    # tried BUG-TT-25 + BUG-TT-26 and both returned None, the
+                    # stream is confirmed over — skip the CDN-race retry.
+                    and not _hls_confirmed_ended
+                    # BUG-TT-12-SCOPE FIX: only retry when detection confirmed a
+                    # live room (tiktok_room_id set). Optimistic downloads have no
+                    # confirmed live evidence — skip the 35s retry sequence.
+                    and bool(task.media_info and task.media_info.tiktok_room_id)
                 )
                 _is_hls_expired = (
                     is_live
@@ -2165,22 +2325,34 @@ class YtDlpEngine:
                     and not task.is_cancellation_requested
                 )
                 if _is_tiktok_api_race:
-                    logger.info(
-                        "BUG-TT-12: TikTok live API returned 'not live' for task %s"
-                        " — waiting 5s and retrying once (CDN cache race)",
-                        task.id,
-                    )
-                    time.sleep(5)
-                    try:
-                        with yt_dlp.YoutubeDL(opts) as ydl:
-                            ydl.download([task.url])
-                        # retry succeeded — fall through to filename resolution
-                    except yt_dlp.utils.DownloadError as retry_exc:
-                        if task.is_cancellation_requested:
-                            raise
-                        raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
-                    except Exception as retry_exc:
-                        raise RuntimeError(str(retry_exc)) from retry_exc
+                    _bt12_last_exc: "Optional[Exception]" = None
+                    for _bt12_delay in (5, 10, 20):
+                        logger.info(
+                            "BUG-TT-12: TikTok live API returned 'not live' for task %s"
+                            " — waiting %ds and retrying (CDN cache race)",
+                            task.id,
+                            _bt12_delay,
+                        )
+                        time.sleep(_bt12_delay)
+                        try:
+                            with yt_dlp.YoutubeDL(opts) as ydl:
+                                ydl.download([task.url])
+                            _bt12_last_exc = None
+                            break
+                        except yt_dlp.utils.DownloadError as retry_exc:
+                            if task.is_cancellation_requested:
+                                raise
+                            _bt12_l = str(retry_exc).lower()
+                            if (
+                                "not currently live" not in _bt12_l
+                                and "channel is not currently live" not in _bt12_l
+                            ):
+                                raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                            _bt12_last_exc = retry_exc
+                        except Exception as retry_exc:
+                            raise RuntimeError(str(retry_exc)) from retry_exc
+                    if _bt12_last_exc is not None:
+                        raise RuntimeError(_friendly_error(str(_bt12_last_exc))) from _bt12_last_exc
                 elif _is_hls_expired:
                     logger.info(
                         "BUG-TT-02: TikTok live HLS expired for task %s — re-extracting",
@@ -2207,7 +2379,10 @@ class YtDlpEngine:
                             if _tt13_m:
                                 _tt13_user = _tt13_m.group(1)
                                 _tt13_cookie_raw = (
-                                    _resolve_cookie("https://www.tiktok.com/", self._config) or ""
+                                    _resolve_cookie(
+                                        "https://www.tiktok.com/", self._config, _task_cookie_override
+                                    )
+                                    or ""
                                 )
                                 _tt13_cookie_txt, _tt13_is_temp = "", False
                                 if _tt13_cookie_raw:
@@ -2267,7 +2442,39 @@ class YtDlpEngine:
                     except Exception as retry_exc:
                         raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
                 else:
-                    raise RuntimeError(_friendly_error(_exc_str)) from exc
+                    # BUG-TT-10231-DL: 10231 during download — yt-dlp re-runs extract_info
+                    # internally in ydl.download(). Use app_info to trigger the Android
+                    # mobile API (_extract_aweme_app) which bypasses the web path that
+                    # returns 10231. app_name alone has no effect (see BUG-TT-10231).
+                    if "status code 10231" in _exc_str and _is_tiktok_vod and not is_live:
+                        _10231_dl_ok = False
+                        for _fb_app_info in (
+                            "/trill/35.1.3/2023501030/1180",
+                            "/musical_ly/35.1.3/2023501030/1233",
+                            "/aweme/35.1.3/2023501030/1128",
+                        ):
+                            _fb_opts = dict(opts)
+                            _fb_opts["extractor_args"] = {"tiktok": {"app_info": [_fb_app_info]}}
+                            try:
+                                with yt_dlp.YoutubeDL(_fb_opts) as ydl:
+                                    ydl.download([task.url])
+                                logger.debug(
+                                    "BUG-TT-10231-DL: %s retry succeeded for %s",
+                                    _fb_app_info,
+                                    task.url,
+                                )
+                                _10231_dl_ok = True
+                                break
+                            except Exception as _fb_exc:
+                                logger.debug(
+                                    "BUG-TT-10231-DL: %s retry failed: %s",
+                                    _fb_app_info,
+                                    _fb_exc,
+                                )
+                        if not _10231_dl_ok:
+                            raise RuntimeError(_friendly_error(_exc_str)) from exc
+                    else:
+                        raise RuntimeError(_friendly_error(_exc_str)) from exc
             except Exception as exc:
                 if task.is_cancellation_requested:
                     raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
@@ -2432,7 +2639,13 @@ class YtDlpEngine:
                     from utils.naming import build_filename as _build_fn
 
                     _mi = task.media_info
-                    _uploader = _mi.uploader if _mi and _mi.uploader else "Unknown"
+                    _uploader = (_mi.uploader if _mi and _mi.uploader else "") or ""
+                    if not _uploader:
+                        import re as _re_upl  # noqa: PLC0415
+
+                        _upl_url = (_mi.url if _mi and _mi.url else "") or task.url or ""
+                        _upl_m = _re_upl.search(r"tiktok\.com/@([A-Za-z0-9_.]+)", _upl_url, _re_upl.I)
+                        _uploader = _upl_m.group(1) if _upl_m else "Unknown"
                     _title = _mi.title if _mi and _mi.title else ""
                     _vid_id = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
                     _new_name = _build_fn(
@@ -2484,6 +2697,8 @@ class YtDlpEngine:
         _exclude_bases: "frozenset[str] | None" = None,
         _exclude_hosts: "frozenset[str] | None" = None,
         room_id: str = "",
+        cookie_override: "str | None" = None,
+        username: str = "",
     ) -> "tuple[str, str, str, str] | None":
         """Extract (hls_url, video_id, uploader, title) from TikTok live via yt-dlp skip_download.
 
@@ -2492,7 +2707,7 @@ class YtDlpEngine:
         _exclude_bases: base URLs (path without query params) to skip — used to
         avoid CDN nodes that returned 404 on a previous attempt.
         """
-        _cookie_path = _resolve_cookie(task_url, self._config)
+        _cookie_path = _resolve_cookie(task_url, self._config, cookie_override)
         opts_ei: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -2519,53 +2734,53 @@ class YtDlpEngine:
                 info = ydl.extract_info(task_url, download=False)
         except Exception as exc:
             exc_str = str(exc)
-            # BUG-TT-25 FIX: yt-dlp TikTokLiveIE calls room/info without signing
-            # (no X-Bogus/msToken) -- TikTok returns status=4 even for live streams.
-            # When we have a known room_id (from the live checker), call room/info
-            # directly with curl_cffi Chrome impersonation to bypass the unsigned path.
-            if room_id and (
+            # BUG-TT-25/26/30 FIX: yt-dlp TikTokLiveIE calls room/info without
+            # signing (no X-Bogus/msToken) -- TikTok returns status=4 even for
+            # active streams. Try our fallbacks when yt-dlp says "not currently live".
+            _is_not_live_err = (
                 "not currently live" in exc_str.lower() or "channel is not currently live" in exc_str.lower()
-            ):
+            )
+            if _is_not_live_err:
                 import re as _re_tt25  # noqa: PLC0415
 
                 _m25 = _re_tt25.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task_url, _re_tt25.I)
-                if _m25:
-                    from utils.tiktok_live_checker import (  # noqa: PLC0415
-                        _fetch_hls_from_webcast_room_info,
-                    )
-
-                    _u25 = _m25.group(1)
-                    _c25_raw = _resolve_cookie(task_url, self._config) or ""
-                    _c25_txt, _c25_is_temp = "", False
-                    if _c25_raw:
-                        _c25_txt, _c25_is_temp = _prepare_cookie_for_use(_c25_raw)
-                    _direct25 = _fetch_hls_from_webcast_room_info(
-                        room_id,
-                        _u25,
-                        proxy=self._config.proxy or "",
-                        cookie_file=_c25_txt,
-                    )
-                    if _c25_is_temp:
-                        try:
-                            Path(_c25_txt).unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                    if _direct25:
-                        _hls25, _rid25 = _direct25
-                        logger.info(
-                            "BUG-TT-25: room/info direct HLS URL for %s"
-                            " (bypassed yt-dlp unsigned room/info call)",
-                            task_url[:60],
-                        )
-                        return _hls25, _rid25, _u25, ""
-                    # BUG-TT-26 FIX: webcast.tiktok.com unreachable or returned
-                    # non-live status even though stream is active. Fall back to
-                    # fetching the live page HTML and extracting HLS from SIGI_STATE.
+                _u25 = (_m25.group(1) if _m25 else None) or username
+                if _u25:
                     from utils.tiktok_live_checker import (  # noqa: PLC0415
                         _fetch_hls_from_live_page,
+                        _fetch_hls_from_webcast_room_info,
+                        _verify_room_alive,
                     )
 
-                    _c26_raw = _resolve_cookie(task_url, self._config) or ""
+                    if room_id:
+                        # BUG-TT-25: signed room/info call (needs room_id)
+                        _c25_raw = _resolve_cookie(task_url, self._config, cookie_override) or ""
+                        _c25_txt, _c25_is_temp = "", False
+                        if _c25_raw:
+                            _c25_txt, _c25_is_temp = _prepare_cookie_for_use(_c25_raw)
+                        _direct25 = _fetch_hls_from_webcast_room_info(
+                            room_id,
+                            _u25,
+                            proxy=self._config.proxy or "",
+                            cookie_file=_c25_txt,
+                            exclude_bases=_exclude_bases or frozenset(),
+                        )
+                        if _c25_is_temp:
+                            try:
+                                Path(_c25_txt).unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                        if _direct25:
+                            _hls25, _rid25 = _direct25
+                            logger.info(
+                                "BUG-TT-25: room/info direct HLS URL for %s"
+                                " (bypassed yt-dlp unsigned room/info call)",
+                                task_url[:60],
+                            )
+                            return _hls25, _rid25, _u25, ""
+                    # BUG-TT-26 FIX: live page scrape only needs username — try
+                    # even when room_id is empty (e.g. analyse returned 429).
+                    _c26_raw = _resolve_cookie(task_url, self._config, cookie_override) or ""
                     _c26_txt, _c26_is_temp = "", False
                     if _c26_raw:
                         _c26_txt, _c26_is_temp = _prepare_cookie_for_use(_c26_raw)
@@ -2589,6 +2804,67 @@ class YtDlpEngine:
                             task_url[:60],
                         )
                         return _hls26, _rid26, _u25, ""
+                    # BUG-TT-29 FIX: retry if room still alive (needs room_id
+                    # for check_alive; skip when room_id unknown).
+                    if room_id:
+                        _proxy29 = self._config.proxy or ""
+                        for _retry29 in range(3):
+                            _alive29 = _verify_room_alive(room_id, _u25, proxy=_proxy29, cookie_file="")
+                            if not _alive29:
+                                break
+                            logger.debug(
+                                "BUG-TT-29: room %s still alive after BUG-TT-25/26 miss"
+                                " (attempt %d/3) — retrying in 5s",
+                                room_id,
+                                _retry29 + 1,
+                            )
+                            time.sleep(5)
+                            _r29_raw = _resolve_cookie(task_url, self._config, cookie_override) or ""
+                            _r29_txt, _r29_temp = "", False
+                            if _r29_raw:
+                                _r29_txt, _r29_temp = _prepare_cookie_for_use(_r29_raw)
+                            try:
+                                _r29a = _fetch_hls_from_webcast_room_info(
+                                    room_id,
+                                    _u25,
+                                    proxy=_proxy29,
+                                    cookie_file=_r29_txt,
+                                    exclude_bases=_exclude_bases or frozenset(),
+                                )
+                                if _r29a:
+                                    logger.info(
+                                        "BUG-TT-29: room/info HLS URL found on retry %d for %s",
+                                        _retry29 + 1,
+                                        task_url[:60],
+                                    )
+                                    return _r29a[0], _r29a[1], _u25, ""
+                                _r29b = _fetch_hls_from_live_page(_u25, proxy=_proxy29, cookie_file=_r29_txt)
+                                if _r29b:
+                                    logger.info(
+                                        "BUG-TT-29: live page HLS URL found on retry %d for %s",
+                                        _retry29 + 1,
+                                        task_url[:60],
+                                    )
+                                    return _r29b[0], _r29b[1], _u25, ""
+                            finally:
+                                if _r29_temp:
+                                    try:
+                                        Path(_r29_txt).unlink(missing_ok=True)
+                                    except OSError:
+                                        pass
+                        # Final check: only return () if check_alive also says dead.
+                        _final29 = _verify_room_alive(room_id, _u25, proxy=_proxy29, cookie_file="")
+                        if not _final29:
+                            logger.debug(
+                                "BUG-TT-29: check_alive confirms room %s ended -- confirmed ended",
+                                room_id,
+                            )
+                            return ()
+                        logger.debug(
+                            "BUG-TT-29: room %s still alive after retries -- letting yt-dlp try",
+                            room_id,
+                        )
+                        return None
             logger.debug("BUG-TT-16: HLS extract failed: %s", exc)
             return None
         finally:
@@ -2719,7 +2995,7 @@ class YtDlpEngine:
             ffmpeg_bin,
             "-hide_banner",
             "-loglevel",
-            "error",
+            "warning",
             "-reconnect",
             "1",
             "-reconnect_streamed",
@@ -2751,7 +3027,23 @@ class YtDlpEngine:
                 "-headers",
                 f"Cookie: {_ffmpeg_cookie_hdr}\r\nReferer: https://www.tiktok.com/\r\n",
             ]
-        cmd += ["-i", hls_url, "-c", "copy", "-f", "mpegts", "-y", out_path]
+        # -use_wallclock_as_timestamps: timestamp each received packet using
+        # actual receive time instead of the stream's encoded wall-clock PTS.
+        # TikTok HLS segments carry absolute stream-position timestamps (e.g.
+        # 2700s for a stream that started 45 min ago), so without this flag
+        # the .ts file reports ~49 min duration even for a 4-min recording.
+        cmd += [
+            "-use_wallclock_as_timestamps",
+            "1",
+            "-i",
+            hls_url,
+            "-c",
+            "copy",
+            "-f",
+            "mpegts",
+            "-y",
+            out_path,
+        ]
 
         try:
             proc = subprocess.Popen(
@@ -2795,7 +3087,7 @@ class YtDlpEngine:
         task.filename = out_path
         _last_size = 0
         _stall_seconds = 0
-        _STALL_LIMIT_S = 120  # seconds without new data → stream ended
+        _STALL_LIMIT_S = 20  # seconds without new data → stream ended
 
         try:
             while proc.poll() is None:
@@ -2850,6 +3142,154 @@ class YtDlpEngine:
             raise RuntimeError(f"FFmpeg exited with code {ret}.\n{err_msg or 'Không có thông tin lỗi.'}")
 
         # Mark progress done
+        task.progress = 100.0
+        if on_progress:
+            on_progress(task)
+
+    def _download_tiktok_live_hls_curl(
+        self,
+        hls_url: str,
+        out_path: str,
+        task: DownloadTask,
+        cookie_path: str,
+        on_progress: "Optional[Callable[[DownloadTask], None]]",
+    ) -> None:
+        """Download TikTok live HLS using curl_cffi Chrome TLS impersonation.
+
+        BUG-TT-CURLHLS FIX: TikTok's CDN (pull-hls-*.tiktokcdn.com) silently
+        blocks FFmpeg's OpenSSL TLS fingerprint — connection hangs with 0 bytes.
+        curl_cffi with Chrome impersonation bypasses this.  Primary downloader
+        for TikTok live; _download_tiktok_live_direct (FFmpeg) is the fallback.
+
+        Raises RuntimeError with patterns that match the existing _tt16 retry
+        logic — "stall watchdog" for no-data, "404 Not Found"/"403 Forbidden"
+        for expired URLs — so the caller re-extracts without any code changes.
+        """
+        from urllib.parse import urljoin
+
+        from utils.tiktok_live_checker import _get_impersonate_session, _load_cookie_jar  # noqa: PLC0415
+
+        _STALL_TIMEOUT_S = 60
+        _POLL_INTERVAL_S = 2
+        _SEG_TIMEOUT_S = 20
+
+        jar = None
+        _cookie_temp_curl: "str | None" = None
+        if cookie_path:
+            _usable_curl, _is_temp_curl = _prepare_cookie_for_use(cookie_path)
+            if _is_temp_curl:
+                _cookie_temp_curl = _usable_curl
+            jar = _load_cookie_jar(_usable_curl)
+
+        proxies = None
+        if self._config.proxy:
+            proxies = {"http": self._config.proxy, "https": self._config.proxy}
+
+        session = _get_impersonate_session(jar)
+        _curl_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.tiktok.com/",
+            "Origin": "https://www.tiktok.com",
+        }
+
+        seen_segs: "set[str]" = set()
+        last_new_seg_ts = time.time()
+        total_bytes = 0
+
+        task.status = DownloadStatus.DOWNLOADING
+        task.filename = out_path
+
+        try:
+            with open(out_path, "wb") as _curl_f:
+                while True:
+                    if task.is_cancellation_requested:
+                        raise yt_dlp.utils.DownloadError("Cancelled by user")
+                    task.wait_if_paused()
+
+                    if time.time() - last_new_seg_ts > _STALL_TIMEOUT_S:
+                        raise RuntimeError(
+                            f"stall watchdog: curl_cffi HLS không có segment mới trong "
+                            f"{_STALL_TIMEOUT_S}s — stream có thể đã kết thúc."
+                        )
+
+                    try:
+                        _m3u8_resp = session.get(
+                            hls_url,
+                            headers=_curl_headers,
+                            proxies=proxies,
+                            timeout=_SEG_TIMEOUT_S,
+                        )
+                    except Exception as _curl_e:
+                        raise RuntimeError(f"HLS playlist request failed: {_curl_e}") from _curl_e
+
+                    if _m3u8_resp.status_code == 404:
+                        raise RuntimeError("404 Not Found: HLS playlist expired or unavailable")
+                    if _m3u8_resp.status_code == 403:
+                        raise RuntimeError("403 Forbidden: HLS playlist access denied")
+                    if _m3u8_resp.status_code != 200:
+                        time.sleep(_POLL_INTERVAL_S)
+                        continue
+
+                    _m3u8_text = _m3u8_resp.text
+                    _stream_ended = "#EXT-X-ENDLIST" in _m3u8_text
+
+                    _base_url = hls_url.rsplit("/", 1)[0] + "/"
+                    for _seg_line in _m3u8_text.splitlines():
+                        _seg_line = _seg_line.strip()
+                        if not _seg_line or _seg_line.startswith("#"):
+                            continue
+                        _seg_url = (
+                            _seg_line if _seg_line.startswith("http") else urljoin(_base_url, _seg_line)
+                        )
+                        # Dedup by base path — TikTok signs each segment URL
+                        # per-refresh, so same segment returns different ?expire/sign.
+                        _seg_key = _seg_url.split("?")[0]
+                        if _seg_key in seen_segs:
+                            continue
+                        seen_segs.add(_seg_key)
+
+                        try:
+                            _seg_resp = session.get(
+                                _seg_url,
+                                headers=_curl_headers,
+                                proxies=proxies,
+                                timeout=_SEG_TIMEOUT_S,
+                            )
+                        except Exception:
+                            continue
+
+                        if _seg_resp.status_code == 200:
+                            _seg_data = _seg_resp.content
+                            _curl_f.write(_seg_data)
+                            _curl_f.flush()
+                            total_bytes += len(_seg_data)
+                            last_new_seg_ts = time.time()
+
+                            task.downloaded_bytes = total_bytes
+                            _elapsed_curl = task.elapsed
+                            task.eta = (
+                                f"⏺ {_fmt_bytes(total_bytes)} | {_elapsed_curl}"
+                                if _elapsed_curl
+                                else f"⏺ {_fmt_bytes(total_bytes)} đã ghi"
+                            )
+                            if on_progress:
+                                on_progress(task)
+
+                    if _stream_ended:
+                        break
+
+                    time.sleep(_POLL_INTERVAL_S)
+        finally:
+            if _cookie_temp_curl:
+                try:
+                    Path(_cookie_temp_curl).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
         task.progress = 100.0
         if on_progress:
             on_progress(task)
