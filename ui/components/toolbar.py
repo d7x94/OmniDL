@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.components.url_utils import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
 
@@ -24,8 +25,6 @@ if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
-
-from ui.components.url_utils import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK
 
 _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 

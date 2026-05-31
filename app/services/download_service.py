@@ -227,7 +227,8 @@ class DownloadService:
                                     if _acct30 and _acct30.cookie_file:
                                         _tt_cookie_raw = _acct30.cookie_file
                                         logger.debug(
-                                            "BUG-TT-30: main cookie absent -- using pool account '%s' for detection",
+                                            "BUG-TT-30: main cookie absent"
+                                            " -- using pool account '%s' for detection",
                                             _acct30.name,
                                         )
                             except Exception:
