@@ -37,6 +37,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libegl1
+
       - name: Install dependencies
         run: uv sync --extra api --extra dev
 
@@ -50,6 +53,8 @@ jobs:
             --no-strict-optional
 
       - name: Run pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           uv run pytest \
             --ignore=tests/test_e2e.py \

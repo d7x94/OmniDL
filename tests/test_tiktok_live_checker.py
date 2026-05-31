@@ -435,7 +435,7 @@ class TestNetworkErrors:
         ):
             from utils.tiktok_live_checker import check_tiktok_live
 
-            with pytest.raises(RuntimeError, match="kết nối"):
+            with pytest.raises(RuntimeError, match="connect"):
                 check_tiktok_live("user")
 
     def test_timeout_raises_runtime_error(self):
