@@ -3,6 +3,7 @@ tests/test_account_pool.py
 Unit tests for infrastructure/downloader/account_pool.py
 Covers: _AccountSlot, TikTokAccount, TikTokAccountPool
 """
+
 from __future__ import annotations
 
 import threading
@@ -296,7 +297,9 @@ class TestTikTokAccountPool:
                 second_acquired.set()
 
         t1 = threading.Thread(target=first_holder)
-        t2 = threading.Thread(target=lambda: (entered.wait(), pool.acquire().__enter__() and second_acquired.set()))
+        t2 = threading.Thread(
+            target=lambda: (entered.wait(), pool.acquire().__enter__() and second_acquired.set())
+        )
 
         t1.start()
         entered.wait(timeout=1.0)
@@ -316,3 +319,15 @@ class TestTikTokAccountPool:
         t1.join(timeout=1.0)
         assert unblocked.wait(timeout=1.0), "Should unblock after first holder exits"
         t_waiter.join(timeout=1.0)
+
+    def test_pick_account_returns_enabled(self):
+        acc = _make_account()
+        pool = TikTokAccountPool([acc])
+        assert pool._pick_account() is acc
+
+    def test_pick_account_picks_least_loaded(self):
+        a = _make_account("a", max_slots=2)
+        b = _make_account("b", max_slots=2)
+        pool = TikTokAccountPool([a, b])
+        pool._load[a.id] = 1
+        assert pool._pick_account() is b
