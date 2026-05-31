@@ -2974,7 +2974,7 @@ class YtDlpEngine:
                                 "BUG-TT-29: check_alive confirms room %s ended -- confirmed ended",
                                 room_id,
                             )
-                            return ()
+                            return None
                         logger.debug(
                             "BUG-TT-29: room %s still alive after retries -- letting yt-dlp try",
                             room_id,
