@@ -2050,7 +2050,7 @@ class TestPrepareCookieForUse:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildFfmpegCookieHeader:
+class TestBuildFfmpegCookieHeader2:
     def test_empty_cookie_file_returns_empty(self):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
         assert _build_ffmpeg_cookie_header("") == ""

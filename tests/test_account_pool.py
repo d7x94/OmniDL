@@ -297,7 +297,7 @@ class TestTikTokAccountPool:
                 second_acquired.set()
 
         t1 = threading.Thread(target=first_holder)
-        t2 = threading.Thread(
+        _t2 = threading.Thread(
             target=lambda: (entered.wait(), pool.acquire().__enter__() and second_acquired.set())
         )
 

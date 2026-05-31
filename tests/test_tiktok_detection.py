@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
-from utils.tiktok_detection.context import LiveCheckContext
+import pytest
+
+from utils.tiktok_detection.context import LiveCheckContext, LiveCheckResult
 from utils.tiktok_detection.dispatcher import LiveDetectionDispatcher
 from utils.tiktok_detection.health import HealthDaemon, StrategyHealthRegistry
+from utils.tiktok_detection.strategies.pass0_webcast_api import (
+    Pass0WebcastApi,
+    _valid_room_id,
+)
+from utils.tiktok_detection.strategies.pass3_user_api import (
+    Pass3UserApi,
+)
+from utils.tiktok_detection.strategies.pass3_user_api import (
+    _valid_room_id as _pass3_valid_room_id,
+)
 from utils.tiktok_detection.strategy import StreamConfirmedEndedError
 
 
@@ -127,29 +140,11 @@ def test_dispatcher_reraises_last_runtime_error():
     strategy.check.side_effect = RuntimeError("hard error")
     dispatcher = LiveDetectionDispatcher(strategies=[strategy], health=_make_health())
     ctx = LiveCheckContext(username="testuser")
-    import pytest
-
     with pytest.raises(RuntimeError, match="hard error"):
         dispatcher.check(ctx)
 
 
 # ── Pass0WebcastApi ────────────────────────────────────────────────────────
-
-import json
-
-import pytest
-
-from utils.tiktok_detection.context import LiveCheckResult
-from utils.tiktok_detection.strategies.pass0_webcast_api import (
-    Pass0WebcastApi,
-    _valid_room_id,
-)
-from utils.tiktok_detection.strategies.pass3_user_api import (
-    Pass3UserApi,
-)
-from utils.tiktok_detection.strategies.pass3_user_api import (
-    _valid_room_id as _pass3_valid_room_id,
-)
 
 # ── _valid_room_id (shared helper) ────────────────────────────────────────
 
