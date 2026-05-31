@@ -2150,6 +2150,11 @@ function renderFileBrowser() {
         <div class="qi-convert-track">
           <div class="qi-convert-fill${job.progress === 0 ? ' indeterminate' : ''}" id="cvfill-${job.job_id}" style="width:${job.progress}%"></div>
         </div>
+        <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
+                data-jid="${job.job_id}"
+                onclick="cancelConvert(this.dataset.jid, this)">
+          ✕ Dừng
+        </button>
       </div>`;
     } else if (job && job.status === 'COMPLETED' && !job.output_deleted) {
       cvBlock = `<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">

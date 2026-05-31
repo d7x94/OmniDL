@@ -10,6 +10,7 @@ BUG-TT-18: _extract_tiktok_live_hls_url must select the highest-quality
 BUG-TT-19: analyse_url must retry extract_info after 5s when the TikTok live
            checker returns None (bot-detection / API race), not fail immediately.
 """
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_config(tmp_path: Path) -> MagicMock:
     cfg = MagicMock()
@@ -46,6 +48,7 @@ def _make_tiktok_live_task(url: str) -> DownloadTask:
 # ---------------------------------------------------------------------------
 # BUG-TT-18 Change A: _extract_tiktok_live_hls_url selects best quality
 # ---------------------------------------------------------------------------
+
 
 class TestExtractTiktokLiveHlsQuality:
     """BUG-TT-18: highest-quality m3u8 format must be selected, not the first."""
@@ -87,25 +90,25 @@ class TestExtractTiktokLiveHlsQuality:
         formats = self._make_formats()
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": formats, "id": "7637468409928977159"}
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
-            result = engine._extract_tiktok_live_hls_url(
-                "https://vt.tiktok.com/ZS9FUF87/"
-            )
+            result = engine._extract_tiktok_live_hls_url("https://vt.tiktok.com/ZS9FUF87/")
 
         assert result is not None
         hls_url, vid_id, *_ = result
-        assert "stream_hd" in hls_url, (
-            f"Expected HD stream URL, got: {hls_url!r} (BUG-TT-18)"
-        )
-        assert "stream_ld" not in hls_url, (
-            f"Must not select _ld stream, got: {hls_url!r} (BUG-TT-18)"
-        )
+        assert "stream_hd" in hls_url, f"Expected HD stream URL, got: {hls_url!r} (BUG-TT-18)"
+        assert "stream_ld" not in hls_url, f"Must not select _ld stream, got: {hls_url!r} (BUG-TT-18)"
 
     def test_selects_by_height_then_tbr(self, tmp_path):
         """When multiple formats have the same height, pick highest tbr."""
@@ -128,9 +131,15 @@ class TestExtractTiktokLiveHlsQuality:
         ]
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": formats, "id": "abc123"}
 
@@ -139,9 +148,7 @@ class TestExtractTiktokLiveHlsQuality:
 
         assert result is not None
         hls_url, *_ = result
-        assert "high_tbr" in hls_url, (
-            f"Must prefer higher tbr at same height, got: {hls_url!r} (BUG-TT-18)"
-        )
+        assert "high_tbr" in hls_url, f"Must prefer higher tbr at same height, got: {hls_url!r} (BUG-TT-18)"
 
     def test_returns_none_when_no_m3u8_and_no_fallback(self, tmp_path):
         """Returns None when no m3u8 formats and no .m3u8 fallback URLs."""
@@ -150,9 +157,15 @@ class TestExtractTiktokLiveHlsQuality:
         engine = self._make_engine(tmp_path)
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": [{"protocol": "https", "url": "https://cdn/video.mp4"}], "id": "x"}
 
@@ -166,6 +179,7 @@ class TestExtractTiktokLiveHlsQuality:
 # BUG-TT-19: analyse_url retries extract_info after checker returns None
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyseUrlTt19Retry:
     """BUG-TT-19: when TikTok checker returns None, wait 5s and retry extract_info."""
 
@@ -175,6 +189,7 @@ class TestAnalyseUrlTt19Retry:
     def _make_download_service(self, tmp_path: Path):
         from app.event_bus import EventBus  # noqa: PLC0415
         from app.services.download_service import DownloadService  # noqa: PLC0415
+
         cfg = _make_config(tmp_path)
         bus = EventBus()
         engine = self._make_engine(tmp_path)
@@ -189,6 +204,7 @@ class TestAnalyseUrlTt19Retry:
     def _run_analyse_url(self, ds, url, on_done, on_error):
         """Run analyse_url and wait for the background thread to finish."""
         import threading
+
         done = threading.Event()
         _orig_done = on_done.side_effect
         _orig_error = on_error.side_effect
@@ -220,23 +236,24 @@ class TestAnalyseUrlTt19Retry:
 
         not_live_exc = yt_dlp.utils.DownloadError("The channel is not currently live")
 
-        with patch.object(
-                 ds._engine, "extract_info",
-                 side_effect=[not_live_exc, retry_info],
-             ) as mock_extract, \
-             patch(
-                 "utils.tiktok_live_checker._check_tiktok_live_with_room_id",
-                 return_value=None,
-             ), \
-             patch(
-                 "utils.tiktok_live_checker._resolve_short_link",
-                 return_value="https://www.tiktok.com/@user/live",
-             ), \
-             patch("app.services.download_service._resolve_cookie", return_value=""), \
-             patch("app.services.download_service._prepare_cookie_for_use",
-                   return_value=("", False)), \
-             patch("time.sleep"):
-
+        with (
+            patch.object(
+                ds._engine,
+                "extract_info",
+                side_effect=[not_live_exc, retry_info],
+            ) as mock_extract,
+            patch(
+                "utils.tiktok_live_checker._check_tiktok_live_with_room_id",
+                return_value=None,
+            ),
+            patch(
+                "utils.tiktok_live_checker._resolve_short_link",
+                return_value="https://www.tiktok.com/@user/live",
+            ),
+            patch("app.services.download_service._resolve_cookie", return_value=""),
+            patch("app.services.download_service._prepare_cookie_for_use", return_value=("", False)),
+            patch("time.sleep"),
+        ):
             self._run_analyse_url(ds, url, on_done, on_error)
 
         assert mock_extract.call_count == 2, (
@@ -245,8 +262,10 @@ class TestAnalyseUrlTt19Retry:
         on_done.assert_called_once_with(retry_info)
         on_error.assert_not_called()
 
-    def test_retry_fails_falls_through_to_on_error(self, tmp_path):
-        """When both initial and retry extract_info fail, on_error is called."""
+    def test_retry_fails_optimistic_on_done(self, tmp_path):
+        """BUG-TT-XX: when all retries fail and bot-detection blocks checker,
+        on_done is called with an optimistic MediaInfo (not on_error) so the
+        download phase can proceed with pool cookies."""
         url = "https://vt.tiktok.com/ZS9FUF87/"
         ds = self._make_download_service(tmp_path)
 
@@ -255,32 +274,37 @@ class TestAnalyseUrlTt19Retry:
 
         not_live_exc = yt_dlp.utils.DownloadError("The channel is not currently live")
 
-        with patch.object(
-                 ds._engine, "extract_info",
-                 side_effect=[not_live_exc, not_live_exc],
-             ), \
-             patch(
-                 "utils.tiktok_live_checker._check_tiktok_live_with_room_id",
-                 return_value=None,
-             ), \
-             patch(
-                 "utils.tiktok_live_checker._resolve_short_link",
-                 return_value="https://www.tiktok.com/@user/live",
-             ), \
-             patch("app.services.download_service._resolve_cookie", return_value=""), \
-             patch("app.services.download_service._prepare_cookie_for_use",
-                   return_value=("", False)), \
-             patch("time.sleep"):
-
+        with (
+            patch.object(
+                ds._engine,
+                "extract_info",
+                side_effect=[not_live_exc, not_live_exc],
+            ),
+            patch(
+                "utils.tiktok_live_checker._check_tiktok_live_with_room_id",
+                return_value=None,
+            ),
+            patch(
+                "utils.tiktok_live_checker._resolve_short_link",
+                return_value="https://www.tiktok.com/@user/live",
+            ),
+            patch("app.services.download_service._resolve_cookie", return_value=""),
+            patch("app.services.download_service._prepare_cookie_for_use", return_value=("", False)),
+            patch("time.sleep"),
+        ):
             self._run_analyse_url(ds, url, on_done, on_error)
 
-        on_done.assert_not_called()
-        on_error.assert_called_once()
+        on_error.assert_not_called()
+        on_done.assert_called_once()
+        info = on_done.call_args[0][0]
+        assert info.is_live is True
+        assert info.platform == "TikTok"
 
 
 # ---------------------------------------------------------------------------
 # BUG-TT-21: _extract_tiktok_live_hls_url respects _exclude_bases
 # ---------------------------------------------------------------------------
+
 
 class TestExtractTiktokLiveHlsExcludeBases:
     """BUG-TT-21: when a CDN path 404s, exclude it and return next-best format."""
@@ -319,9 +343,15 @@ class TestExtractTiktokLiveHlsExcludeBases:
         hd_base = "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8"
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": formats, "id": "vid123"}
 
@@ -346,9 +376,15 @@ class TestExtractTiktokLiveHlsExcludeBases:
         sd_base = "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_sd/index.m3u8"
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": formats, "id": "vid123"}
 
@@ -368,16 +404,24 @@ class TestExtractTiktokLiveHlsExcludeBases:
 
         engine = self._make_engine(tmp_path)
         formats = self._make_formats()
-        all_bases = frozenset({
-            "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8",
-            "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_sd/index.m3u8",
-            "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_ld/index.m3u8",
-        })
+        all_bases = frozenset(
+            {
+                "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_hd/index.m3u8",
+                "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_sd/index.m3u8",
+                "https://pull-hls-l1-sg01.tiktokcdn.com/stage/stream-XXX_ld/index.m3u8",
+            }
+        )
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": formats, "id": "vid123"}
 
@@ -400,9 +444,15 @@ class TestExtractTiktokLiveHlsExcludeBases:
         formats = self._make_formats()
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return {"formats": formats, "id": "vid123"}
 

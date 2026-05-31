@@ -726,7 +726,14 @@ def _fetch_hls_from_webcast_room_info(
             )
             return None
         data = _json.loads(resp.text)
-        room_data = data.get("data") or {}
+        _raw_data = data.get("data")
+        if not _raw_data or not isinstance(_raw_data, dict):
+            logger.debug(
+                "BUG-TT-25: room/info empty envelope (blocked/rate-limited) for room %s",
+                room_id,
+            )
+            return None
+        room_data = _raw_data
         # BUG-TT-ROOMINFO-NESTED FIX: TikTok sometimes nests room data under
         # a "room" key: {"data": {"room": {"status": 2, "stream_url": {...}}}}
         # instead of the flat {"data": {"status": 2, ...}} structure.
@@ -735,11 +742,18 @@ def _fetch_hls_from_webcast_room_info(
             room_data = _nested
         status = room_data.get("status")
         if status != 2:
-            logger.debug(
-                "tiktok_live_checker: room/info status=%s for room %s (not live)",
-                status,
-                room_id,
-            )
+            if status in (4, 5):
+                logger.debug(
+                    "BUG-TT-25: room/info status=%s (ended) for room %s",
+                    status,
+                    room_id,
+                )
+            else:
+                logger.debug(
+                    "tiktok_live_checker: room/info status=%s for room %s (not live)",
+                    status,
+                    room_id,
+                )
             return None
         stream_url = room_data.get("stream_url") or {}
         # Collect all CDN variants: primary first, then hls_pull_url_map entries.

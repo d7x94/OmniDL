@@ -25,6 +25,7 @@ Covers:
  20.  DownloadService — check_tiktok_profile_live method exists
  21.  ServiceFacade — check_tiktok_profile_live method exists
 """
+
 from __future__ import annotations
 
 import json
@@ -38,6 +39,7 @@ import pytest
 # UI stubs — must run before any ui.* import
 # Mirrors the pattern in test_queue_open_folder_fix.py
 # ---------------------------------------------------------------------------
+
 
 def _install_ui_stubs():
     """Stub tkinter, customtkinter and ui.themes so headless CI can import UI modules."""
@@ -57,22 +59,39 @@ def _install_ui_stubs():
         ctk = types.ModuleType("customtkinter")
 
         class _BaseWidget:
-            def __init__(self, *a, **kw): pass
-            def pack(self, **kw): pass
-            def pack_forget(self): pass
-            def grid(self, **kw): pass
-            def winfo_exists(self): return True
-            def winfo_ismapped(self): return False
-            def configure(self, **kw): pass
-            def cget(self, key): return ""
-            def after(self, ms, fn=None, *args): pass
+            def __init__(self, *a, **kw):
+                pass
 
-        ctk.CTk    = _BaseWidget  # MainWindow inherits from CTk
-        ctk.CTkFrame  = _BaseWidget
-        ctk.CTkLabel  = MagicMock
+            def pack(self, **kw):
+                pass
+
+            def pack_forget(self):
+                pass
+
+            def grid(self, **kw):
+                pass
+
+            def winfo_exists(self):
+                return True
+
+            def winfo_ismapped(self):
+                return False
+
+            def configure(self, **kw):
+                pass
+
+            def cget(self, key):
+                return ""
+
+            def after(self, ms, fn=None, *args):
+                pass
+
+        ctk.CTk = _BaseWidget  # MainWindow inherits from CTk
+        ctk.CTkFrame = _BaseWidget
+        ctk.CTkLabel = MagicMock
         ctk.CTkButton = MagicMock
-        ctk.CTkEntry  = MagicMock
-        ctk.CTkFont   = MagicMock
+        ctk.CTkEntry = MagicMock
+        ctk.CTkFont = MagicMock
         ctk.CTkScrollableFrame = _BaseWidget
         ctk.CTkToplevel = _BaseWidget
         ctk.set_appearance_mode = MagicMock()
@@ -99,37 +118,46 @@ _install_ui_stubs()
 # 1-2. is_tiktok_profile_url
 # ---------------------------------------------------------------------------
 
+
 class TestIsTiktokProfileUrl:
     def test_accepts_simple_profile(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.tiktok.com/@someuser") is True
 
     def test_accepts_profile_with_trailing_slash(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.tiktok.com/@someuser/") is True
 
     def test_accepts_profile_with_query(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.tiktok.com/@user123?lang=en") is True
 
     def test_rejects_live_url(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.tiktok.com/@user/live") is False
 
     def test_rejects_video_url(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.tiktok.com/@user/video/123456") is False
 
     def test_rejects_non_tiktok(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.instagram.com/@user") is False
 
     def test_rejects_instagram_profile(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.instagram.com/someuser/") is False
 
     def test_rejects_plain_tiktok_root(self):
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         assert is_tiktok_profile_url("https://www.tiktok.com/") is False
 
 
@@ -137,31 +165,38 @@ class TestIsTiktokProfileUrl:
 # 3-4. extract_tiktok_username
 # ---------------------------------------------------------------------------
 
+
 class TestExtractTiktokUsername:
     def test_simple_username(self):
         from utils.tiktok_live_checker import extract_tiktok_username
+
         assert extract_tiktok_username("https://www.tiktok.com/@baki_baby") == "baki_baby"
 
     def test_username_lowercased(self):
         from utils.tiktok_live_checker import extract_tiktok_username
+
         assert extract_tiktok_username("https://www.tiktok.com/@CoolUser") == "cooluser"
 
     def test_returns_none_for_live_url(self):
         from utils.tiktok_live_checker import extract_tiktok_username
+
         assert extract_tiktok_username("https://www.tiktok.com/@user/live") is None
 
     def test_returns_none_for_non_tiktok(self):
         from utils.tiktok_live_checker import extract_tiktok_username
+
         assert extract_tiktok_username("https://www.instagram.com/user/") is None
 
     def test_username_with_dots(self):
         from utils.tiktok_live_checker import extract_tiktok_username
+
         assert extract_tiktok_username("https://www.tiktok.com/@user.name") == "user.name"
 
 
 # ---------------------------------------------------------------------------
 # 5. __NEXT_DATA__ path — status=2 → live
 # ---------------------------------------------------------------------------
+
 
 def _make_response(status: int = 200, text: str = "") -> MagicMock:
     resp = MagicMock()
@@ -196,6 +231,10 @@ def _patch_session(resp: MagicMock):
                 "utils.tiktok_live_checker._verify_room_alive",
                 return_value=True,
             ),
+            patch(
+                "utils.tiktok_live_checker._ROOM_ID_CACHE",
+                {},
+            ),
         ):
             yield session
 
@@ -217,6 +256,7 @@ def _next_data_page(user_data: dict) -> str:
     _valid_room_id() accepts it.  status is preserved as-is.
     """
     import copy
+
     data = copy.deepcopy(user_data)
     if "roomId" in data and data["roomId"]:
         data["roomId"] = _NUMERIC_ROOM_ID
@@ -235,6 +275,7 @@ def _next_data_page(user_data: dict) -> str:
 def _universal_data_page(user_data: dict) -> str:
     """Wrap user_data in a minimal __UNIVERSAL_DATA_FOR_REHYDRATION__ blob."""
     import copy
+
     data = copy.deepcopy(user_data)
     if "roomId" in data and data["roomId"]:
         data["roomId"] = _NUMERIC_ROOM_ID
@@ -256,17 +297,20 @@ class TestNextDataLiveDetection:
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("testuser")
         assert result == "https://www.tiktok.com/@testuser/live"
 
-    def test_status_4_returns_none(self):
-        """status=4 means stream ended."""
+    def test_status_4_with_room_id_returns_live(self):
+        """BUG-TT-25: TikTok returns status=4 for unsigned requests even when
+        stream is active. roomId present → return live URL optimistically."""
         page = _next_data_page({"status": 4, "roomId": _NUMERIC_ROOM_ID})
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("testuser")
-        assert result is None
+        assert result == "https://www.tiktok.com/@testuser/live"
 
     def test_room_id_present_status_not_ended_returns_live(self):
         """roomId present and status is not 4/5 → live."""
@@ -274,6 +318,7 @@ class TestNextDataLiveDetection:
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("testuser")
         assert result is not None
 
@@ -282,6 +327,7 @@ class TestNextDataLiveDetection:
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("testuser")
         assert result is None
 
@@ -290,27 +336,33 @@ class TestNextDataLiveDetection:
 # 6. __UNIVERSAL_DATA__ path
 # ---------------------------------------------------------------------------
 
+
 class TestUniversalDataLiveDetection:
     def test_universal_data_status_2(self):
         page = _universal_data_page({"status": 2, "roomId": _NUMERIC_ROOM_ID})
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("tiktokuser")
         assert result == "https://www.tiktok.com/@tiktokuser/live"
 
-    def test_universal_data_status_4_returns_none(self):
+    def test_universal_data_status_4_with_room_id_returns_live(self):
+        """BUG-TT-25: status=4 with roomId → live URL (TikTok serves status=4
+        for unsigned requests even when stream is active)."""
         page = _universal_data_page({"status": 4, "roomId": _NUMERIC_ROOM_ID})
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("tiktokuser")
-        assert result is None
+        assert result == "https://www.tiktok.com/@tiktokuser/live"
 
 
 # ---------------------------------------------------------------------------
 # 7-9. Returns None cases
 # ---------------------------------------------------------------------------
+
 
 class TestReturnsNone:
     def test_no_live_keywords_in_page(self):
@@ -318,6 +370,7 @@ class TestReturnsNone:
         resp = _make_response(200, "<html><body>normal profile</body></html>")
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("regularuser")
         assert result is None
 
@@ -326,6 +379,7 @@ class TestReturnsNone:
         resp = _make_response(200, "<div>liveRoomInfo sometext roomId</div>")
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("user2")
         assert result is None
 
@@ -335,6 +389,7 @@ class TestReturnsNone:
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("user3")
         assert result is None
 
@@ -343,11 +398,13 @@ class TestReturnsNone:
 # 10-11. HTTP error codes
 # ---------------------------------------------------------------------------
 
+
 class TestHttpErrors:
     def test_404_raises_runtime_error(self):
         resp = _make_response(404, "")
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             with pytest.raises(RuntimeError, match="not found"):
                 check_tiktok_live("ghostuser")
 
@@ -355,6 +412,7 @@ class TestHttpErrors:
         resp = _make_response(429, "")
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             with pytest.raises(RuntimeError, match="blocked"):
                 check_tiktok_live("someuser")
 
@@ -362,6 +420,7 @@ class TestHttpErrors:
 # ---------------------------------------------------------------------------
 # 12-13. Network errors
 # ---------------------------------------------------------------------------
+
 
 class TestNetworkErrors:
     def test_connection_error_raises_runtime_error(self):
@@ -375,6 +434,7 @@ class TestNetworkErrors:
             return_value=session,
         ):
             from utils.tiktok_live_checker import check_tiktok_live
+
             with pytest.raises(RuntimeError, match="kết nối"):
                 check_tiktok_live("user")
 
@@ -387,7 +447,8 @@ class TestNetworkErrors:
             return_value=session,
         ):
             from utils.tiktok_live_checker import check_tiktok_live
-            with pytest.raises(RuntimeError, match="hết thời gian"):
+
+            with pytest.raises(RuntimeError, match="timeout|hết thời gian"):
                 check_tiktok_live("user")
 
     def test_request_exception_raises_runtime_error(self):
@@ -399,6 +460,7 @@ class TestNetworkErrors:
             return_value=session,
         ):
             from utils.tiktok_live_checker import check_tiktok_live
+
             with pytest.raises(RuntimeError, match="HTTP"):
                 check_tiktok_live("user")
 
@@ -407,12 +469,14 @@ class TestNetworkErrors:
 # 14. Live URL format
 # ---------------------------------------------------------------------------
 
+
 class TestLiveUrlFormat:
     def test_live_url_contains_username(self):
         page = _next_data_page({"status": 2, "roomId": _NUMERIC_ROOM_ID})
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("myuser")
         assert result == "https://www.tiktok.com/@myuser/live"
 
@@ -422,6 +486,7 @@ class TestLiveUrlFormat:
         resp = _make_response(200, page)
         with _patch_session(resp):
             from utils.tiktok_live_checker import check_tiktok_live
+
             result = check_tiktok_live("myuser")
         assert "@myuser/live" in result
 
@@ -429,6 +494,7 @@ class TestLiveUrlFormat:
 # ---------------------------------------------------------------------------
 # 15. Proxy forwarding
 # ---------------------------------------------------------------------------
+
 
 class TestProxyForwarding:
     def test_proxy_passed_to_requests(self):
@@ -439,6 +505,7 @@ class TestProxyForwarding:
             return_value=session,
         ):
             from utils.tiktok_live_checker import check_tiktok_live
+
             check_tiktok_live("user", proxy="http://127.0.0.1:8080")
         _, kwargs = session.get.call_args
         proxies = kwargs.get("proxies") or {}
@@ -453,6 +520,7 @@ class TestProxyForwarding:
             return_value=session,
         ):
             from utils.tiktok_live_checker import check_tiktok_live
+
             check_tiktok_live("user", proxy="")
         _, kwargs = session.get.call_args
         proxies = kwargs.get("proxies")
@@ -463,22 +531,26 @@ class TestProxyForwarding:
 # 16-17. _extract_live_status path3 fallback
 # ---------------------------------------------------------------------------
 
+
 class TestExtractLiveStatusPath3:
     def test_path3_fires_on_status2_with_room_id(self):
         """Path3 fallback: raw string contains 'status': 2 AND roomId."""
         from utils.tiktok_live_checker import _extract_live_status
+
         data = {"other": {"nested": {"status": 2, "roomId": "1234567890"}}}
         assert _extract_live_status(data, "user") is True
 
     def test_path3_does_not_fire_without_room_id(self):
         """Path3 should NOT return True if roomId is absent (avoid false positives)."""
         from utils.tiktok_live_checker import _extract_live_status
+
         data = {"other": {"nested": {"status": 2}}}
         assert _extract_live_status(data, "user") is False
 
     def test_path3_does_not_fire_on_status_4(self):
         """status=4 without path1/2 data — path3 scans for status=2 only."""
         from utils.tiktok_live_checker import _extract_live_status
+
         data = {"other": {"nested": {"status": 4, "roomId": "abc"}}}
         assert _extract_live_status(data, "user") is False
 
@@ -487,16 +559,19 @@ class TestExtractLiveStatusPath3:
 # 18. _MonitorItem.profile_platform field
 # ---------------------------------------------------------------------------
 
+
 class TestMonitorItemProfilePlatform:
     def test_profile_platform_field_exists_with_empty_default(self):
         """_MonitorItem must have profile_platform: str = ''."""
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         item = _MonitorItem(url="https://www.tiktok.com/@user")
         assert hasattr(item, "profile_platform")
         assert item.profile_platform == ""
 
     def test_profile_platform_can_be_set_to_tiktok(self):
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         item = _MonitorItem(
             url="https://www.tiktok.com/@user",
             profile_platform="tiktok",
@@ -507,6 +582,7 @@ class TestMonitorItemProfilePlatform:
 
     def test_profile_platform_can_be_set_to_instagram(self):
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         item = _MonitorItem(
             url="https://www.instagram.com/user/",
             profile_platform="instagram",
@@ -520,13 +596,16 @@ class TestMonitorItemProfilePlatform:
 # 19. LiveMonitorTab imports
 # ---------------------------------------------------------------------------
 
+
 class TestLiveMonitorTabImports:
     def test_imports_is_tiktok_profile_url(self):
         import ui.tabs.live_monitor_tab as mod
+
         assert hasattr(mod, "is_tiktok_profile_url")
 
     def test_imports_extract_tiktok_username(self):
         import ui.tabs.live_monitor_tab as mod
+
         assert hasattr(mod, "extract_tiktok_username")
 
 
@@ -534,9 +613,11 @@ class TestLiveMonitorTabImports:
 # 20. DownloadService.check_tiktok_profile_live
 # ---------------------------------------------------------------------------
 
+
 class TestDownloadServiceTiktok:
     def test_method_exists(self):
         from app.services.download_service import DownloadService
+
         assert callable(getattr(DownloadService, "check_tiktok_profile_live", None))
 
     def test_calls_on_error_for_invalid_url(self):
@@ -584,18 +665,21 @@ class TestDownloadServiceTiktok:
 # 21. ServiceFacade.check_tiktok_profile_live
 # ---------------------------------------------------------------------------
 
+
 class TestServiceFacadeTiktok:
     def test_method_exists_on_facade(self):
         from ui.main_window import ServiceFacade
+
         assert callable(getattr(ServiceFacade, "check_tiktok_profile_live", None))
 
     def test_facade_delegates_to_service(self):
         from ui.main_window import ServiceFacade
+
         mock_svc = MagicMock()
         mock_cfg = MagicMock()
         facade = ServiceFacade(mock_svc, mock_cfg)
 
-        on_done  = MagicMock()
+        on_done = MagicMock()
         on_error = MagicMock()
         facade.check_tiktok_profile_live(
             url="https://www.tiktok.com/@user",
@@ -614,6 +698,7 @@ class TestServiceFacadeTiktok:
 # 22-26. Short-link resolution (BUG-CH FIX)
 # ---------------------------------------------------------------------------
 
+
 class TestShortLinkResolution:
     """vt.tiktok.com and vm.tiktok.com short links must be resolved before
     the profile regex is applied — otherwise Live Monitor ignores them."""
@@ -626,6 +711,7 @@ class TestShortLinkResolution:
     def test_vt_short_link_recognised_as_profile(self):
         """vt.tiktok.com link that resolves to /@username -> True."""
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         resolved = "https://www.tiktok.com/@q_kiet2212"
         with patch("requests.head", return_value=self._head_resp(resolved)):
             assert is_tiktok_profile_url("https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/") is True
@@ -633,6 +719,7 @@ class TestShortLinkResolution:
     def test_vm_short_link_recognised_as_profile(self):
         """vm.tiktok.com link that resolves to /@username -> True."""
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         resolved = "https://www.tiktok.com/@someuser"
         with patch("requests.head", return_value=self._head_resp(resolved)):
             assert is_tiktok_profile_url("https://vm.tiktok.com/ABCDEF/") is True
@@ -640,6 +727,7 @@ class TestShortLinkResolution:
     def test_vt_short_link_extract_username(self):
         """extract_tiktok_username resolves short link and returns username."""
         from utils.tiktok_live_checker import extract_tiktok_username
+
         resolved = "https://www.tiktok.com/@q_kiet2212"
         with patch("requests.head", return_value=self._head_resp(resolved)):
             assert extract_tiktok_username("https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/") == "q_kiet2212"
@@ -647,6 +735,7 @@ class TestShortLinkResolution:
     def test_short_link_resolving_to_video_returns_false(self):
         """Short link that resolves to a video URL -> False (not a profile)."""
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         resolved = "https://www.tiktok.com/@user/video/123456789"
         with patch("requests.head", return_value=self._head_resp(resolved)):
             assert is_tiktok_profile_url("https://vt.tiktok.com/ZZZZ/") is False
@@ -656,6 +745,7 @@ class TestShortLinkResolution:
         import requests as req
 
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         with patch("requests.head", side_effect=req.exceptions.ConnectionError("fail")):
             # Falls back to original URL which doesn't match _PROFILE_RE -> False
             assert is_tiktok_profile_url("https://vt.tiktok.com/ZS9N8sGVN33Go-yNEKU/") is False
@@ -663,6 +753,7 @@ class TestShortLinkResolution:
     def test_canonical_url_does_not_call_head(self):
         """Non-short-link URLs must NOT trigger a HEAD request."""
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         with patch("requests.head") as mock_head:
             result = is_tiktok_profile_url("https://www.tiktok.com/@someuser")
         mock_head.assert_not_called()
@@ -671,6 +762,7 @@ class TestShortLinkResolution:
     def test_extract_username_canonical_no_head(self):
         """extract_tiktok_username on canonical URL must NOT trigger HEAD."""
         from utils.tiktok_live_checker import extract_tiktok_username
+
         with patch("requests.head") as mock_head:
             result = extract_tiktok_username("https://www.tiktok.com/@q_kiet2212")
         mock_head.assert_not_called()
@@ -679,6 +771,7 @@ class TestShortLinkResolution:
     def test_proxy_forwarded_to_head_request(self):
         """proxy param is forwarded to requests.head during short-link resolve."""
         from utils.tiktok_live_checker import is_tiktok_profile_url
+
         resolved = "https://www.tiktok.com/@user"
         resp = self._head_resp(resolved)
         with patch("requests.head", return_value=resp) as mock_head:
@@ -690,6 +783,7 @@ class TestShortLinkResolution:
 # ---------------------------------------------------------------------------
 # Dispatcher: first-success wins
 # ---------------------------------------------------------------------------
+
 
 class TestDispatcherFirstSuccess:
     def test_dispatcher_returns_first_success(self):
@@ -734,6 +828,7 @@ class TestDispatcherFirstSuccess:
 # ---------------------------------------------------------------------------
 # Health daemon: disables broken strategy
 # ---------------------------------------------------------------------------
+
 
 class TestHealthDaemonDisablesBrokenStrategy:
     def test_health_daemon_disables_broken_strategy(self):

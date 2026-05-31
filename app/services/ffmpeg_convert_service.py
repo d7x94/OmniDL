@@ -1196,13 +1196,8 @@ class FfmpegConvertService:
                 "-probesize",
                 "200M",
                 "-fflags",
-                "+genpts+discardcorrupt",
+                "+genpts",
             ]
-            # Regenerate timestamps from frame counter: N/FRAME_RATE/TB assigns
-            # PTS = 0, 1/fps, 2/fps, ... regardless of source DTS/PTS discontinuities.
-            # Fixes TikTok live TS where DTS wrap-around causes output duration to
-            # inflate from ~4 min to ~49 min when -fps_mode cfr fills the fake gaps.
-            vf_parts.insert(0, "setpts=N/FRAME_RATE/TB")
 
         if seek > 0:
             cmd += ["-ss", f"{seek:.3f}"]
@@ -1246,12 +1241,6 @@ class FfmpegConvertService:
                     cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
                 else:
                     cmd += FfmpegConvertService._build_gpu_flags(hw_spec, encode_settings)
-
-        # FLV/TS + GPU: -fps_mode cfr gives GPU encoders monotonic PTS so the
-        # output MP4 ctts box is valid for iPhone's VideoToolbox decoder.
-        # libx264 handles variable PTS natively and does not need this flag.
-        if is_flv_ts and encode_settings and encode_settings.encoder_key != "cpu":
-            cmd += ["-fps_mode", "cfr"]
 
         # ── Common output flags ───────────────────────────────────────────
         pix_fmt = "yuv420p"

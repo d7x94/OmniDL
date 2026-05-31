@@ -334,6 +334,7 @@ class TestNotLiveRetryCap:
 
         task = MagicMock()
         task.id = "live-task"
+        task.url = "https://www.tiktok.com/@user/live"
         task.is_cancellation_requested = False
         task.media_info = mi
         task._lock = threading.Lock()

@@ -10,6 +10,7 @@ Fills coverage gaps left by test_yt_dlp_engine.py:
 - cookie_file: boundary check (S3 fix) — path inside/outside home dir
 - _detect_platform: all known platforms + unknown
 """
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,7 @@ from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _detect_platfor
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_config(
     extra_args="",
@@ -56,6 +58,7 @@ def make_task(url="https://youtube.com/watch?v=test") -> DownloadTask:
 
 def fake_ydl_class(info_dict=None, raise_exc=None):
     """Return a fake YoutubeDL class that returns *info_dict* or raises *raise_exc*."""
+
     class FakeYDL:
         def __init__(self, opts):
             self._opts = opts
@@ -81,6 +84,7 @@ def fake_ydl_class(info_dict=None, raise_exc=None):
 # ---------------------------------------------------------------------------
 # _detect_platform
 # ---------------------------------------------------------------------------
+
 
 class TestDetectPlatform:
     def test_youtube(self):
@@ -122,6 +126,7 @@ class TestDetectPlatform:
 # extract_info — success path
 # ---------------------------------------------------------------------------
 
+
 class TestExtractInfoSuccess:
     def test_returns_media_info_object(self):
         info_dict = {
@@ -136,6 +141,7 @@ class TestExtractInfoSuccess:
         cfg = make_config()
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(info_dict)):
             result = engine.extract_info("https://youtube.com/watch?v=abc")
         assert result.title == "My Video"
@@ -162,6 +168,7 @@ class TestExtractInfoSuccess:
         cfg = make_config()
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(playlist_dict)):
             result = engine.extract_info("https://youtube.com/playlist?list=abc")
         assert result.title == "First Video"
@@ -171,6 +178,7 @@ class TestExtractInfoSuccess:
         cfg = make_config()
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(playlist_dict)):
             with pytest.raises(RuntimeError, match=r"empty|không có video|no video"):
                 engine.extract_info("https://youtube.com/playlist?list=abc")
@@ -179,6 +187,7 @@ class TestExtractInfoSuccess:
         cfg = make_config()
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(None)):
             with pytest.raises(RuntimeError):
                 engine.extract_info("https://youtube.com/watch?v=abc")
@@ -188,11 +197,13 @@ class TestExtractInfoSuccess:
 # extract_info — error messages
 # ---------------------------------------------------------------------------
 
+
 class TestExtractInfoErrors:
     def _extract_with_error(self, error_msg: str) -> str:
         cfg = make_config()
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         exc = yt_dlp.utils.DownloadError(error_msg)
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(raise_exc=exc)):
             with pytest.raises(RuntimeError) as exc_info:
@@ -212,6 +223,7 @@ class TestExtractInfoErrors:
         cfg = make_config(use_cookies=False, cookie_file="")
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         mock_ydl = MagicMock()
         with patch.object(mod.yt_dlp, "YoutubeDL", mock_ydl):
             with pytest.raises(RuntimeError, match="Facebook Stories"):
@@ -222,6 +234,7 @@ class TestExtractInfoErrors:
         cfg = make_config(use_cookies=False, cookie_file="")
         engine = YtDlpEngine(cfg)
         import infrastructure.downloader.yt_dlp_engine as mod
+
         mock_ydl = MagicMock()
         with patch.object(mod.yt_dlp, "YoutubeDL", mock_ydl):
             with pytest.raises(RuntimeError, match="[Cc]ookie"):
@@ -232,6 +245,7 @@ class TestExtractInfoErrors:
         """Instagram Stories pass through to yt-dlp when a cookie file is configured."""
         import os
         import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as f:
             f.write("# Netscape HTTP Cookie File\n")
             cookie_path = f.name
@@ -241,15 +255,27 @@ class TestExtractInfoErrors:
             import infrastructure.downloader.yt_dlp_engine as mod
 
             info_dict = {
-                "title": "Story", "uploader": "user", "duration": 15,
-                "thumbnail": "", "formats": [], "is_live": False, "was_live": False,
+                "title": "Story",
+                "uploader": "user",
+                "duration": 15,
+                "thumbnail": "",
+                "formats": [],
+                "is_live": False,
+                "was_live": False,
             }
 
             class FakeYDL:
-                def __init__(self, opts): pass
-                def __enter__(self): return self
-                def __exit__(self, *a): pass
-                def extract_info(self, url, download=False): return info_dict
+                def __init__(self, opts):
+                    pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    pass
+
+                def extract_info(self, url, download=False):
+                    return info_dict
 
             with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
                 # Should NOT raise — cookie file present → allowed through
@@ -266,15 +292,27 @@ class TestExtractInfoErrors:
         import infrastructure.downloader.yt_dlp_engine as mod
 
         info_dict = {
-            "title": "Story", "uploader": "user", "duration": 15,
-            "thumbnail": "", "formats": [], "is_live": False, "was_live": False,
+            "title": "Story",
+            "uploader": "user",
+            "duration": 15,
+            "thumbnail": "",
+            "formats": [],
+            "is_live": False,
+            "was_live": False,
         }
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def extract_info(self, url, download=False): return info_dict
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def extract_info(self, url, download=False):
+                return info_dict
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             result = engine.extract_info("https://www.instagram.com/stories/user/123")
@@ -285,6 +323,7 @@ class TestExtractInfoErrors:
 # Download opts — D2 fix: exponential backoff
 # ---------------------------------------------------------------------------
 
+
 class TestBackoffOpts:
     def _capture_opts(self, task, cfg):
         captured = {}
@@ -292,11 +331,18 @@ class TestBackoffOpts:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def download(self, urls): pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def download(self, urls):
+                pass
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         engine = YtDlpEngine(cfg)
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
@@ -324,22 +370,34 @@ class TestBackoffOpts:
 # Cookie file boundary check (S3 fix)
 # ---------------------------------------------------------------------------
 
+
 class TestCookieFileBoundary:
     def _run_extract(self, cfg, captured_opts):
         info_dict = {
-            "title": "T", "uploader": "U", "duration": 1,
-            "thumbnail": "", "formats": [], "is_live": False, "was_live": False,
+            "title": "T",
+            "uploader": "U",
+            "duration": 1,
+            "thumbnail": "",
+            "formats": [],
+            "is_live": False,
+            "was_live": False,
         }
 
         class FakeYDL:
             def __init__(self, opts):
                 captured_opts.update(opts)
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, url, download=False):
                 return info_dict
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         engine = YtDlpEngine(cfg)
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.extract_info("https://youtube.com/watch?v=abc")
@@ -349,6 +407,7 @@ class TestCookieFileBoundary:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps({}))
         cfg = ConfigManager(config_path)
@@ -364,8 +423,7 @@ class TestCookieFileBoundary:
         config_dir.mkdir(parents=True)
         cookie.write_text("# Netscape HTTP Cookie File\n")
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        cfg = self._make_real_config(config_dir / "config.json",
-                                     cookie_file=str(cookie))
+        cfg = self._make_real_config(config_dir / "config.json", cookie_file=str(cookie))
         opts = {}
         self._run_extract(cfg, opts)
         assert opts.get("cookiefile") == str(cookie.resolve())
@@ -376,8 +434,7 @@ class TestCookieFileBoundary:
         outside = tmp_path / "outside_cookies.txt"
         outside.write_text("# cookies\n")
         monkeypatch.setattr(Path, "home", lambda: config_dir)
-        cfg = self._make_real_config(config_dir / "config.json",
-                                     cookie_file=str(outside))
+        cfg = self._make_real_config(config_dir / "config.json", cookie_file=str(outside))
         opts = {}
         self._run_extract(cfg, opts)
         # Should NOT be passed to yt-dlp
@@ -386,8 +443,9 @@ class TestCookieFileBoundary:
     def test_nonexistent_cookie_file_is_ignored(self, tmp_path, monkeypatch):
         config_dir = tmp_path / "config_dir"
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        cfg = self._make_real_config(config_dir / "config.json",
-                                     cookie_file=str(tmp_path / "nonexistent.txt"))
+        cfg = self._make_real_config(
+            config_dir / "config.json", cookie_file=str(tmp_path / "nonexistent.txt")
+        )
         opts = {}
         self._run_extract(cfg, opts)
         assert "cookiefile" not in opts
@@ -396,6 +454,7 @@ class TestCookieFileBoundary:
 # ---------------------------------------------------------------------------
 # Progress hook
 # ---------------------------------------------------------------------------
+
 
 class TestProgressHook:
     def _make_hook(self, task=None):
@@ -408,47 +467,55 @@ class TestProgressHook:
 
     def test_downloading_status_updates_progress(self):
         hook, task = self._make_hook()
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 500,
-            "total_bytes": 1000,
-            "speed": None,
-            "eta": None,
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 500,
+                "total_bytes": 1000,
+                "speed": None,
+                "eta": None,
+            }
+        )
         assert task.status == DownloadStatus.DOWNLOADING
         assert task.progress == pytest.approx(50.0)
 
     def test_downloading_caps_progress_at_99(self):
         hook, task = self._make_hook()
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 1000,
-            "total_bytes": 1000,
-            "speed": None,
-            "eta": None,
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 1000,
+                "total_bytes": 1000,
+                "speed": None,
+                "eta": None,
+            }
+        )
         assert task.progress <= 99.0
 
     def test_downloading_sets_speed(self):
         hook, task = self._make_hook()
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 100,
-            "total_bytes": 1000,
-            "speed": 1024 * 512,  # 512 KiB/s
-            "eta": None,
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 100,
+                "total_bytes": 1000,
+                "speed": 1024 * 512,  # 512 KiB/s
+                "eta": None,
+            }
+        )
         assert "KiB/s" in task.speed or "MiB/s" in task.speed
 
     def test_downloading_sets_eta(self):
         hook, task = self._make_hook()
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 100,
-            "total_bytes": 1000,
-            "speed": None,
-            "eta": 90,  # 1m30s
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 100,
+                "total_bytes": 1000,
+                "speed": None,
+                "eta": 90,  # 1m30s
+            }
+        )
         assert task.eta == "01:30"
 
     def test_finished_sets_processing_status(self):
@@ -483,32 +550,37 @@ class TestProgressHook:
         engine = YtDlpEngine(cfg)
         task = make_task()
         hook = engine._make_progress_hook(task, callback=lambda t: calls.append(t))
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 100,
-            "total_bytes": 1000,
-            "speed": None,
-            "eta": None,
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 100,
+                "total_bytes": 1000,
+                "speed": None,
+                "eta": None,
+            }
+        )
         assert calls == [task]
 
     def test_no_total_bytes_skips_progress_update(self):
         hook, task = self._make_hook()
         task.progress = 0.0
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 100,
-            "total_bytes": 0,
-            "total_bytes_estimate": 0,
-            "speed": None,
-            "eta": None,
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 100,
+                "total_bytes": 0,
+                "total_bytes_estimate": 0,
+                "speed": None,
+                "eta": None,
+            }
+        )
         assert task.progress == 0.0
 
 
 # ---------------------------------------------------------------------------
 # Final filename resolution after FFmpeg merge
 # ---------------------------------------------------------------------------
+
 
 class TestFinalFilenameResolution:
     """After download, task.filename must point to the real merged file,
@@ -524,15 +596,22 @@ class TestFinalFilenameResolution:
         merged_file = tmp_path / f"channel - title{create_file_ext}"
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def download(self, urls):
                 # Simulate FFmpeg creating the final merged file.
                 # Must be > 50,000 bytes to pass the engine's size-scan threshold.
                 merged_file.write_bytes(b"fake merged video content" * 3000)
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
 
@@ -541,9 +620,7 @@ class TestFinalFilenameResolution:
     def test_filename_resolved_to_merged_mp4(self, tmp_path):
         """task.filename should point to the .mp4 file after FFmpeg merge."""
         task, merged = self._run_download(tmp_path, ".mp4")
-        assert task.filename == str(merged), (
-            f"Expected {merged}, got {task.filename}"
-        )
+        assert task.filename == str(merged), f"Expected {merged}, got {task.filename}"
 
     def test_filename_resolved_to_merged_mkv(self, tmp_path):
         """task.filename should point to .mkv when that is the merged output."""
@@ -562,23 +639,29 @@ class TestFinalFilenameResolution:
         task = make_task()
         task.output_dir = str(tmp_path)
 
-        real_file   = tmp_path / "video.mp4"
-        part_file   = tmp_path / "video.mp4.part"
+        real_file = tmp_path / "video.mp4"
+        part_file = tmp_path / "video.mp4.part"
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def download(self, urls):
                 real_file.write_bytes(b"real" * 15000)  # >50KB to pass size-scan
                 part_file.write_bytes(b"partial")
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
 
-        assert ".part" not in task.filename, \
-            "task.filename must not point to a .part file"
+        assert ".part" not in task.filename, "task.filename must not point to a .part file"
         assert task.filename == str(real_file)
 
     def test_empty_output_dir_does_not_crash(self, tmp_path):
@@ -589,13 +672,20 @@ class TestFinalFilenameResolution:
         task.output_dir = str(tmp_path)
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def download(self, urls):
                 pass  # Creates no file at all
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)  # Must not raise
 
@@ -633,31 +723,37 @@ class TestOutputDirAlwaysAbsolute:
         exe_dir = tmp_path / "exe_dir"
         exe_dir.mkdir()
         try:
-            os.chdir(exe_dir)   # simulate PyInstaller CWD = EXE dir
+            os.chdir(exe_dir)  # simulate PyInstaller CWD = EXE dir
 
-            task.output_dir = str(tmp_path)   # absolute — use parent tmp_path
+            task.output_dir = str(tmp_path)  # absolute — use parent tmp_path
             # Pretend only a relative path is available (edge-case portable install)
-            task.output_dir = "downloads"     # relative to CWD = exe_dir
+            task.output_dir = "downloads"  # relative to CWD = exe_dir
 
             captured_opts: list[dict] = []
 
             class CapturingYDL:
                 def __init__(self, opts):
                     captured_opts.append(opts)
-                def __enter__(self): return self
-                def __exit__(self, *a): pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    pass
+
                 def download(self, urls):
                     # Create a dummy file so size-scan doesn't fail
-                    dl_dir = (exe_dir / "downloads")
+                    dl_dir = exe_dir / "downloads"
                     dl_dir.mkdir(exist_ok=True)
                     (dl_dir / "video.mp4").write_bytes(b"x" * 60_000)
 
             import infrastructure.downloader.yt_dlp_engine as mod
+
             with patch.object(mod.yt_dlp, "YoutubeDL", CapturingYDL):
                 try:
                     engine.download(task)
                 except Exception:
-                    pass   # we only care about opts here
+                    pass  # we only care about opts here
 
             assert captured_opts, "YoutubeDL was not instantiated"
             outtmpl = captured_opts[0]["outtmpl"]
@@ -677,24 +773,32 @@ class TestOutputDirAlwaysAbsolute:
         cfg = make_config(download_dir=tmp_path)
         engine = YtDlpEngine(cfg)
         task = make_task()
-        task.output_dir = str(tmp_path)   # absolute
+        task.output_dir = str(tmp_path)  # absolute
 
         final_file = tmp_path / "video.mp4"
 
         class FakeYDL:
-            def __init__(self, opts): self.opts = opts
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def download(self, urls):
                 # Simulate engine's postprocessor hook firing with the final path
                 final_file.write_bytes(b"x" * 60_000)
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
 
         assert task.filename, "task.filename must not be empty after download"
         import os
+
         assert os.path.isabs(task.filename), (
             f"task.filename must be absolute after download, got: {task.filename!r}"
         )
@@ -703,6 +807,7 @@ class TestOutputDirAlwaysAbsolute:
 # ---------------------------------------------------------------------------
 # Instagram Live — URL detection and progress hook behaviour (FIX-1,2,3,4)
 # ---------------------------------------------------------------------------
+
 
 class TestInstagramLive:
     """Regression tests for Instagram Live fixes.
@@ -719,12 +824,15 @@ class TestInstagramLive:
 
     # ── URL pattern helpers ────────────────────────────────────────────────
 
-    @pytest.mark.parametrize("url", [
-        "https://www.instagram.com/someuser/live/",
-        "https://www.instagram.com/someuser/live",
-        "https://www.instagram.com/live/ABC123xyz/",
-        "https://www.instagram.com/live/ABC123xyz",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.instagram.com/someuser/live/",
+            "https://www.instagram.com/someuser/live",
+            "https://www.instagram.com/live/ABC123xyz/",
+            "https://www.instagram.com/live/ABC123xyz",
+        ],
+    )
     def test_instagram_live_urls_blocked_without_cookies(self, url):
         """All Instagram Live URL formats must be rejected when no cookies set."""
         cfg = make_config(cookie_file="", use_cookies=False)
@@ -733,10 +841,13 @@ class TestInstagramLive:
         with pytest.raises(RuntimeError, match="cookie"):
             engine.extract_info(url)
 
-    @pytest.mark.parametrize("url", [
-        "https://www.instagram.com/someuser/live/",
-        "https://www.instagram.com/live/ABC123xyz/",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.instagram.com/someuser/live/",
+            "https://www.instagram.com/live/ABC123xyz/",
+        ],
+    )
     def test_instagram_live_allowed_with_cookie_file(self, url, tmp_path, monkeypatch):
         """Instagram Live URLs pass the cookie gate when a cookie file is configured."""
         cookie_file = tmp_path / "cookies.txt"
@@ -754,7 +865,7 @@ class TestInstagramLive:
             "duration": 0,
             "thumbnail": "",
             "formats": [],
-            "is_live": False,   # ← yt-dlp did NOT set is_live (race condition)
+            "is_live": False,  # ← yt-dlp did NOT set is_live (race condition)
             "was_live": False,
             "id": "abc123",
         }
@@ -762,10 +873,17 @@ class TestInstagramLive:
         import infrastructure.downloader.yt_dlp_engine as mod
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def extract_info(self, u, download): return fake_info
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def extract_info(self, u, download):
+                return fake_info
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             info = engine.extract_info(url)
@@ -792,7 +910,7 @@ class TestInstagramLive:
             "duration": 0,
             "thumbnail": "",
             "formats": [],
-            "is_live": True,   # yt-dlp set it correctly
+            "is_live": True,  # yt-dlp set it correctly
             "was_live": False,
             "id": "x1",
         }
@@ -800,10 +918,17 @@ class TestInstagramLive:
         import infrastructure.downloader.yt_dlp_engine as mod
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-            def extract_info(self, u, download): return fake_info
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def extract_info(self, u, download):
+                return fake_info
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             info = engine.extract_info(url)
@@ -826,10 +951,18 @@ class TestInstagramLive:
 
         import infrastructure.downloader.yt_dlp_engine as mod
 
+        mod._IG_RL.reset()
+
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, u, download):
                 call_count["n"] += 1
                 raise yt_dlp.utils.DownloadError("checkpoint_required")
@@ -861,9 +994,15 @@ class TestInstagramLive:
         import infrastructure.downloader.yt_dlp_engine as mod
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, u, download):
                 raise yt_dlp.utils.DownloadError("checkpoint_required")
 
@@ -888,19 +1027,19 @@ class TestInstagramLive:
         task = make_task("https://www.instagram.com/someuser/live/")
 
         hook = engine._make_progress_hook(task, callback=None, is_live=True)
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 5 * 1024 * 1024,   # 5 MiB recorded
-            "total_bytes": 0,
-            "total_bytes_estimate": 0,
-            "speed": None,
-            "eta": None,
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 5 * 1024 * 1024,  # 5 MiB recorded
+                "total_bytes": 0,
+                "total_bytes_estimate": 0,
+                "speed": None,
+                "eta": None,
+            }
+        )
 
         assert task.eta != "", "eta must not be empty for live with no total_bytes (FIX-1)"
-        assert "ghi" in task.eta, (
-            f"eta must mention 'đã ghi' for live recording, got: {task.eta!r} (FIX-1)"
-        )
+        assert "ghi" in task.eta, f"eta must mention 'đã ghi' for live recording, got: {task.eta!r} (FIX-1)"
 
     def test_vod_hook_not_affected_by_live_fix(self):
         """
@@ -915,14 +1054,16 @@ class TestInstagramLive:
         # is_live defaults to False — VOD path
         hook = engine._make_progress_hook(task, callback=None, is_live=False)
         task.eta = "original"
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 1024,
-            "total_bytes": 0,
-            "total_bytes_estimate": 0,
-            "speed": None,
-            "eta": None,       # yt-dlp returns None eta for this frame
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 1024,
+                "total_bytes": 0,
+                "total_bytes_estimate": 0,
+                "speed": None,
+                "eta": None,  # yt-dlp returns None eta for this frame
+            }
+        )
 
         assert task.eta == "original", (
             "VOD hook must NOT overwrite task.eta with live recording string "
@@ -940,26 +1081,25 @@ class TestInstagramLive:
         task = make_task("https://www.instagram.com/someuser/live/")
 
         hook = engine._make_progress_hook(task, callback=None, is_live=True)
-        hook({
-            "status": "downloading",
-            "downloaded_bytes": 1024,
-            "total_bytes": 0,
-            "total_bytes_estimate": 0,
-            "speed": None,
-            "eta": 90,   # yt-dlp provided eta = 90 seconds — must be ignored
-        })
+        hook(
+            {
+                "status": "downloading",
+                "downloaded_bytes": 1024,
+                "total_bytes": 0,
+                "total_bytes_estimate": 0,
+                "speed": None,
+                "eta": 90,  # yt-dlp provided eta = 90 seconds — must be ignored
+            }
+        )
 
-        assert task.eta != "01:30", (
-            f"Live hook must NOT use yt-dlp's numeric eta, got: {task.eta!r}"
-        )
-        assert "ghi" in task.eta, (
-            f"Live hook must show bytes-recorded format, got: {task.eta!r}"
-        )
+        assert task.eta != "01:30", f"Live hook must NOT use yt-dlp's numeric eta, got: {task.eta!r}"
+        assert "ghi" in task.eta, f"Live hook must show bytes-recorded format, got: {task.eta!r}"
 
 
 # ---------------------------------------------------------------------------
 # Instagram Photo — no-video interception (FIX-A, FIX-B, FIX-D)
 # ---------------------------------------------------------------------------
+
 
 class TestInstagramPhoto:
     """Regression tests for Instagram photo post handling.
@@ -976,39 +1116,42 @@ class TestInstagramPhoto:
 
     # ── FIX-A: synthetic MediaInfo returned for photo post ─────────────────
 
-    @pytest.mark.parametrize("url,expected_id,error_msg", [
-        (
-            "https://www.instagram.com/p/DV8iEFpEfTl/",
-            "DV8iEFpEfTl",
-            "[Instagram] DV8iEFpEfTl: There is no video in this post",
-        ),
-        (
-            "https://www.instagram.com/p/DV8iEFpEfTl",
-            "DV8iEFpEfTl",
-            "[Instagram] DV8iEFpEfTl: There is no video in this post",
-        ),
-        (
-            "https://www.instagram.com/reel/ABC123xyz/",
-            "ABC123xyz",
-            "[Instagram] ABC123xyz: There is no video in this post",
-        ),
-        (
-            "https://www.instagram.com/tv/XYZ789/",
-            "XYZ789",
-            "[Instagram] XYZ789: There is no video in this post",
-        ),
-        # With valid cookies, yt-dlp raises "No video formats found!" instead
-        (
-            "https://www.instagram.com/p/DV-424dD66n/",
-            "DV-424dD66n",
-            "[Instagram] DV-424dD66n: No video formats found!; please report this issue",
-        ),
-        (
-            "https://www.instagram.com/p/DV-424dD66n/",
-            "DV-424dD66n",
-            "No video formats found!",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "url,expected_id,error_msg",
+        [
+            (
+                "https://www.instagram.com/p/DV8iEFpEfTl/",
+                "DV8iEFpEfTl",
+                "[Instagram] DV8iEFpEfTl: There is no video in this post",
+            ),
+            (
+                "https://www.instagram.com/p/DV8iEFpEfTl",
+                "DV8iEFpEfTl",
+                "[Instagram] DV8iEFpEfTl: There is no video in this post",
+            ),
+            (
+                "https://www.instagram.com/reel/ABC123xyz/",
+                "ABC123xyz",
+                "[Instagram] ABC123xyz: There is no video in this post",
+            ),
+            (
+                "https://www.instagram.com/tv/XYZ789/",
+                "XYZ789",
+                "[Instagram] XYZ789: There is no video in this post",
+            ),
+            # With valid cookies, yt-dlp raises "No video formats found!" instead
+            (
+                "https://www.instagram.com/p/DV-424dD66n/",
+                "DV-424dD66n",
+                "[Instagram] DV-424dD66n: No video formats found!; please report this issue",
+            ),
+            (
+                "https://www.instagram.com/p/DV-424dD66n/",
+                "DV-424dD66n",
+                "No video formats found!",
+            ),
+        ],
+    )
     def test_photo_post_returns_synthetic_media_info(self, url, expected_id, error_msg, tmp_path):
         """
         When yt-dlp raises 'no video in this post' for an IG /p/ /reel/ /tv/ URL,
@@ -1024,21 +1167,23 @@ class TestInstagramPhoto:
         import infrastructure.downloader.yt_dlp_engine as mod
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, u, download):
                 raise yt_dlp.utils.DownloadError(error_msg)
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             info = engine.extract_info(url)
 
-        assert info.formats == [], (
-            "Photo MediaInfo must have formats=[] to trigger BUG Z path (FIX-A)"
-        )
-        assert info.duration == 0, (
-            "Photo MediaInfo must have duration=0 to trigger BUG Z path (FIX-A)"
-        )
+        assert info.formats == [], "Photo MediaInfo must have formats=[] to trigger BUG Z path (FIX-A)"
+        assert info.duration == 0, "Photo MediaInfo must have duration=0 to trigger BUG Z path (FIX-A)"
         assert info.is_live is False, "Photo must not be flagged as live (FIX-A)"
         assert info.platform == "Instagram", "Platform must be Instagram (FIX-A)"
         assert info.video_id == expected_id, (
@@ -1061,15 +1206,21 @@ class TestInstagramPhoto:
 
         import infrastructure.downloader.yt_dlp_engine as mod
 
+        mod._IG_RL.reset()
+
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, u, download):
                 call_count["n"] += 1
-                raise yt_dlp.utils.DownloadError(
-                    "[Instagram] DV8iEFpEfTl: There is no video in this post"
-                )
+                raise yt_dlp.utils.DownloadError("[Instagram] DV8iEFpEfTl: There is no video in this post")
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             with patch.object(mod.time, "sleep") as mock_sleep:
@@ -1098,12 +1249,20 @@ class TestInstagramPhoto:
 
         import infrastructure.downloader.yt_dlp_engine as mod
 
+        mod._IG_RL.reset()
+
         # Simulate the _check_unsupported_url gate passing (no cookies required
         # for /p/ URLs — only stories and live require cookies)
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, u, download):
                 call_count["n"] += 1
                 # This is the actual yt-dlp error text for KeyError('=')
@@ -1134,6 +1293,7 @@ class TestInstagramPhoto:
         return a message that mentions Instagram cookie context.
         """
         from infrastructure.downloader.yt_dlp_engine import _friendly_error
+
         for msg in ["There is no video in this post", "No video formats found!"]:
             result = _friendly_error(msg)
             assert "cookie" in result.lower() or "ảnh" in result.lower(), (
@@ -1157,10 +1317,18 @@ class TestInstagramPhoto:
 
         import infrastructure.downloader.yt_dlp_engine as mod
 
+        mod._IG_RL.reset()
+
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
             def extract_info(self, u, download):
                 call_count["n"] += 1
                 raise yt_dlp.utils.DownloadError(
@@ -1185,18 +1353,17 @@ class TestInstagramPhoto:
         'extractor error' must return a message telling user to update yt-dlp.
         """
         from infrastructure.downloader.yt_dlp_engine import _friendly_error
+
         msg = _friendly_error(
-            "DV8iEFpEfTlTc4MTIwNjQ2YQ==: An extractor error has occurred. "
-            "(caused by KeyError('='))"
+            "DV8iEFpEfTlTc4MTIwNjQ2YQ==: An extractor error has occurred. (caused by KeyError('='))"
         )
-        assert "yt-dlp" in msg.lower(), (
-            f"extractor error must mention yt-dlp update, got: {msg!r} (FIX-D)"
-        )
+        assert "yt-dlp" in msg.lower(), f"extractor error must mention yt-dlp update, got: {msg!r} (FIX-D)"
 
 
 # ---------------------------------------------------------------------------
 # BUG-TT-PROD — TikTok product link "audio-only" false positive
 # ---------------------------------------------------------------------------
+
 
 class TestBugTtProd:
     """Regression for BUG-TT-PROD.
@@ -1226,18 +1393,20 @@ class TestBugTtProd:
             def download(self, urls):
                 output_file.write_bytes(b"x" * 100_000)
                 for hook in captured[0].get("postprocessor_hooks", []):
-                    hook({
-                        "status": "finished",
-                        "postprocessor": "FFmpegVideoRemuxer",
-                        "info_dict": {
-                            "vcodec": "none",
-                            "acodec": "aac",
-                            "format_id": "audio",
-                            "ext": "mp4",
-                            "filepath": str(output_file),
-                            "__real_download_filename": str(output_file),
-                        },
-                    })
+                    hook(
+                        {
+                            "status": "finished",
+                            "postprocessor": "FFmpegVideoRemuxer",
+                            "info_dict": {
+                                "vcodec": "none",
+                                "acodec": "aac",
+                                "format_id": "audio",
+                                "ext": "mp4",
+                                "filepath": str(output_file),
+                                "__real_download_filename": str(output_file),
+                            },
+                        }
+                    )
 
         return FakeYDL
 
@@ -1264,7 +1433,9 @@ class TestBugTtProd:
             with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_result):
                 engine.download(task)
 
-        assert output_file.exists(), "BUG-TT-PROD: product link file must not be deleted when FFprobe finds video"
+        assert output_file.exists(), (
+            "BUG-TT-PROD: product link file must not be deleted when FFprobe finds video"
+        )
 
     def test_template_effect_raises_when_ffprobe_confirms_no_video(self, tmp_path):
         """FFprobe also finds no video -> file deleted, error raised (BUG-TT-EFF regression)."""
@@ -1323,33 +1494,37 @@ class TestBugTtProd:
                 if call_count[0] == 1:
                     first_file.write_bytes(b"x" * 100_000)
                     for hook in self._opts.get("postprocessor_hooks", []):
-                        hook({
-                            "status": "finished",
-                            "postprocessor": "FFmpegVideoRemuxer",
-                            "info_dict": {
-                                "vcodec": "none",
-                                "acodec": "mp3",
-                                "format_id": "audio",
-                                "ext": "mp4",
-                                "filepath": str(first_file),
-                                "__real_download_filename": str(first_file),
-                            },
-                        })
+                        hook(
+                            {
+                                "status": "finished",
+                                "postprocessor": "FFmpegVideoRemuxer",
+                                "info_dict": {
+                                    "vcodec": "none",
+                                    "acodec": "mp3",
+                                    "format_id": "audio",
+                                    "ext": "mp4",
+                                    "filepath": str(first_file),
+                                    "__real_download_filename": str(first_file),
+                                },
+                            }
+                        )
                 else:
                     retry_file.write_bytes(b"x" * 200_000)
                     for hook in self._opts.get("postprocessor_hooks", []):
-                        hook({
-                            "status": "finished",
-                            "postprocessor": "FFmpegVideoRemuxer",
-                            "info_dict": {
-                                "vcodec": "h264",
-                                "acodec": "aac",
-                                "format_id": "h264_540p",
-                                "ext": "mp4",
-                                "filepath": str(retry_file),
-                                "__real_download_filename": str(retry_file),
-                            },
-                        })
+                        hook(
+                            {
+                                "status": "finished",
+                                "postprocessor": "FFmpegVideoRemuxer",
+                                "info_dict": {
+                                    "vcodec": "h264",
+                                    "acodec": "aac",
+                                    "format_id": "h264_540p",
+                                    "ext": "mp4",
+                                    "filepath": str(retry_file),
+                                    "__real_download_filename": str(retry_file),
+                                },
+                            }
+                        )
 
         probe_no_video = MagicMock()
         probe_no_video.video_codec = ""
@@ -1385,18 +1560,20 @@ class TestBugTtProd:
                 out = tmp_path / f"out{call_count[0]}.mp4"
                 out.write_bytes(b"x" * 100_000)
                 for hook in self._opts.get("postprocessor_hooks", []):
-                    hook({
-                        "status": "finished",
-                        "postprocessor": "FFmpegVideoRemuxer",
-                        "info_dict": {
-                            "vcodec": "none",
-                            "acodec": "mp3",
-                            "format_id": "audio",
-                            "ext": "mp4",
-                            "filepath": str(out),
-                            "__real_download_filename": str(out),
-                        },
-                    })
+                    hook(
+                        {
+                            "status": "finished",
+                            "postprocessor": "FFmpegVideoRemuxer",
+                            "info_dict": {
+                                "vcodec": "none",
+                                "acodec": "mp3",
+                                "format_id": "audio",
+                                "ext": "mp4",
+                                "filepath": str(out),
+                                "__real_download_filename": str(out),
+                            },
+                        }
+                    )
 
         probe_no_video = MagicMock()
         probe_no_video.video_codec = ""
@@ -1418,7 +1595,7 @@ def test_tiktok_rate_limiter_enforces_interval():
     """Two rapid calls must be spaced by at least min_interval seconds."""
     import time
 
-    from infrastructure.downloader.yt_dlp_engine import _tiktok_rl
+    from infrastructure.downloader.yt_dlp_engine import _TT_RL as _tiktok_rl
 
     _tiktok_rl.reset()
 
@@ -1436,7 +1613,7 @@ def test_tiktok_rate_limiter_reset_allows_immediate():
     """After reset(), first acquire() must not sleep."""
     import time
 
-    from infrastructure.downloader.yt_dlp_engine import _tiktok_rl
+    from infrastructure.downloader.yt_dlp_engine import _TT_RL as _tiktok_rl
 
     _tiktok_rl.reset()
 

@@ -275,23 +275,6 @@ class RemoteConvertService:
             output_codec=output_codec,
         )
 
-    def auto_convert_tiktok_live(self, task, **kwargs) -> None:
-        mi = getattr(task, "media_info", None)
-        if not (mi and mi.is_live and "tiktok" in task.url.lower()):
-            return
-        src = Path(task.filename)
-        if not src.is_file() or src.suffix.lower() == ".mp4":
-            return
-        try:
-            self.start_convert(
-                source_task_id=task.id,
-                file_path=src,
-                encoder_key="auto",
-            )
-            logger.info("Auto-converting TikTok livestream (remote): %s", src.name)
-        except Exception:
-            logger.exception("Auto-convert failed for %s", src.name)
-
     def delete_convert_file(self, job_id: str, allowed_dir: Path) -> tuple[bool, str]:
         """
         Delete the converted output file from disk for a COMPLETED job.

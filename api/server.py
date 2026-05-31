@@ -137,7 +137,6 @@ _active_thread: threading.Thread | None = None
 _active_bus: "EventBus | None" = None  # held to allow re-wiring on restart
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
 _bus_wired = False  # BUG-CB: prevent duplicate subscriptions on restart
-_wired_remote_convert: "Optional[RemoteConvertService]" = None  # tracks active auto_convert subscription
 
 
 def _broadcast(event_type: str, data: dict) -> None:
@@ -261,9 +260,6 @@ def _wire_event_bus(bus: EventBus) -> None:
     bus.subscribe(EventBus.CONVERT_COMPLETED, _on_convert_completed)
     bus.subscribe(EventBus.CONVERT_FAILED, _on_convert_failed)
     bus.subscribe(EventBus.CONVERT_CANCELLED, _on_convert_cancelled)
-
-    # auto_convert_tiktok_live is wired separately in start_api_server() so it
-    # can be swapped on each restart without duplicating the static _on_* handlers.
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -1640,16 +1636,10 @@ def start_api_server(
     # connections, so no events are missed.
     # BUG-CB: guard prevents duplicate subscriptions when restart_api_server()
     # calls start_api_server() again (token rotate, port change, etc.).
-    global _bus_wired, _wired_remote_convert
+    global _bus_wired
     if not _bus_wired:
         _wire_event_bus(bus)
         _bus_wired = True
-    # Always swap the auto_convert subscription to the current remote_convert instance.
-    if _wired_remote_convert is not None:
-        bus.unsubscribe(EventBus.DOWNLOAD_COMPLETED, _wired_remote_convert.auto_convert_tiktok_live)
-    if remote_convert is not None:
-        bus.subscribe(EventBus.DOWNLOAD_COMPLETED, remote_convert.auto_convert_tiktok_live)
-    _wired_remote_convert = remote_convert
 
     app = create_app(service, config, remote_convert=remote_convert)
 

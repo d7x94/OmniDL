@@ -1,6 +1,6 @@
-# OmniDL v18.0.0
+# OmniDL v18.6.0
 
-A desktop media downloader supporting YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, CustomTkinter, yt-dlp, and gallery-dl.
+A desktop media downloader supporting YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
 
 ## Features
 
@@ -18,10 +18,10 @@ A desktop media downloader supporting YouTube, TikTok, Instagram, Twitter/X, Fac
 ```
 domain/          Pure business models (DownloadTask, MediaInfo, enums). No external deps.
 app/             Use-cases, EventBus, DownloadService. Orchestration only.
-infrastructure/  yt-dlp engine, download manager, config, history. Side effects here.
-ui/              CustomTkinter tabs and widgets. Consumes app/service layer only.
-utils/           Pure helpers — ffmpeg_locator, deno_locator, helpers, logger,
-                 instagram_live_checker, tiktok_live_checker. No omnidl imports.
+infrastructure/  yt-dlp engine, download manager, account_pool, config, history. Side effects here.
+ui/              PySide6 tabs and widgets. Consumes app/service layer only.
+utils/           Pure helpers — ffmpeg_locator, helpers, logger,
+                 tiktok_live_checker, tiktok_detection/. No omnidl imports.
 tests/           pytest unit tests. Mock-only — no real network or subprocess.
 ```
 
@@ -208,15 +208,12 @@ Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 
 | Package | Version | Purpose |
 |---|---|---|
-| customtkinter | >=5.2.2 | GUI framework |
+| pyside6 | >=6.7 | GUI framework |
 | yt-dlp | >=2025.1.1 | Download engine (video / live) |
-| gallery-dl | >=1.27.0 | Image/gallery download engine (Instagram photos, Twitter images) |
-| Pillow | >=10.3.0 | Thumbnail rendering (patches CVE-2024-28219) |
+| gallery-dl | >=1.32.1 | Image/gallery download engine (Instagram photos, Twitter images) |
 | requests | >=2.31.0 | HTTP client |
 | packaging | >=23.0 | Version utilities |
-| platformdirs | >=4.0.0 | Platform-appropriate user-data directories (SEC-3) |
-| PySocks | >=1.7.1 | SOCKS4/5 proxy support for yt-dlp |
-| playwright | >=1.40 | Facebook Story CDP via `connect_over_cdp()` |
+| playwright | >=1.40 | Facebook Story + Instagram Live CDP via `connect_over_cdp()` |
 | cryptography | >=41.0.0 | Cookie at-rest encryption (macOS Fernet/AES-128-CBC) |
 | keyring | >=24.0.0 | macOS Keychain key storage; Brave/Chrome 127+ App-Bound cookie decrypt |
 
@@ -290,7 +287,17 @@ PyInstaller (Python 3.13) → GitHub Release
 
 ## Changelog Highlights
 
-### v18.0.0 (current — 2026-04-30)
+### v18.6.0 (current — 2026-05-31)
+- **PySide6 migration** — GUI rewritten from CustomTkinter to PySide6 (Qt6); linear design language, QSS theming, dark/light tokens
+- **TikTok detection refactor** (`utils/tiktok_detection/`) — 4-pass parallel strategy dispatcher with health registry; Pass 0: `webcast/room/list/` API; Pass 1: profile HTML scrape; Pass 2: live-page scrape; Pass 3: `user/detail/` API fallback. Strategies run concurrently via `ThreadPoolExecutor`; first result wins
+- **TikTok account pool** (`infrastructure/downloader/account_pool.py`) — thread-safe multi-account pool with per-account concurrent-slot caps and live `set_max()` resize. Least-loaded account picked per download
+- **BUG-TT-25/26**: `tiktok_room_id` forwarded through Remote API `/api/download` body so fallback strategies can use it
+- **Rate limiter**: per-request delay on TikTok Live checker to avoid HTTP 429
+- **Cookie cache**: plaintext cookie cached in memory after first DPAPI decrypt — avoids repeated Credential Manager calls on every TikTok check cycle
+- **Vietnamese localization**: Remote App (`api/static/index.html`) fully localized; all queue/batch/convert/live-monitor UI strings in Vietnamese
+- **Network panel** (`ui/tabs/settings/network_panel.py`) — proxy configuration UI for yt-dlp and gallery-dl
+
+### v18.0.0 (2026-04-30)
 - **BUG-TT-08/09/10**: TikTok Live false negative fixed — `curl_cffi` Chrome impersonation, `roomId="0"` rejection, pass-0 `webcast/room/list/` API, `ImpersonateTarget` vs string split for yt-dlp vs `curl_cffi` APIs
 - **BUG-IG-01**: Instagram Live DASH/MPD support — `.mpd` regex, `ctx.route` Service Worker intercept, `Network.responseReceived`, 60 s timeout, `-f matroska` container
 - **BUG-KS-01/02**: Kuaishou CDN probe timeout no longer triggers re-extract; probe timeout 15 s → 8 s; `cookie_str` passed to all sessions; `Content-Type: text/html` triggers inline re-extract without raise

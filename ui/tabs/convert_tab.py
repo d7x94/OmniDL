@@ -177,20 +177,20 @@ class FileCard(QFrame):
         top_layout.addWidget(self._state_badge)
 
         # Buttons in order
-        self._cancel_btn = QPushButton("Huy")
+        self._cancel_btn = QPushButton("Hủy")
         self._cancel_btn.setFixedSize(60, 26)
         self._cancel_btn.setStyleSheet(
-            f"background: {T.warning_bg}; color: {T.warning}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold;"
+            f"background: {T.warning_bg}; color: {T.warning}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.clicked.connect(lambda: self._on_cancel(self.job.id))
         self._cancel_btn.hide()
         top_layout.addWidget(self._cancel_btn)
 
-        self._open_btn = QPushButton("Mo")
+        self._open_btn = QPushButton("Mở")
         self._open_btn.setFixedSize(52, 26)
         self._open_btn.setStyleSheet(
-            f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold;"
+            f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
         self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._open_btn.clicked.connect(lambda: self._on_open_folder(self.job.id))
@@ -200,7 +200,7 @@ class FileCard(QFrame):
         self._preview_btn = QPushButton("Xem")
         self._preview_btn.setFixedSize(52, 26)
         self._preview_btn.setStyleSheet(
-            f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold;"
+            f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
         self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._preview_btn.clicked.connect(self._open_preview)
@@ -210,7 +210,7 @@ class FileCard(QFrame):
         self._delete_output_btn = QPushButton("Xóa file")
         self._delete_output_btn.setFixedSize(70, 26)
         self._delete_output_btn.setStyleSheet(
-            f"background: {T.error_bg}; color: {T.error_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold;"
+            f"background: {T.error_bg}; color: {T.error_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
         self._delete_output_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_output_btn.clicked.connect(lambda: self._on_delete_output(self.job.id))
@@ -221,6 +221,8 @@ class FileCard(QFrame):
         self._remove_btn.setFixedSize(28, 26)
         self._remove_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px;"
+            f" padding: 0; font-size: 13px; font-weight: bold;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._remove_btn.clicked.connect(lambda: self._on_remove(self.job.id))

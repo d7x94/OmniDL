@@ -119,6 +119,8 @@ class DownloadItemWidget(QFrame):
             QPushButton {{
                 background: {T.primary_dim}; color: {T.primary_text};
                 border-radius: 10px; border: 1.5px solid {T.primary}; font-size: 12px;
+                padding: 0;
+                font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
             }}
             QPushButton:hover {{ background: {T.primary}; color: white; }}
         """)
@@ -133,6 +135,8 @@ class DownloadItemWidget(QFrame):
             QPushButton {{
                 background: {T.error_bg}; color: {T.error_text};
                 border-radius: 10px; border: 1.5px solid {T.error}; font-size: 12px;
+                padding: 0;
+                font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
             }}
             QPushButton:hover {{ background: {T.error}; color: white; }}
         """)
@@ -145,6 +149,7 @@ class DownloadItemWidget(QFrame):
         self._folder_btn.setFixedHeight(30)
         self._folder_btn.setStyleSheet(
             f"background: {T.success_bg}; color: {T.success_text}; border-radius: 10px; border: none; font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._folder_btn.clicked.connect(self._open_folder)
@@ -155,11 +160,24 @@ class DownloadItemWidget(QFrame):
         self._preview_btn.setFixedHeight(30)
         self._preview_btn.setStyleSheet(
             f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 10px; border: none; font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._preview_btn.clicked.connect(self._open_preview)
         self._preview_btn.hide()
         btn_row.addWidget(self._preview_btn)
+
+        self._convert_btn = QPushButton("🔄  Chuyển")
+        self._convert_btn.setFixedHeight(30)
+        self._convert_btn.setStyleSheet(
+            f"background: {T.warning_bg}; color: {T.warning}; border-radius: 10px; border: none;"
+            f" font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self._convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._convert_btn.clicked.connect(self._on_convert_click)
+        self._convert_btn.hide()
+        btn_row.addWidget(self._convert_btn)
 
         top.addWidget(self._btn_box)
         outer.addLayout(top)
@@ -281,11 +299,14 @@ class DownloadItemWidget(QFrame):
                 self._completed_path = task.filename
             self._folder_btn.show()
             self._preview_btn.show()
+            if self._on_convert and not self._converting:
+                self._convert_btn.show()
             self._pause_btn.hide()
             self._cancel_btn.hide()
         elif not terminal:
             self._folder_btn.hide()
             self._preview_btn.hide()
+            self._convert_btn.hide()
 
         is_active = st in (DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)
         self._set_active_accent(is_active)
@@ -333,6 +354,8 @@ class DownloadItemWidget(QFrame):
             QPushButton {{
                 background: {T.primary_dim}; color: {T.primary_text};
                 border-radius: 10px; border: 1.5px solid {T.primary}; font-size: 12px;
+                padding: 0;
+                font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
             }}
             QPushButton:hover {{ background: {T.primary}; color: white; }}
         """)
@@ -340,9 +363,25 @@ class DownloadItemWidget(QFrame):
             QPushButton {{
                 background: {T.error_bg}; color: {T.error_text};
                 border-radius: 10px; border: 1.5px solid {T.error}; font-size: 12px;
+                padding: 0;
+                font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
             }}
             QPushButton:hover {{ background: {T.error}; color: white; }}
         """)
+
+    def _on_convert_click(self) -> None:
+        if self._converting or not self._completed_path or not self._on_convert:
+            return
+        self._converting = True
+        self._convert_btn.setText("Đang chuyển…")
+        self._convert_btn.setEnabled(False)
+        try:
+            self._on_convert(Path(self._completed_path), "mp4", None)
+        except Exception as exc:
+            logger.warning("on_convert raised: %s", exc)
+            self._converting = False
+            self._convert_btn.setText("🔄  Chuyển")
+            self._convert_btn.setEnabled(True)
 
     def _open_preview(self) -> None:
         p_str = self._completed_path or getattr(self.task, "filename", "")

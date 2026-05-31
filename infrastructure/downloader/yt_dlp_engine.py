@@ -518,6 +518,12 @@ def _friendly_error(msg: str) -> str:
             "  2. Chờ 5–15 phút rồi thử lại (nếu là rate-limit tạm thời)\n"
             "  3. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
         )
+    if "not comfortable" in msg_l or "log in for access" in msg_l:
+        return (
+            "TikTok yêu cầu đăng nhập để tải video này.\n"
+            "Cookie pool có thể đã hết hạn hoặc dùng tài khoản khác.\n"
+            "Giải pháp: Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
+        )
     if "copyright" in msg_l:
         return "This content has been blocked due to a copyright claim."
     if "blocked" in msg_l:
@@ -786,6 +792,34 @@ class _DiagLogger:
         logger.error("[yt-dlp] %s", msg.strip())
 
 
+def _tt29_cookie_sources(
+    task_url: str, config: ConfigManager, override: "str | None"
+) -> "list[tuple[str, str]]":
+    """Return (cookie_path, label) pairs for BUG-TT-29 rotation.
+
+    Sequence: pool → global-tiktok → anon → pool → global-tiktok.
+    Consecutive duplicates are removed so identical cookie files don't
+    burn retries (e.g. when pool override == per-platform cookie).
+    """
+    pool = _resolve_cookie(task_url, config, override) or ""
+    global_tt = _resolve_cookie(task_url, config, None) or ""
+    raw: list[tuple[str, str]] = [
+        (pool, "pool"),
+        (global_tt, "global"),
+        ("", "anon"),
+        (pool, "pool"),
+        (global_tt, "global"),
+    ]
+    out: list[tuple[str, str]] = []
+    last: object = object()
+    for c, lbl in raw:
+        if c == last:
+            continue
+        out.append((c, lbl))
+        last = c
+    return out
+
+
 class YtDlpEngine:
     """
     Handles:
@@ -1008,11 +1042,21 @@ class YtDlpEngine:
                     time.sleep(2**attempt)
         if info is None:
             # BUG-TT-10231: TikTok web extraction returns status 10231 for some videos.
+            # BUG-TT-CHALLENGE: TikTok also serves an anti-bot JS challenge page that
+            # yt-dlp cannot solve, raising "Unexpected response from webpage request".
+            # Both are bypassed by routing to the Android mobile API via app_info.
             # Use _saw_10231 (not just last_exc) — last retry may have been a 429.
             # Fix: use app_info (not app_name) to trigger _extract_aweme_app() (Android
             # mobile API). app_name alone is ignored by TikTokIE when app_info is absent:
             # _KNOWN_APP_INFO stays [] → yt-dlp skips app API → web extraction → 10231.
-            if _saw_10231 or (last_exc and "status code 10231" in str(last_exc)):
+            _tt_web_blocked_ei = _saw_10231 or (
+                last_exc
+                and (
+                    "status code 10231" in str(last_exc).lower()
+                    or "unexpected response from webpage request" in str(last_exc).lower()
+                )
+            )
+            if _tt_web_blocked_ei:
                 for _fb_app_info in (
                     "/trill/35.1.3/2023501030/1180",
                     "/musical_ly/35.1.3/2023501030/1233",
@@ -1950,7 +1994,7 @@ class YtDlpEngine:
                 # quality variant (SD/LD from hls_pull_url_map) instead of retrying
                 # the same dead CDN path with a refreshed token indefinitely.
                 _tt16_stall_counts: dict[str, int] = {}
-                _STALL_BASE_THRESHOLD = 2
+                _STALL_BASE_THRESHOLD = 1
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
                         _seg_path = (
@@ -1959,7 +2003,13 @@ class YtDlpEngine:
                             else (_direct_out_path + f".seg{_tt16_attempt}")
                         )
                         try:
-                            if _CURL_CFFI_AVAILABLE:
+                            # BUG-TT-FLV-CURL FIX: FLV URLs (from BUG-TT-24 fallback)
+                            # must not be passed to _download_tiktok_live_hls_curl —
+                            # it parses the response as M3U8, finds no segments, and
+                            # stalls for 60s per attempt, freezing the UI at 556B.
+                            # Route FLV to FFmpeg which already handles it via _is_flv_url.
+                            _is_flv_current = ".flv" in _tt16_current_hls.lower()
+                            if _CURL_CFFI_AVAILABLE and not _is_flv_current:
                                 self._download_tiktok_live_hls_curl(
                                     _tt16_current_hls,
                                     _seg_path,
@@ -2028,10 +2078,19 @@ class YtDlpEngine:
                                 pass
 
                             # Append whatever was captured before FFmpeg died
-                            if _tt16_attempt > 0 and _seg_size > 0:
+                            # BUG-TT-SMALLSEG FIX: only append segments with real content.
+                            # A stall on a new CDN base produces a tiny garbage file (e.g. 556 B).
+                            # Appending it makes _main_size non-zero, which bypasses the
+                            # BUG-TT-20B/STALL2 retry path that excludes bad CDN bases.
+                            # Always clean up the seg file regardless of size.
+                            if _tt16_attempt > 0:
                                 try:
-                                    with open(_direct_out_path, "ab") as _fout, open(_seg_path, "rb") as _fin:
-                                        _fout.write(_fin.read())
+                                    if _seg_size > 500_000:
+                                        with (
+                                            open(_direct_out_path, "ab") as _fout,
+                                            open(_seg_path, "rb") as _fin,
+                                        ):
+                                            _fout.write(_fin.read())
                                     Path(_seg_path).unlink(missing_ok=True)
                                 except OSError:
                                     pass
@@ -2446,7 +2505,12 @@ class YtDlpEngine:
                     # internally in ydl.download(). Use app_info to trigger the Android
                     # mobile API (_extract_aweme_app) which bypasses the web path that
                     # returns 10231. app_name alone has no effect (see BUG-TT-10231).
-                    if "status code 10231" in _exc_str and _is_tiktok_vod and not is_live:
+                    # BUG-TT-CHALLENGE: same Android API fallback for the anti-bot JS
+                    # challenge ("Unexpected response from webpage request").
+                    _tt_web_blocked = (
+                        "status code 10231" in _exc_l or "unexpected response from webpage request" in _exc_l
+                    )
+                    if _tt_web_blocked and _is_tiktok_vod and not is_live:
                         _10231_dl_ok = False
                         for _fb_app_info in (
                             "/trill/35.1.3/2023501030/1180",
@@ -2474,7 +2538,47 @@ class YtDlpEngine:
                         if not _10231_dl_ok:
                             raise RuntimeError(_friendly_error(_exc_str)) from exc
                     else:
-                        raise RuntimeError(_friendly_error(_exc_str)) from exc
+                        # BUG-TT-SENSITIVE: pool cookie may be stale / wrong account.
+                        # Retry with per-platform cookie (no pool override) before failing.
+                        _tt_login_req = (
+                            "not comfortable for some audiences" in _exc_l or "log in for access" in _exc_l
+                        )
+                        if _tt_login_req and _is_tiktok_vod and not is_live and _task_cookie_override:
+                            _global_cookie = _resolve_cookie(task.url, self._config, None)
+                            _global_temp: str | None = None
+                            _global_ok = False
+                            try:
+                                _fb_opts = dict(opts)
+                                if _global_cookie:
+                                    _gc_usable, _gc_is_temp = _prepare_cookie_for_use(_global_cookie)
+                                    _fb_opts["cookiefile"] = _gc_usable
+                                    if _gc_is_temp:
+                                        _global_temp = _gc_usable
+                                else:
+                                    _fb_opts.pop("cookiefile", None)
+                                logger.debug(
+                                    "BUG-TT-SENSITIVE: pool cookie rejected, retrying with"
+                                    " per-platform cookie for %s",
+                                    task.url,
+                                )
+                                with yt_dlp.YoutubeDL(_fb_opts) as ydl:
+                                    ydl.download([task.url])
+                                _global_ok = True
+                            except Exception as _sens_exc:
+                                logger.debug(
+                                    "BUG-TT-SENSITIVE: per-platform cookie retry failed: %s",
+                                    _sens_exc,
+                                )
+                            finally:
+                                if _global_temp:
+                                    try:
+                                        Path(_global_temp).unlink(missing_ok=True)
+                                    except OSError:
+                                        pass
+                            if not _global_ok:
+                                raise RuntimeError(_friendly_error(_exc_str)) from exc
+                        else:
+                            raise RuntimeError(_friendly_error(_exc_str)) from exc
             except Exception as exc:
                 if task.is_cancellation_requested:
                     raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
@@ -2804,22 +2908,33 @@ class YtDlpEngine:
                             task_url[:60],
                         )
                         return _hls26, _rid26, _u25, ""
-                    # BUG-TT-29 FIX: retry if room still alive (needs room_id
-                    # for check_alive; skip when room_id unknown).
+                    # BUG-TT-29 FIX: retry with cookie rotation if room_id known.
+                    # Rotates pool → global-tiktok → anon → pool → global-tiktok
+                    # (consecutive duplicates collapsed). Backoff covers bot-detection
+                    # cooldowns that 3×5s could not recover from.
                     if room_id:
                         _proxy29 = self._config.proxy or ""
-                        for _retry29 in range(3):
-                            _alive29 = _verify_room_alive(room_id, _u25, proxy=_proxy29, cookie_file="")
-                            if not _alive29:
-                                break
-                            logger.debug(
-                                "BUG-TT-29: room %s still alive after BUG-TT-25/26 miss"
-                                " (attempt %d/3) — retrying in 5s",
-                                room_id,
-                                _retry29 + 1,
-                            )
-                            time.sleep(5)
-                            _r29_raw = _resolve_cookie(task_url, self._config, cookie_override) or ""
+                        _sources29 = _tt29_cookie_sources(task_url, self._config, cookie_override)
+                        _backoff29 = (8, 15, 25, 40, 60)
+                        for _retry29, (_r29_raw, _r29_label) in enumerate(_sources29):
+                            if _retry29 == 0:
+                                logger.debug(
+                                    "BUG-TT-29: room %s attempt 1/%d (cookie=%s)",
+                                    room_id,
+                                    len(_sources29),
+                                    _r29_label,
+                                )
+                            else:
+                                _sleep29 = _backoff29[min(_retry29 - 1, len(_backoff29) - 1)]
+                                logger.debug(
+                                    "BUG-TT-29: room %s attempt %d/%d (cookie=%s) — retrying in %ds",
+                                    room_id,
+                                    _retry29 + 1,
+                                    len(_sources29),
+                                    _r29_label,
+                                    _sleep29,
+                                )
+                                time.sleep(_sleep29)
                             _r29_txt, _r29_temp = "", False
                             if _r29_raw:
                                 _r29_txt, _r29_temp = _prepare_cookie_for_use(_r29_raw)
@@ -3169,7 +3284,7 @@ class YtDlpEngine:
 
         from utils.tiktok_live_checker import _get_impersonate_session, _load_cookie_jar  # noqa: PLC0415
 
-        _STALL_TIMEOUT_S = 60
+        _STALL_TIMEOUT_S = 20
         _POLL_INTERVAL_S = 2
         _SEG_TIMEOUT_S = 20
 
