@@ -97,7 +97,7 @@ class TestPass2LivePage:
         from utils.tiktok_detection.strategies.pass2_live_page import Pass2LivePage
 
         strategy = Pass2LivePage()
-        ctx = self._make_ctx(cookie_file="/tmp/cook.txt")
+        ctx = self._make_ctx(cookie_file="/tmp/cook.txt")  # nosec B108
         call_count = {"n": 0}
 
         def fake_fetch(username, proxy="", cookie_file=""):
@@ -262,7 +262,7 @@ def _make_service():
     from app.services.download_service import DownloadService
 
     config = MagicMock()
-    config.download_dir = "/tmp/omnidl_test"
+    config.download_dir = "/tmp/omnidl_test"  # nosec B108
     manager = MagicMock()
     history = MagicMock()
     history.all.return_value = []

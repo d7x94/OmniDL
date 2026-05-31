@@ -92,10 +92,10 @@ class TestAccountSlot:
 
 class TestTikTokAccount:
     def test_to_dict_round_trip(self):
-        acc = TikTokAccount(name="Alice", cookie_file="/tmp/a.txt", max_slots=2, enabled=True)
+        acc = TikTokAccount(name="Alice", cookie_file="/tmp/a.txt", max_slots=2, enabled=True)  # nosec B108
         d = acc.to_dict()
         assert d["name"] == "Alice"
-        assert d["cookie_file"] == "/tmp/a.txt"
+        assert d["cookie_file"] == "/tmp/a.txt"  # nosec B108
         assert d["max_slots"] == 2
         assert d["enabled"] is True
         assert "id" in d
@@ -138,7 +138,7 @@ class TestTikTokAccount:
 # ---------------------------------------------------------------------------
 
 
-def _make_account(name="acc", cookie_file="/tmp/c.txt", max_slots=1, enabled=True):
+def _make_account(name="acc", cookie_file="/tmp/c.txt", max_slots=1, enabled=True):  # nosec B108
     return TikTokAccount(name=name, cookie_file=cookie_file, max_slots=max_slots, enabled=enabled)
 
 
@@ -262,12 +262,12 @@ class TestTikTokAccountPool:
             assert status[0][1] == 1
 
     def test_to_list(self):
-        acc = _make_account(name="Test", cookie_file="/tmp/t.txt")
+        acc = _make_account(name="Test", cookie_file="/tmp/t.txt")  # nosec B108
         pool = TikTokAccountPool([acc])
         result = pool.to_list()
         assert len(result) == 1
         assert result[0]["name"] == "Test"
-        assert result[0]["cookie_file"] == "/tmp/t.txt"
+        assert result[0]["cookie_file"] == "/tmp/t.txt"  # nosec B108
 
     def test_pick_account_returns_none_when_empty(self):
         pool = TikTokAccountPool([])
