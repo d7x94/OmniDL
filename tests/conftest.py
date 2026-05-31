@@ -24,12 +24,12 @@ try:
 except ImportError:
 
     class _QtMeta(type):
-        """Metaclass: class-level attr access returns a no-op lambda."""
+        """Metaclass: class-level attr access returns a stub class (supports chained access)."""
 
         def __getattr__(cls, name):
-            val = lambda *a, **kw: None  # noqa: E731
-            setattr(cls, name, val)
-            return val
+            sub = _QtMeta(name, (_Q,), {"__module__": getattr(cls, "__module__", "")})
+            setattr(cls, name, sub)
+            return sub
 
     class _Q(metaclass=_QtMeta):
         """Stub base: subclassable, instantiable, attribute-safe."""
