@@ -95,4 +95,4 @@ def test_no_eq_when_defaults():
 
 def test_no_reencode_when_copy():
     cmd = _cmd(needs_reencode=False)
-    assert "-c copy" in " ".join(cmd)
+    assert "-c" in cmd and cmd[cmd.index("-c") + 1] == "copy"
