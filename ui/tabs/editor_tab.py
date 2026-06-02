@@ -1012,6 +1012,8 @@ class EditorTab(QWidget):
             self._preview_label.set_frame(pixmap)
 
     def _update_effect_params(self) -> None:
+        if self._preview_mode:
+            return
         params = EffectParams(
             brightness=self._brightness_slider.value() / 100.0,
             contrast=self._contrast_slider.value() / 100.0,
