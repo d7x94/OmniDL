@@ -569,6 +569,19 @@ class EditorTab(QWidget):
         panel_layout.addWidget(self._effects_panel)
         panel_layout.addStretch()
 
+        # Wire live preview signals
+        self._text_input.textChanged.connect(self._update_effect_params)
+        self._text_pos_combo.currentIndexChanged.connect(self._update_effect_params)
+        self._text_size_spin.valueChanged.connect(self._update_effect_params)
+        self._text_color_combo.currentIndexChanged.connect(self._update_effect_params)
+        self._text_box_check.toggled.connect(self._update_effect_params)
+        self._text_shadow_check.toggled.connect(self._update_effect_params)
+        self._brightness_slider.valueChanged.connect(self._update_effect_params)
+        self._contrast_slider.valueChanged.connect(self._update_effect_params)
+        self._saturation_slider.valueChanged.connect(self._update_effect_params)
+        self._hue_slider.valueChanged.connect(self._update_effect_params)
+        self._blur_slider.valueChanged.connect(self._update_effect_params)
+
         self._right_scroll.setWidget(self._controls_panel)
         self._splitter.addWidget(self._right_scroll)
 
@@ -812,6 +825,8 @@ class EditorTab(QWidget):
         self._cancel_preview = None
         self._preview_mode = True
         self._preview_temp = temp_path
+        self._saved_effect_params = self._frame_processor.params
+        self._frame_processor.update_params(EffectParams())
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(temp_path)))
         self._player.play()
@@ -829,6 +844,7 @@ class EditorTab(QWidget):
         self._preview_mode = False
         old_temp = self._preview_temp
         self._preview_temp = None
+        self._frame_processor.update_params(self._saved_effect_params)
         self._player.stop()
         if self._current_source:
             self._player.setSource(QUrl.fromLocalFile(str(self._current_source)))
@@ -989,5 +1005,24 @@ class EditorTab(QWidget):
 
     def _on_video_frame(self, frame: "QVideoFrame") -> None:
         pixmap = self._frame_processor.process(frame, self._preview_label.size())
+        if pixmap is not None:
+            self._preview_label.set_frame(pixmap)
+
+    def _update_effect_params(self) -> None:
+        params = EffectParams(
+            brightness=self._brightness_slider.value() / 100.0,
+            contrast=self._contrast_slider.value() / 100.0,
+            saturation=self._saturation_slider.value() / 100.0,
+            hue=float(self._hue_slider.value()),
+            blur=self._blur_slider.value() / 10.0,
+            text=self._text_input.text().strip(),
+            text_pos=self._text_pos_combo.currentIndex(),
+            text_size=self._text_size_spin.value(),
+            text_color=_TEXT_COLOR_VALUES[self._text_color_combo.currentIndex()],
+            text_box=self._text_box_check.isChecked(),
+            text_shadow=self._text_shadow_check.isChecked(),
+        )
+        self._frame_processor.update_params(params)
+        pixmap = self._frame_processor.rerender(self._preview_label.size())
         if pixmap is not None:
             self._preview_label.set_frame(pixmap)
