@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 from uuid import uuid4
 
 from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,9 +20,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -75,6 +77,40 @@ def _unique_output(source: Path) -> Path:
         out = source.parent / f"{stem}_{i}{suf}"
         i += 1
     return out
+
+
+class _AspectRatioLabel(QWidget):
+    """Black-background widget that paints a QPixmap centered with aspect ratio preserved."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pixmap: Optional[QPixmap] = None
+        self.setMinimumSize(320, 180)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setStyleSheet("background: #000; border-radius: 4px;")
+
+    def set_frame(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
+        self.update()
+
+    def clear_frame(self) -> None:
+        self._pixmap = None
+        self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        super().paintEvent(event)
+        if not self._pixmap or self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        scaled = self._pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
 
 
 class EditorTab(QWidget):
@@ -139,28 +175,38 @@ class EditorTab(QWidget):
 
         layout.addLayout(file_row)
 
-        # Video widget
-        self._video_widget = QVideoWidget()
-        self._video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._video_widget.setStyleSheet("background: #000;")
-        layout.addWidget(self._video_widget, 1)
+        # ── Main splitter ─────────────────────────────────────────────────────
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setHandleWidth(4)
+        self._splitter.setStyleSheet(f"QSplitter::handle {{ background: {T.border}; border-radius: 2px; }}")
+        layout.addWidget(self._splitter, 1)
 
-        # Empty state label
+        # ── LEFT: preview + timeline + play controls ──────────────────────────
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 6, 0)
+        left_layout.setSpacing(8)
+
+        self._preview_label = _AspectRatioLabel()
+        self._preview_label.setVisible(False)
+        left_layout.addWidget(self._preview_label, 1)
+
         self._empty_lbl = QLabel("Chưa có video. Mở file hoặc nhấn 'Chỉnh sửa' từ lịch sử tải xuống.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_lbl.setStyleSheet(f"color: {T.text3}; font-size: 13px;")
-        self._video_widget.setVisible(False)
-        layout.addWidget(self._empty_lbl)
+        self._empty_lbl.setStyleSheet(
+            f"color: {T.text3}; font-size: 13px; background: {T.surface2}; border-radius: 8px; padding: 40px;"
+        )
+        self._empty_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        left_layout.addWidget(self._empty_lbl, 1)
 
-        # Timeline widget (OpenReel-inspired visual timeline)
         self._timeline = TimelineWidget()
         self._timeline.setEnabled(False)
         self._timeline.seeked.connect(self._on_timeline_seek)
         self._timeline.in_changed.connect(self._on_timeline_in)
         self._timeline.out_changed.connect(self._on_timeline_out)
-        layout.addWidget(self._timeline)
+        left_layout.addWidget(self._timeline)
 
-        # Controls row
+        # Play controls row (inside left panel)
         ctrl_row = QHBoxLayout()
         ctrl_row.setSpacing(10)
 
@@ -187,7 +233,7 @@ class EditorTab(QWidget):
         self._info_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         ctrl_row.addWidget(self._info_lbl)
 
-        self._toggle_ctrl_btn = QPushButton("⊡ Ẩn")
+        self._toggle_ctrl_btn = QPushButton("⊡ Ẩn bảng")
         self._toggle_ctrl_btn.setFixedHeight(28)
         self._toggle_ctrl_btn.setEnabled(False)
         self._toggle_ctrl_btn.setStyleSheet(
@@ -200,13 +246,25 @@ class EditorTab(QWidget):
         self._toggle_ctrl_btn.clicked.connect(self._toggle_controls)
         ctrl_row.addWidget(self._toggle_ctrl_btn)
 
-        layout.addLayout(ctrl_row)
+        left_layout.addLayout(ctrl_row)
+        self._splitter.addWidget(left_panel)
 
-        # Controls panel — wraps trim + edit + speed/volume + text rows
+        # ── RIGHT: scrollable controls panel ─────────────────────────────────
+        self._right_scroll = QScrollArea()
+        self._right_scroll.setWidgetResizable(True)
+        self._right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._right_scroll.setMinimumWidth(320)
+        self._right_scroll.setMaximumWidth(460)
+        self._right_scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            f" QScrollBar:vertical {{ background: {T.surface2}; width: 6px; border-radius: 3px; }}"
+            f" QScrollBar::handle:vertical {{ background: {T.border}; border-radius: 3px; }}"
+        )
+
         self._controls_panel = QWidget()
         self._controls_panel.setStyleSheet("background: transparent;")
         panel_layout = QVBoxLayout(self._controls_panel)
-        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setContentsMargins(6, 0, 0, 0)
         panel_layout.setSpacing(8)
 
         # ── Trim row ──────────────────────────────────────────────────────────
@@ -266,6 +324,11 @@ class EditorTab(QWidget):
         edit_row.addWidget(self._mute_check)
 
         edit_row.addStretch()
+        panel_layout.addLayout(edit_row)
+
+        # ── Export row ────────────────────────────────────────────────────────
+        export_row = QHBoxLayout()
+        export_row.setSpacing(8)
 
         self._preview_btn = QPushButton("▶ Xem thử")
         self._preview_btn.setFixedHeight(32)
@@ -278,7 +341,7 @@ class EditorTab(QWidget):
         )
         self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._preview_btn.clicked.connect(self._on_preview_click)
-        edit_row.addWidget(self._preview_btn)
+        export_row.addWidget(self._preview_btn)
 
         self._export_btn = QPushButton("✂  Xuất")
         self._export_btn.setFixedHeight(32)
@@ -291,20 +354,21 @@ class EditorTab(QWidget):
         )
         self._export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._export_btn.clicked.connect(self._export)
-        edit_row.addWidget(self._export_btn)
+        export_row.addWidget(self._export_btn)
 
         self._export_status = QLabel("")
         self._export_status.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        edit_row.addWidget(self._export_status)
+        export_row.addWidget(self._export_status, 1)
 
-        panel_layout.addLayout(edit_row)
+        panel_layout.addLayout(export_row)
 
         # ── Speed + Volume row ────────────────────────────────────────────────
         sv_row = QHBoxLayout()
         sv_row.setSpacing(10)
 
-        sv_row.addWidget(QLabel("Tốc độ:"))
-        sv_row.itemAt(0).widget().setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        sv_lbl = QLabel("Tốc độ:")
+        sv_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        sv_row.addWidget(sv_lbl)
 
         self._speed_combo = QComboBox()
         self._speed_combo.addItems(_SPEED_LABELS)
@@ -339,13 +403,13 @@ class EditorTab(QWidget):
 
         panel_layout.addLayout(sv_row)
 
-        # ── Text overlay row ──────────────────────────────────────────────────
-        text_row = QHBoxLayout()
-        text_row.setSpacing(8)
+        # ── Text overlay: input line ──────────────────────────────────────────
+        text_input_row = QHBoxLayout()
+        text_input_row.setSpacing(8)
 
         text_lbl = QLabel("Văn bản:")
         text_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_row.addWidget(text_lbl)
+        text_input_row.addWidget(text_lbl)
 
         self._text_input = QLineEdit()
         self._text_input.setMaxLength(80)
@@ -356,11 +420,17 @@ class EditorTab(QWidget):
             f"background: {T.surface2}; color: {T.text}; border: 1px solid {T.border};"
             f" border-radius: 6px; padding: 0 8px; font-size: 11px;"
         )
-        text_row.addWidget(self._text_input, 1)
+        text_input_row.addWidget(self._text_input, 1)
+
+        panel_layout.addLayout(text_input_row)
+
+        # ── Text overlay: options line ────────────────────────────────────────
+        text_opt_row = QHBoxLayout()
+        text_opt_row.setSpacing(8)
 
         pos_lbl = QLabel("Vị trí:")
         pos_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_row.addWidget(pos_lbl)
+        text_opt_row.addWidget(pos_lbl)
 
         self._text_pos_combo = QComboBox()
         self._text_pos_combo.addItems(["Trên", "Giữa", "Dưới"])
@@ -372,11 +442,11 @@ class EditorTab(QWidget):
             f" border-radius: 6px; padding: 0 8px; font-size: 11px; }}"
             f" QComboBox::drop-down {{ border: none; }}"
         )
-        text_row.addWidget(self._text_pos_combo)
+        text_opt_row.addWidget(self._text_pos_combo)
 
         size_lbl = QLabel("Cỡ:")
         size_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_row.addWidget(size_lbl)
+        text_opt_row.addWidget(size_lbl)
 
         self._text_size_spin = QSpinBox()
         self._text_size_spin.setRange(8, 72)
@@ -387,11 +457,11 @@ class EditorTab(QWidget):
             f"QSpinBox {{ background: {T.surface2}; color: {T.text}; border: 1px solid {T.border};"
             f" border-radius: 6px; padding: 0 6px; font-size: 11px; }}"
         )
-        text_row.addWidget(self._text_size_spin)
+        text_opt_row.addWidget(self._text_size_spin)
 
         color_lbl = QLabel("Màu:")
         color_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_row.addWidget(color_lbl)
+        text_opt_row.addWidget(color_lbl)
 
         self._text_color_combo = QComboBox()
         self._text_color_combo.addItems(_TEXT_COLOR_LABELS)
@@ -402,21 +472,22 @@ class EditorTab(QWidget):
             f" border-radius: 6px; padding: 0 8px; font-size: 11px; }}"
             f" QComboBox::drop-down {{ border: none; }}"
         )
-        text_row.addWidget(self._text_color_combo)
+        text_opt_row.addWidget(self._text_color_combo)
 
         self._text_box_check = QCheckBox("Nền")
         self._text_box_check.setEnabled(False)
         self._text_box_check.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_row.addWidget(self._text_box_check)
+        text_opt_row.addWidget(self._text_box_check)
 
         self._text_shadow_check = QCheckBox("Bóng")
         self._text_shadow_check.setEnabled(False)
         self._text_shadow_check.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_row.addWidget(self._text_shadow_check)
+        text_opt_row.addWidget(self._text_shadow_check)
 
-        panel_layout.addLayout(text_row)
+        text_opt_row.addStretch()
+        panel_layout.addLayout(text_opt_row)
 
-        # ── Effects section (OpenReel-inspired) ───────────────────────────────
+        # ── Effects section ───────────────────────────────────────────────────
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {T.border};")
@@ -491,14 +562,20 @@ class EditorTab(QWidget):
         eff_layout.addLayout(fade_row)
 
         panel_layout.addWidget(self._effects_panel)
+        panel_layout.addStretch()
 
-        layout.addWidget(self._controls_panel)
+        self._right_scroll.setWidget(self._controls_panel)
+        self._splitter.addWidget(self._right_scroll)
 
-        # Media player
+        # Splitter proportions: preview expands, controls fixed
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
+        self._splitter.setSizes([700, 380])
+
+        # Media player — QVideoSink wired in Task 3
         self._audio_output = QAudioOutput()
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio_output)
-        self._player.setVideoOutput(self._video_widget)
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
@@ -581,7 +658,7 @@ class EditorTab(QWidget):
         self._text_shadow_check.setEnabled(True)
         self._clear_btn.setVisible(True)
         self._empty_lbl.setVisible(False)
-        self._video_widget.setVisible(True)
+        self._preview_label.setVisible(True)
         self._info_lbl.setText(p.name)
         self._in_ms = 0
         self._out_ms = -1
@@ -610,9 +687,9 @@ class EditorTab(QWidget):
         self._cancel_trim = None
         self._export_btn.setText("✂  Xuất")
         self._preview_btn.setText("▶ Xem thử")
-        if not self._controls_panel.isVisible():
-            self._controls_panel.setVisible(True)
-            self._toggle_ctrl_btn.setText("⊡ Ẩn")
+        if not self._right_scroll.isVisible():
+            self._right_scroll.setVisible(True)
+            self._toggle_ctrl_btn.setText("⊡ Ẩn bảng")
         self._player.play()
 
     def _clear_file(self) -> None:
@@ -652,7 +729,8 @@ class EditorTab(QWidget):
         self._text_box_check.setEnabled(False)
         self._text_shadow_check.setEnabled(False)
         self._clear_btn.setVisible(False)
-        self._video_widget.setVisible(False)
+        self._preview_label.clear_frame()
+        self._preview_label.setVisible(False)
         self._empty_lbl.setVisible(True)
         self._time_lbl.setText("0:00 / 0:00")
         self._info_lbl.setText("")
@@ -676,9 +754,9 @@ class EditorTab(QWidget):
     # ── Toggle controls ───────────────────────────────────────────────────────
 
     def _toggle_controls(self) -> None:
-        visible = self._controls_panel.isVisible()
-        self._controls_panel.setVisible(not visible)
-        self._toggle_ctrl_btn.setText("⊞ Hiện" if visible else "⊡ Ẩn")
+        visible = self._right_scroll.isVisible()
+        self._right_scroll.setVisible(not visible)
+        self._toggle_ctrl_btn.setText("⊞ Hiện bảng" if visible else "⊡ Ẩn bảng")
 
     # ── Preview ───────────────────────────────────────────────────────────────
 
