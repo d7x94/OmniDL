@@ -33,15 +33,15 @@ class TimelineWidget(QWidget):
     _RULER_H = 18
     _TRACK_H = 32
     _HANDLE_H = 14
-    _HANDLE_ZONE = 8   # px hit radius around each handle
+    _HANDLE_ZONE = 8  # px hit radius around each handle
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._duration_ms: int = 0
         self._position_ms: int = 0
         self._in_ms: int = 0
-        self._out_ms: int = -1          # -1 means "end of clip"
-        self._drag: str | None = None   # 'seek' | 'in' | 'out'
+        self._out_ms: int = -1  # -1 means "end of clip"
+        self._drag: str | None = None  # 'seek' | 'in' | 'out'
         self.setFixedHeight(self._RULER_H + self._TRACK_H + self._HANDLE_H)
         self.setMouseTracking(True)
 
@@ -97,7 +97,6 @@ class TimelineWidget(QWidget):
         p.fillRect(0, 0, w, total_h, QColor(T.surface2))
 
         if self._duration_ms <= 0:
-            p.end()
             return
 
         ty = self._RULER_H  # track y-start
@@ -135,11 +134,13 @@ class TimelineWidget(QWidget):
         p.setBrush(QBrush(in_c))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPolygon(
-            QPolygon([
-                QPoint(in_x - 5, hy),
-                QPoint(in_x + 5, hy),
-                QPoint(in_x, hy + self._HANDLE_H - 2),
-            ])
+            QPolygon(
+                [
+                    QPoint(in_x - 5, hy),
+                    QPoint(in_x + 5, hy),
+                    QPoint(in_x, hy + self._HANDLE_H - 2),
+                ]
+            )
         )
 
         # Out handle (red/error colour)
@@ -149,11 +150,13 @@ class TimelineWidget(QWidget):
         p.setBrush(QBrush(out_c))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPolygon(
-            QPolygon([
-                QPoint(out_x - 5, hy),
-                QPoint(out_x + 5, hy),
-                QPoint(out_x, hy + self._HANDLE_H - 2),
-            ])
+            QPolygon(
+                [
+                    QPoint(out_x - 5, hy),
+                    QPoint(out_x + 5, hy),
+                    QPoint(out_x, hy + self._HANDLE_H - 2),
+                ]
+            )
         )
 
         # Playhead (white vertical line + circle cap)
@@ -164,8 +167,6 @@ class TimelineWidget(QWidget):
         p.setBrush(QBrush(ph_c))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(ph_x - 4, 0, 8, 8)
-
-        p.end()
 
     def _draw_ruler(self, p: QPainter, w: int) -> None:
         p.fillRect(0, 0, w, self._RULER_H, QColor(T.surface))
@@ -185,7 +186,7 @@ class TimelineWidget(QWidget):
             step_s = 60
 
         t_s = 0
-        while t_s <= dur_s:
+        while t_s <= int(dur_s):
             x = self._ms_to_x(t_s * 1000)
             p.drawLine(x, self._RULER_H - 5, x, self._RULER_H)
             if w > 200:
