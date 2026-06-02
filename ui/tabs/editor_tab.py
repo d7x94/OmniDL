@@ -680,6 +680,8 @@ class EditorTab(QWidget):
         self._clear_btn.setVisible(True)
         self._empty_lbl.setVisible(False)
         self._preview_label.setVisible(True)
+        self._frame_processor.update_params(EffectParams())
+        self._saved_effect_params = EffectParams()
         self._info_lbl.setText(p.name)
         self._in_ms = 0
         self._out_ms = -1
@@ -752,6 +754,7 @@ class EditorTab(QWidget):
         self._clear_btn.setVisible(False)
         self._preview_label.clear_frame()
         self._preview_label.setVisible(False)
+        self._frame_processor.update_params(EffectParams())
         self._empty_lbl.setVisible(True)
         self._time_lbl.setText("0:00 / 0:00")
         self._info_lbl.setText("")
