@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QPainter, QPixmap
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,11 +29,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.components.frame_processor import EffectParams, FrameProcessor
 from ui.components.timeline_widget import TimelineWidget
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
 
 if TYPE_CHECKING:
+    from PySide6.QtMultimedia import QVideoFrame
+
     from ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
@@ -126,6 +129,8 @@ class EditorTab(QWidget):
         self._preview_mode: bool = False
         self._preview_temp: Optional[Path] = None
         self._cancel_preview: Optional[Callable[[], None]] = None
+        self._frame_processor = FrameProcessor()
+        self._saved_effect_params: EffectParams = EffectParams()
         self._build()
 
     def _build(self) -> None:
@@ -572,10 +577,13 @@ class EditorTab(QWidget):
         self._splitter.setStretchFactor(1, 0)
         self._splitter.setSizes([700, 380])
 
-        # Media player — QVideoSink wired in Task 3
+        # Media player with QVideoSink for frame capture
         self._audio_output = QAudioOutput()
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio_output)
+        self._video_sink = QVideoSink()
+        self._player.setVideoOutput(self._video_sink)
+        self._video_sink.videoFrameChanged.connect(self._on_video_frame)
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
@@ -978,3 +986,8 @@ class EditorTab(QWidget):
         if error != QMediaPlayer.Error.NoError:
             logger.error("QMediaPlayer error: %s - %s", error, error_string)
             self._info_lbl.setText(f"Lỗi: {error_string}")
+
+    def _on_video_frame(self, frame: "QVideoFrame") -> None:
+        pixmap = self._frame_processor.process(frame, self._preview_label.size())
+        if pixmap is not None:
+            self._preview_label.set_frame(pixmap)
