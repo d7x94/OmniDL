@@ -76,6 +76,7 @@ class _BasePanel(QWidget):
         bar = QFrame()
         bar.setFixedSize(3, 16)
         bar.setStyleSheet(f"background: {accent}; border-radius: 2px; border: none;")
+        bar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         hl.addWidget(bar)
         hl.addSpacing(8)
 
@@ -83,6 +84,7 @@ class _BasePanel(QWidget):
         if icon:
             icon_lbl = QLabel(icon)
             icon_lbl.setStyleSheet("background: transparent; font-size: 14px;")
+            icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             hl.addWidget(icon_lbl)
             hl.addSpacing(6)
 
@@ -92,6 +94,7 @@ class _BasePanel(QWidget):
             f"color: {T.text3}; font-size: 11px; font-weight: 600; "
             f"letter-spacing: 0.5px; background: transparent;"
         )
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         hl.addWidget(lbl)
         hl.addSpacing(10)
 
@@ -99,6 +102,7 @@ class _BasePanel(QWidget):
         divider = QFrame()
         divider.setFixedHeight(1)
         divider.setStyleSheet(f"background: {T.divider}; border: none;")
+        divider.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         hl.addWidget(divider, 1)
 
         # Badge (optional)
@@ -110,6 +114,7 @@ class _BasePanel(QWidget):
                 f"background: transparent; border: 1px solid {accent}; "
                 f"border-radius: 3px; padding: 1px 5px;"
             )
+            badge_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             hl.addWidget(badge_lbl)
 
         # Chevron
@@ -118,6 +123,7 @@ class _BasePanel(QWidget):
         chevron.setStyleSheet(
             f"color: {T.text3 if collapsed else accent}; font-size: 10px; background: transparent;"
         )
+        chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         hl.addWidget(chevron)
 
         sw_layout.addWidget(header)
