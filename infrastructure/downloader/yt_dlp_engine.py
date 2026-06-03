@@ -226,6 +226,8 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("kuaishou.com", "kuaishou"),
     ("kwai.com", "kuaishou"),
     ("v.kuaishou.com", "kuaishou"),
+    ("ok.ru", "ok_ru"),
+    ("m.ok.ru", "ok_ru"),
 ]
 
 _IG_RL = _PlatformRateLimiter(1.5)
@@ -380,6 +382,7 @@ _PLATFORM_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"threads\.(net|com)", re.I), "Threads"),
     (re.compile(r"vimeo\.com", re.I), "Vimeo"),
     (re.compile(r"dailymotion\.com", re.I), "Dailymotion"),
+    (re.compile(r"ok\.ru", re.I), "OK.ru"),
 ]
 
 
@@ -1994,7 +1997,8 @@ class YtDlpEngine:
                 # quality variant (SD/LD from hls_pull_url_map) instead of retrying
                 # the same dead CDN path with a refreshed token indefinitely.
                 _tt16_stall_counts: dict[str, int] = {}
-                _STALL_BASE_THRESHOLD = 1
+                _STALL_BASE_THRESHOLD = 3
+                _tt16_grace_wait_done = False
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
                         _seg_path = (
@@ -2173,8 +2177,9 @@ class YtDlpEngine:
                                     # base is dead — exclude it to force trying an
                                     # alternative quality variant (SD/LD).
                                     _is_stall = "stall watchdog" in str(_seg_exc)
+                                    _is_token_expired = "token expired:" in str(_seg_exc)
                                     _stall_base0 = _tt16_current_hls.split("?")[0]
-                                    if not _is_stall:
+                                    if not _is_stall and not _is_token_expired:
                                         _tt16_bad_bases.add(_stall_base0)
                                         _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
                                     else:
@@ -2208,8 +2213,9 @@ class YtDlpEngine:
                                 # falling back to yt-dlp (BUG-TT-22).
                                 if _main_size == 0:
                                     _is_stall2 = "stall watchdog" in str(_seg_exc)
+                                    _is_token_expired2 = "token expired:" in str(_seg_exc)
                                     _stall_base2 = _tt16_current_hls.split("?")[0]
-                                    if not _is_stall2:
+                                    if not _is_stall2 and not _is_token_expired2:
                                         _tt16_bad_bases.add(_stall_base2)
                                         _tt16_bad_hosts.add(_urlparse(_tt16_current_hls).netloc)
                                     else:
@@ -2237,6 +2243,33 @@ class YtDlpEngine:
                                         _tt16_attempt += 1
                                         time.sleep(2)
                                         continue
+                                    if not _tt16_grace_wait_done:
+                                        # BUG-TT-CDNWARM: single CDN variant keeps stalling
+                                        # (propagation lag). Sleep 30s then re-extract with
+                                        # clean state. Must re-extract after sleep — token
+                                        # TTL ~18-25s < 30s so _fresh1 token is expired.
+                                        _tt16_grace_wait_done = True
+                                        logger.info(
+                                            "BUG-TT-CDNWARM: all CDN bases stalling"
+                                            " — waiting 30s for CDN warm-up"
+                                        )
+                                        time.sleep(30)
+                                        _tt16_bad_bases.clear()
+                                        _tt16_stall_counts.clear()
+                                        _grace_fresh = self._extract_tiktok_live_hls_url(
+                                            task.url,
+                                            room_id=_room_id_hint,
+                                            cookie_override=_task_cookie_override,
+                                            username=_username_hint,
+                                        )
+                                        if _grace_fresh:
+                                            _tt16_current_hls = _grace_fresh[0]
+                                            try:
+                                                Path(_direct_out_path).unlink(missing_ok=True)
+                                            except OSError:
+                                                pass
+                                            _tt16_attempt += 1
+                                            continue
                                     raise
                                 _direct_ffmpeg_ok = True
                                 break
@@ -2251,6 +2284,54 @@ class YtDlpEngine:
                             _direct_ffmpeg_ok = True
                             break
                 except yt_dlp.utils.DownloadError:
+                    if task.is_cancellation_requested:
+                        _partial = Path(_direct_out_path)
+                        # BUG-TT-CANCEL-SEG FIX: if cancel happened during a .segN write,
+                        # append whatever was captured to the main .ts before moving/deleting.
+                        if _tt16_attempt > 0:
+                            _cseg = Path(_direct_out_path + f".seg{_tt16_attempt}")
+                            if _cseg.exists() and _cseg.stat().st_size > 0:
+                                try:
+                                    with open(_direct_out_path, "ab") as _fo, open(str(_cseg), "rb") as _fi:
+                                        _fo.write(_fi.read())
+                                    logger.info(
+                                        "BUG-TT-CANCEL-SEG: appended partial seg%d (%s) on cancel",
+                                        _tt16_attempt,
+                                        _fmt_bytes(_cseg.stat().st_size),
+                                    )
+                                except OSError as _ap_c:
+                                    logger.warning(
+                                        "BUG-TT-CANCEL-SEG: append seg on cancel failed: %s", _ap_c
+                                    )
+                        if task.keep_partial and _partial.exists() and _partial.stat().st_size > 0:
+                            import sys as _sys_ps
+
+                            if (
+                                _sys_ps.platform == "win32"
+                                and _partial.parent.resolve() != output_dir.resolve()
+                            ):
+                                import shutil as _shu_ps
+
+                                try:
+                                    _dst_ps = output_dir / _partial.name
+                                    _shu_ps.move(str(_partial), str(_dst_ps))
+                                    task.filename = str(_dst_ps)
+                                except OSError:
+                                    task.filename = str(_partial)
+                            else:
+                                task.filename = str(_partial)
+                            logger.info("Partial TikTok live saved on cancel: %s", task.filename)
+                        elif not task.keep_partial:
+                            try:
+                                _partial.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                        # Always clean up all .segN files left in temp
+                        for _si in range(1, _tt16_attempt + 2):
+                            try:
+                                Path(_direct_out_path + f".seg{_si}").unlink(missing_ok=True)
+                            except OSError:
+                                pass
                     raise
                 except RuntimeError as _tt16_exc:
                     logger.warning(
@@ -2325,16 +2406,46 @@ class YtDlpEngine:
                 # Check the task's own cancellation flag rather than parsing the
                 # error string — reliable across yt-dlp versions and locales.
                 if task.is_cancellation_requested:
-                    # Remove any partial .part files left by yt-dlp so the download
-                    # directory does not accumulate stale fragment files.
-                    try:
-                        for f in output_dir.glob("*.part"):
-                            if task.filename and f.stem in task.filename:
-                                f.unlink(missing_ok=True)
-                                logger.debug("Cleaned up partial file: %s", f)
-                    except OSError as cleanup_exc:
-                        logger.warning("Part-file cleanup failed: %s", cleanup_exc)
-                    raise  # let _run_task handle the CANCELLED transition
+                    if task.keep_partial:
+                        # Locate the partial recording and keep it.
+                        # yt-dlp writes to <filename>.part while downloading;
+                        # rename it to the final name and set task.filename.
+                        _kept: "Path | None" = None
+                        if task.filename and Path(task.filename).exists():
+                            _kept = Path(task.filename)
+                        elif task.filename and Path(task.filename + ".part").exists():
+                            try:
+                                Path(task.filename + ".part").rename(task.filename)
+                                _kept = Path(task.filename)
+                            except OSError:
+                                pass
+                        if not _kept:
+                            try:
+                                _pcands = sorted(
+                                    output_dir.glob("*.part"),
+                                    key=lambda f: f.stat().st_size,
+                                    reverse=True,
+                                )
+                                if _pcands:
+                                    _renamed = _pcands[0].with_suffix("")
+                                    _pcands[0].rename(_renamed)
+                                    _kept = _renamed
+                            except OSError:
+                                pass
+                        if _kept:
+                            task.filename = str(_kept)
+                            logger.info("Partial live file saved on cancel: %s", _kept)
+                    else:
+                        # Remove any partial .part files left by yt-dlp so the download
+                        # directory does not accumulate stale fragment files.
+                        try:
+                            for f in output_dir.glob("*.part"):
+                                if task.filename and f.stem in task.filename:
+                                    f.unlink(missing_ok=True)
+                                    logger.debug("Cleaned up partial file: %s", f)
+                        except OSError as cleanup_exc:
+                            logger.warning("Part-file cleanup failed: %s", cleanup_exc)
+                    raise  # let _run_task handle the CANCELLED / PARTIAL_SAVED transition
 
                 # BUG-TT-02 FIX: TikTok HLS tokens expire after ~1-2 minutes.
                 # When ffmpeg exits with an error on a live stream, re-extract a
@@ -3344,7 +3455,7 @@ class YtDlpEngine:
                     if _m3u8_resp.status_code == 404:
                         raise RuntimeError("404 Not Found: HLS playlist expired or unavailable")
                     if _m3u8_resp.status_code == 403:
-                        raise RuntimeError("403 Forbidden: HLS playlist access denied")
+                        raise RuntimeError("token expired: 403 on HLS playlist — needs fresh URL")
                     if _m3u8_resp.status_code != 200:
                         time.sleep(_POLL_INTERVAL_S)
                         continue

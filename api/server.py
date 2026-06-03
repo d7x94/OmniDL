@@ -637,8 +637,14 @@ def create_app(
         return QueueActionResponse(task_id=task_id, action="resumed")
 
     @app.post("/api/queue/{task_id}/cancel", response_model=QueueActionResponse)
-    async def cancel_task(task_id: str, _: None = Depends(_require_auth)):
-        _get_task_or_404(service, task_id)
+    async def cancel_task(
+        task_id: str,
+        keep_partial: bool = False,
+        _: None = Depends(_require_auth),
+    ):
+        task = _get_task_or_404(service, task_id)
+        if keep_partial or (task.media_info and task.media_info.is_live):
+            task.keep_partial = True
         service.cancel_download(task_id)
         return QueueActionResponse(task_id=task_id, action="cancelled")
 
@@ -700,7 +706,7 @@ def create_app(
         pre-flight failures.
         """
         task = _get_task_or_404(service, task_id)
-        if task.status.name != "COMPLETED":
+        if task.status.name not in {"COMPLETED", "PARTIAL_SAVED"}:
             raise HTTPException(status_code=400, detail="Task is not COMPLETED")
 
         td = service.taildrop
@@ -744,7 +750,7 @@ def create_app(
         Security: path is validated against download_dir before deletion.
         """
         task = _get_task_or_404(service, task_id)
-        if task.status.name != "COMPLETED":
+        if task.status.name not in {"COMPLETED", "PARTIAL_SAVED"}:
             raise HTTPException(status_code=400, detail="Task is not COMPLETED")
 
         file_path = _resolve_task_file(task)
