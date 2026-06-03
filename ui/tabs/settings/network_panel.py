@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -57,6 +58,7 @@ _PC_PLATFORMS = [
     ("twitter", "Twitter / X"),
     ("threads", "Threads"),
     ("kuaishou", "Kuaishou"),
+    ("ok_ru", "OK.ru"),
 ]
 
 
@@ -76,14 +78,17 @@ class NetworkPanel(_BasePanel):
         cfg = self._app.config
 
         # -- Network & Auth ------------------------------------------------
-        self._section(None, "🔒   NETWORK & AUTHENTICATION")
-        net = self._card()
+        sec_net = self._collapsible_section("NETWORK & AUTHENTICATION", "net_auth", icon="🔒")
 
+        # Proxy card
+        proxy_card = self._card(container=sec_net)
         proxy_row = QWidget()
         proxy_row.setStyleSheet("background: transparent;")
         phl = QHBoxLayout(proxy_row)
-        phl.setContentsMargins(16, 12, 16, 4)
-        phl.addWidget(QLabel("Proxy URL"))
+        phl.setContentsMargins(20, 14, 20, 14)
+        proxy_lbl = QLabel("Proxy URL")
+        proxy_lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; background: transparent;")
+        phl.addWidget(proxy_lbl)
         phl.addStretch()
         self._proxy_entry = QLineEdit()
         self._proxy_entry.setFixedSize(260, 32)
@@ -92,47 +97,61 @@ class NetworkPanel(_BasePanel):
         self._proxy_entry.setText(cfg.proxy)
         self._proxy_entry.editingFinished.connect(self._on_proxy_focusout)
         phl.addWidget(self._proxy_entry)
-        net.layout().addWidget(proxy_row)
+        proxy_card.layout().addWidget(proxy_row)
 
-        self._switch_row(net, "Use browser cookies", cfg.use_cookies, lambda v: cfg.set("use_cookies", v))
+        # Cookie card
+        cookie_card = self._card(container=sec_net)
 
-        browser_row = QWidget()
-        browser_row.setStyleSheet("background: transparent;")
-        bhl = QHBoxLayout(browser_row)
-        bhl.setContentsMargins(16, 4, 16, 4)
-        bhl.addWidget(QLabel("Cookie source browser"))
-        bhl.addStretch()
+        # Row: browser selector + use-cookies toggle
+        br_row = QWidget()
+        br_row.setStyleSheet("background: transparent;")
+        brhl = QHBoxLayout(br_row)
+        brhl.setContentsMargins(20, 14, 20, 12)
+        brhl.setSpacing(10)
+        br_lbl = QLabel("Trình duyệt nguồn")
+        br_lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; background: transparent;")
+        brhl.addWidget(br_lbl)
         self._browser_combo = QComboBox()
         self._browser_combo.addItems(["chrome", "firefox", "safari", "edge", "opera", "brave"])
         self._browser_combo.setCurrentText(cfg.cookies_browser)
-        self._browser_combo.setFixedWidth(130)
+        self._browser_combo.setFixedWidth(120)
         self._browser_combo.currentTextChanged.connect(lambda v: cfg.set("cookies_browser", v))
-        bhl.addWidget(self._browser_combo)
-        net.layout().addWidget(browser_row)
+        brhl.addWidget(self._browser_combo)
+        brhl.addStretch()
+        use_lbl = QLabel("Dùng cookies")
+        use_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; background: transparent;")
+        brhl.addWidget(use_lbl)
+        self._use_cookies_sw = QCheckBox()
+        self._use_cookies_sw.setChecked(cfg.use_cookies)
+        self._use_cookies_sw.clicked.connect(lambda v: cfg.set("use_cookies", v))
+        brhl.addWidget(self._use_cookies_sw)
+        cookie_card.layout().addWidget(br_row)
 
-        self._row_label(
-            net,
-            "🌐  Cookie fallback — cho YouTube, Twitch, Vimeo...  "
-            "(dùng khi nền tảng chưa có trong bảng Per-Platform bên dưới)",
-            T.text2,
+        self._separator(cookie_card)
+
+        # Sub-heading: auto extract
+        sh1 = QWidget()
+        sh1.setStyleSheet("background: transparent;")
+        sh1l = QHBoxLayout(sh1)
+        sh1l.setContentsMargins(20, 10, 20, 6)
+        sh1_lbl = QLabel("LẤY COOKIES TỰ ĐỘNG")
+        sh1_lbl.setStyleSheet(
+            f"color: {T.text3}; font-size: 10px; font-weight: 600; letter-spacing: 0.8px; background: transparent;"
         )
-        self._row_label(
-            net,
-            "⚠  File này chứa toàn bộ cookies của trình duyệt (Google, email, banking...).\n"
-            "   Ưu tiên dùng bảng Per-Platform bên dưới để bảo mật hơn.",
-            T.warning_text,
-            wrap=True,
-        )
+        sh1l.addWidget(sh1_lbl)
+        sh1l.addStretch()
+        cookie_card.layout().addWidget(sh1)
 
         ext_row = QWidget()
         ext_row.setStyleSheet("background: transparent;")
         ehl = QHBoxLayout(ext_row)
-        ehl.setContentsMargins(16, 0, 16, 4)
+        ehl.setContentsMargins(20, 0, 20, 6)
+        ehl.setSpacing(8)
         self._extract_global_btn = QPushButton("🔄  Firefox / Edge / Opera")
         self._extract_global_btn.setFixedHeight(30)
         self._extract_global_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._extract_global_btn.setStyleSheet(
-            f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 12px;"
+            f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 12px; padding: 0 12px;"
         )
         self._extract_global_btn.clicked.connect(self._extract_global_cookies)
         ehl.addWidget(self._extract_global_btn)
@@ -140,7 +159,7 @@ class NetworkPanel(_BasePanel):
         self._extract_cdp_btn.setFixedHeight(30)
         self._extract_cdp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._extract_cdp_btn.setStyleSheet(
-            f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 12px;"
+            f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 12px; padding: 0 12px;"
         )
         self._extract_cdp_btn.clicked.connect(self._extract_global_cdp)
         ehl.addWidget(self._extract_cdp_btn)
@@ -150,20 +169,67 @@ class NetworkPanel(_BasePanel):
         )
         ehl.addWidget(self._extract_global_status)
         ehl.addStretch()
-        net.layout().addWidget(ext_row)
+        cookie_card.layout().addWidget(ext_row)
 
-        self._row_label(
-            net,
-            "🔄 = yt-dlp đọc trực tiếp (cần đóng Brave/Chrome trước).  "
-            "🦁 = CDP — không cần đóng trình duyệt, Brave 127+ an toàn.",
+        hint_row = QWidget()
+        hint_row.setStyleSheet("background: transparent;")
+        hhl = QHBoxLayout(hint_row)
+        hhl.setContentsMargins(20, 0, 20, 10)
+        h_lbl = QLabel(
+            "🔄 = yt-dlp đọc trực tiếp (cần đóng Brave/Chrome trước)   •   "
+            "🦁 = CDP — không cần đóng trình duyệt, Brave 127+ an toàn"
         )
+        h_lbl.setWordWrap(True)
+        h_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        hhl.addWidget(h_lbl)
+        cookie_card.layout().addWidget(hint_row)
 
-        self._row_label(net, "📁  Hoặc import file .txt thủ công:")
+        self._separator(cookie_card)
+
+        # Sub-heading: manual import
+        sh2 = QWidget()
+        sh2.setStyleSheet("background: transparent;")
+        sh2l = QHBoxLayout(sh2)
+        sh2l.setContentsMargins(20, 10, 20, 6)
+        sh2_lbl = QLabel("IMPORT FILE THỦ CÔNG")
+        sh2_lbl.setStyleSheet(
+            f"color: {T.text3}; font-size: 10px; font-weight: 600; letter-spacing: 0.8px; background: transparent;"
+        )
+        sh2l.addWidget(sh2_lbl)
+        sh2l.addStretch()
+        cookie_card.layout().addWidget(sh2)
+
+        fb_row = QWidget()
+        fb_row.setStyleSheet("background: transparent;")
+        fbhl = QHBoxLayout(fb_row)
+        fbhl.setContentsMargins(20, 0, 20, 4)
+        fb_lbl = QLabel(
+            "🌐  Cookie fallback — YouTube, Twitch, Vimeo...  "
+            "(dùng khi nền tảng chưa có trong bảng Per-Platform bên dưới)"
+        )
+        fb_lbl.setWordWrap(True)
+        fb_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; background: transparent;")
+        fbhl.addWidget(fb_lbl)
+        cookie_card.layout().addWidget(fb_row)
+
+        warn_row = QWidget()
+        warn_row.setStyleSheet("background: transparent;")
+        whl = QHBoxLayout(warn_row)
+        whl.setContentsMargins(20, 2, 20, 8)
+        w_lbl = QLabel(
+            "⚠  File này chứa toàn bộ cookies của trình duyệt (Google, email, banking...).\n"
+            "   Ưu tiên dùng bảng Per-Platform bên dưới để bảo mật hơn."
+        )
+        w_lbl.setWordWrap(True)
+        w_lbl.setStyleSheet(f"color: {T.warning_text}; font-size: 11px; background: transparent;")
+        whl.addWidget(w_lbl)
+        cookie_card.layout().addWidget(warn_row)
 
         cf_row = QWidget()
         cf_row.setStyleSheet("background: transparent;")
         cfhl = QHBoxLayout(cf_row)
-        cfhl.setContentsMargins(16, 0, 16, 14)
+        cfhl.setContentsMargins(20, 0, 20, 14)
+        cfhl.setSpacing(8)
         self._cf_lbl = QLabel(self._short_cookie_path(cfg.cookie_file))
         self._cf_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 11px; background: transparent;")
         cfhl.addWidget(self._cf_lbl, 1)
@@ -183,11 +249,17 @@ class NetworkPanel(_BasePanel):
         )
         self._clear_cf_btn.clicked.connect(self._clear_cookie_file)
         cfhl.addWidget(self._clear_cf_btn)
-        net.layout().addWidget(cf_row)
+        cookie_card.layout().addWidget(cf_row)
 
         # -- Per-platform cookies ------------------------------------------
-        self._section(None, "🍪   PER-PLATFORM COOKIES  ✅ Khuyến nghị — bảo mật hơn")
-        pc_card = self._card()
+        sec_pc = self._collapsible_section(
+            "PER-PLATFORM COOKIES",
+            "net_per_platform",
+            icon="🍪",
+            badge="KHUYẾN NGHỊ",
+            badge_color=T.success,
+        )
+        pc_card = self._card(container=sec_pc)
 
         self._row_label(
             pc_card,
@@ -286,8 +358,13 @@ class NetworkPanel(_BasePanel):
     # ── TikTok Account Pool UI ─────────────────────────────────────────────
 
     def _build_tiktok_accounts_section(self) -> None:
-        self._section(None, "🎵   TIKTOK ACCOUNTS   — Pool tài khoản để tải song song")
-        self._tt_card = self._card()
+        sec_tt = self._collapsible_section(
+            "TIKTOK ACCOUNTS",
+            "net_tiktok_pool",
+            icon="🎵",
+            badge="POOL",
+        )
+        self._tt_card = self._card(container=sec_tt)
 
         self._row_label(
             self._tt_card,
@@ -906,6 +983,7 @@ class NetworkPanel(_BasePanel):
             "twitter": "Twitter/X",
             "threads": "Threads",
             "kuaishou": "Kuaishou",
+            "ok_ru": "OK.ru",
         }.get(platform_key, platform_key.title())
         chosen, _ = QFileDialog.getOpenFileName(
             self,
@@ -953,6 +1031,7 @@ class NetworkPanel(_BasePanel):
             "twitter": "Twitter/X",
             "threads": "Threads",
             "kuaishou": "Kuaishou",
+            "ok_ru": "OK.ru",
         }.get(platform_key, platform_key.title())
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cookies.txt"
@@ -1023,6 +1102,7 @@ class NetworkPanel(_BasePanel):
             "twitter": "Twitter/X",
             "threads": "Threads",
             "kuaishou": "Kuaishou",
+            "ok_ru": "OK.ru",
         }.get(platform_key, platform_key.title())
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
