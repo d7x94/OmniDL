@@ -1,4 +1,5 @@
 """Base class shared by every Settings sub-panel (PySide6)."""
+
 from __future__ import annotations
 
 import logging
@@ -24,13 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 class _BasePanel(QWidget):
-
     def __init__(self, parent, app: "MainWindow") -> None:
         super().__init__(parent)
         self._app = app
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
+        self._sections: list[tuple[str, str, QWidget, QWidget]] = []
+        # (display_text_lower, cfg_key, section_wrapper, content)
 
     def _section(self, _parent, text: str) -> None:
         self._layout.addSpacing(28)
@@ -43,24 +45,127 @@ class _BasePanel(QWidget):
         wl.addWidget(lbl)
         self._layout.addWidget(wrapper)
 
-    def _card(self, _parent=None) -> QFrame:
+    def _collapsible_section(
+        self,
+        text: str,
+        key: str = "",
+        icon: str = "",
+        badge: str = "",
+        badge_color: str = "",
+    ) -> QWidget:
+        cfg_key = f"ui.settings.collapsed.{key or text}"
+        collapsed = bool(self._app.config.get(cfg_key, False))
+
+        accent = badge_color or T.primary
+
+        section_wrapper = QWidget()
+        section_wrapper.setStyleSheet("background: transparent;")
+        sw_layout = QVBoxLayout(section_wrapper)
+        sw_layout.setContentsMargins(0, 20, 0, 0)
+        sw_layout.setSpacing(0)
+
+        # Clickable header row
+        header = QWidget()
+        header.setStyleSheet("background: transparent;")
+        header.setCursor(Qt.CursorShape.PointingHandCursor)
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(28, 0, 28, 8)
+        hl.setSpacing(0)
+
+        # Accent bar
+        bar = QFrame()
+        bar.setFixedSize(3, 16)
+        bar.setStyleSheet(f"background: {accent}; border-radius: 2px; border: none;")
+        hl.addWidget(bar)
+        hl.addSpacing(8)
+
+        # Icon (optional)
+        if icon:
+            icon_lbl = QLabel(icon)
+            icon_lbl.setStyleSheet("background: transparent; font-size: 14px;")
+            hl.addWidget(icon_lbl)
+            hl.addSpacing(6)
+
+        # Label
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            f"color: {T.text3}; font-size: 11px; font-weight: 600; "
+            f"letter-spacing: 0.5px; background: transparent;"
+        )
+        hl.addWidget(lbl)
+        hl.addSpacing(10)
+
+        # Divider line (flex)
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background: {T.divider}; border: none;")
+        hl.addWidget(divider, 1)
+
+        # Badge (optional)
+        if badge:
+            hl.addSpacing(8)
+            badge_lbl = QLabel(badge)
+            badge_lbl.setStyleSheet(
+                f"color: {accent}; font-size: 10px; font-weight: 600; "
+                f"background: transparent; border: 1px solid {accent}; "
+                f"border-radius: 3px; padding: 1px 5px;"
+            )
+            hl.addWidget(badge_lbl)
+
+        # Chevron
+        hl.addSpacing(8)
+        chevron = QLabel("▼" if collapsed else "▲")
+        chevron.setStyleSheet(
+            f"color: {T.text3 if collapsed else accent}; font-size: 10px; background: transparent;"
+        )
+        hl.addWidget(chevron)
+
+        sw_layout.addWidget(header)
+
+        # Collapsible content area
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        content.setVisible(not collapsed)
+        sw_layout.addWidget(content)
+
+        self._layout.addWidget(section_wrapper)
+        self._sections.append((text.lower(), cfg_key, section_wrapper, content))
+
+        _state = [collapsed]
+
+        def _toggle():
+            _state[0] = not _state[0]
+            content.setVisible(not _state[0])
+            chevron.setText("▼" if _state[0] else "▲")
+            chevron.setStyleSheet(
+                f"color: {T.text3 if _state[0] else accent}; font-size: 10px; background: transparent;"
+            )
+            self._app.config.set(cfg_key, _state[0])
+
+        header.mousePressEvent = lambda e: _toggle()
+        return content
+
+    def _card(self, _parent=None, container: QWidget | None = None) -> QFrame:
         wrapper = QWidget()
         wrapper.setStyleSheet("background: transparent;")
         wl = QHBoxLayout(wrapper)
         wl.setContentsMargins(28, 0, 28, 10)
         card = QFrame()
-        card.setStyleSheet(
-            f"QFrame {{ background-color: {T.surface}; border: none; border-radius: 12px; }}"
-        )
+        card.setStyleSheet(f"QFrame {{ background-color: {T.surface}; border: none; border-radius: 12px; }}")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.setSpacing(0)
         wl.addWidget(card)
-        self._layout.addWidget(wrapper)
+        if container is not None:
+            container.layout().addWidget(wrapper)
+        else:
+            self._layout.addWidget(wrapper)
         return card
 
-    def _slider_row(self, card: QFrame, label_text: str, initial_val: int,
-                    lo: int, hi: int, cmd) -> QSlider:
+    def _slider_row(self, card: QFrame, label_text: str, initial_val: int, lo: int, hi: int, cmd) -> QSlider:
         row = QWidget()
         row.setStyleSheet("background: transparent;")
         hl = QHBoxLayout(row)
@@ -101,8 +206,7 @@ class _BasePanel(QWidget):
         slider.valueChanged.connect(_on_change)
         return slider
 
-    def _switch_row(self, card: QFrame, label_text: str,
-                    initial_val: bool, cmd) -> QCheckBox:
+    def _switch_row(self, card: QFrame, label_text: str, initial_val: bool, cmd) -> QCheckBox:
         row = QWidget()
         row.setStyleSheet("background: transparent;")
         hl = QHBoxLayout(row)
@@ -122,20 +226,17 @@ class _BasePanel(QWidget):
         lbl.setWordWrap(True)
         lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
         lbl.setStyleSheet(
-            f"color: {color or T.text3}; font-size: 11px; background: transparent;"
-            " padding: 0 20px 10px;"
+            f"color: {color or T.text3}; font-size: 11px; background: transparent; padding: 0 20px 10px;"
         )
         card.layout().addWidget(lbl)
         return lbl
 
-    def _row_label(self, card: QFrame, text: str, color: str = "",
-                   wrap: bool = False) -> QLabel:
+    def _row_label(self, card: QFrame, text: str, color: str = "", wrap: bool = False) -> QLabel:
         lbl = QLabel(text)
         if wrap:
             lbl.setWordWrap(True)
         lbl.setStyleSheet(
-            f"color: {color or T.text3}; font-size: 11px; background: transparent;"
-            " padding: 4px 20px 4px;"
+            f"color: {color or T.text3}; font-size: 11px; background: transparent; padding: 4px 20px 4px;"
         )
         card.layout().addWidget(lbl)
         return lbl
