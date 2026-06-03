@@ -49,8 +49,8 @@ class RemoteApiPanel(_BasePanel):
     def _build(self) -> None:
         cfg = self._app.config
 
-        self._section(None, "🔌   REMOTE API  (iOS / Mobile)")
-        api_card = self._card()
+        sec_api = self._collapsible_section("REMOTE API", "api_remote", icon="🔌")
+        api_card = self._card(container=sec_api)
 
         self._row_label(
             api_card,
@@ -122,8 +122,8 @@ class RemoteApiPanel(_BasePanel):
         api_card.layout().addWidget(token_action_row)
 
         # ── Tailscale HTTPS Profile section ─────────────────────────────
-        self._section(None, "🔒   TAILSCALE HTTPS PROFILE")
-        ts_card = self._card()
+        sec_ts = self._collapsible_section("TAILSCALE HTTPS PROFILE", "api_tailscale", icon="🔒")
+        ts_card = self._card(container=sec_ts)
 
         self._row_label(
             ts_card,

@@ -190,8 +190,8 @@ class ToolsPanel(_BasePanel):
         cfg = self._app.config
 
         # -- yt-dlp engine -------------------------------------------------
-        self._section(None, "🔧   YT-DLP ENGINE")
-        ytdlp = self._card()
+        sec_ytdlp = self._collapsible_section("YT-DLP ENGINE", "tools_ytdlp", icon="🔧")
+        ytdlp = self._card(container=sec_ytdlp)
 
         ver_row = QWidget()
         ver_row.setStyleSheet("background: transparent;")
@@ -258,8 +258,8 @@ class ToolsPanel(_BasePanel):
         ytdlp.layout().addWidget(extra_row)
 
         # -- gallery-dl engine ---------------------------------------------
-        self._section(None, "🖼   GALLERY-DL ENGINE")
-        gdl = self._card()
+        sec_gdl = self._collapsible_section("GALLERY-DL ENGINE", "tools_gallery_dl", icon="🖼")
+        gdl = self._card(container=sec_gdl)
 
         gdl_ver_row = QWidget()
         gdl_ver_row.setStyleSheet("background: transparent;")
@@ -291,8 +291,8 @@ class ToolsPanel(_BasePanel):
         gdl.layout().addWidget(gdl_upd_row)
 
         # -- Data & Privacy ------------------------------------------------
-        self._section(None, "🗑   DATA & PRIVACY")
-        data_card = self._card()
+        sec_data = self._collapsible_section("DATA & PRIVACY", "tools_data_privacy", icon="🗑")
+        data_card = self._card(container=sec_data)
 
         self._row_label(
             data_card,

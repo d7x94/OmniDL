@@ -41,8 +41,8 @@ class TaildropPanel(_BasePanel):
     def _build(self) -> None:
         cfg = self._app.config
 
-        self._section(None, "📲   TAILDROP  (Gửi file → iPhone qua Tailscale)")
-        td_card = self._card()
+        sec_td = self._collapsible_section("TAILDROP", "tail_config", icon="📲")
+        td_card = self._card(container=sec_td)
 
         self._row_label(
             td_card,

@@ -1,4 +1,5 @@
 """Settings panel: Download Location · Behaviour · Appearance (PySide6)."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -37,8 +38,8 @@ def _pick_folder_win32(initial_dir: str):
         return (ctypes.c_byte * 16)(*raw)
 
     CLSID_FileOpenDialog = _guid(0xDC1C5A9C, 0xE88A, 0x4DDE, 0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7)
-    IID_IFileOpenDialog  = _guid(0xD57C7288, 0xD4AD, 0x4768, 0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60)
-    IID_IShellItem       = _guid(0x43826D1E, 0xE718, 0x42EE, 0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE)
+    IID_IFileOpenDialog = _guid(0xD57C7288, 0xD4AD, 0x4768, 0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60)
+    IID_IShellItem = _guid(0x43826D1E, 0xE718, 0x42EE, 0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE)
 
     S_OK = 0
     HRESULT_CANCELLED = 0x800704C7
@@ -47,17 +48,17 @@ def _pick_folder_win32(initial_dir: str):
     FOS_FORCEFILESYSTEM = 0x00000040
     SIGDN_FILESYSPATH = ctypes.c_int(-2147123200)
 
-    ole32   = ctypes.windll.ole32
+    ole32 = ctypes.windll.ole32
     shell32 = ctypes.windll.shell32
 
     def _com(obj, idx, *args):
         vtbl_ptr = ctypes.cast(
-            ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0],
-            ctypes.POINTER(ctypes.c_void_p))
+            ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p)
+        )
         fn_addr = vtbl_ptr[idx]
 
         def _argtype(a):
-            return ctypes.c_void_p if hasattr(a, '_obj') else type(a)
+            return ctypes.c_void_p if hasattr(a, "_obj") else type(a)
 
         arg_types = [ctypes.c_void_p] + [_argtype(a) for a in args]
         proto = ctypes.WINFUNCTYPE(ctypes.c_long, *arg_types)
@@ -68,8 +69,11 @@ def _pick_folder_win32(initial_dir: str):
 
     dialog = ctypes.c_void_p()
     hr = ole32.CoCreateInstance(
-        CLSID_FileOpenDialog, None, CLSCTX_INPROC_SERVER,
-        IID_IFileOpenDialog, ctypes.byref(dialog),
+        CLSID_FileOpenDialog,
+        None,
+        CLSCTX_INPROC_SERVER,
+        IID_IFileOpenDialog,
+        ctypes.byref(dialog),
     )
     if hr != S_OK or not dialog:
         if _co_needs_uninit:
@@ -82,7 +86,8 @@ def _pick_folder_win32(initial_dir: str):
         if _init.exists():
             shell_item = ctypes.c_void_p()
             hr2 = shell32.SHCreateItemFromParsingName(
-                str(_init), None, IID_IShellItem, ctypes.byref(shell_item))
+                str(_init), None, IID_IShellItem, ctypes.byref(shell_item)
+            )
             if hr2 == S_OK and shell_item:
                 try:
                     _com(dialog, 12, shell_item)
@@ -122,13 +127,15 @@ def _pick_folder_win32(initial_dir: str):
 
 def _resolve_com_rename(stale_path):
     import time
+
     parent = stale_path.parent
     if not parent.is_dir():
         return None
     try:
         now = time.time()
         candidates = [
-            d for d in parent.iterdir()
+            d
+            for d in parent.iterdir()
             if d.is_dir() and d.name != stale_path.name and (now - d.stat().st_ctime) < 30
         ]
         if not candidates:
@@ -143,6 +150,7 @@ _DIALOG_PREWARMED = False
 
 def _prewarm_file_dialog_win32() -> None:
     import sys as _sys
+
     global _DIALOG_PREWARMED
     if _DIALOG_PREWARMED or _sys.platform != "win32":
         return
@@ -156,7 +164,7 @@ def _prewarm_file_dialog_win32() -> None:
             return (ctypes.c_byte * 16)(*raw)
 
         CLSID = _guid(0xDC1C5A9C, 0xE88A, 0x4DDE, 0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7)
-        IID   = _guid(0xD57C7288, 0xD4AD, 0x4768, 0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60)
+        IID = _guid(0xD57C7288, 0xD4AD, 0x4768, 0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60)
         S_OK = 0
         ole32 = ctypes.windll.ole32
         co_hr = ole32.CoInitialize(None)
@@ -166,8 +174,8 @@ def _prewarm_file_dialog_win32() -> None:
             hr = ole32.CoCreateInstance(CLSID, None, 1, IID, ctypes.byref(dialog))
             if hr == S_OK and dialog:
                 vtbl = ctypes.cast(
-                    ctypes.cast(dialog, ctypes.POINTER(ctypes.c_void_p))[0],
-                    ctypes.POINTER(ctypes.c_void_p))
+                    ctypes.cast(dialog, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p)
+                )
                 ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vtbl[2])(dialog)
             shell32 = ctypes.windll.shell32
             shell32.SHChangeNotify(ctypes.c_long(0x08000000), ctypes.c_uint(0x00001000), None, None)
@@ -179,7 +187,6 @@ def _prewarm_file_dialog_win32() -> None:
 
 
 class GeneralPanel(_BasePanel):
-
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, app)
         _prewarm_file_dialog_win32()
@@ -189,8 +196,8 @@ class GeneralPanel(_BasePanel):
         cfg = self._app.config
 
         # -- Download location ---------------------------------------------
-        self._section(None, "VỊ TRÍ LƯU FILE")
-        loc = self._card()
+        sec_loc = self._collapsible_section("VỊ TRÍ LƯU FILE", "gen_location", icon="📁")
+        loc = self._card(container=sec_loc)
 
         row = QWidget()
         row.setStyleSheet("background: transparent;")
@@ -208,26 +215,33 @@ class GeneralPanel(_BasePanel):
         loc.layout().addWidget(row)
 
         # -- Download behaviour --------------------------------------------
-        self._section(None, "HÀNH VI TẢI XUỐNG")
-        beh = self._card()
+        sec_beh = self._collapsible_section("HÀNH VI TẢI XUỐNG", "gen_behaviour", icon="⬇️")
+        beh = self._card(container=sec_beh)
 
-        self._slider_row(beh, "Số lần tải đồng thời tối đa",
-                         cfg.max_concurrent, 1, 8,
-                         lambda v: cfg.set("max_concurrent", int(v)))
+        self._slider_row(
+            beh,
+            "Số lần tải đồng thời tối đa",
+            cfg.max_concurrent,
+            1,
+            8,
+            lambda v: cfg.set("max_concurrent", int(v)),
+        )
         self._hint(beh, "⚠  Thay đổi có hiệu lực sau khi khởi động lại ứng dụng.", T.warning_text)
 
-        self._slider_row(beh, "Số lần thử lại khi lỗi",
-                         cfg.max_retries, 0, 10,
-                         lambda v: cfg.set("max_retries", int(v)))
+        self._slider_row(
+            beh, "Số lần thử lại khi lỗi", cfg.max_retries, 0, 10, lambda v: cfg.set("max_retries", int(v))
+        )
 
-        self._switch_row(beh, "Nhúng ảnh thu nhỏ (thumbnail)", cfg.embed_thumbnail,
-                         lambda v: cfg.set("embed_thumbnail", v))
-        self._switch_row(beh, "Nhúng thông tin metadata", cfg.embed_metadata,
-                         lambda v: cfg.set("embed_metadata", v))
+        self._switch_row(
+            beh, "Nhúng ảnh thu nhỏ (thumbnail)", cfg.embed_thumbnail, lambda v: cfg.set("embed_thumbnail", v)
+        )
+        self._switch_row(
+            beh, "Nhúng thông tin metadata", cfg.embed_metadata, lambda v: cfg.set("embed_metadata", v)
+        )
 
         # -- Appearance ----------------------------------------------------
-        self._section(None, "GIAO DIỆN")
-        app_card = self._card()
+        sec_app = self._collapsible_section("GIAO DIỆN", "gen_appearance", icon="🎨")
+        app_card = self._card(container=sec_app)
 
         theme_row = QWidget()
         theme_row.setStyleSheet("background: transparent;")
@@ -248,20 +262,22 @@ class GeneralPanel(_BasePanel):
         app_card.layout().addWidget(theme_row)
 
         # -- Clipboard monitor ---------------------------------------------
-        self._section(None, "THEO DÕI CLIPBOARD")
-        clip = self._card()
+        sec_clip = self._collapsible_section("THEO DÕI CLIPBOARD", "gen_clipboard", icon="📋")
+        clip = self._card(container=sec_clip)
 
-        self._switch_row(clip, "Tự động phát hiện URL từ clipboard",
-                         cfg.clipboard_monitor_enabled,
-                         self._on_clipboard_toggle)
+        self._switch_row(
+            clip,
+            "Tự động phát hiện URL từ clipboard",
+            cfg.clipboard_monitor_enabled,
+            self._on_clipboard_toggle,
+        )
         self._hint(clip, "Kiểm tra clipboard mỗi 1,5 giây và tự động điền URL vào thanh tìm kiếm")
 
         # -- Developer -----------------------------------------------------
-        self._section(None, "NHÂN VIÊN PHÁT TRIỂN")
-        dev = self._card()
+        sec_dev = self._collapsible_section("NHÂN VIÊN PHÁT TRIỂN", "gen_developer", icon="🛠️")
+        dev = self._card(container=sec_dev)
 
-        self._switch_row(dev, "Ghi log chi tiết (debug)", cfg.debug_logging,
-                         self._on_debug_toggle)
+        self._switch_row(dev, "Ghi log chi tiết (debug)", cfg.debug_logging, self._on_debug_toggle)
         self._hint(dev, "Ghi chi tiết vào omnidl_debug.log  •  Không cần khởi động lại")
 
         self._layout.addSpacing(20)
@@ -293,8 +309,7 @@ class GeneralPanel(_BasePanel):
                 _from_com = True
 
         if chosen is None:
-            chosen = QFileDialog.getExistingDirectory(
-                self, "Select download folder", initialdir)
+            chosen = QFileDialog.getExistingDirectory(self, "Select download folder", initialdir)
 
         if not chosen:
             return
@@ -317,7 +332,8 @@ class GeneralPanel(_BasePanel):
                     if time.time() - chosen_path.parent.stat().st_mtime < 1.5:
                         _rb_now = time.time()
                         _rb_candidates = [
-                            d for d in chosen_path.parent.iterdir()
+                            d
+                            for d in chosen_path.parent.iterdir()
                             if d.is_dir()
                             and d.name != chosen_path.name
                             and (_rb_now - d.stat().st_ctime) < 30
@@ -354,6 +370,7 @@ class GeneralPanel(_BasePanel):
     def _on_debug_toggle(self, enabled: bool) -> None:
         self._app.config.set("debug_logging", enabled)
         from utils.logger import apply_debug_logging
+
         apply_debug_logging(enabled)
         msg = "Debug logging ON — writing to omnidl_debug.log" if enabled else "Debug logging OFF"
         logger.info(msg)
