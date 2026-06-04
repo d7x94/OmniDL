@@ -1492,7 +1492,7 @@ class TestBugTtProd:
             def extract_info(self, url, download=False):
                 # musical_ly app_info client exposes h264 format; others audio-only
                 ea = self._opts.get("extractor_args", {}).get("tiktok", {})
-                if ea.get("app_info") == ["/musical_ly/35.1.3/2023501030/1233"]:
+                if ea.get("app_info") == ["7250000000000000001/musical_ly/35.1.3/2023501030/1233"]:
                     return {
                         "formats": [
                             {
@@ -1554,7 +1554,9 @@ class TestBugTtProd:
         assert retry_file.exists(), "BUG-TT-SHOP-3: retry output must be kept"
         # captured_opts[1] is the extract_info call for musical_ly (quiet=True + extractor_args)
         retry_extractor_args = captured_opts[1].get("extractor_args", {}).get("tiktok", {})
-        assert retry_extractor_args.get("app_info") == ["/musical_ly/35.1.3/2023501030/1233"]
+        assert retry_extractor_args.get("app_info") == [
+            "7250000000000000001/musical_ly/35.1.3/2023501030/1233"
+        ]
 
     def test_shopping_video_musical_ly_retry_also_audio_only_raises(self, tmp_path):
         """BUG-TT-SHOP-3: extract_info shows no video formats for any client -> error raised, no retry download."""

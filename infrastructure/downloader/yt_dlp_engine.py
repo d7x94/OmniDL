@@ -2730,9 +2730,9 @@ class YtDlpEngine:
                                 _shop4_format = "bestvideo+bestaudio/best"
                                 for _s4_extractor in (
                                     None,  # bare format retry first (no extractor override)
-                                    {"app_info": ["/musical_ly/35.1.3/2023501030/1233"]},
-                                    {"app_info": ["/trill/35.1.3/2023501030/1180"]},
-                                    {"app_info": ["/aweme/35.1.3/2023501030/1128"]},
+                                    {"app_info": ["7250000000000000007/musical_ly/35.1.3/2023501030/1233"]},
+                                    {"app_info": ["7250000000000000008/trill/35.1.3/2023501030/1180"]},
+                                    {"app_info": ["7250000000000000009/aweme/35.1.3/2023501030/1128"]},
                                 ):
                                     _s4_opts = dict(opts)
                                     _s4_opts["format"] = _shop4_format
@@ -2829,19 +2829,19 @@ class YtDlpEngine:
                 # strings so each client actually hits the mobile API endpoint.
                 # aid: aweme=1128, trill=1180, musical_ly=1233 (from yt-dlp source)
                 _shop3_clients = [
-                    {"app_info": ["/musical_ly/35.1.3/2023501030/1233"]},  # aid=1233
-                    {"app_info": ["/trill/35.1.3/2023501030/1180"]},  # aid=1180
-                    {"app_info": ["/aweme/35.1.3/2023501030/1128"]},  # aid=1128
+                    {"app_info": ["7250000000000000001/musical_ly/35.1.3/2023501030/1233"]},  # aid=1233
+                    {"app_info": ["7250000000000000002/trill/35.1.3/2023501030/1180"]},  # aid=1180
+                    {"app_info": ["7250000000000000003/aweme/35.1.3/2023501030/1128"]},  # aid=1128
                     {
-                        "app_info": ["/musical_ly/35.1.3/2023501030/1233"],
+                        "app_info": ["7250000000000000004/musical_ly/35.1.3/2023501030/1233"],
                         "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
                     },
                     {
-                        "app_info": ["/trill/35.1.3/2023501030/1180"],
+                        "app_info": ["7250000000000000005/trill/35.1.3/2023501030/1180"],
                         "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
                     },
                     {
-                        "app_info": ["/aweme/35.1.3/2023501030/1128"],
+                        "app_info": ["7250000000000000006/aweme/35.1.3/2023501030/1128"],
                         "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
                     },
                 ]
