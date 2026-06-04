@@ -2320,6 +2320,36 @@ class YtDlpEngine:
                                     task.filename = str(_partial)
                             else:
                                 task.filename = str(_partial)
+                            # Rename to descriptive name (mirrors BUG-LN-WIN post-download rename)
+                            try:
+                                from utils.naming import build_filename as _build_fn_c  # noqa: PLC0415
+
+                                _mi_c = task.media_info
+                                _upl_c = (_mi_c.uploader if _mi_c and _mi_c.uploader else "") or ""
+                                if not _upl_c:
+                                    import re as _re_c  # noqa: PLC0415
+
+                                    _upl_url_c = (_mi_c.url if _mi_c and _mi_c.url else "") or task.url or ""
+                                    _upl_m_c = _re_c.search(
+                                        r"tiktok\.com/@([A-Za-z0-9_.]+)", _upl_url_c, _re_c.I
+                                    )
+                                    _upl_c = _upl_m_c.group(1) if _upl_m_c else "Unknown"
+                                _title_c = (_mi_c.title if _mi_c and _mi_c.title else "") or ""
+                                _vid_c = (_mi_c.video_id if _mi_c and _mi_c.video_id else _live_vid_id)[:20]
+                                _new_name_c = _build_fn_c(
+                                    uploader=_upl_c,
+                                    date_label=f"[LIVE] {rec_ts}",
+                                    title=_title_c,
+                                    video_id=_vid_c,
+                                    ext="ts",
+                                )
+                                _cur_c = Path(task.filename)
+                                _new_path_c = output_dir / _new_name_c
+                                if _new_path_c != _cur_c and _cur_c.is_file():
+                                    _cur_c.rename(_new_path_c)
+                                    task.filename = str(_new_path_c)
+                            except Exception as _rn_c:
+                                logger.warning("BUG-TT-CANCEL-SEG: rename on cancel failed: %s", _rn_c)
                             logger.info("Partial TikTok live saved on cancel: %s", task.filename)
                         elif not task.keep_partial:
                             try:
