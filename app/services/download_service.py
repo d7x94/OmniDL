@@ -465,6 +465,9 @@ class DownloadService:
     def clear_finished(self, exclude_ids: "frozenset[str] | None" = None) -> None:
         self._manager.clear_terminal(exclude_ids=exclude_ids)
 
+    def clear_specific(self, ids: list[str]) -> None:
+        self._manager.clear_specific(ids)
+
     def rebuild_tiktok_pool(self) -> None:
         self._manager.rebuild_tiktok_pool()
 

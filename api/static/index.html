@@ -855,8 +855,9 @@
 
     <!-- ── Queue tab ─────────────────────────────────────────────────── -->
     <div class="tab-panel" id="panel-queue">
-      <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-        <button class="btn btn-secondary btn-sm" onclick="clearFinished()">Xóa đã xong</button>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:10px;">
+        <button class="btn btn-secondary btn-sm" id="select-mode-btn" onclick="toggleSelectMode()">Chọn</button>
+        <button class="btn btn-secondary btn-sm" id="clear-finished-btn" onclick="clearFinished()">Xóa đã xong</button>
       </div>
       <div id="queue-list"></div>
     </div>
@@ -1438,7 +1439,12 @@ function queueItemHtml(t) {
   const fillCls = { COMPLETED:'done', FAILED:'failed', PAUSED:'paused', CANCELLED:'failed' }[t.status] || '';
   const isPaused = t.status === 'PAUSED';
   const isActive = ['QUEUED','DOWNLOADING','PROCESSING'].includes(t.status);
-  const isDone   = ['COMPLETED','FAILED','CANCELLED'].includes(t.status);
+  const isDone   = _TERMINAL.has(t.status);
+  const isChecked = selectedIds.has(t.id);
+  const checkboxHtml = (selectMode && isDone)
+    ? `<input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleSelectItem('${t.id}', this.checked)"
+         style="margin-right:8px; width:16px; height:16px; accent-color:var(--primary); flex-shrink:0;">`
+    : '';
 
   const speed = t.speed ? `<span>${t.speed}</span>` : '';
   const eta   = t.eta   ? `<span>ETA ${t.eta}</span>` : '';
@@ -1461,7 +1467,7 @@ function queueItemHtml(t) {
 
   // ── File-action buttons (only when original file still exists on disk) ──
   let fileActionBtns = '';
-  if (t.status === 'COMPLETED' && t.filename) {
+  if ((t.status === 'COMPLETED' || t.status === 'PARTIAL_SAVED') && t.filename) {
     fileActionBtns = `<div class="qi-file-actions">
       <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
         ☁ Send to iPhone
@@ -1480,7 +1486,7 @@ function queueItemHtml(t) {
   // Stays visible even after the original file is deleted, so the user can
   // still delete / preview the converted output.
   let convertBlock = '';
-  if (t.status === 'COMPLETED') {
+  if (t.status === 'COMPLETED' || t.status === 'PARTIAL_SAVED') {
     const activeJob = Object.values(convertJobs).find(
       j => j.source_task_id === t.id &&
            ['PENDING','CONVERTING'].includes(j.status)
@@ -1545,6 +1551,7 @@ function queueItemHtml(t) {
 
   return `<div class="queue-item" id="qi-${t.id}">
     <div class="qi-header">
+      ${checkboxHtml}
       ${t.is_live ? '<span style="background:#e53935;color:#fff;font-size:10px;font-weight:700;border-radius:4px;padding:1px 6px;letter-spacing:.5px;flex-shrink:0;margin-right:6px;">LIVE</span>' : ''}
       <div class="qi-title">${escHtml(t.title)}</div>
       <div class="qi-platform">${escHtml(t.platform)}</div>
@@ -1607,14 +1614,52 @@ async function cancelTask(id) {
     // the server-side cancel may still go through; SSE will update the UI.
   }
 }
+let selectMode = false;
+const selectedIds = new Set();
+
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  selectedIds.clear();
+  const btn = document.getElementById('select-mode-btn');
+  if (btn) btn.classList.toggle('btn-primary', selectMode);
+  const clearBtn = document.getElementById('clear-finished-btn');
+  if (clearBtn) clearBtn.textContent = 'Xóa đã xong';
+  renderQueue();
+}
+
+function toggleSelectItem(id, checked) {
+  if (checked) selectedIds.add(id);
+  else selectedIds.delete(id);
+  const clearBtn = document.getElementById('clear-finished-btn');
+  if (clearBtn) {
+    clearBtn.textContent = (selectMode && selectedIds.size > 0)
+      ? `Xóa đã chọn (${selectedIds.size})`
+      : 'Xóa đã xong';
+  }
+}
+
+const _TERMINAL = new Set(['COMPLETED','FAILED','CANCELLED','PARTIAL_SAVED']);
+
 async function clearFinished() {
   try {
+    if (selectMode && selectedIds.size > 0) {
+      const ids = [...selectedIds];
+      await api('DELETE', '/api/queue/items', {ids});
+      ids.forEach(id => delete tasks[id]);
+      selectedIds.clear();
+      const clearBtn = document.getElementById('clear-finished-btn');
+      if (clearBtn) clearBtn.textContent = 'Xóa đã xong';
+      renderQueue();
+      updateQueueBadge();
+      toast(`Đã xóa ${ids.length} tác vụ`);
+      return;
+    }
     const r = await api('DELETE', '/api/queue/finished');
     const excluded = new Set(r.excluded_ids || []);
     // Remove terminal tasks from local state, but keep tasks the server excluded
     // (i.e. tasks with an active convert job still running on them).
     Object.keys(tasks).forEach(id => {
-      if (['COMPLETED','FAILED','CANCELLED'].includes(tasks[id].status) && !excluded.has(id))
+      if (['COMPLETED','FAILED','CANCELLED','PARTIAL_SAVED'].includes(tasks[id].status) && !excluded.has(id))
         delete tasks[id];
     });
     renderQueue();

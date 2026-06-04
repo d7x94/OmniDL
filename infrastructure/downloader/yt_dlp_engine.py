@@ -2719,7 +2719,48 @@ class YtDlpEngine:
                             if not _global_ok:
                                 raise RuntimeError(_friendly_error(_exc_str)) from exc
                         else:
-                            raise RuntimeError(_friendly_error(_exc_str)) from exc
+                            # BUG-TT-SHOP-4 FIX: shopping/product videos sometimes expose
+                            # NO format matching the custom format string — not even /best —
+                            # because TikTok returns a restricted format list to the web
+                            # client. BUG-TT-SHOP-3 never fires here (no file downloaded).
+                            # Retry with yt-dlp default selector + alternate mobile clients.
+                            _is_format_unavailable = "requested format is not available" in _exc_l
+                            if _is_format_unavailable and _is_tiktok_vod and not is_live:
+                                _shop4_ok = False
+                                _shop4_format = "bestvideo+bestaudio/best"
+                                for _s4_extractor in (
+                                    None,  # bare format retry first (no extractor override)
+                                    {"app_name": ["musical_ly"]},
+                                    {"app_name": ["trill"]},
+                                    {"app_info": ["/aweme/35.1.3/2023501030/1128"]},
+                                ):
+                                    _s4_opts = dict(opts)
+                                    _s4_opts["format"] = _shop4_format
+                                    if _s4_extractor:
+                                        _s4_opts["extractor_args"] = {"tiktok": _s4_extractor}
+                                    else:
+                                        _s4_opts.pop("extractor_args", None)
+                                    _final_filepath.clear()
+                                    _selected_vcodec.clear()
+                                    try:
+                                        with yt_dlp.YoutubeDL(_s4_opts) as ydl:
+                                            ydl.download([task.url])
+                                        _shop4_ok = True
+                                        logger.debug(
+                                            "BUG-TT-SHOP-4: retry succeeded extractor=%s",
+                                            _s4_extractor,
+                                        )
+                                        break
+                                    except Exception as _s4_exc:
+                                        logger.debug(
+                                            "BUG-TT-SHOP-4: extractor=%s failed: %s",
+                                            _s4_extractor,
+                                            _s4_exc,
+                                        )
+                                if not _shop4_ok:
+                                    raise RuntimeError(_friendly_error(_exc_str)) from exc
+                            else:
+                                raise RuntimeError(_friendly_error(_exc_str)) from exc
             except Exception as exc:
                 if task.is_cancellation_requested:
                     raise yt_dlp.utils.DownloadError("Cancelled by user") from exc

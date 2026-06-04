@@ -48,6 +48,7 @@ class DownloadManager:
         "tiktok": 2,
         "facebook": 3,
         "twitter": 2,
+        "youtube": 2,
     }
 
     def __init__(
@@ -186,6 +187,15 @@ class DownloadManager:
             for tid in to_del:
                 del self._tasks[tid]
                 self._futures.pop(tid, None)
+
+    def clear_specific(self, ids: list[str]) -> None:
+        with self._lock:
+            terminal = DownloadStatus.terminal_states()
+            for tid in ids:
+                t = self._tasks.get(tid)
+                if t and t.status in terminal:
+                    del self._tasks[tid]
+                    self._futures.pop(tid, None)
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -651,13 +661,23 @@ class DownloadManager:
 
         # ── Resolve final state ───────────────────────────────────────────
         if task.is_cancellation_requested:
-            with task._lock:
-                task.status = DownloadStatus.CANCELLED
-                task.speed = ""
-                task.eta = ""
-                task.finished_at = time.time()
-            logger.info("Task cancelled: %s", task.id)
-            self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
+            if task.keep_partial and task.filename:
+                with task._lock:
+                    task.status = DownloadStatus.PARTIAL_SAVED
+                    task.progress = 100.0
+                    task.speed = ""
+                    task.eta = ""
+                    task.finished_at = time.time()
+                logger.info("Task saved partial: %s → %s", task.id, task.filename)
+                self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
+            else:
+                with task._lock:
+                    task.status = DownloadStatus.CANCELLED
+                    task.speed = ""
+                    task.eta = ""
+                    task.finished_at = time.time()
+                logger.info("Task cancelled: %s", task.id)
+                self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
 
         elif last_exc is None:
             with task._lock:

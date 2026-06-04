@@ -32,6 +32,8 @@ class QueueTab(QWidget):
         super().__init__()
         self._app = app
         self._widgets: dict[str, DownloadItemWidget] = {}
+        self._select_mode = False
+        self._selected_ids: set[str] = set()
         self._build()
 
         self._poll_timer = QTimer(self)
@@ -75,6 +77,31 @@ class QueueTab(QWidget):
             padding: 4px 12px;
         """)
         hdr_layout.addWidget(self._count_lbl)
+
+        self._select_btn = QPushButton("Chọn")
+        self._select_btn.setFixedHeight(32)
+        self._select_btn.setCheckable(True)
+        self._select_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text2};
+                border: none;
+                border-radius: 8px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+            }}
+            QPushButton:checked {{
+                background-color: {T.primary_dim};
+                color: {T.primary_text};
+            }}
+        """)
+        self._select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_btn.clicked.connect(self._toggle_select_mode)
+        hdr_layout.addWidget(self._select_btn)
 
         self._clear_btn = QPushButton("Xóa đã xong")
         self._clear_btn.setFixedHeight(32)
@@ -130,6 +157,7 @@ class QueueTab(QWidget):
         for tid in list(self._widgets):
             if tid not in current_ids:
                 w = self._widgets.pop(tid)
+                self._selected_ids.discard(tid)
                 self._items_layout.removeWidget(w)
                 w.deleteLater()
 
@@ -140,19 +168,15 @@ class QueueTab(QWidget):
                     task,
                     on_pause=self._on_pause,
                     on_cancel=self._on_cancel,
-                    on_convert=lambda p, target_ext="mp4", encode_settings=None, **kw: (
-                        self._app.service.convert_to_mp4(
-                            p,
-                            target_ext=target_ext,
-                            encode_settings=encode_settings,
-                            **kw,
-                        )
-                    ),
+                    on_convert=lambda p, **kw: self._app.navigate_to("convert", file_path=str(p)),
                     on_send=self._on_send,
+                    on_edit=lambda p: self._app.navigate_to("editor", file_path=str(p)),
                 )
                 self._items_layout.insertWidget(self._items_layout.count() - 1, w)
                 self._widgets[task.id] = w
                 w.refresh(task)
+                if self._select_mode:
+                    w.set_select_mode(True, self._on_item_select)
             else:
                 self._widgets[task.id].refresh(task)
 
@@ -175,8 +199,36 @@ class QueueTab(QWidget):
     def _on_cancel(self, task_id: str) -> None:
         self._app.service.cancel_download(task_id)
 
+    def _toggle_select_mode(self) -> None:
+        self._select_mode = self._select_btn.isChecked()
+        self._selected_ids.clear()
+        for w in self._widgets.values():
+            if self._select_mode:
+                w.set_select_mode(True, self._on_item_select)
+            else:
+                w.set_select_mode(False, None)
+        self._update_clear_btn_label()
+
+    def _on_item_select(self, task_id: str, checked: bool) -> None:
+        if checked:
+            self._selected_ids.add(task_id)
+        else:
+            self._selected_ids.discard(task_id)
+        self._update_clear_btn_label()
+
+    def _update_clear_btn_label(self) -> None:
+        if self._select_mode and self._selected_ids:
+            self._clear_btn.setText(f"Xóa đã chọn ({len(self._selected_ids)})")
+        else:
+            self._clear_btn.setText("Xóa đã xong")
+
     def _clear_finished(self) -> None:
-        self._app.service.clear_finished()
+        if self._select_mode and self._selected_ids:
+            self._app.service.clear_specific(list(self._selected_ids))
+            self._selected_ids.clear()
+            self._update_clear_btn_label()
+        else:
+            self._app.service.clear_finished()
 
     def _on_send(self, file_path, restore_btn, task=None, specific_files=None) -> None:
         nodes = self._app.config.taildrop_target_nodes

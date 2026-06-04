@@ -25,6 +25,8 @@ from utils.helpers import fmt_bytes, open_file, open_folder, reveal_in_explorer
 
 logger = logging.getLogger(__name__)
 
+_VIDEO_EXTS = frozenset({".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".flv", ".wmv"})
+
 _STATUS: dict = {
     DownloadStatus.QUEUED: ("Chờ", "text3", "surface3"),
     DownloadStatus.DOWNLOADING: ("Đang tải", "primary", "primary_dim"),
@@ -33,6 +35,7 @@ _STATUS: dict = {
     DownloadStatus.COMPLETED: ("Hoàn tất", "success", "success_bg"),
     DownloadStatus.FAILED: ("Lỗi", "error", "error_bg"),
     DownloadStatus.CANCELLED: ("Đã hủy", "text3", "surface2"),
+    DownloadStatus.PARTIAL_SAVED: ("Lưu tạm", "warning", "warning_bg"),
 }
 
 _PROG_STATE: dict = {
@@ -43,6 +46,7 @@ _PROG_STATE: dict = {
     DownloadStatus.COMPLETED: "complete",
     DownloadStatus.FAILED: "failed",
     DownloadStatus.CANCELLED: "failed",
+    DownloadStatus.PARTIAL_SAVED: "complete",
 }
 
 
@@ -55,6 +59,7 @@ class DownloadItemWidget(QFrame):
         on_cancel: Callable,
         on_convert: Optional[Callable] = None,
         on_send: Optional[Callable] = None,
+        on_edit: Optional[Callable] = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -62,8 +67,10 @@ class DownloadItemWidget(QFrame):
         self._on_cancel = on_cancel
         self._on_convert = on_convert
         self._on_send = on_send
+        self._on_edit = on_edit
         self._completed_path: str = ""
         self._converting = False
+        self._checkbox = None  # QCheckBox, created by set_select_mode
 
         self.setObjectName("download_card")
         self._build()
@@ -142,7 +149,7 @@ class DownloadItemWidget(QFrame):
         """)
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.setToolTip("Hủy tải xuống")
-        self._cancel_btn.clicked.connect(lambda: self._on_cancel(self.task.id))
+        self._cancel_btn.clicked.connect(self._on_cancel_click)
         btn_row.addWidget(self._cancel_btn)
 
         self._folder_btn = QPushButton("📂  Mở")
@@ -178,6 +185,18 @@ class DownloadItemWidget(QFrame):
         self._convert_btn.clicked.connect(self._on_convert_click)
         self._convert_btn.hide()
         btn_row.addWidget(self._convert_btn)
+
+        self._edit_btn = QPushButton("✂  Sửa")
+        self._edit_btn.setFixedHeight(30)
+        self._edit_btn.setStyleSheet(
+            "background: #FCE7F3; color: #EC4899; border-radius: 10px; border: none;"
+            " font-size: 11px; font-weight: 600; padding: 0 12px;"
+            ' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self._edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._edit_btn.clicked.connect(self._on_edit_click)
+        self._edit_btn.hide()
+        btn_row.addWidget(self._edit_btn)
 
         top.addWidget(self._btn_box)
         outer.addLayout(top)
@@ -294,19 +313,22 @@ class DownloadItemWidget(QFrame):
             self._pause_btn.show()
             self._cancel_btn.show()
 
-        if st == DownloadStatus.COMPLETED and task.filename:
+        if st in {DownloadStatus.COMPLETED, DownloadStatus.PARTIAL_SAVED} and task.filename:
             if not self._completed_path:
                 self._completed_path = task.filename
             self._folder_btn.show()
             self._preview_btn.show()
             if self._on_convert and not self._converting:
                 self._convert_btn.show()
+            if self._on_edit and Path(self._completed_path).suffix.lower() in _VIDEO_EXTS:
+                self._edit_btn.show()
             self._pause_btn.hide()
             self._cancel_btn.hide()
         elif not terminal:
             self._folder_btn.hide()
             self._preview_btn.hide()
             self._convert_btn.hide()
+            self._edit_btn.hide()
 
         is_active = st in (DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)
         self._set_active_accent(is_active)
@@ -369,19 +391,30 @@ class DownloadItemWidget(QFrame):
             QPushButton:hover {{ background: {T.error}; color: white; }}
         """)
 
-    def _on_convert_click(self) -> None:
-        if self._converting or not self._completed_path or not self._on_convert:
+    def _on_cancel_click(self) -> None:
+        if (
+            self.task.media_info
+            and self.task.media_info.is_live
+            and self.task.status in DownloadStatus.active_states()
+        ):
+            self.task.keep_partial = True
+        self._on_cancel(self.task.id)
+
+    def _on_edit_click(self) -> None:
+        if not self._completed_path or not self._on_edit:
             return
-        self._converting = True
-        self._convert_btn.setText("Đang chuyển…")
-        self._convert_btn.setEnabled(False)
         try:
-            self._on_convert(Path(self._completed_path), "mp4", None)
+            self._on_edit(Path(self._completed_path))
+        except Exception as exc:
+            logger.warning("on_edit raised: %s", exc)
+
+    def _on_convert_click(self) -> None:
+        if not self._completed_path or not self._on_convert:
+            return
+        try:
+            self._on_convert(Path(self._completed_path))
         except Exception as exc:
             logger.warning("on_convert raised: %s", exc)
-            self._converting = False
-            self._convert_btn.setText("🔄  Chuyển")
-            self._convert_btn.setEnabled(True)
 
     def _open_preview(self) -> None:
         p_str = self._completed_path or getattr(self.task, "filename", "")
@@ -423,6 +456,36 @@ class DownloadItemWidget(QFrame):
                 open_folder(p.parent)
         elif p.parent.is_dir():
             open_folder(p.parent)
+
+    def set_select_mode(self, enabled: bool, on_toggle) -> None:
+        from PySide6.QtWidgets import QCheckBox  # noqa: PLC0415
+
+        if enabled:
+            terminal = self.task.status in DownloadStatus.terminal_states()
+            if not terminal:
+                return
+            if self._checkbox is None:
+                cb = QCheckBox(self)
+                cb.setChecked(False)
+                # Insert checkbox at position 0 of the top row
+                top_layout = self.layout().itemAt(0).layout()
+                top_layout.insertWidget(0, cb)
+                self._checkbox = cb
+            self._checkbox.setVisible(True)
+            try:
+                self._checkbox.toggled.disconnect()
+            except RuntimeError:
+                pass
+            if on_toggle:
+                tid = self.task.id
+                self._checkbox.toggled.connect(lambda checked, t=tid: on_toggle(t, checked))
+        else:
+            if self._checkbox is not None:
+                self._checkbox.setVisible(False)
+                try:
+                    self._checkbox.toggled.disconnect()
+                except RuntimeError:
+                    pass
 
     @staticmethod
     def _trunc(s: str, n: int) -> str:

@@ -648,6 +648,18 @@ def create_app(
         service.cancel_download(task_id)
         return QueueActionResponse(task_id=task_id, action="cancelled")
 
+    @app.delete("/api/queue/items")
+    async def clear_selected_items(
+        request: Request,
+        _: None = Depends(_require_auth),
+    ):
+        """Remove specific tasks by ID (only if terminal status)."""
+        body = await request.json()
+        ids: list[str] = body.get("ids", [])
+        if ids:
+            service.clear_specific(ids)
+        return {"status": "ok", "count": len(ids)}
+
     @app.delete("/api/queue/finished")
     async def clear_finished(_: None = Depends(_require_auth)):
         """Remove all COMPLETED / FAILED / CANCELLED tasks from the queue.
@@ -816,7 +828,7 @@ def create_app(
         • Same path-traversal guard as the delete endpoint.
         """
         task = _get_task_or_404(service, task_id)
-        if task.status.name != "COMPLETED":
+        if task.status.name not in {"COMPLETED", "PARTIAL_SAVED"}:
             raise HTTPException(status_code=400, detail="Task is not COMPLETED")
 
         file_path = _resolve_task_file(task)
@@ -944,7 +956,7 @@ def create_app(
             raise HTTPException(status_code=503, detail="Convert service not available")
 
         task = _get_task_or_404(service, task_id)
-        if task.status.name != "COMPLETED":
+        if task.status.name not in {"COMPLETED", "PARTIAL_SAVED"}:
             raise HTTPException(status_code=400, detail="Task is not COMPLETED")
 
         file_path = _resolve_task_file(task)
