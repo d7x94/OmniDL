@@ -2822,6 +2822,7 @@ class YtDlpEngine:
                 # Also tries alternate api_hostname (api22) in case the default
                 # regional server returns restricted format lists for product videos.
                 _shop3_got_video = False
+                _shop3_ec_blocked = False  # mobile API returned valid JSON but zero video URLs
                 # app_info format: iid/app_name/app_version/manifest_app_version/aid
                 # app_name-only extractor arg does NOT trigger the mobile API path —
                 # yt-dlp only calls _extract_aweme_app when _KNOWN_APP_INFO is set,
@@ -2846,7 +2847,7 @@ class YtDlpEngine:
                     },
                 ]
                 for _s3_args in _shop3_clients:
-                    if _shop3_got_video:
+                    if _shop3_got_video or _shop3_ec_blocked:
                         break
                     _s3_base = dict(opts)
                     _s3_base["extractor_args"] = {"tiktok": _s3_args}
@@ -2859,11 +2860,15 @@ class YtDlpEngine:
                             if f.get("vcodec") not in (None, "none", "")
                         ]
                         if not _s3_video_fmts:
+                            # Mobile API replied with valid JSON but zero video formats.
+                            # TikTok applies this restriction server-side per-video (EC/product
+                            # flag); all other clients will return the same empty result.
                             logger.debug(
-                                "BUG-TT-SHOP-3: %s — no video formats in API response",
+                                "BUG-TT-SHOP-3: %s — no video formats in API response (EC block)",
                                 _s3_args,
                             )
-                            continue
+                            _shop3_ec_blocked = True
+                            break
                         _s3_best = max(
                             _s3_video_fmts,
                             key=lambda f: (f.get("height") or 0, f.get("tbr") or 0),
@@ -2904,6 +2909,13 @@ class YtDlpEngine:
                             Path(_retry_broken).unlink(missing_ok=True)
                         except OSError:
                             pass
+                    if _shop3_ec_blocked:
+                        raise RuntimeError(
+                            "Video này không thể tải — TikTok chặn hoàn toàn URL video.\n"
+                            "Đây là video E-Commerce/sản phẩm (isECVideo=1): TikTok không"
+                            " cung cấp video URL cho bất kỳ API client nào.\n"
+                            "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
+                        )
                     raise RuntimeError(
                         "Video này chỉ có âm thanh — không có video track.\n"
                         'TikTok product/showcase và "template effect" / AR effect videos'

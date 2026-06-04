@@ -1559,7 +1559,7 @@ class TestBugTtProd:
         ]
 
     def test_shopping_video_musical_ly_retry_also_audio_only_raises(self, tmp_path):
-        """BUG-TT-SHOP-3: extract_info shows no video formats for any client -> error raised, no retry download."""
+        """BUG-TT-SHOP-3: extract_info shows no video formats → EC block detected, error raised, no retry download."""
         import infrastructure.downloader.yt_dlp_engine as mod
 
         engine, task = self._make_engine_task(tmp_path)
@@ -1604,7 +1604,7 @@ class TestBugTtProd:
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_no_video):
-                with pytest.raises(RuntimeError, match="âm thanh"):
+                with pytest.raises(RuntimeError, match="không thể tải|TikTok chặn"):
                     engine.download(task)
 
         assert call_count[0] == 1, (
