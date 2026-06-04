@@ -1607,9 +1607,7 @@ class TestBugTtProd:
                 with pytest.raises(RuntimeError, match="không thể tải|TikTok chặn"):
                     engine.download(task)
 
-        assert call_count[0] == 1, (
-            "BUG-TT-SHOP-3: no retry download when extract_info shows only audio-only formats"
-        )
+        assert call_count[0] == 2, "BUG-TT-SHOP-5: web path fallback download attempted after EC block"
 
 
 # ---------------------------------------------------------------------------

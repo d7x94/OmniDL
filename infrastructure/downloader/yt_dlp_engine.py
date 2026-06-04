@@ -2904,25 +2904,66 @@ class YtDlpEngine:
 
                 if not _shop3_got_video:
                     _retry_broken = _final_filepath[0] if _final_filepath else ""
-                    if _retry_broken:
-                        try:
-                            Path(_retry_broken).unlink(missing_ok=True)
-                        except OSError:
-                            pass
                     if _shop3_ec_blocked:
+                        # BUG-TT-SHOP-5: web path fallback — remove app_info so yt-dlp
+                        # uses _extract_web_data_and_status (TikTok web API). The web API
+                        # may return downloadAddr (v16.tokcdn.com/..._original.mp4) even
+                        # for EC-blocked videos that the mobile API returns zero formats for.
+                        _s5_opts = dict(opts)
+                        _s5_opts.pop("extractor_args", None)
+                        _final_filepath.clear()
+                        _selected_vcodec.clear()
+                        _shop5_ok = False
+                        try:
+                            with yt_dlp.YoutubeDL({**_s5_opts, "quiet": True}) as _s5_ydl:
+                                _s5_ydl.download([task.url])
+                            if _selected_vcodec and _selected_vcodec[0].lower() not in ("none", ""):
+                                _shop5_ok = True
+                            elif _final_filepath and Path(_final_filepath[0]).is_file():
+                                from app.services.ffmpeg_convert_service import (  # noqa: PLC0415
+                                    probe_media_info as _probe_shop5,
+                                )
+
+                                _r5 = _probe_shop5(Path(_final_filepath[0]))
+                                if _r5 and _r5.video_codec:
+                                    _shop5_ok = True
+                            if _shop5_ok:
+                                logger.debug("BUG-TT-SHOP-5: web path succeeded for EC-blocked video")
+                        except Exception as _s5_exc:
+                            logger.debug("BUG-TT-SHOP-5: web path failed: %s", _s5_exc)
+
+                        if not _shop5_ok:
+                            if _retry_broken:
+                                try:
+                                    Path(_retry_broken).unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+                            _broken5 = _final_filepath[0] if _final_filepath else ""
+                            if _broken5:
+                                try:
+                                    Path(_broken5).unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+                            raise RuntimeError(
+                                "Video này không thể tải — TikTok chặn hoàn toàn URL video.\n"
+                                "Đây là video E-Commerce/sản phẩm (isECVideo=1): TikTok không"
+                                " cung cấp video URL cho bất kỳ API client nào.\n"
+                                "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
+                            )
+                        # BUG-TT-SHOP-5: web path succeeded — fall through to filename resolution
+                    else:
+                        if _retry_broken:
+                            try:
+                                Path(_retry_broken).unlink(missing_ok=True)
+                            except OSError:
+                                pass
                         raise RuntimeError(
-                            "Video này không thể tải — TikTok chặn hoàn toàn URL video.\n"
-                            "Đây là video E-Commerce/sản phẩm (isECVideo=1): TikTok không"
-                            " cung cấp video URL cho bất kỳ API client nào.\n"
+                            "Video này chỉ có âm thanh — không có video track.\n"
+                            'TikTok product/showcase và "template effect" / AR effect videos'
+                            " không cung cấp video track qua API (chỉ expose audio stream).\n"
                             "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
                         )
-                    raise RuntimeError(
-                        "Video này chỉ có âm thanh — không có video track.\n"
-                        'TikTok product/showcase và "template effect" / AR effect videos'
-                        " không cung cấp video track qua API (chỉ expose audio stream).\n"
-                        "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
-                    )
-                # BUG-TT-SHOP-3: retry succeeded — fall through to filename resolution
+                # BUG-TT-SHOP-3/5: retry succeeded — fall through to filename resolution
         if _final_filepath:
             # Best case: pp_hook told us exactly where the merged file is
             p = Path(_final_filepath[0])
