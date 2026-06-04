@@ -2730,8 +2730,8 @@ class YtDlpEngine:
                                 _shop4_format = "bestvideo+bestaudio/best"
                                 for _s4_extractor in (
                                     None,  # bare format retry first (no extractor override)
-                                    {"app_name": ["musical_ly"]},
-                                    {"app_name": ["trill"]},
+                                    {"app_info": ["/musical_ly/35.1.3/2023501030/1233"]},
+                                    {"app_info": ["/trill/35.1.3/2023501030/1180"]},
                                     {"app_info": ["/aweme/35.1.3/2023501030/1128"]},
                                 ):
                                     _s4_opts = dict(opts)
@@ -2822,12 +2822,24 @@ class YtDlpEngine:
                 # Also tries alternate api_hostname (api22) in case the default
                 # regional server returns restricted format lists for product videos.
                 _shop3_got_video = False
+                # app_info format: iid/app_name/app_version/manifest_app_version/aid
+                # app_name-only extractor arg does NOT trigger the mobile API path —
+                # yt-dlp only calls _extract_aweme_app when _KNOWN_APP_INFO is set,
+                # which requires the 'app_info' extractor arg.  Use full app_info
+                # strings so each client actually hits the mobile API endpoint.
+                # aid: aweme=1128, trill=1180, musical_ly=1233 (from yt-dlp source)
                 _shop3_clients = [
-                    {"app_name": ["musical_ly"]},
-                    {"app_name": ["trill"]},
-                    {"app_info": ["/aweme/35.1.3/2023501030/1128"]},
-                    {"app_name": ["musical_ly"], "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"]},
-                    {"app_name": ["trill"], "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"]},
+                    {"app_info": ["/musical_ly/35.1.3/2023501030/1233"]},  # aid=1233
+                    {"app_info": ["/trill/35.1.3/2023501030/1180"]},  # aid=1180
+                    {"app_info": ["/aweme/35.1.3/2023501030/1128"]},  # aid=1128
+                    {
+                        "app_info": ["/musical_ly/35.1.3/2023501030/1233"],
+                        "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
+                    },
+                    {
+                        "app_info": ["/trill/35.1.3/2023501030/1180"],
+                        "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
+                    },
                     {
                         "app_info": ["/aweme/35.1.3/2023501030/1128"],
                         "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
