@@ -2774,40 +2774,50 @@ class YtDlpEngine:
                         pass
 
                 # BUG-TT-SHOP-3 FIX: TikTok product/showcase videos sometimes only
-                # expose video formats to the musical_ly mobile client (different API
-                # aid param). Retry once with app_name=musical_ly + video-only format
-                # chain before giving up. Silent on failure — raises below if no video.
+                # expose video formats to a non-default mobile client (different API
+                # aid param). Try multiple clients before giving up — same pattern
+                # as BUG-TT-10231-DL. Silent on failure per-variant; raises below.
                 _shop3_got_video = False
-                _final_filepath.clear()
-                _selected_vcodec.clear()
-                _ml_opts = dict(opts)
-                _ml_opts["extractor_args"] = {"tiktok": {"app_name": ["musical_ly"]}}
-                _ml_opts["format"] = (
+                _shop3_format = (
                     "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best[vcodec!=none]"
                 )
-                try:
-                    with yt_dlp.YoutubeDL(_ml_opts) as ydl:
-                        ydl.download([task.url])
-                    if _selected_vcodec and _selected_vcodec[0].lower() not in ("none", ""):
-                        _shop3_got_video = True
-                        logger.debug(
-                            "BUG-TT-SHOP-3: musical_ly retry succeeded, vcodec=%r",
-                            _selected_vcodec[0],
-                        )
-                    elif _final_filepath and Path(_final_filepath[0]).is_file():
-                        from app.services.ffmpeg_convert_service import (  # noqa: PLC0415
-                            probe_media_info as _probe_shop3,
-                        )
-
-                        _r3 = _probe_shop3(Path(_final_filepath[0]))
-                        if _r3 and _r3.video_codec:
+                for _s3_args in (
+                    {"app_name": ["musical_ly"]},
+                    {"app_name": ["trill"]},
+                    {"app_info": ["/aweme/35.1.3/2023501030/1128"]},
+                ):
+                    if _shop3_got_video:
+                        break
+                    _final_filepath.clear()
+                    _selected_vcodec.clear()
+                    _ml_opts = dict(opts)
+                    _ml_opts["extractor_args"] = {"tiktok": _s3_args}
+                    _ml_opts["format"] = _shop3_format
+                    try:
+                        with yt_dlp.YoutubeDL(_ml_opts) as ydl:
+                            ydl.download([task.url])
+                        if _selected_vcodec and _selected_vcodec[0].lower() not in ("none", ""):
                             _shop3_got_video = True
                             logger.debug(
-                                "BUG-TT-SHOP-3: musical_ly retry — FFprobe found video=%r",
-                                _r3.video_codec,
+                                "BUG-TT-SHOP-3: %s retry succeeded, vcodec=%r",
+                                _s3_args,
+                                _selected_vcodec[0],
                             )
-                except Exception as _shop3_exc:
-                    logger.debug("BUG-TT-SHOP-3: musical_ly retry failed: %s", _shop3_exc)
+                        elif _final_filepath and Path(_final_filepath[0]).is_file():
+                            from app.services.ffmpeg_convert_service import (  # noqa: PLC0415
+                                probe_media_info as _probe_shop3,
+                            )
+
+                            _r3 = _probe_shop3(Path(_final_filepath[0]))
+                            if _r3 and _r3.video_codec:
+                                _shop3_got_video = True
+                                logger.debug(
+                                    "BUG-TT-SHOP-3: %s retry — FFprobe found video=%r",
+                                    _s3_args,
+                                    _r3.video_codec,
+                                )
+                    except Exception as _shop3_exc:
+                        logger.debug("BUG-TT-SHOP-3: %s retry failed: %s", _s3_args, _shop3_exc)
 
                 if not _shop3_got_video:
                     _retry_broken = _final_filepath[0] if _final_filepath else ""
@@ -2822,7 +2832,7 @@ class YtDlpEngine:
                         " không cung cấp video track qua API (chỉ expose audio stream).\n"
                         "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
                     )
-                # BUG-TT-SHOP-3: musical_ly retry succeeded — fall through to filename resolution
+                # BUG-TT-SHOP-3: retry succeeded — fall through to filename resolution
         if _final_filepath:
             # Best case: pp_hook told us exactly where the merged file is
             p = Path(_final_filepath[0])
