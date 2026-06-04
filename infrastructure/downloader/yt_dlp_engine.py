@@ -2814,34 +2814,59 @@ class YtDlpEngine:
                     except OSError:
                         pass
 
-                # BUG-TT-SHOP-3 FIX: TikTok product/showcase videos sometimes only
-                # expose video formats to a non-default mobile client (different API
-                # aid param). Try multiple clients before giving up — same pattern
-                # as BUG-TT-10231-DL. Silent on failure per-variant; raises below.
+                # BUG-TT-SHOP-3 FIX: info-extraction-first — enumerate available
+                # formats from multiple API clients WITHOUT downloading, then only
+                # download when a format with vcodec != none is found.  Previous
+                # approach downloaded a full file per client just to discover it
+                # was audio-only; this skips the download entirely for those clients.
+                # Also tries alternate api_hostname (api22) in case the default
+                # regional server returns restricted format lists for product videos.
                 _shop3_got_video = False
-                _shop3_format = (
-                    "best[format_id^=h264]/download/bestvideo*+bestaudio*/bestvideo*/best[vcodec!=none]"
-                )
-                for _s3_args in (
+                _shop3_clients = [
                     {"app_name": ["musical_ly"]},
                     {"app_name": ["trill"]},
                     {"app_info": ["/aweme/35.1.3/2023501030/1128"]},
-                ):
+                    {"app_name": ["musical_ly"], "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"]},
+                    {"app_name": ["trill"], "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"]},
+                    {
+                        "app_info": ["/aweme/35.1.3/2023501030/1128"],
+                        "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
+                    },
+                ]
+                for _s3_args in _shop3_clients:
                     if _shop3_got_video:
                         break
-                    _final_filepath.clear()
-                    _selected_vcodec.clear()
-                    _ml_opts = dict(opts)
-                    _ml_opts["extractor_args"] = {"tiktok": _s3_args}
-                    _ml_opts["format"] = _shop3_format
+                    _s3_base = dict(opts)
+                    _s3_base["extractor_args"] = {"tiktok": _s3_args}
                     try:
-                        with yt_dlp.YoutubeDL(_ml_opts) as ydl:
-                            ydl.download([task.url])
+                        with yt_dlp.YoutubeDL({**_s3_base, "quiet": True}) as _s3_ydl:
+                            _s3_info = _s3_ydl.extract_info(task.url, download=False)
+                        _s3_video_fmts = [
+                            f
+                            for f in (_s3_info.get("formats") or [])
+                            if f.get("vcodec") not in (None, "none", "")
+                        ]
+                        if not _s3_video_fmts:
+                            logger.debug(
+                                "BUG-TT-SHOP-3: %s — no video formats in API response",
+                                _s3_args,
+                            )
+                            continue
+                        _s3_best = max(
+                            _s3_video_fmts,
+                            key=lambda f: (f.get("height") or 0, f.get("tbr") or 0),
+                        )
+                        _final_filepath.clear()
+                        _selected_vcodec.clear()
+                        _s3_dl_opts = {**_s3_base, "format": _s3_best["format_id"]}
+                        with yt_dlp.YoutubeDL(_s3_dl_opts) as _s3_ydl:
+                            _s3_ydl.download([task.url])
                         if _selected_vcodec and _selected_vcodec[0].lower() not in ("none", ""):
                             _shop3_got_video = True
                             logger.debug(
-                                "BUG-TT-SHOP-3: %s retry succeeded, vcodec=%r",
+                                "BUG-TT-SHOP-3: %s succeeded, format=%r vcodec=%r",
                                 _s3_args,
+                                _s3_best["format_id"],
                                 _selected_vcodec[0],
                             )
                         elif _final_filepath and Path(_final_filepath[0]).is_file():
@@ -2853,12 +2878,12 @@ class YtDlpEngine:
                             if _r3 and _r3.video_codec:
                                 _shop3_got_video = True
                                 logger.debug(
-                                    "BUG-TT-SHOP-3: %s retry — FFprobe found video=%r",
+                                    "BUG-TT-SHOP-3: %s — FFprobe found video=%r",
                                     _s3_args,
                                     _r3.video_codec,
                                 )
                     except Exception as _shop3_exc:
-                        logger.debug("BUG-TT-SHOP-3: %s retry failed: %s", _s3_args, _shop3_exc)
+                        logger.debug("BUG-TT-SHOP-3: %s failed: %s", _s3_args, _shop3_exc)
 
                 if not _shop3_got_video:
                     _retry_broken = _final_filepath[0] if _final_filepath else ""

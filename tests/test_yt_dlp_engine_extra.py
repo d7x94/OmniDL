@@ -1469,7 +1469,7 @@ class TestBugTtProd:
                     engine.download(task)
 
     def test_shopping_video_musical_ly_retry_succeeds(self, tmp_path):
-        """BUG-TT-SHOP-3: first attempt audio-only, musical_ly retry returns real video."""
+        """BUG-TT-SHOP-3: first attempt audio-only, musical_ly extract_info finds h264, retry downloads real video."""
         import infrastructure.downloader.yt_dlp_engine as mod
 
         engine, task = self._make_engine_task(tmp_path)
@@ -1488,6 +1488,23 @@ class TestBugTtProd:
 
             def __exit__(self, *a):
                 pass
+
+            def extract_info(self, url, download=False):
+                # musical_ly client exposes h264 format; others audio-only
+                ea = self._opts.get("extractor_args", {}).get("tiktok", {})
+                if ea.get("app_name") == ["musical_ly"]:
+                    return {
+                        "formats": [
+                            {
+                                "format_id": "h264_540p",
+                                "vcodec": "h264",
+                                "height": 540,
+                                "tbr": 1000,
+                                "ext": "mp4",
+                            }
+                        ]
+                    }
+                return {"formats": [{"format_id": "audio", "vcodec": "none", "ext": "m4a"}]}
 
             def download(self, urls):
                 call_count[0] += 1
@@ -1533,13 +1550,14 @@ class TestBugTtProd:
             with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_no_video):
                 engine.download(task)  # must not raise
 
-        assert call_count[0] == 2, "BUG-TT-SHOP-3: must call YDL twice (initial + retry)"
+        assert call_count[0] == 2, "BUG-TT-SHOP-3: must call download twice (initial + retry)"
         assert retry_file.exists(), "BUG-TT-SHOP-3: retry output must be kept"
+        # captured_opts[1] is the extract_info call for musical_ly (quiet=True + extractor_args)
         retry_extractor_args = captured_opts[1].get("extractor_args", {})
         assert retry_extractor_args.get("tiktok", {}).get("app_name") == ["musical_ly"]
 
     def test_shopping_video_musical_ly_retry_also_audio_only_raises(self, tmp_path):
-        """BUG-TT-SHOP-3: both attempts audio-only -> error raised, call count == 2."""
+        """BUG-TT-SHOP-3: extract_info shows no video formats for any client -> error raised, no retry download."""
         import infrastructure.downloader.yt_dlp_engine as mod
 
         engine, task = self._make_engine_task(tmp_path)
@@ -1554,6 +1572,10 @@ class TestBugTtProd:
 
             def __exit__(self, *a):
                 pass
+
+            def extract_info(self, url, download=False):
+                # All clients return audio-only formats — no video track available
+                return {"formats": [{"format_id": "audio", "vcodec": "none", "ext": "m4a"}]}
 
             def download(self, urls):
                 call_count[0] += 1
@@ -1583,7 +1605,9 @@ class TestBugTtProd:
                 with pytest.raises(RuntimeError, match="âm thanh"):
                     engine.download(task)
 
-        assert call_count[0] == 2, "BUG-TT-SHOP-3: must attempt retry before raising"
+        assert call_count[0] == 1, (
+            "BUG-TT-SHOP-3: no retry download when extract_info shows only audio-only formats"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1634,6 +1658,7 @@ def test_tiktok_rate_limiter_reset_allows_immediate():
 class TestFriendlyErrorBranches:
     def _fe(self, msg: str) -> str:
         from infrastructure.downloader.yt_dlp_engine import _friendly_error
+
         return _friendly_error(msg)
 
     def test_live_not_started(self):
@@ -1730,6 +1755,7 @@ class TestFriendlyErrorBranches:
 class TestCheckUnsupportedUrl:
     def test_threads_post_always_blocked(self):
         from infrastructure.downloader.yt_dlp_engine import _check_unsupported_url
+
         url = "https://www.threads.com/@user/post/ABC123"
         result = _check_unsupported_url(url, has_cookies=True)
         assert result is not None
@@ -1737,12 +1763,14 @@ class TestCheckUnsupportedUrl:
 
     def test_threads_net_post_always_blocked(self):
         from infrastructure.downloader.yt_dlp_engine import _check_unsupported_url
+
         url = "https://www.threads.net/@user/post/ABC123"
         result = _check_unsupported_url(url, has_cookies=False)
         assert result is not None
 
     def test_facebook_live_blocked_without_cookies(self):
         from infrastructure.downloader.yt_dlp_engine import _check_unsupported_url
+
         url = "https://www.facebook.com/live/12345"
         result = _check_unsupported_url(url, has_cookies=False)
         assert result is not None
@@ -1750,12 +1778,14 @@ class TestCheckUnsupportedUrl:
 
     def test_facebook_live_allowed_with_cookies(self):
         from infrastructure.downloader.yt_dlp_engine import _check_unsupported_url
+
         url = "https://www.facebook.com/live/12345"
         result = _check_unsupported_url(url, has_cookies=True)
         assert result is None
 
     def test_allowed_url_returns_none(self):
         from infrastructure.downloader.yt_dlp_engine import _check_unsupported_url
+
         result = _check_unsupported_url("https://youtube.com/watch?v=abc", has_cookies=False)
         assert result is None
 
@@ -1768,14 +1798,17 @@ class TestCheckUnsupportedUrl:
 class TestPlatformForUrl:
     def test_valid_tiktok_url(self):
         from infrastructure.downloader.yt_dlp_engine import platform_for_url
+
         assert platform_for_url("https://www.tiktok.com/@user/video/123") == "tiktok"
 
     def test_unknown_url_returns_none(self):
         from infrastructure.downloader.yt_dlp_engine import platform_for_url
+
         assert platform_for_url("https://unknownplatform.io/video/1") is None
 
     def test_malformed_url_returns_none(self):
         from infrastructure.downloader.yt_dlp_engine import platform_for_url
+
         # A string that urlparse raises on or returns no hostname
         result = platform_for_url("not-a-url-at-all\x00bad")
         assert result is None
@@ -1789,14 +1822,17 @@ class TestPlatformForUrl:
 class TestBuildFfmpegCookieHeader:
     def test_empty_path_returns_empty(self):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         assert _build_ffmpeg_cookie_header("") == ""
 
     def test_nonexistent_file_returns_empty(self):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         assert _build_ffmpeg_cookie_header("/nonexistent/path/cookies.txt") == ""
 
     def test_parses_tiktok_cookies(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         cookie_file = tmp_path / "cookies.txt"
         # Netscape cookie file format: domain, flag, path, secure, expiry, name, value
         cookie_file.write_text(
@@ -1814,6 +1850,7 @@ class TestBuildFfmpegCookieHeader:
 
     def test_empty_name_or_value_skipped(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         cookie_file = tmp_path / "cookies.txt"
         cookie_file.write_text(
             "# Netscape HTTP Cookie File\n"
@@ -1832,6 +1869,7 @@ class TestBuildFfmpegCookieHeader:
 class TestDiagLogger:
     def test_debug_matching_keyword_logs(self):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
+
         diag = _DiagLogger()
         # Should not raise — just exercises the branch
         diag.debug("merging formats into output")
@@ -1839,21 +1877,25 @@ class TestDiagLogger:
 
     def test_debug_non_matching_does_not_log(self):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
+
         diag = _DiagLogger()
         diag.debug("some irrelevant message about nothing special")
 
     def test_info_is_noop(self):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
+
         diag = _DiagLogger()
         diag.info("progress bar output")  # must not raise
 
     def test_warning_logs(self):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
+
         diag = _DiagLogger()
         diag.warning("some yt-dlp warning")  # must not raise
 
     def test_error_logs(self):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
+
         diag = _DiagLogger()
         diag.error("some yt-dlp error")  # must not raise
 
@@ -1868,6 +1910,7 @@ class TestTt29CookieSources:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         config_path = config_dir / "config.json"
@@ -1876,6 +1919,7 @@ class TestTt29CookieSources:
 
     def test_no_cookies_returns_anon_only(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _tt29_cookie_sources
+
         cfg = self._make_config(tmp_path)
         sources = _tt29_cookie_sources("https://www.tiktok.com/@user/video/1", cfg, None)
         # All cookie paths are empty — dedup should collapse to [("", "anon")]
@@ -1884,32 +1928,28 @@ class TestTt29CookieSources:
 
     def test_override_is_first_when_valid(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _tt29_cookie_sources
+
         cfg = self._make_config(tmp_path)
         cookie = tmp_path / "cfg" / "pool.txt"
         cookie.write_text("# Netscape HTTP Cookie File\n")
-        sources = _tt29_cookie_sources(
-            "https://www.tiktok.com/@user/video/1", cfg, str(cookie)
-        )
+        sources = _tt29_cookie_sources("https://www.tiktok.com/@user/video/1", cfg, str(cookie))
         # First entry should be the pool cookie
         assert sources[0][0] == str(cookie.resolve())
         assert sources[0][1] == "pool"
 
     def test_consecutive_duplicates_removed(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _tt29_cookie_sources
+
         cfg = self._make_config(tmp_path)
         # When pool == global (same file), consecutive duplicates are removed
         cookie = tmp_path / "cfg" / "same.txt"
         cookie.write_text("# Netscape HTTP Cookie File\n")
         cfg.set("cookie_file", str(cookie))
-        sources = _tt29_cookie_sources(
-            "https://www.tiktok.com/@user/video/1", cfg, str(cookie)
-        )
+        sources = _tt29_cookie_sources("https://www.tiktok.com/@user/video/1", cfg, str(cookie))
         paths = [c for c, _ in sources]
         # No two consecutive entries should be identical
         for i in range(len(paths) - 1):
-            assert paths[i] != paths[i + 1], (
-                f"Consecutive duplicate at index {i}: {paths[i]!r}"
-            )
+            assert paths[i] != paths[i + 1], f"Consecutive duplicate at index {i}: {paths[i]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1922,6 +1962,7 @@ class TestValidateCookiePathRaw:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         cfg_path = config_dir / "config.json"
@@ -1930,6 +1971,7 @@ class TestValidateCookiePathRaw:
 
     def test_txt_stored_but_enc_exists_returns_enc(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         config_dir = tmp_path / "cfg"
         txt_path = config_dir / "cookies.txt"
@@ -1941,6 +1983,7 @@ class TestValidateCookiePathRaw:
 
     def test_neither_txt_nor_enc_returns_none(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         config_dir = tmp_path / "cfg"
         txt_path = config_dir / "missing.txt"
@@ -1949,6 +1992,7 @@ class TestValidateCookiePathRaw:
 
     def test_outside_safe_dir_returns_none(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         outside = tmp_path / "outside.txt"
         outside.write_text("# cookies\n")
@@ -1957,6 +2001,7 @@ class TestValidateCookiePathRaw:
 
     def test_empty_string_returns_none(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         assert _validate_cookie_path_raw("", cfg) is None
 
@@ -1971,6 +2016,7 @@ class TestResolveCookie:
         import json
 
         from infrastructure.config.config_manager import ConfigManager
+
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         cfg_path = config_dir / "config.json"
@@ -1979,6 +2025,7 @@ class TestResolveCookie:
 
     def test_override_takes_priority(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+
         cfg = self._make_config(tmp_path)
         cookie = tmp_path / "cfg" / "override.txt"
         cookie.write_text("# Netscape HTTP Cookie File\n")
@@ -1987,12 +2034,14 @@ class TestResolveCookie:
 
     def test_no_cookies_returns_none(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+
         cfg = self._make_config(tmp_path)
         result = _resolve_cookie("https://www.youtube.com/watch?v=abc", cfg, None)
         assert result is None
 
     def test_per_platform_cookie_used(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+
         cfg = self._make_config(tmp_path)
         cookie = tmp_path / "cfg" / "tiktok.txt"
         cookie.write_text("# Netscape HTTP Cookie File\n")
@@ -2002,11 +2051,13 @@ class TestResolveCookie:
 
     def test_urlparse_exception_returns_none(self):
         from infrastructure.downloader.yt_dlp_engine import platform_for_url
+
         with patch("infrastructure.downloader.yt_dlp_engine._urlparse", side_effect=ValueError("bad")):
             assert platform_for_url("anything") is None
 
     def test_resolve_cookie_urlparse_exception_falls_through(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+
         cfg = self._make_config(tmp_path)
         with patch("infrastructure.downloader.yt_dlp_engine._urlparse", side_effect=ValueError("bad")):
             result = _resolve_cookie("bad://url", cfg, None)
@@ -2021,6 +2072,7 @@ class TestResolveCookie:
 class TestPrepareCookieForUse:
     def test_decrypt_success_returns_tmp_path(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _prepare_cookie_for_use
+
         enc = tmp_path / "cookies.enc"
         enc.write_bytes(b"encrypted")
         tmp_out = tmp_path / "cookies_tmp.txt"
@@ -2034,11 +2086,15 @@ class TestPrepareCookieForUse:
 
     def test_decrypt_failure_falls_back_to_original(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _prepare_cookie_for_use
+
         enc = tmp_path / "cookies.enc"
         enc.write_bytes(b"encrypted")
         with (
             patch("infrastructure.downloader.cookie_storage.is_encrypted", return_value=True),
-            patch("infrastructure.downloader.cookie_storage.decrypt_to_tempfile", side_effect=RuntimeError("key error")),
+            patch(
+                "infrastructure.downloader.cookie_storage.decrypt_to_tempfile",
+                side_effect=RuntimeError("key error"),
+            ),
         ):
             path, is_temp = _prepare_cookie_for_use(str(enc))
         assert path == str(enc)
@@ -2053,10 +2109,12 @@ class TestPrepareCookieForUse:
 class TestBuildFfmpegCookieHeader2:
     def test_empty_cookie_file_returns_empty(self):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         assert _build_ffmpeg_cookie_header("") == ""
 
     def test_valid_tiktok_cookie_parsed(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         cookie_file = tmp_path / "cookies.txt"
         cookie_file.write_text(
             "# Netscape HTTP Cookie File\n"
@@ -2071,25 +2129,22 @@ class TestBuildFfmpegCookieHeader2:
 
     def test_malformed_lines_skipped(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         cookie_file = tmp_path / "cookies.txt"
-        cookie_file.write_text(
-            "# comment\n"
-            "bad line\n"
-            ".tiktok.com\tTRUE\t/\tFALSE\t0\ttoken\tval\n"
-        )
+        cookie_file.write_text("# comment\nbad line\n.tiktok.com\tTRUE\t/\tFALSE\t0\ttoken\tval\n")
         result = _build_ffmpeg_cookie_header(str(cookie_file))
         assert "token=val" in result
 
     def test_nonexistent_file_returns_empty(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         result = _build_ffmpeg_cookie_header(str(tmp_path / "missing.txt"))
         assert result == ""
 
     def test_no_tiktok_cookies_returns_empty(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _build_ffmpeg_cookie_header
+
         cookie_file = tmp_path / "cookies.txt"
-        cookie_file.write_text(
-            ".youtube.com\tTRUE\t/\tFALSE\t0\ttoken\tval\n"
-        )
+        cookie_file.write_text(".youtube.com\tTRUE\t/\tFALSE\t0\ttoken\tval\n")
         result = _build_ffmpeg_cookie_header(str(cookie_file))
         assert result == ""
