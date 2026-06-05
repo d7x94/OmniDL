@@ -30,9 +30,10 @@ _SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
 
 
 class Toolbar(QWidget):
-    def __init__(self, app: "MainWindow", parent=None) -> None:
+    def __init__(self, app: "MainWindow", parent=None, on_collapse=None) -> None:
         super().__init__(parent)
         self._app = app
+        self._on_collapse = on_collapse
         self._analysing = False
         self._spinner_idx = 0
         self._analyse_token = 0
@@ -187,6 +188,19 @@ class Toolbar(QWidget):
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
         row.addWidget(self._status_lbl)
+
+        self._collapse_btn = QPushButton("∧")
+        self._collapse_btn.setFixedSize(24, 24)
+        self._collapse_btn.setFlat(True)
+        self._collapse_btn.setToolTip("Ẩn thanh phân tích")
+        self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
+            QPushButton:hover {{ color: {T.text}; background-color: {T.surface3}; border-radius: 4px; }}
+        """)
+        if self._on_collapse:
+            self._collapse_btn.clicked.connect(self._on_collapse)
+        row.addWidget(self._collapse_btn)
 
         outer.addWidget(inner, 1)
 
@@ -377,6 +391,10 @@ class Toolbar(QWidget):
                 font-weight: 600;
             }}
             QPushButton:hover {{ background-color: #c62828; }}  /* no error_hover token */
+        """)
+        self._collapse_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
+            QPushButton:hover {{ color: {T.text}; background-color: {T.surface3}; border-radius: 4px; }}
         """)
         for btn, color in ((self._paste_btn, T.text2), (self._clear_btn, T.text3)):
             btn.setStyleSheet(f"""

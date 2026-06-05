@@ -18,6 +18,7 @@ installed in a read-only location (e.g. C:\\Program Files on Windows).
 APP_BINARY_DIR still points to the executable's parent and is used only
 for read-only bundled assets (e.g. default_config.json in the future).
 """
+
 from __future__ import annotations
 
 import multiprocessing
@@ -51,6 +52,7 @@ def _get_data_dir() -> Path:
     """
     try:
         from platformdirs import user_data_dir
+
         return Path(user_data_dir("OmniDL", appauthor=False))
     except ImportError:
         # Graceful fallback if platformdirs is somehow missing at runtime
@@ -61,14 +63,15 @@ def _get_log_dir() -> Path:
     """Return the platform-appropriate log directory for OmniDL."""
     try:
         from platformdirs import user_log_dir
+
         return Path(user_log_dir("OmniDL", appauthor=False))
     except ImportError:
         return _get_data_dir() / "logs"
 
 
 APP_BINARY_DIR = _get_app_dir()
-DATA_DIR       = _get_data_dir()
-LOG_DIR        = _get_log_dir()
+DATA_DIR = _get_data_dir()
+LOG_DIR = _get_log_dir()
 
 # Ensure paths are importable when running from source
 if str(APP_BINARY_DIR) not in sys.path:
@@ -106,7 +109,7 @@ def _hide_console() -> None:
 
     hwnd = _ctypes.windll.kernel32.GetConsoleWindow()
     if not hwnd:
-        return   # no console attached (frozen build) — nothing to do
+        return  # no console attached (frozen build) — nothing to do
 
     _console_hwnd = hwnd
 
@@ -115,8 +118,8 @@ def _hide_console() -> None:
 
     # Step 2: remove from Windows activation stack so it cannot surface
     # when a media player closes.  WS_EX_TOOLWINDOW = 0x00000080.
-    _GWL_EXSTYLE      = -20
-    _WS_EX_APPWINDOW  = 0x00040000
+    _GWL_EXSTYLE = -20
+    _WS_EX_APPWINDOW = 0x00040000
     _WS_EX_TOOLWINDOW = 0x00000080
     style = _ctypes.windll.user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
     style = (style & ~_WS_EX_APPWINDOW) | _WS_EX_TOOLWINDOW
@@ -147,12 +150,14 @@ def _close_console() -> None:
     if not _console_hwnd:
         return
     import ctypes as _ctypes
+
     _WM_CLOSE = 0x0010
     _ctypes.windll.user32.PostMessageW(_console_hwnd, _WM_CLOSE, 0, 0)
 
 
 def main() -> None:
     from utils.logger import setup_logging
+
     setup_logging(LOG_DIR)
 
     # Hide the console window so PowerShell never surfaces over OmniDL.
@@ -163,11 +168,14 @@ def main() -> None:
         _hide_console()
 
     import logging
+
     logger = logging.getLogger("omnidl.main")
     logger.info(
         "OmniDL v%s starting | binary=%s | data=%s | frozen=%s",
         _APP_VERSION,
-        APP_BINARY_DIR, DATA_DIR, getattr(sys, "frozen", False),
+        APP_BINARY_DIR,
+        DATA_DIR,
+        getattr(sys, "frozen", False),
     )
 
     _check_deps()
@@ -180,10 +188,8 @@ def main() -> None:
     from infrastructure.storage.history_repository import HistoryRepository
 
     # All user-mutable data lives in DATA_DIR, not next to the binary.
-    config  = ConfigManager(DATA_DIR / "config.json")
-    history = HistoryRepository(
-        DATA_DIR / "download_history.jsonl", config.history_limit
-    )
+    config = ConfigManager(DATA_DIR / "config.json")
+    history = HistoryRepository(DATA_DIR / "download_history.jsonl", config.history_limit)
     _clear_history_on_version_change(config, history)
 
     # Apply debug logging mode from config (must run after ConfigManager is ready
@@ -191,6 +197,7 @@ def main() -> None:
     # are captured from the beginning of the session).
     if config.debug_logging:
         from utils.logger import apply_debug_logging as _apply_debug
+
         _apply_debug(True)
         logger.info("Debug logging active — writing to omnidl_debug.log")
 
@@ -204,6 +211,7 @@ def main() -> None:
             cleanup_stale_cookies,
             encrypt_plaintext_cookies,
         )
+
         cleanup_leftover_temp_files(_cookie_dir)
         n_encrypted = encrypt_plaintext_cookies(_cookie_dir)
         if n_encrypted:
@@ -214,13 +222,15 @@ def main() -> None:
     except Exception as exc:
         logger.warning("Cookie startup cleanup failed (non-fatal): %s", exc)
 
-    engine         = YtDlpEngine(config)
+    engine = YtDlpEngine(config)
     gallery_engine = GalleryDlEngine(config)
 
     from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
     instagram_live_engine = InstagramLiveEngine(config)
 
     from infrastructure.downloader.kuaishou_engine import KuaishouEngine
+
     kuaishou_engine = KuaishouEngine(config)
 
     # Inject bundled Deno into PATH once on the main thread before any worker
@@ -228,22 +238,28 @@ def main() -> None:
     # it from ThreadPoolExecutor workers (the old approach) was a latent race.
     try:
         from utils.deno_locator import get_deno_env as _get_deno_env
+
         _deno_env = _get_deno_env()
         if _deno_env:
             import os as _os
+
             _os.environ.update(_deno_env)
             logger.info("Deno PATH injected into environment (startup, main thread)")
     except Exception as _deno_exc:
         logger.warning("Deno PATH injection failed (non-fatal): %s", _deno_exc)
 
     manager = DownloadManager(
-        config, engine=engine, gallery_engine=gallery_engine,
-        story_engine_enabled=True, instagram_live_engine=instagram_live_engine,
+        config,
+        engine=engine,
+        gallery_engine=gallery_engine,
+        story_engine_enabled=True,
+        instagram_live_engine=instagram_live_engine,
         kuaishou_engine=kuaishou_engine,
     )
     manager.start()
 
     from app.services.download_service import DownloadService
+
     service = DownloadService(
         config=config,
         download_manager=manager,
@@ -266,24 +282,30 @@ def main() -> None:
         try:
             from api.server import start_api_server as _start_api
             from app.event_bus import bus as _event_bus
+
             _api_thread = _start_api(service=service, config=config, bus=_event_bus)
         except ImportError as _api_err:
             import logging as _log_api
+
             _log_api.getLogger(__name__).warning(
-                "Remote API disabled — fastapi/uvicorn not installed: %s. "
-                "Run: pip install fastapi uvicorn",
+                "Remote API disabled — fastapi/uvicorn not installed: %s. Run: pip install fastapi uvicorn",
                 _api_err,
             )
 
     from PySide6.QtWidgets import QApplication
+
     _qt_app = QApplication.instance() or QApplication(sys.argv)
+    if sys.platform != "darwin":
+        _qt_app.setStyle("Fusion")
 
     from ui.theme_qt import apply_theme
     from ui.themes.tokens import T
+
     T.set_mode(config.theme)
     apply_theme()
 
     from ui.main_window import MainWindow
+
     window = MainWindow(service=service, config=config)
     window.show()
 
@@ -324,6 +346,7 @@ def _migrate_legacy_data() -> None:
     """
     import logging
     import shutil
+
     logger = logging.getLogger("omnidl.main")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -345,13 +368,13 @@ def _migrate_legacy_data() -> None:
 def _check_deps() -> None:
     missing = []
     for pkg, install in [
-        ("PySide6",       "pyside6>=6.7"),
-        ("yt_dlp",        "yt-dlp>=2025.1.1"),
-        ("PIL",           "Pillow>=10.3.0"),
-        ("requests",      "requests>=2.31.0"),
-        ("platformdirs",  "platformdirs>=4.0.0"),  # DEF-024
-        ("gallery_dl",    "gallery-dl>=1.27.0"),   # image fallback engine
-        ("playwright",    "playwright>=1.40"),      # Facebook Story CDP
+        ("PySide6", "pyside6>=6.7"),
+        ("yt_dlp", "yt-dlp>=2025.1.1"),
+        ("PIL", "Pillow>=10.3.0"),
+        ("requests", "requests>=2.31.0"),
+        ("platformdirs", "platformdirs>=4.0.0"),  # DEF-024
+        ("gallery_dl", "gallery-dl>=1.27.0"),  # image fallback engine
+        ("playwright", "playwright>=1.40"),  # Facebook Story CDP
     ]:
         try:
             __import__(pkg)

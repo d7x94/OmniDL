@@ -99,6 +99,8 @@ class DownloadTask:
     _cookie_override: str | None = field(default=None, compare=False, repr=False)
 
     # ── Control primitives (not serialised) ──────────────────────────────
+    keep_partial: bool = False  # set by UI before cancel on live tasks → engine saves partial file
+
     _cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
     _pause_event: threading.Event = field(default_factory=_set_event, compare=False, repr=False)
     # An RLock guards coordinated multi-field reads via snapshot().  Python's

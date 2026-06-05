@@ -43,7 +43,7 @@ _VALID_PROXY_SCHEMES: tuple[str, ...] = (
 
 _DEFAULTS: dict[str, Any] = {
     "download_dir": str(Path.home() / "Downloads" / "OmniDL"),
-    "theme": "dark",
+    "theme": "violet",
     "language": "en",
     "max_concurrent": 3,
     "max_retries": 3,
@@ -264,7 +264,7 @@ class ConfigManager:
 
     @property
     def theme(self) -> str:
-        return str(self.get("theme", "dark"))
+        return str(self.get("theme", "violet"))
 
     @property
     def max_concurrent(self) -> int:

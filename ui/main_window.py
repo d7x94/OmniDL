@@ -38,6 +38,7 @@ NAV_ITEMS = [
     ("batch", "⊞", "Hàng loạt", "TẢI XUỐNG"),
     ("live_monitor", "◉", "Trực tiếp", "TẢI XUỐNG"),
     ("convert", "⇄", "Chuyển đổi", "CÔNG CỤ"),
+    ("editor", "✂", "Editor", "CÔNG CỤ"),
     ("history", "◷", "Lịch sử", "THƯ VIỆN"),
     ("settings", "⊙", "Cài đặt", "HỆ THỐNG"),
     ("special_dl", "◆", "Đặc biệt", "HỆ THỐNG"),
@@ -86,13 +87,17 @@ class MainWindow(QMainWindow):
         # Toolbar
         from ui.components.toolbar import Toolbar
 
-        self._toolbar = Toolbar(app=self)
+        self._toolbar_strip = self._make_collapse_strip("Thanh phân tích", self._expand_toolbar)
+        root.addWidget(self._toolbar_strip)
+        self._toolbar_strip.setVisible(False)
+
+        self._toolbar = Toolbar(app=self, on_collapse=self._collapse_toolbar)
         root.addWidget(self._toolbar)
 
         # Top bar: pill tabs + right controls
-        top_bar = QWidget()
-        top_bar.setObjectName("top_bar")
-        top_bar_layout = QHBoxLayout(top_bar)
+        self._top_bar = QWidget()
+        self._top_bar.setObjectName("top_bar")
+        top_bar_layout = QHBoxLayout(self._top_bar)
         top_bar_layout.setContentsMargins(12, 6, 12, 6)
         top_bar_layout.setSpacing(8)
 
@@ -126,13 +131,28 @@ class MainWindow(QMainWindow):
         self._notif_btn.clicked.connect(self._open_notification_panel)
         top_bar_layout.addWidget(self._notif_btn)
 
-        root.addWidget(top_bar)
+        self._collapse_nav_btn = QPushButton("∧")
+        self._collapse_nav_btn.setFixedSize(24, 28)
+        self._collapse_nav_btn.setFlat(True)
+        self._collapse_nav_btn.setToolTip("Ẩn thanh điều hướng")
+        self._collapse_nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_nav_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
+            QPushButton:hover {{ color: {T.text}; background-color: {T.surface3}; border-radius: 4px; }}
+        """)
+        self._collapse_nav_btn.clicked.connect(self._collapse_nav)
+        top_bar_layout.addWidget(self._collapse_nav_btn)
+
+        self._nav_strip = self._make_collapse_strip("Thanh điều hướng", self._expand_nav)
+        root.addWidget(self._nav_strip)
+        self._nav_strip.setVisible(False)
+        root.addWidget(self._top_bar)
 
         # Thin separator below top bar
-        sep = QFrame()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {T.border};")
-        root.addWidget(sep)
+        self._top_sep = QFrame()
+        self._top_sep.setFixedHeight(1)
+        self._top_sep.setStyleSheet(f"background-color: {T.border};")
+        root.addWidget(self._top_sep)
 
         # 3px accent bar — color updates per active tab in navigate_to()
         self._accent_bar = QFrame()
@@ -210,6 +230,7 @@ class MainWindow(QMainWindow):
     def _build_tabs(self) -> None:
         from ui.tabs.batch_tab import BatchTab
         from ui.tabs.convert_tab import ConvertTab
+        from ui.tabs.editor_tab import EditorTab
         from ui.tabs.history_tab import HistoryTab
         from ui.tabs.home_tab import HomeTab
         from ui.tabs.live_monitor_tab import LiveMonitorTab
@@ -223,6 +244,7 @@ class MainWindow(QMainWindow):
             "batch": BatchTab,
             "live_monitor": LiveMonitorTab,
             "convert": ConvertTab,
+            "editor": EditorTab,
             "history": HistoryTab,
             "settings": SettingsTab,
             "special_dl": SpecialDlTab,
@@ -259,10 +281,12 @@ class MainWindow(QMainWindow):
 
     # ── Navigation ────────────────────────────────────────────────────────
 
-    def navigate_to(self, key: str) -> None:
+    def navigate_to(self, key: str, file_path: Optional[str] = None) -> None:
         if key not in self._tabs:
             return
         self._stack.setCurrentWidget(self._tabs[key])
+        if file_path and hasattr(self._tabs[key], "load_file"):
+            self._tabs[key].load_file(file_path)
 
         # Update pill button active state
         prev = self._current_tab
@@ -345,6 +369,59 @@ class MainWindow(QMainWindow):
             btn.setProperty("active", "true")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+        self._apply_strip_styles()
+
+    def _make_collapse_strip(self, label: str, on_expand) -> QFrame:
+        strip = QFrame()
+        strip.setFixedHeight(18)
+        strip.setObjectName("collapse_strip")
+        strip.setStyleSheet(f"background: {T.surface2}; border: none;")
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(0)
+        btn = QPushButton(f"∨  {label}")
+        btn.setFlat(True)
+        btn.setFixedHeight(16)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(f"color: {T.text3}; font-size: 10px; padding: 0; background: transparent;")
+        btn.clicked.connect(on_expand)
+        layout.addWidget(btn)
+        layout.addStretch()
+        return strip
+
+    def _apply_strip_styles(self) -> None:
+        strip_ss = f"background: {T.surface2}; border: none;"
+        btn_ss = f"color: {T.text3}; font-size: 10px; padding: 0; background: transparent;"
+        collapse_btn_ss = f"""
+            QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
+            QPushButton:hover {{ color: {T.text}; background-color: {T.surface3}; border-radius: 4px; }}
+        """
+        for strip in (self._toolbar_strip, self._nav_strip):
+            strip.setStyleSheet(strip_ss)
+            inner_btn = strip.findChild(QPushButton)
+            if inner_btn:
+                inner_btn.setStyleSheet(btn_ss)
+        self._collapse_nav_btn.setStyleSheet(collapse_btn_ss)
+
+    def _collapse_toolbar(self) -> None:
+        self._toolbar.setVisible(False)
+        self._toolbar_strip.setVisible(True)
+
+    def _expand_toolbar(self) -> None:
+        self._toolbar_strip.setVisible(False)
+        self._toolbar.setVisible(True)
+
+    def _collapse_nav(self) -> None:
+        self._top_bar.setVisible(False)
+        self._top_sep.setVisible(False)
+        self._accent_bar.setVisible(False)
+        self._nav_strip.setVisible(True)
+
+    def _expand_nav(self) -> None:
+        self._nav_strip.setVisible(False)
+        self._top_bar.setVisible(True)
+        self._top_sep.setVisible(True)
+        self._accent_bar.setVisible(True)
 
     # ── Drag & drop ───────────────────────────────────────────────────────
 

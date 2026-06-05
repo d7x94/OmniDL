@@ -38,6 +38,9 @@ CONVERT_FORMATS: list[tuple[str, str]] = [
 ]
 
 
+_VIDEO_EXTS = frozenset({".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".flv", ".wmv"})
+
+
 class PostDownloadActions(QWidget):
     def __init__(
         self,
@@ -46,12 +49,14 @@ class PostDownloadActions(QWidget):
         on_convert: Optional[Callable] = None,
         on_send: Optional[Callable] = None,
         on_delete: Optional[Callable] = None,
+        on_edit: Optional[Callable] = None,
         compact: bool = False,
     ) -> None:
         super().__init__(parent)
         self._on_convert = on_convert
         self._on_send = on_send
         self._on_delete = on_delete
+        self._on_edit = on_edit
         self._compact = compact
         self._file_path: Optional[Path] = None
         self._gallery_dl_files: Optional[list] = None
@@ -94,6 +99,16 @@ class PostDownloadActions(QWidget):
         self._delete_btn.clicked.connect(self._on_delete_click)
         btn_row.addWidget(self._delete_btn)
 
+        self._edit_btn = QPushButton("✂ Sửa")
+        self._edit_btn.setFixedHeight(28)
+        self._edit_btn.setStyleSheet(
+            "background: #FCE7F3; color: #EC4899; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
+        )
+        self._edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._edit_btn.clicked.connect(self._on_edit_click)
+        self._edit_btn.hide()
+        btn_row.addWidget(self._edit_btn)
+
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
         self._status_lbl.hide()
@@ -127,6 +142,12 @@ class PostDownloadActions(QWidget):
 
         self._send_btn.setEnabled(True)
         self._delete_btn.setEnabled(True)
+
+        if self._on_edit and file_path.suffix.lower() in _VIDEO_EXTS:
+            self._edit_btn.show()
+        else:
+            self._edit_btn.hide()
+
         self.setVisible(True)
 
     def hide(self) -> None:
@@ -151,6 +172,14 @@ class PostDownloadActions(QWidget):
         self._set_status(f"Convert thất bại: {msg[:80]}")
 
     # ── Handlers ──────────────────────────────────────────────────────────
+
+    def _on_edit_click(self) -> None:
+        if not self._file_path or not self._on_edit:
+            return
+        try:
+            self._on_edit(self._file_path)
+        except Exception as exc:
+            logger.warning("on_edit raised: %s", exc)
 
     def _on_convert_click(self) -> None:
         if self._converting or not self._file_path:

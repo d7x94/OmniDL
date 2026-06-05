@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
-    QLabel,
+    QHBoxLayout,
+    QLineEdit,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -52,15 +53,18 @@ class SettingsTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
-        hdr = QWidget()
-        hdr.setStyleSheet("background: transparent;")
-        hdr_layout = QVBoxLayout(hdr)
-        hdr_layout.setContentsMargins(28, 24, 28, 14)
-        title = QLabel("Cài đặt")
-        title.setObjectName("page_title")
-        hdr_layout.addWidget(title)
-        layout.addWidget(hdr)
+        # Search box
+        search_row = QWidget()
+        search_row.setStyleSheet("background: transparent;")
+        srl = QHBoxLayout(search_row)
+        srl.setContentsMargins(28, 16, 28, 4)
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("Tìm kiếm cài đặt...")
+        self._search_box.setObjectName("settings_search")
+        self._search_box.setClearButtonEnabled(True)
+        self._search_box.textChanged.connect(self._on_search)
+        srl.addWidget(self._search_box)
+        layout.addWidget(search_row)
 
         # Scrollable content
         scroll = QScrollArea()
@@ -92,6 +96,27 @@ class SettingsTab(QWidget):
         content_layout.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll, 1)
+
+    def _on_search(self, text: str) -> None:
+        q = text.strip().lower()
+        panels = (
+            self._general_panel,
+            self._network_panel,
+            self._tools_panel,
+            self._taildrop_panel,
+            self._api_panel,
+        )
+        for panel in panels:
+            for sec_text, cfg_key, wrapper, content in panel._sections:
+                if q:
+                    match = q in sec_text
+                    wrapper.setVisible(match)
+                    if match:
+                        content.setVisible(True)
+                else:
+                    wrapper.setVisible(True)
+                    collapsed = bool(panel._app.config.get(cfg_key, False))
+                    content.setVisible(not collapsed)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

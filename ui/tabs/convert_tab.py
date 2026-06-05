@@ -93,6 +93,7 @@ class FileJob:
     output: Optional[Path] = None
     error_msg: str = ""
     media_info: Optional[FfmpegMediaInfo] = field(default=None)
+    output_media_info: Optional[FfmpegMediaInfo] = field(default=None)
     cancel_fn: Optional[object] = field(default=None, repr=False)
 
 
@@ -203,7 +204,7 @@ class FileCard(QFrame):
             f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
         self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._preview_btn.clicked.connect(self._open_preview)
+        self._preview_btn.clicked.connect(self._toggle_preview)
         self._preview_btn.hide()
         top_layout.addWidget(self._preview_btn)
 
@@ -269,6 +270,63 @@ class FileCard(QFrame):
         self._err_lbl.hide()
         layout.addWidget(self._err_lbl)
 
+        # Preview panel (before/after comparison)
+        self._preview_panel = QFrame()
+        self._preview_panel.setObjectName("preview_panel")
+        self._preview_panel.setStyleSheet(
+            f"#preview_panel {{ background: {T.surface3}; border-radius: 8px;"
+            f" border: 1px solid {T.border}; }}"
+            f" QLabel {{ border: none; background: transparent; }}"
+        )
+        prev_layout = QVBoxLayout(self._preview_panel)
+        prev_layout.setContentsMargins(0, 2, 0, 2)
+        prev_layout.setSpacing(0)
+
+        self._prev_before_row = _ClickableFrame(
+            self._preview_panel,
+            on_click=lambda: open_file(self.job.source),
+        )
+        self._prev_before_row.setObjectName("prev_before_row")
+        self._prev_before_row.setStyleSheet(
+            f"#prev_before_row {{ background: transparent; border-radius: 6px; }}"
+            f" #prev_before_row:hover {{ background: {T.surface2}; }}"
+        )
+        before_row_l = QHBoxLayout(self._prev_before_row)
+        before_row_l.setContentsMargins(12, 6, 12, 6)
+        before_row_l.setSpacing(8)
+        before_pfx = QLabel("Trước")
+        before_pfx.setFixedWidth(42)
+        before_pfx.setStyleSheet(f"color: {T.text3}; font-size: 10px; font-weight: bold;")
+        self._prev_before_lbl = QLabel("…")
+        self._prev_before_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px;")
+        before_row_l.addWidget(before_pfx)
+        before_row_l.addWidget(self._prev_before_lbl)
+
+        self._prev_after_row = _ClickableFrame(
+            self._preview_panel,
+            on_click=lambda: open_file(self.job.output) if self.job.output else None,
+        )
+        self._prev_after_row.setObjectName("prev_after_row")
+        self._prev_after_row.setStyleSheet(
+            f"#prev_after_row {{ background: transparent; border-radius: 6px; }}"
+            f" #prev_after_row:hover {{ background: {T.surface2}; }}"
+        )
+        after_row_l = QHBoxLayout(self._prev_after_row)
+        after_row_l.setContentsMargins(12, 6, 12, 6)
+        after_row_l.setSpacing(8)
+        after_pfx = QLabel("Sau")
+        after_pfx.setFixedWidth(42)
+        after_pfx.setStyleSheet(f"color: {T.success_text}; font-size: 10px; font-weight: bold;")
+        self._prev_after_lbl = QLabel("Đang đọc…")
+        self._prev_after_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px;")
+        after_row_l.addWidget(after_pfx)
+        after_row_l.addWidget(self._prev_after_lbl)
+
+        prev_layout.addWidget(self._prev_before_row)
+        prev_layout.addWidget(self._prev_after_row)
+        self._preview_panel.hide()
+        layout.addWidget(self._preview_panel)
+
         if self.job.media_info is not None:
             self.update_info(self.job.media_info)
 
@@ -330,11 +388,42 @@ class FileCard(QFrame):
             parts.append(f"{mbps:.1f} Mbps")
         self._info_lbl.setText("  ·  ".join(parts) if parts else "")
 
-    def _open_preview(self) -> None:
-        if self.job.output and self.job.output.exists():
-            open_file(self.job.output)
-        elif self.job.output:
-            open_folder(self.job.output.parent)
+    def _toggle_preview(self) -> None:
+        if self._preview_panel.isVisible():
+            self._preview_panel.hide()
+        else:
+            self._refresh_preview_content()
+            self._preview_panel.show()
+
+    def _refresh_preview_content(self) -> None:
+        self._prev_before_lbl.setText(self._media_info_str(self.job.media_info, self.job.source))
+        if self.job.output_media_info is not None:
+            self._prev_after_lbl.setText(self._media_info_str(self.job.output_media_info, self.job.output))
+        else:
+            self._prev_after_lbl.setText("Đang đọc…")
+
+    def update_output_info(self, info: Optional[FfmpegMediaInfo]) -> None:
+        if self._preview_panel.isVisible():
+            self._refresh_preview_content()
+
+    @staticmethod
+    def _media_info_str(info: Optional[FfmpegMediaInfo], path: Optional[Path] = None) -> str:
+        if info is None:
+            return "—"
+        parts: list[str] = []
+        if info.video_codec:
+            parts.append(info.video_codec.upper())
+        if info.audio_codec:
+            parts.append(info.audio_codec.upper())
+        if info.width and info.height:
+            parts.append(f"{info.width}×{info.height}")
+        if info.duration_s > 0:
+            parts.append(fmt_duration(info.duration_s))
+        if info.bitrate_bps > 0:
+            parts.append(f"{info.bitrate_bps / 1_000_000:.1f} Mbps")
+        if path and path.is_file():
+            parts.append(fmt_bytes(path.stat().st_size))
+        return "  ·  ".join(parts) if parts else "—"
 
     def _initial_info_text(self) -> str:
         return "" if self.job.media_info is not None else "Đang đọc thông tin…"
@@ -361,6 +450,7 @@ class ConvertTab(QWidget):
         self._cards: dict[str, FileCard] = {}
         self._quality = "standard"
         self._output_dir: Optional[Path] = None
+        self._cfg_collapsed = False
         self._queue = ConvertQueue(max_concurrent=_MAX_CONCURRENT)
         self._active_count = 0
         self._encoder_key = "cpu"
@@ -410,48 +500,46 @@ class ConvertTab(QWidget):
         hdr = QWidget()
         hdr.setStyleSheet("background: transparent;")
         hdr_layout = QHBoxLayout(hdr)
-        hdr_layout.setContentsMargins(28, 24, 28, 0)
-
-        left_hdr = QWidget()
-        left_hdr.setStyleSheet("background: transparent;")
-        lh_layout = QVBoxLayout(left_hdr)
-        lh_layout.setContentsMargins(0, 0, 0, 0)
-        lh_layout.setSpacing(2)
-        t1 = QLabel("Chuyển sang iPhone MP4")
-        t1.setObjectName("page_title")
-        lh_layout.addWidget(t1)
-        t2 = QLabel("H.264 · AAC · yuv420p · profile High — chạy mượt trên mọi iPhone")
-        t2.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        lh_layout.addWidget(t2)
-        hdr_layout.addWidget(left_hdr)
-        hdr_layout.addStretch()
+        hdr_layout.setContentsMargins(28, 16, 28, 0)
+        hdr_layout.setSpacing(6)
 
         self._add_btn = QPushButton("Thêm file")
-        self._add_btn.setFixedSize(130, 36)
+        self._add_btn.setFixedSize(100, 30)
         self._add_btn.setStyleSheet(
-            f"background: {T.primary}; color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: bold;"
+            f"background: {T.primary}; color: white; border: none; border-radius: 7px; font-size: 11px; font-weight: bold;"
         )
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.clicked.connect(self._browse_files)
         hdr_layout.addWidget(self._add_btn)
 
         self._folder_btn = QPushButton("Thêm thư mục")
-        self._folder_btn.setFixedSize(150, 36)
+        self._folder_btn.setFixedSize(120, 30)
         self._folder_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 12px; font-weight: bold;"
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px; font-weight: bold;"
         )
         self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._folder_btn.clicked.connect(self._browse_folder)
         hdr_layout.addWidget(self._folder_btn)
 
         self._clear_btn = QPushButton("Xóa xong")
-        self._clear_btn.setFixedSize(100, 36)
+        self._clear_btn.setFixedSize(90, 30)
         self._clear_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 11px;"
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
         )
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_btn.clicked.connect(self._clear_done)
         hdr_layout.addWidget(self._clear_btn)
+
+        hdr_layout.addStretch()
+
+        self._cfg_toggle_btn = QPushButton("⚙ Thông số  ▲")
+        self._cfg_toggle_btn.setFixedSize(130, 30)
+        self._cfg_toggle_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
+        )
+        self._cfg_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cfg_toggle_btn.clicked.connect(self._toggle_cfg_panel)
+        hdr_layout.addWidget(self._cfg_toggle_btn)
 
         layout.addWidget(hdr)
 
@@ -461,7 +549,8 @@ class ConvertTab(QWidget):
         cfg_wrap_layout = QVBoxLayout(cfg_wrap)
         cfg_wrap_layout.setContentsMargins(28, 16, 28, 0)
 
-        cfg = QFrame()
+        self._cfg_panel = QFrame()
+        cfg = self._cfg_panel
         cfg.setStyleSheet(f"""
             QFrame {{
                 background-color: {T.surface};
@@ -611,43 +700,6 @@ class ConvertTab(QWidget):
         co_layout.addStretch()
         cfg_layout.addWidget(cod_row)
 
-        # Output dir row
-        out_row = QWidget()
-        out_row.setStyleSheet("background: transparent;")
-        or_layout = QHBoxLayout(out_row)
-        or_layout.setContentsMargins(0, 0, 0, 0)
-        or_layout.setSpacing(8)
-
-        out_lbl = QLabel("Lưu vào")
-        out_lbl.setFixedWidth(90)
-        out_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
-        or_layout.addWidget(out_lbl)
-
-        self._out_entry = QLineEdit()
-        self._out_entry.setPlaceholderText("Cùng thư mục với video gốc")
-        self._out_entry.setFixedHeight(36)
-        self._out_entry.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {T.input};
-                border: 1px solid {T.border2};
-                border-radius: 8px;
-                color: {T.text};
-                font-size: 12px;
-                padding: 0 8px;
-            }}
-        """)
-        or_layout.addWidget(self._out_entry, 1)
-
-        browse_out_btn = QPushButton("Duyệt...")
-        browse_out_btn.setFixedSize(80, 36)
-        browse_out_btn.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 11px;"
-        )
-        browse_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse_out_btn.clicked.connect(self._browse_output)
-        or_layout.addWidget(browse_out_btn)
-
-        cfg_layout.addWidget(out_row)
         cfg_wrap_layout.addWidget(cfg)
         layout.addWidget(cfg_wrap)
 
@@ -900,11 +952,14 @@ class ConvertTab(QWidget):
             self._status_lbl.setText(f"Đã thêm {len(files)} file từ {folder.name}")
             self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;")
 
-    def _browse_output(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu file đã chuyển")
-        if d:
-            self._output_dir = Path(d)
-            self._out_entry.setText(str(self._output_dir))
+    def _toggle_cfg_panel(self) -> None:
+        self._cfg_collapsed = not self._cfg_collapsed
+        self._cfg_panel.setVisible(not self._cfg_collapsed)
+        self._cfg_toggle_btn.setText("⚙ Thông số  ▼" if self._cfg_collapsed else "⚙ Thông số  ▲")
+
+    def load_file(self, path: str) -> None:
+        self._add_file(Path(path))
+        self._refresh_ui()
 
     def _add_file(self, path: Path) -> None:
         existing = {j.source.resolve() for j in self._jobs.values()}
@@ -938,12 +993,7 @@ class ConvertTab(QWidget):
         if not pending:
             return
 
-        out_entry_val = self._out_entry.text().strip()
-        output_dir: Optional[Path] = None
-        if out_entry_val:
-            output_dir = Path(out_entry_val)
-        elif self._output_dir:
-            output_dir = self._output_dir
+        output_dir: Optional[Path] = self._output_dir
 
         encoder_key = self._encoder_key
         if encoder_key not in self._available_encoders:
@@ -1045,6 +1095,22 @@ class ConvertTab(QWidget):
         self._refresh_status()
         if self._active_count == 0:
             self._convert_btn.setEnabled(True)
+        if job.output and job.output.is_file():
+            threading.Thread(
+                target=self._probe_output_async,
+                args=(job,),
+                daemon=True,
+                name=f"omnidl-probe-out-{job.id}",
+            ).start()
+
+    def _probe_output_async(self, job: FileJob) -> None:
+        job.output_media_info = probe_media_info(job.output)
+        ui_bridge.post(lambda j=job: self._update_card_output_info(j))
+
+    def _update_card_output_info(self, job: FileJob) -> None:
+        card = self._cards.get(job.id)
+        if card:
+            card.update_output_info(job.output_media_info)
 
     def _refresh_ui(self) -> None:
         for jid in list(self._cards):

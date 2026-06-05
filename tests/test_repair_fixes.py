@@ -13,6 +13,7 @@ Each test is tagged with the original audit finding it covers:
   PERF-1  : QueueTab idle-aware poll (unit-testable logic only)
   REL-1   : open_folder no longer silently swallows exceptions
 """
+
 from __future__ import annotations
 
 import threading
@@ -22,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ── CRIT-1: get_task() present on DownloadService ─────────────────────────────
+
 
 def test_download_service_has_get_task(tmp_path):
     """DownloadService must expose get_task() — absence caused an AttributeError
@@ -37,8 +39,7 @@ def test_download_service_has_get_task(tmp_path):
     mgr = DownloadManager(cfg, engine=engine)
     mgr.start()
     repo = HistoryRepository(tmp_path / "history.jsonl")
-    svc = DownloadService(config=cfg, download_manager=mgr,
-                          history_repo=repo, engine=engine)
+    svc = DownloadService(config=cfg, download_manager=mgr, history_repo=repo, engine=engine)
 
     # Must exist and be callable
     assert callable(getattr(svc, "get_task", None)), (
@@ -66,8 +67,7 @@ def test_service_facade_get_task_round_trips(tmp_path):
     mgr = DownloadManager(cfg, engine=engine)
     mgr.start()
     repo = HistoryRepository(tmp_path / "history.jsonl")
-    svc = DownloadService(config=cfg, download_manager=mgr,
-                          history_repo=repo, engine=engine)
+    svc = DownloadService(config=cfg, download_manager=mgr, history_repo=repo, engine=engine)
 
     # Simulate what ServiceFacade does
     assert svc.get_task("does-not-exist") is None
@@ -76,23 +76,27 @@ def test_service_facade_get_task_round_trips(tmp_path):
 
 # ── CRIT-2 / SEC-1: _validate_cookie_path helper ─────────────────────────────
 
+
 class TestValidateCookiePath:
     """_validate_cookie_path() must accept only files inside the OmniDL data
     directory and reject anything under Path.home() or elsewhere."""
 
     def _make_config(self, tmp_path, cookie_rel=""):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "data" / "config.json")
         cfg.set("cookie_file", cookie_rel)
         return cfg
 
     def test_empty_returns_none(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         cfg = self._make_config(tmp_path)
         assert _validate_cookie_path(cfg) is None
 
     def test_valid_file_inside_data_dir(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True)
         cookie = data_dir / "cookies.txt"
@@ -105,6 +109,7 @@ class TestValidateCookiePath:
     def test_file_outside_data_dir_rejected(self, tmp_path):
         """A file outside the OmniDL data dir must be rejected (SEC-1 fix)."""
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True)
         # File lives in a sibling directory, not inside data_dir
@@ -120,6 +125,7 @@ class TestValidateCookiePath:
         """Files under Path.home() that are outside the data dir must be
         rejected — this is the core SEC-1 fix (SSH key exfiltration vector)."""
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True)
         cfg = self._make_config(tmp_path)
@@ -133,6 +139,7 @@ class TestValidateCookiePath:
     def test_path_traversal_rejected(self, tmp_path):
         """Classic ../../ traversal must not escape the data directory."""
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True)
         cfg = self._make_config(tmp_path)
@@ -141,6 +148,7 @@ class TestValidateCookiePath:
 
     def test_nonexistent_file_returns_none(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         data_dir = tmp_path / "data"
         data_dir.mkdir(parents=True)
         cfg = self._make_config(tmp_path)
@@ -150,20 +158,28 @@ class TestValidateCookiePath:
 
 # ── SEC-2: SHA-256 verification in _install_ytdlp_frozen ─────────────────────
 
+
 class TestInstallYtdlpFrozenSha256:
     """_install_ytdlp_frozen() must verify the SHA-256 digest of the downloaded
     wheel before extracting it."""
 
-    def _make_fake_meta(self, ver="2099.1.1", sha256="abc123", url="https://files.example.com/yt_dlp-2099.1.1-py3-none-any.whl"):
+    def _make_fake_meta(
+        self,
+        ver="2099.1.1",
+        sha256="abc123",
+        url="https://files.example.com/yt_dlp-2099.1.1-py3-none-any.whl",
+    ):
         return {
             "info": {"version": ver},
             "releases": {
-                ver: [{
-                    "filename": f"yt_dlp-{ver}-py3-none-any.whl",
-                    "url": url,
-                    "digests": {"sha256": sha256},
-                }]
-            }
+                ver: [
+                    {
+                        "filename": f"yt_dlp-{ver}-py3-none-any.whl",
+                        "url": url,
+                        "digests": {"sha256": sha256},
+                    }
+                ]
+            },
         }
 
     def test_sha256_mismatch_raises(self, tmp_path):
@@ -200,6 +216,7 @@ class TestInstallYtdlpFrozenSha256:
                     # Write fake content to the tmp file path
                     def write_fake(src, dst):
                         pass
+
                     mock_copy.side_effect = write_fake
                     # Patch tmp_whl.read_bytes to return fake content
                     with patch("pathlib.Path.read_bytes", return_value=fake_whl_content):
@@ -207,6 +224,7 @@ class TestInstallYtdlpFrozenSha256:
                             with patch("pathlib.Path.mkdir"):
                                 # Import the function from the module
                                 import importlib
+
                                 settings_mod = importlib.import_module("ui.tabs.settings_tab")
                                 with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
                                     settings_mod._install_ytdlp_frozen()
@@ -221,12 +239,14 @@ class TestInstallYtdlpFrozenSha256:
         fake_meta = {
             "info": {"version": "2099.2.2"},
             "releases": {
-                "2099.2.2": [{
-                    "filename": "yt_dlp-2099.2.2-py3-none-any.whl",
-                    "url": "https://files.example.com/yt_dlp-2099.2.2-py3-none-any.whl",
-                    # no 'digests' key
-                }]
-            }
+                "2099.2.2": [
+                    {
+                        "filename": "yt_dlp-2099.2.2-py3-none-any.whl",
+                        "url": "https://files.example.com/yt_dlp-2099.2.2-py3-none-any.whl",
+                        # no 'digests' key
+                    }
+                ]
+            },
         }
         fake_meta_response = MagicMock()
         fake_meta_response.__enter__ = lambda s: s
@@ -236,6 +256,7 @@ class TestInstallYtdlpFrozenSha256:
         with patch("ui.tabs.settings.tools_panel.urlopen", return_value=fake_meta_response):
             with patch("pathlib.Path.mkdir"):
                 import importlib
+
                 settings_mod = importlib.import_module("ui.tabs.settings_tab")
                 with pytest.raises(RuntimeError, match="SHA-256"):
                     settings_mod._install_ytdlp_frozen()
@@ -243,22 +264,25 @@ class TestInstallYtdlpFrozenSha256:
 
 # ── SEC-3: Proxy scheme validation ───────────────────────────────────────────
 
-class TestProxyValidation:
 
+class TestProxyValidation:
     def test_valid_http_proxy_accepted(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         cfg.set("proxy", "http://proxy.example.com:8080")
         assert cfg.proxy == "http://proxy.example.com:8080"
 
     def test_valid_socks5_proxy_accepted(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         cfg.set("proxy", "socks5://127.0.0.1:1080")
         assert cfg.proxy == "socks5://127.0.0.1:1080"
 
     def test_empty_proxy_returns_empty(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         cfg.set("proxy", "")
         assert cfg.proxy == ""
@@ -266,18 +290,21 @@ class TestProxyValidation:
     def test_invalid_scheme_rejected(self, tmp_path):
         """A proxy with an unrecognised scheme must be rejected (returns '')."""
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         cfg.set("proxy", "file:///etc/passwd")
         assert cfg.proxy == ""
 
     def test_ftp_scheme_rejected(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         cfg.set("proxy", "ftp://attacker.com:21")
         assert cfg.proxy == ""
 
     def test_bare_hostname_rejected(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         cfg.set("proxy", "proxy.example.com:8080")
         assert cfg.proxy == ""
@@ -285,37 +312,26 @@ class TestProxyValidation:
 
 # ── QUAL-1: Log rotation ──────────────────────────────────────────────────────
 
+
 def test_logger_uses_rotating_file_handler(tmp_path):
-    """setup_logging() must attach a RotatingFileHandler, not a plain
-    FileHandler, so log files do not grow without bound."""
+    """setup_logging() must configure log rotation to prevent unbounded growth."""
     import logging
-    from logging.handlers import RotatingFileHandler
 
-    from utils.logger import setup_logging
+    from utils.logger import _InterceptHandler, setup_logging
 
-    # Use a separate logger to avoid polluting the root logger for other tests
     log_dir = tmp_path / "logs"
-    # Remove any existing handlers on the root logger first
     root = logging.getLogger()
     original_handlers = root.handlers[:]
     root.handlers.clear()
 
     try:
         setup_logging(log_dir)
-        file_handlers = [
-            h for h in logging.getLogger().handlers
-            if isinstance(h, RotatingFileHandler)
-        ]
-        assert file_handlers, (
-            "setup_logging() must attach a RotatingFileHandler. "
-            "Plain FileHandler grows without bound."
-        )
-        rh = file_handlers[0]
-        assert rh.maxBytes > 0, "RotatingFileHandler maxBytes must be positive"
-        assert rh.backupCount > 0, "RotatingFileHandler backupCount must be positive"
+        # loguru backend: rotation is configured in the loguru file sink;
+        # stdlib root gets a single _InterceptHandler bridge
+        assert (log_dir / "omnidl.log").exists(), "setup_logging must create omnidl.log"
+        intercept = [h for h in logging.getLogger().handlers if isinstance(h, _InterceptHandler)]
+        assert intercept, "setup_logging() must attach _InterceptHandler to root logger"
     finally:
-        # Restore original handlers — close each before removing to prevent
-        # pytest capture from hitting a closed TextIOWrapper (cascade I/O error)
         for h in logging.getLogger().handlers[:]:
             try:
                 h.close()
@@ -327,6 +343,7 @@ def test_logger_uses_rotating_file_handler(tmp_path):
 
 
 # ── CONC-1: EventBus RLock ────────────────────────────────────────────────────
+
 
 def test_eventbus_uses_rlock():
     """EventBus._lock must be an RLock, not a plain Lock.
@@ -371,6 +388,7 @@ def test_eventbus_reentrant_subscribe_does_not_deadlock():
 
 # ── PERF-1: Idle-aware poll logic ─────────────────────────────────────────────
 
+
 def test_idle_poll_interval_logic():
     """When no downloads are active the poll interval should be 2000 ms,
     not 500 ms.  This tests the same conditional used in QueueTab._poll()."""
@@ -398,6 +416,7 @@ def test_idle_poll_interval_logic():
 
 
 # ── REL-1: open_folder logs instead of silently swallowing ───────────────────
+
 
 def test_open_folder_logs_on_failure(tmp_path, caplog):
     """open_folder() must log a debug message when the OS call fails instead

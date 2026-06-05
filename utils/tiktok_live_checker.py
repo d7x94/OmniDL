@@ -768,7 +768,33 @@ def _fetch_hls_from_webcast_room_info(
             if _u and _u not in _candidates:
                 _candidates.append(_u)
         if not _candidates:
-            logger.debug("tiktok_live_checker: room/info no HLS URL for room %s", room_id)
+            _su_keys = list(stream_url.keys())
+            logger.debug(
+                "tiktok_live_checker: room/info no HLS URL for room %s (stream_url keys: %s)",
+                room_id,
+                _su_keys,
+            )
+            # BUG-TT-FLV FIX: some streamers/regions serve FLV instead of HLS.
+            # room/info returns status=2 (live) but hls_pull_url is absent while
+            # flv_pull_url is populated. The BUG-TT-16 download path already routes
+            # .flv URLs to FFmpeg (yt_dlp_engine.py BUG-TT-FLV-CURL), so returning
+            # the FLV URL here is sufficient to unblock the download.
+            _flv_primary = stream_url.get("flv_pull_url") or ""
+            _flv_map = stream_url.get("flv_pull_url_map") or {}
+            _flv_candidates: list[str] = []
+            if _flv_primary:
+                _flv_candidates.append(_flv_primary)
+            for _u in _flv_map.values():
+                if _u and _u not in _flv_candidates:
+                    _flv_candidates.append(_u)
+            for _url in _flv_candidates:
+                if _url.split("?")[0] not in exclude_bases:
+                    logger.info(
+                        "tiktok_live_checker: room/info FLV fallback for @%s room %s",
+                        username,
+                        room_id,
+                    )
+                    return _url, room_id
             return None
         # Return first URL whose CDN base is not in the caller's exclude list.
         for _url in _candidates:
@@ -817,7 +843,13 @@ def _fetch_hls_from_live_page(
         if not rid or not rid.isdigit() or int(rid) == 0:
             return None
         su = lr.get("streamUrl") or lr.get("stream_url") or {}
-        url = su.get("hls_pull_url") or next(iter((su.get("hls_pull_url_map") or {}).values()), "")
+        # BUG-TT-FLV FIX: fall back to FLV if HLS is absent in the page JSON.
+        url = (
+            su.get("hls_pull_url")
+            or next(iter((su.get("hls_pull_url_map") or {}).values()), "")
+            or su.get("flv_pull_url")
+            or next(iter((su.get("flv_pull_url_map") or {}).values()), "")
+        )
         return (url, rid) if url else None
 
     # Path 1: SIGI_STATE (legacy, still used in some regions)

@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MAX_BATCH_URLS: int = 50
+MAX_BATCH_URLS: int = 500
 _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
@@ -84,6 +84,9 @@ class BatchTab(QWidget):
         self._batch_token: int = 0
         self._analysing_count: int = 0
         self._spinner_idx: int = 0
+        self._seq_queue: list[_BatchItem] = []
+        self._seq_current_task_id: str | None = None
+        self._seq_timer: QTimer | None = None
         self._quality_map = {
             "Best": "bestvideo+bestaudio/best",
             "1080p": "bestvideo[height<=1080]+bestaudio/best",
@@ -141,7 +144,7 @@ class BatchTab(QWidget):
         input_card_layout.setContentsMargins(16, 12, 16, 12)
         input_card_layout.setSpacing(6)
 
-        hint = QLabel("Dán URL vào đây — mỗi dòng một link (tối đa 50)")
+        hint = QLabel("Dán URL vào đây — mỗi dòng một link (tối đa 500)")
         hint.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         input_card_layout.addWidget(hint)
 
@@ -215,6 +218,19 @@ class BatchTab(QWidget):
         rl.setObjectName("section_title")
         rl.setStyleSheet(f"color: {T.text2}; font-size: 13px; font-weight: bold;")
         rh_layout.addWidget(rl)
+
+        self._select_all_chk = QCheckBox("Chọn hết")
+        self._select_all_chk.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
+        self._select_all_chk.setVisible(False)
+        self._select_all_chk.toggled.connect(self._on_select_all_toggled)
+        rh_layout.addWidget(self._select_all_chk)
+
+        self._sequential_chk = QCheckBox("Tải tuần tự")
+        self._sequential_chk.setChecked(True)
+        self._sequential_chk.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
+        self._sequential_chk.setVisible(False)
+        rh_layout.addWidget(self._sequential_chk)
+
         rh_layout.addStretch()
 
         ql = QLabel("Chất lượng:")
@@ -512,8 +528,15 @@ class BatchTab(QWidget):
 
         if not self._items:
             self._add_empty_label()
+            self._select_all_chk.setVisible(False)
+            self._sequential_chk.setVisible(False)
             return
 
+        self._select_all_chk.setVisible(True)
+        self._sequential_chk.setVisible(True)
+        self._select_all_chk.blockSignals(True)
+        self._select_all_chk.setChecked(True)
+        self._select_all_chk.blockSignals(False)
         for item in self._items:
             self._build_item_row(item)
 
@@ -621,9 +644,28 @@ class BatchTab(QWidget):
                 f"color: {T.primary_text}; font-size: 12px; background: transparent;"
             )
 
+    def _on_select_all_toggled(self, checked: bool) -> None:
+        for item in self._items:
+            item.checked = checked
+            if item.check_box is not None:
+                item.check_box.blockSignals(True)
+                item.check_box.setChecked(checked)
+                item.check_box.blockSignals(False)
+        self._update_queue_btn_count()
+
+    def _sync_select_all_state(self) -> None:
+        ready = [i for i in self._items if i.state == _ItemState.READY]
+        if not ready:
+            return
+        all_checked = all(i.checked for i in ready)
+        self._select_all_chk.blockSignals(True)
+        self._select_all_chk.setChecked(all_checked)
+        self._select_all_chk.blockSignals(False)
+
     def _on_check_change(self, item: _BatchItem, checked: bool) -> None:
         item.checked = checked
         self._update_queue_btn_count()
+        self._sync_select_all_state()
 
     def _update_queue_btn_count(self) -> None:
         ready = sum(1 for i in self._items if i.state == _ItemState.READY and i.checked)
@@ -655,36 +697,90 @@ class BatchTab(QWidget):
         format_id = self._quality_map.get(quality_label, "bestvideo+bestaudio/best")
         output_ext = self._format_combo.currentText()
 
-        queued = 0
-        for item in self._items:
-            if item.state != _ItemState.READY or not item.checked:
-                continue
-            if item.media_info is None:
-                continue
-            try:
-                self._app.service.start_download(
-                    url=item.url,
-                    media_info=item.media_info,
-                    format_id=format_id,
-                    output_ext=output_ext,
-                )
-                item.state = _ItemState.QUEUED
-                self._refresh_item_ui(item)
-                queued += 1
-            except Exception as exc:
-                logger.warning("Batch queue failed for %s: %s", item.url, exc)
-                item.state = _ItemState.ERROR
-                item.error_msg = str(exc)[:80]
-                item.checked = False
-                self._refresh_item_ui(item)
+        to_submit = [i for i in self._items if i.state == _ItemState.READY and i.checked and i.media_info]
+        if not to_submit:
+            return
 
-        if queued:
-            self._app.toast(f"Đã thêm {queued} video vào queue.", "success")
+        if self._sequential_chk.isChecked():
+            self._seq_queue = to_submit[:]
             self._queue_all_btn.setEnabled(False)
-            self._queue_all_btn.setText("✓  Đã thêm vào queue")
-            self._status_lbl.setText(f"✓  {queued} video da duoc them vao queue")
+            self._queue_all_btn.setText("⬇  Đang tải tuần tự…")
+            self._status_lbl.setText(f"Tải tuần tự: {len(to_submit)} video")
+            self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
+            self._submit_next_sequential(format_id, output_ext)
+        else:
+            queued = 0
+            for item in to_submit:
+                if self._submit_one(item, format_id, output_ext):
+                    queued += 1
+            if queued:
+                self._app.toast(f"Đã thêm {queued} video vào queue.", "success")
+                self._queue_all_btn.setEnabled(False)
+                self._queue_all_btn.setText("✓  Đã thêm vào queue")
+                self._status_lbl.setText(f"✓  {queued} video đã được thêm vào queue")
+                self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
+                self._app.navigate_to("queue")
+
+    def _submit_one(self, item: _BatchItem, format_id: str, output_ext: str) -> bool:
+        try:
+            task = self._app.service.start_download(
+                url=item.url,
+                media_info=item.media_info,
+                format_id=format_id,
+                output_ext=output_ext,
+            )
+            item.state = _ItemState.QUEUED
+            self._refresh_item_ui(item)
+            return task.id
+        except Exception as exc:
+            logger.warning("Batch queue failed for %s: %s", item.url, exc)
+            item.state = _ItemState.ERROR
+            item.error_msg = str(exc)[:80]
+            item.checked = False
+            self._refresh_item_ui(item)
+            return None
+
+    def _submit_next_sequential(self, format_id: str = "", output_ext: str = "") -> None:
+        if not self._seq_queue:
+            self._stop_seq_timer()
+            self._queue_all_btn.setText("✓  Đã tải xong")
+            self._status_lbl.setText("✓  Hoàn tất tải tuần tự")
             self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
-            self._app.navigate_to("queue")
+            return
+
+        if not format_id:
+            format_id = self._quality_map.get(self._quality_combo.currentText(), "bestvideo+bestaudio/best")
+        if not output_ext:
+            output_ext = self._format_combo.currentText()
+
+        item = self._seq_queue.pop(0)
+        task_id = self._submit_one(item, format_id, output_ext)
+        self._seq_current_task_id = task_id
+        remaining = len(self._seq_queue)
+        if remaining:
+            self._app.toast(f"Đang tải tuần tự — còn {remaining} video.", "info")
+        self._app.navigate_to("queue")
+        self._start_seq_timer()
+
+    def _start_seq_timer(self) -> None:
+        if self._seq_timer is None:
+            self._seq_timer = QTimer(self)
+            self._seq_timer.timeout.connect(self._tick_sequential)
+        self._seq_timer.start(2000)
+
+    def _stop_seq_timer(self) -> None:
+        if self._seq_timer:
+            self._seq_timer.stop()
+        self._seq_current_task_id = None
+
+    def _tick_sequential(self) -> None:
+        if not self._seq_current_task_id:
+            self._submit_next_sequential()
+            return
+        task = self._app.service.get_task(self._seq_current_task_id)
+        if task is None or task.status in DownloadStatus.terminal_states():
+            self._seq_current_task_id = None
+            self._submit_next_sequential()
 
     # ── Retry errors ──────────────────────────────────────────────────────────
 
@@ -719,6 +815,8 @@ class BatchTab(QWidget):
     def _clear_all(self) -> None:
         self._batch_token += 1
         self._analysing_count = 0
+        self._stop_seq_timer()
+        self._seq_queue.clear()
         self._text_area.clear()
 
         while self._items_layout.count():
@@ -735,6 +833,8 @@ class BatchTab(QWidget):
         self._retry_btn.setText("Retry errors")
         self._url_count_lbl.setText("")
         self._status_lbl.setText("")
+        self._select_all_chk.setVisible(False)
+        self._sequential_chk.setVisible(False)
         self._add_empty_label()
 
     # ── Public API (called by HomeTab for playlist redirect) ──────────────────

@@ -16,6 +16,8 @@ dependencies = [
     "cryptography>=41.0.0",
     "playwright>=1.40",
     "curl-cffi>=0.15.0",
+    "loguru>=0.7.3",
+    "ffmpeg-python>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -92,6 +94,8 @@ module = [
     "ui.tabs.settings.remote_api_panel",
     "ui.tabs.settings.taildrop_panel",
     "ui.tabs.settings.tools_panel",
+    "ui.tabs.editor_tab",
+    "app.services.ffmpeg_trim_service",
     "ui.tabs.special_dl_tab",
     "ui.theme_qt",
 ]

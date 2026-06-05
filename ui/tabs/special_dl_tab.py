@@ -319,6 +319,7 @@ class SpecialDlTab(QWidget):
             on_convert=self._on_post_convert,
             on_send=self._on_post_send,
             on_delete=self._on_post_delete,
+            on_edit=lambda p: self._app.navigate_to("editor", file_path=str(p)),
             compact=False,
         )
         br_layout.addWidget(self._post_actions)

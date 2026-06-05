@@ -131,54 +131,13 @@ class EditorTab(QWidget):
         self._cancel_preview: Optional[Callable[[], None]] = None
         self._frame_processor = FrameProcessor()
         self._saved_effect_params: EffectParams = EffectParams()
+        self._file_path: str = ""
         self._build()
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(24, 8, 24, 8)
         layout.setSpacing(12)
-
-        # Header
-        header = QLabel("Chỉnh sửa video")
-        header.setStyleSheet(f"color: {T.text}; font-size: 20px; font-weight: 700;")
-        layout.addWidget(header)
-
-        # File picker row
-        file_row = QHBoxLayout()
-        file_row.setSpacing(8)
-        self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText("Chọn file video hoặc mở từ lịch sử tải xuống...")
-        self._path_edit.setReadOnly(True)
-        self._path_edit.setStyleSheet(
-            f"background: {T.surface2}; color: {T.text}; border: 1px solid {T.border};"
-            f" border-radius: 8px; padding: 6px 10px; font-size: 12px;"
-        )
-        file_row.addWidget(self._path_edit, 1)
-
-        open_btn = QPushButton("📂  Mở file")
-        open_btn.setFixedHeight(34)
-        open_btn.setStyleSheet(
-            f"background: {T.primary}; color: white; border: none; border-radius: 8px;"
-            f" font-size: 12px; font-weight: 600; padding: 0 16px;"
-        )
-        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        open_btn.clicked.connect(self._pick_file)
-        file_row.addWidget(open_btn)
-
-        self._clear_btn = QPushButton("X")
-        self._clear_btn.setFixedSize(34, 34)
-        self._clear_btn.setToolTip("Đóng file")
-        self._clear_btn.setStyleSheet(
-            f"QPushButton {{ background: {T.surface2}; color: {T.text2}; border: 1px solid {T.border};"
-            f" border-radius: 8px; font-size: 14px; font-weight: 600; }}"
-            f" QPushButton:hover {{ background: {T.error}; color: white; border-color: {T.error}; }}"
-        )
-        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_btn.setVisible(False)
-        self._clear_btn.clicked.connect(self._clear_file)
-        file_row.addWidget(self._clear_btn)
-
-        layout.addLayout(file_row)
 
         # ── Main splitter ─────────────────────────────────────────────────────
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -272,9 +231,39 @@ class EditorTab(QWidget):
         panel_layout.setContentsMargins(6, 0, 0, 0)
         panel_layout.setSpacing(8)
 
-        # ── Trim row ──────────────────────────────────────────────────────────
-        trim_row = QHBoxLayout()
-        trim_row.setSpacing(8)
+        # ── File buttons row ──────────────────────────────────────────────────
+        file_btn_row = QHBoxLayout()
+        file_btn_row.setSpacing(6)
+
+        open_btn = QPushButton("📂  Mở file")
+        open_btn.setFixedHeight(30)
+        open_btn.setStyleSheet(
+            f"background: {T.primary}; color: white; border: none; border-radius: 8px;"
+            f" font-size: 12px; font-weight: 600; padding: 0 16px;"
+        )
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._pick_file)
+        file_btn_row.addWidget(open_btn)
+
+        self._clear_btn = QPushButton("✕  Đóng file")
+        self._clear_btn.setFixedHeight(30)
+        self._clear_btn.setToolTip("Đóng file hiện tại")
+        self._clear_btn.setStyleSheet(
+            f"QPushButton {{ background: {T.surface2}; color: {T.text2}; border: 1px solid {T.border};"
+            f" border-radius: 8px; font-size: 12px; font-weight: 600; padding: 0 12px; }}"
+            f" QPushButton:hover {{ background: {T.error}; color: white; border-color: {T.error}; }}"
+        )
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.setVisible(False)
+        self._clear_btn.clicked.connect(self._clear_file)
+        file_btn_row.addWidget(self._clear_btn)
+        file_btn_row.addStretch()
+
+        panel_layout.addLayout(file_btn_row)
+
+        # ── Trim rows ─────────────────────────────────────────────────────────
+        in_row = QHBoxLayout()
+        in_row.setSpacing(8)
 
         self._set_in_btn = QPushButton("[ Set In")
         self._set_in_btn.setFixedHeight(28)
@@ -282,17 +271,16 @@ class EditorTab(QWidget):
         self._set_in_btn.setStyleSheet(self._pill_style(T.primary_dim, T.primary_text))
         self._set_in_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._set_in_btn.clicked.connect(self._set_in)
-        trim_row.addWidget(self._set_in_btn)
+        in_row.addWidget(self._set_in_btn)
 
         self._in_lbl = QLabel("In: 0:00")
         self._in_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-family: monospace;")
-        trim_row.addWidget(self._in_lbl)
+        in_row.addWidget(self._in_lbl)
+        in_row.addStretch()
+        panel_layout.addLayout(in_row)
 
-        trim_row.addStretch()
-
-        self._out_lbl = QLabel("Out: --:--")
-        self._out_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-family: monospace;")
-        trim_row.addWidget(self._out_lbl)
+        out_row = QHBoxLayout()
+        out_row.setSpacing(8)
 
         self._set_out_btn = QPushButton("Set Out ]")
         self._set_out_btn.setFixedHeight(28)
@@ -300,9 +288,13 @@ class EditorTab(QWidget):
         self._set_out_btn.setStyleSheet(self._pill_style(T.primary_dim, T.primary_text))
         self._set_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._set_out_btn.clicked.connect(self._set_out)
-        trim_row.addWidget(self._set_out_btn)
+        out_row.addWidget(self._set_out_btn)
 
-        panel_layout.addLayout(trim_row)
+        self._out_lbl = QLabel("Out: --:--")
+        self._out_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-family: monospace;")
+        out_row.addWidget(self._out_lbl)
+        out_row.addStretch()
+        panel_layout.addLayout(out_row)
 
         # ── Edit options row ──────────────────────────────────────────────────
         edit_row = QHBoxLayout()
@@ -503,7 +495,7 @@ class EditorTab(QWidget):
         eff_lbl.setStyleSheet(f"color: {T.text}; font-size: 12px; font-weight: 700;")
         eff_header_row.addWidget(eff_lbl)
         eff_header_row.addStretch()
-        self._toggle_effects_btn = QPushButton("+ Hiển thị")
+        self._toggle_effects_btn = QPushButton("- Ẩn")
         self._toggle_effects_btn.setFixedHeight(24)
         self._toggle_effects_btn.setEnabled(False)
         self._toggle_effects_btn.setStyleSheet(
@@ -517,7 +509,7 @@ class EditorTab(QWidget):
         panel_layout.addLayout(eff_header_row)
 
         self._effects_panel = QWidget()
-        self._effects_panel.setVisible(False)
+        self._effects_panel.setVisible(True)
         eff_layout = QVBoxLayout(self._effects_panel)
         eff_layout.setContentsMargins(0, 4, 0, 0)
         eff_layout.setSpacing(6)
@@ -649,7 +641,7 @@ class EditorTab(QWidget):
         self._cleanup_preview()
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(p)))
-        self._path_edit.setText(str(p))
+        self._file_path = str(p)
         self._current_source = p
         self._original_duration = 0
         self._play_btn.setEnabled(True)
@@ -722,7 +714,7 @@ class EditorTab(QWidget):
             self._cancel_trim = None
         self._player.stop()
         self._player.setSource(QUrl())
-        self._path_edit.clear()
+        self._file_path = ""
         self._current_source = None
         self._original_duration = 0
         self._play_btn.setEnabled(False)
@@ -896,7 +888,7 @@ class EditorTab(QWidget):
             self._cancel_trim = None
             return
 
-        src_text = self._path_edit.text()
+        src_text = self._file_path
         if not src_text:
             return
         source = Path(src_text)

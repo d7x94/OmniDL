@@ -243,19 +243,19 @@ class TestThemeTokenValues(unittest.TestCase):
         # MagicMock stub at module-load time.  Remove the stub so we get the
         # real ThemeManager singleton here.
         sys.modules.pop("ui.themes.tokens", None)
-        from ui.themes.tokens import _DARK, _LIGHT, T
+        from ui.themes.tokens import _LIGHT, _VIOLET, T
 
         self.T = T
-        self.DARK = _DARK
+        self.DARK = _VIOLET
         self.LIGHT = _LIGHT
         # Always start from a known state
-        T.set_mode("dark")
+        T.set_mode("violet")
 
     def tearDown(self):
-        self.T.set_mode("dark")  # restore default
+        self.T.set_mode("violet")  # restore default
 
     def test_dark_palette_bg_is_correct(self):
-        self.T.set_mode("dark")
+        self.T.set_mode("violet")
         self.assertEqual(self.T.bg, self.DARK["bg"])
 
     def test_light_palette_bg_is_correct(self):
@@ -263,7 +263,7 @@ class TestThemeTokenValues(unittest.TestCase):
         self.assertEqual(self.T.bg, self.LIGHT["bg"])
 
     def test_dark_error_token_is_red(self):
-        self.T.set_mode("dark")
+        self.T.set_mode("violet")
         self.assertEqual(self.T.error, self.DARK["error"])
 
     def test_light_error_token_is_red(self):
@@ -281,9 +281,9 @@ class TestThemeTokenValues(unittest.TestCase):
             )
 
     def test_set_mode_idempotent(self):
-        self.T.set_mode("dark")
-        self.T.set_mode("dark")
-        self.assertEqual(self.T.mode, "dark")
+        self.T.set_mode("violet")
+        self.T.set_mode("violet")
+        self.assertEqual(self.T.mode, "violet")
 
     def test_unknown_token_raises_attribute_error(self):
         with self.assertRaises(AttributeError):
@@ -298,29 +298,31 @@ class TestThemeCallbackRegistration(unittest.TestCase):
         from ui.themes.tokens import T
 
         self.T = T
-        T.set_mode("dark")
+        T.set_mode("violet")
 
     def tearDown(self):
-        self.T.set_mode("dark")
+        self.T.set_mode("violet")
 
     def test_registered_callback_fires_on_mode_change(self):
         fired = []
         self.T.register(lambda: fired.append(1))
         self.T.set_mode("light")
         self.assertEqual(fired, [1])
-        self.T.set_mode("dark")
+        self.T.set_mode("violet")
         self.assertEqual(fired, [1, 1])
 
     def test_callback_not_fired_when_mode_unchanged(self):
         fired = []
         self.T.register(lambda: fired.append(1))
-        self.T.set_mode("dark")  # already dark
+        self.T.set_mode("violet")  # already dark
         self.assertEqual(fired, [], "Callback must not fire when mode is unchanged")
 
     def test_unregistered_callback_not_called(self):
         fired = []
+
         def cb():
             return fired.append(1)
+
         self.T.register(cb)
         self.T.unregister(cb)
         self.T.set_mode("light")
@@ -328,8 +330,10 @@ class TestThemeCallbackRegistration(unittest.TestCase):
 
     def test_duplicate_register_ignored(self):
         fired = []
+
         def cb():
             return fired.append(1)
+
         self.T.register(cb)
         self.T.register(cb)  # duplicate
         self.T.set_mode("light")
@@ -343,6 +347,7 @@ class TestThemeCallbackRegistration(unittest.TestCase):
 
         def good_cb():
             return log.append("ok")
+
         self.T.register(bad_cb)
         self.T.register(good_cb)
         self.T.set_mode("light")  # bad_cb raises, but good_cb should still run
@@ -506,11 +511,11 @@ class TestStartupThemeSync(unittest.TestCase):
         import sys as _sys
 
         _sys.modules.pop("ui.themes.tokens", None)
-        from ui.themes.tokens import _DARK, _LIGHT, T
+        from ui.themes.tokens import _LIGHT, _VIOLET, T
 
         # Simulate default (dark) state at module import
-        T.set_mode("dark")
-        self.assertEqual(T.bg, _DARK["bg"])
+        T.set_mode("violet")
+        self.assertEqual(T.bg, _VIOLET["bg"])
 
         # Simulate main.py calling T.set_mode(config.theme) with saved=light
         T.set_mode("light")
@@ -524,22 +529,22 @@ class TestStartupThemeSync(unittest.TestCase):
             )
 
         # Cleanup
-        T.set_mode("dark")
+        T.set_mode("violet")
 
     def test_dark_startup_no_palette_change(self):
         """
-        If config.theme == 'dark' (the default), T stays on dark.
+        If config.theme == 'violet' (the default), T stays on violet.
         No callback is fired (mode unchanged).
         """
-        from ui.themes.tokens import _DARK, T
+        from ui.themes.tokens import _VIOLET, T
 
-        T.set_mode("dark")
+        T.set_mode("violet")
         fired = []
         T.register(lambda: fired.append(1))
-        T.set_mode("dark")  # same mode → no-op
+        T.set_mode("violet")  # same mode → no-op
         self.assertEqual(fired, [], "No callback should fire when mode is unchanged")
-        for key in _DARK:
-            self.assertEqual(T.get(key), _DARK[key])
+        for key in _VIOLET:
+            self.assertEqual(T.get(key), _VIOLET[key])
 
     def test_flicker_prevention_in_main_window(self):
         """MainWindow.__init__ must call self._build() to construct the UI."""

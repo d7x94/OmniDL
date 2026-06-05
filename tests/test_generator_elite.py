@@ -89,7 +89,7 @@ class TestConfigManagerResetToDefaults:
         cfg = ConfigManager(p)
         cfg.set("theme", "light")
         cfg.reset_to_defaults()
-        assert cfg.theme == "dark"
+        assert cfg.theme == "violet"
 
     def test_reset_writes_to_disk(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
@@ -111,7 +111,7 @@ class TestConfigManagerResetToDefaults:
         path_key = str(p.resolve())
         with ConfigManager._cache_lock:
             cached = ConfigManager._cache.get(path_key, {})
-        assert cached.get("theme") == "dark"
+        assert cached.get("theme") == "violet"
 
     def test_reset_then_get_returns_default(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
@@ -357,17 +357,12 @@ class TestSetupLogging:
         assert log_dir.is_dir()
 
     def test_rotating_handler_present(self, tmp_path):
-        import logging
-        from logging.handlers import RotatingFileHandler
-
         from utils.logger import setup_logging
 
-        root = logging.getLogger()
-        # Remove any existing file handler for this path
         log_dir = tmp_path / "logs_rot"
         setup_logging(log_dir)
-        file_handlers = [h for h in root.handlers if isinstance(h, RotatingFileHandler)]
-        assert file_handlers, "No RotatingFileHandler found after setup_logging"
+        # loguru manages rotation internally via its sink configuration
+        assert (log_dir / "omnidl.log").exists(), "setup_logging must create omnidl.log"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
