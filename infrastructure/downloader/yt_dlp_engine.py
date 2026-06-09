@@ -2001,6 +2001,8 @@ class YtDlpEngine:
                 _tt16_grace_wait_done = False
                 try:
                     while _tt16_attempt <= _MAX_HLS_RETRIES:
+                        if task.is_cancellation_requested:
+                            raise yt_dlp.utils.DownloadError("Cancelled by user")
                         _seg_path = (
                             _direct_out_path
                             if _tt16_attempt == 0
@@ -2068,7 +2070,10 @@ class YtDlpEngine:
                                     )
                                     _tt16_current_hls = _tt28_fresh[0]
                                     _tt16_attempt += 1
-                                    time.sleep(2)
+                                    for _i in range(2):
+                                        if task.is_cancellation_requested:
+                                            raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                        time.sleep(1)
                                     continue
                             _direct_ffmpeg_ok = True
                             break
@@ -2133,7 +2138,10 @@ class YtDlpEngine:
                                 if _fresh:
                                     _tt16_current_hls = _fresh[0]
                                     _tt16_attempt += 1
-                                    time.sleep(2)
+                                    for _i in range(2):
+                                        if task.is_cancellation_requested:
+                                            raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                        time.sleep(1)
                                     continue
                                 else:
                                     # Can't re-extract — stream likely ended
@@ -2205,7 +2213,10 @@ class YtDlpEngine:
                                         except OSError:
                                             pass
                                         _tt16_attempt += 1
-                                        time.sleep(2)
+                                        for _i in range(2):
+                                            if task.is_cancellation_requested:
+                                                raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                            time.sleep(1)
                                         continue
                                     raise  # no alternative CDN path available
                                 # BUG-TT-20B FIX: subsequent 0B failure — exclude
@@ -2241,7 +2252,10 @@ class YtDlpEngine:
                                         except OSError:
                                             pass
                                         _tt16_attempt += 1
-                                        time.sleep(2)
+                                        for _i in range(2):
+                                            if task.is_cancellation_requested:
+                                                raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                            time.sleep(1)
                                         continue
                                     if not _tt16_grace_wait_done:
                                         # BUG-TT-CDNWARM: single CDN variant keeps stalling
@@ -2253,7 +2267,10 @@ class YtDlpEngine:
                                             "BUG-TT-CDNWARM: all CDN bases stalling"
                                             " — waiting 30s for CDN warm-up"
                                         )
-                                        time.sleep(30)
+                                        for _i in range(30):
+                                            if task.is_cancellation_requested:
+                                                raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                            time.sleep(1)
                                         _tt16_bad_bases.clear()
                                         _tt16_stall_counts.clear()
                                         _grace_fresh = self._extract_tiktok_live_hls_url(
@@ -3636,6 +3653,8 @@ class YtDlpEngine:
 
                     _base_url = hls_url.rsplit("/", 1)[0] + "/"
                     for _seg_line in _m3u8_text.splitlines():
+                        if task.is_cancellation_requested:
+                            raise yt_dlp.utils.DownloadError("Cancelled by user")
                         _seg_line = _seg_line.strip()
                         if not _seg_line or _seg_line.startswith("#"):
                             continue
@@ -3679,7 +3698,10 @@ class YtDlpEngine:
                     if _stream_ended:
                         break
 
-                    time.sleep(_POLL_INTERVAL_S)
+                    for _i in range(_POLL_INTERVAL_S):
+                        if task.is_cancellation_requested:
+                            raise yt_dlp.utils.DownloadError("Cancelled by user")
+                        time.sleep(1)
         finally:
             if _cookie_temp_curl:
                 try:

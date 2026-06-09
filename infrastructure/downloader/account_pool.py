@@ -103,13 +103,16 @@ class TikTokAccountPool:
 
             account = min(candidates, key=_ratio)
             slot = self._slots[account.id]
+            # Pre-reserve the slot in _load before releasing the lock so that
+            # concurrent acquire() calls see this account as loaded and pick a
+            # different one.  Without this, all threads see load=0 and pile onto
+            # account A, blocking on slot.acquire() while B and C sit idle.
+            self._load[account.id] = self._load.get(account.id, 0) + 1
 
         # slot.acquire() may block — must be outside _lock to avoid deadlock.
         # Holding a local reference to slot is safe even if remove_account()
         # runs concurrently: the slot object itself remains valid.
         slot.acquire()
-        with self._lock:
-            self._load[account.id] = self._load.get(account.id, 0) + 1
         try:
             yield account
         finally:
