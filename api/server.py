@@ -9,8 +9,9 @@ Architecture:
     (which is already thread-safe) and the EventBus.
   • Analyse endpoint bridges the callback-based DownloadService.analyse_url()
     to a synchronous wait using threading.Event.
-  • Real-time progress is pushed to SSE clients via a per-client queue.Queue
-    fed by EventBus subscriber callbacks (which fire on worker threads).
+  • Real-time progress is pushed to SSE clients via a per-client asyncio.Queue
+    fed by EventBus subscriber callbacks (worker threads hand frames to the
+    server event loop with call_soon_threadsafe).
 
 Token auth:
   • All endpoints require a Bearer token in the Authorization header.
@@ -22,11 +23,11 @@ Token auth:
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import json
 import logging
 import mimetypes
-import queue
 import secrets
 import shutil
 import sys
@@ -42,6 +43,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from api.models import (
     AnalyseRequest,
     AnalyseResponse,
+    ClearItemsRequest,
     ClipboardAnalyseRequest,
     ConvertJobResponse,
     ConvertRequest,
@@ -59,6 +61,10 @@ from api.models import (
     FileTransferResponse,
     HistoryListResponse,
     HistoryStatsResponse,
+    MonitorAddRequest,
+    MonitorIntervalRequest,
+    MonitorItemResponse,
+    MonitorListResponse,
     QueueActionResponse,
     TaskResponse,
 )
@@ -70,6 +76,7 @@ if TYPE_CHECKING:
     import uvicorn
 
     from app.services.download_service import DownloadService
+    from app.services.live_monitor_service import LiveMonitorService
     from app.services.remote_convert_service import RemoteConvertService
     from infrastructure.config.config_manager import ConfigManager
 
@@ -77,7 +84,10 @@ logger = logging.getLogger(__name__)
 
 # ── SSE broadcast helpers ─────────────────────────────────────────────────────
 
-_sse_clients: list[queue.Queue] = []
+# Each client is (asyncio.Queue, event loop of the server thread).  Frames are
+# handed to the loop via call_soon_threadsafe so async generators (no threadpool
+# thread per connection) can consume them.
+_sse_clients: list[tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = []
 _sse_lock = threading.Lock()
 _PING_INTERVAL = 15  # seconds — keeps iOS Safari connections alive
 
@@ -104,10 +114,12 @@ _RATE_LIMIT = 60  # max requests per window
 _RATE_WINDOW = 60.0  # seconds
 _rate_buckets: dict[str, collections.deque] = {}
 _rate_lock = threading.Lock()
+_rate_last_cleanup: float = 0.0
 
 
 def _check_rate_limit(ip: str) -> bool:
     """Return True if within limit, False if over. Thread-safe."""
+    global _rate_last_cleanup
     now = time.monotonic()
     with _rate_lock:
         bucket = _rate_buckets.setdefault(ip, collections.deque())
@@ -116,6 +128,13 @@ def _check_rate_limit(ip: str) -> bool:
         if len(bucket) >= _RATE_LIMIT:
             return False
         bucket.append(now)
+        # Prune empty buckets every 5 min to prevent unbounded growth from
+        # short-lived clients (bots, scanners, one-time iOS shortcuts runs).
+        if now - _rate_last_cleanup > 300.0:
+            stale = [k for k, v in _rate_buckets.items() if not v]
+            for k in stale:
+                del _rate_buckets[k]
+            _rate_last_cleanup = now
         return True
 
 
@@ -134,23 +153,38 @@ def _analyse_cache_cleanup() -> None:
 # ── Runtime server state (module-level so stop/restart can reach it) ─────────
 _active_server: "uvicorn.Server | None" = None  # type: ignore[name-defined]
 _active_thread: threading.Thread | None = None
-_active_bus: "EventBus | None" = None  # held to allow re-wiring on restart
+_active_monitor: "LiveMonitorService | None" = None  # stopped on restart/shutdown
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
 _bus_wired = False  # BUG-CB: prevent duplicate subscriptions on restart
 
 
 def _broadcast(event_type: str, data: dict) -> None:
-    """Push an SSE frame to all connected clients."""
+    """Push an SSE frame to all connected clients. Safe to call from any thread."""
     msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     with _sse_lock:
-        dead: list[queue.Queue] = []
-        for q in _sse_clients:
-            try:
-                q.put_nowait(msg)
-            except queue.Full:
-                dead.append(q)
-        for q in dead:
-            _sse_clients.remove(q)
+        clients = list(_sse_clients)
+    for q, loop in clients:
+        try:
+            loop.call_soon_threadsafe(_offer_sse, q, msg)
+        except RuntimeError:
+            pass  # loop already closed — server shutting down
+
+
+def _offer_sse(q: asyncio.Queue, msg: str) -> None:
+    """Runs on the server event loop. Evicts the client if its queue is full."""
+    try:
+        q.put_nowait(msg)
+    except asyncio.QueueFull:
+        # Slow client — evict it.  Push a None sentinel (after freeing one
+        # slot) so its generator terminates and the EventSource reconnects,
+        # instead of the connection staying open receiving only pings forever.
+        with _sse_lock:
+            _sse_clients[:] = [(cq, cl) for cq, cl in _sse_clients if cq is not q]
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        q.put_nowait(None)
 
 
 def _task_to_dict(task: DownloadTask) -> dict:
@@ -269,12 +303,13 @@ def create_app(
     service: "DownloadService",
     config: "ConfigManager",
     remote_convert: "Optional[RemoteConvertService]" = None,
+    live_monitor: "Optional[LiveMonitorService]" = None,
 ) -> FastAPI:
     """Build and return the FastAPI application.
 
-    ``remote_convert`` is optional so existing callers (tests, older startup
-    code) continue to work unchanged — convert endpoints simply return 503
-    when the service is not provided.
+    ``remote_convert`` and ``live_monitor`` are optional so existing callers
+    (tests, older startup code) continue to work unchanged — those endpoints
+    simply return 503 when the service is not provided.
     """
 
     app = FastAPI(
@@ -287,9 +322,11 @@ def create_app(
 
     # Allow cross-origin requests so the PWA can connect from any origin
     # (including the iOS "Add to Home Screen" launch context).
+    # Only when a token is set — in open mode (tests / token-less create_app)
+    # a wildcard would let any web page issue state-changing calls.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["*"] if config.api_token else [],
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
@@ -310,21 +347,26 @@ def create_app(
         Skipped entirely when api_token is empty (open/local-only mode).
         """
         client_ip = request.client.host if request.client else "unknown"
-        if not _check_rate_limit(client_ip):
-            raise HTTPException(status_code=429, detail="Rate limit exceeded — try again later")
-        if not _token:
-            return  # auth disabled — local trusted network only
         provided = token  # query param first (SSE path)
         if not provided:
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 provided = auth_header[7:]
+        # Valid-token requests bypass the rate limiter: behind tailscale serve
+        # (or any localhost-bound proxy) every client shares one IP, so letting
+        # unauthenticated requests consume the bucket would allow a single bad
+        # client to 429-lock out all legitimate users.
+        if _token and provided and secrets.compare_digest(provided.encode("utf-8"), _token.encode("utf-8")):
+            return
+        if not _check_rate_limit(client_ip):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded — try again later")
+        if not _token:
+            return  # auth disabled — local trusted network only
         if not provided:
             logger.warning("API auth: missing token from %s", client_ip)
             raise HTTPException(status_code=401, detail="Authorization required")
-        if not secrets.compare_digest(provided, _token):
-            logger.warning("API auth: invalid token from %s", client_ip)
-            raise HTTPException(status_code=403, detail="Invalid token")
+        logger.warning("API auth: invalid token from %s", client_ip)
+        raise HTTPException(status_code=403, detail="Invalid token")
 
     # ── Health check ──────────────────────────────────────────────────────
 
@@ -356,7 +398,11 @@ def create_app(
             done.set()
 
         service.analyse_url(body.url, on_done=on_done, on_error=on_error)
-        done.wait(timeout=180)
+        # Poll instead of done.wait(): a blocking wait here would freeze the
+        # entire event loop (every endpoint + SSE) for up to 180 s.
+        deadline = time.monotonic() + 180.0
+        while not done.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -375,6 +421,7 @@ def create_app(
             is_live=info.is_live,
             playlist_count=len(info.playlist_entries),
             source_engine=info.source_engine,  # BUG-BT fix: forward engine choice to client
+            tiktok_room_id=info.tiktok_room_id,
         )
 
     # ── URL analysis — SSE streaming variant ─────────────────────────────
@@ -449,7 +496,7 @@ def create_app(
                 )
             entry["refs"] += 1
 
-        def _stream() -> Generator[str, None, None]:
+        async def _stream():
             try:
                 done = entry["done"]
                 result = entry["result"]
@@ -462,8 +509,9 @@ def create_app(
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
-                    wait_s = min(keepalive_interval, remaining)
-                    done.wait(timeout=wait_s)
+                    # Poll the threading.Event — awaiting keeps this off the
+                    # threadpool (sync generators pin a thread per connection).
+                    await asyncio.sleep(min(0.5, remaining))
                     now = time.monotonic()
                     if not done.is_set() and now - last_ka >= keepalive_interval:
                         yield ": keepalive\n\n"
@@ -543,7 +591,11 @@ def create_app(
             done.set()
 
         service.analyse_url(body.url, on_done=on_done, on_error=on_error)
-        done.wait(timeout=180)
+        # Poll instead of done.wait(): a blocking wait here would freeze the
+        # entire event loop (every endpoint + SSE) for up to 180 s.
+        deadline = time.monotonic() + 180.0
+        while not done.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -650,15 +702,13 @@ def create_app(
 
     @app.delete("/api/queue/items")
     async def clear_selected_items(
-        request: Request,
+        body: ClearItemsRequest,
         _: None = Depends(_require_auth),
     ):
         """Remove specific tasks by ID (only if terminal status)."""
-        body = await request.json()
-        ids: list[str] = body.get("ids", [])
-        if ids:
-            service.clear_specific(ids)
-        return {"status": "ok", "count": len(ids)}
+        if body.ids:
+            service.clear_specific(body.ids)
+        return {"status": "ok", "count": len(body.ids)}
 
     @app.delete("/api/queue/finished")
     async def clear_finished(_: None = Depends(_require_auth)):
@@ -724,8 +774,8 @@ def create_app(
         td = service.taildrop
         if not config.taildrop_enabled:
             raise HTTPException(status_code=503, detail="Taildrop is disabled in settings")
-        node = config.taildrop_target_node
-        if not node:
+        nodes = config.taildrop_target_nodes
+        if not nodes:
             raise HTTPException(status_code=503, detail="Taildrop target node not configured")
         if not td.is_tailscale_available():
             raise HTTPException(status_code=503, detail="tailscale CLI not found on server")
@@ -734,16 +784,25 @@ def create_app(
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Output file not found on disk")
 
-        # Dispatch to the background executor — non-blocking.
-        # send_now() bypasses the send_mode guard so the transfer fires
-        # regardless of whether the mode is "always" or "ask".
-        # TaildropService publishes TAILDROP_COMPLETED / TAILDROP_FAILED events
-        # on the EventBus which SSE clients will receive automatically.
-        td.send_now(task)
+        # Broadcast SSE events directly from callbacks so all configured nodes
+        # get a completion/failure event (send_now only handles one node).
+        def _on_node_done(node: str) -> None:
+            _broadcast("taildrop_completed", {"task_id": task_id, "dest_node": node})
+
+        def _on_node_error(node: str, error: str = "") -> None:
+            _broadcast("taildrop_failed", {"task_id": task_id, "dest_node": node, "error": error})
+
+        td.send_file_to_nodes(
+            file_path,
+            nodes,
+            on_node_done=_on_node_done,
+            on_node_error=_on_node_error,
+            task=task,
+        )
         return FileActionResponse(
             task_id=task_id,
             action="transfer_queued",
-            detail=f"Sending to {node} via Taildrop…",
+            detail=f"Sending to {len(nodes)} node(s) via Taildrop…",
         )
 
     @app.delete(
@@ -751,7 +810,7 @@ def create_app(
         response_model=FileActionResponse,
         summary="Delete the output file of a completed task from the server",
     )
-    async def delete_task_file(task_id: str, _: None = Depends(_require_auth)) -> FileActionResponse:
+    def delete_task_file(task_id: str, _: None = Depends(_require_auth)) -> FileActionResponse:
         """
         Permanently delete the output file from the server's disk.
 
@@ -781,9 +840,16 @@ def create_app(
                         "Delete the files manually from the server."
                     ),
                 )
+            root = config.download_dir.resolve()
             errors: list[str] = []
             for f_str in gdl:
-                fp = Path(f_str)
+                try:
+                    fp = Path(f_str).resolve()
+                except OSError:
+                    continue
+                if not fp.is_relative_to(root):
+                    logger.warning("Remote API: skipping delete of out-of-tree path '%s'", f_str)
+                    continue
                 try:
                     if fp.exists():
                         fp.unlink()
@@ -935,7 +1001,7 @@ def create_app(
         response_model=ConvertJobResponse,
         summary="Start a remote conversion job for a completed download task",
     )
-    async def start_convert(
+    def start_convert(
         task_id: str,
         body: ConvertRequest,
         _: None = Depends(_require_auth),
@@ -987,8 +1053,8 @@ def create_app(
                     detail="No convertible video files found in the multi-file download folder",
                 )
             jobs = []
-            for vf in video_files:
-                try:
+            try:
+                for vf in video_files:
                     j = remote_convert.start_convert(
                         source_task_id=task_id,
                         file_path=vf,
@@ -999,8 +1065,11 @@ def create_app(
                         output_codec=body.output_codec or "h264",
                     )
                     jobs.append(j)
-                except ValueError as exc:
-                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except ValueError as exc:
+                # Cancel already-started jobs so none are orphaned.
+                for j in jobs:
+                    remote_convert.cancel_convert(j.job_id)
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             # Return first job; all jobs' progress is broadcast via SSE.
             return _job_to_response(jobs[0])
 
@@ -1196,7 +1265,7 @@ def create_app(
         response_model=FileBrowseResponse,
         summary="Browse files/directories on the server within download_dir",
     )
-    async def browse_files(
+    def browse_files(
         path: Optional[str] = Query(None, description="Absolute path to browse; defaults to download_dir"),
         _: None = Depends(_require_auth),
     ) -> FileBrowseResponse:
@@ -1322,7 +1391,7 @@ def create_app(
         response_model=FileDeleteResponse,
         summary="Delete a file or directory within download_dir",
     )
-    async def delete_file(body: FileDeleteRequest, _: None = Depends(_require_auth)) -> FileDeleteResponse:
+    def delete_file(body: FileDeleteRequest, _: None = Depends(_require_auth)) -> FileDeleteResponse:
         """
         Permanently delete a file or directory from the server.
 
@@ -1427,6 +1496,70 @@ def create_app(
         td.send_file_to_nodes(target, body.nodes, on_node_done=_on_done, on_node_error=_on_error)
         return FileTransferResponse(detail=f"Queued to: {', '.join(body.nodes)}")
 
+    # ── Live monitor ──────────────────────────────────────────────────────
+
+    def _require_monitor() -> "LiveMonitorService":
+        if live_monitor is None:
+            raise HTTPException(status_code=503, detail="Live monitor unavailable")
+        return live_monitor
+
+    @app.get("/api/monitor", response_model=MonitorListResponse, summary="List monitored streams")
+    async def list_monitor(_: None = Depends(_require_auth)) -> dict:
+        svc = _require_monitor()
+        return {"items": svc.list_items(), "interval": svc.get_check_interval(), "paused": svc.is_paused()}
+
+    @app.post("/api/monitor/interval", summary="Set the live-monitor check interval")
+    async def set_monitor_interval(body: MonitorIntervalRequest, _: None = Depends(_require_auth)) -> dict:
+        return {"interval": _require_monitor().set_check_interval(body.interval)}
+
+    @app.post("/api/monitor", response_model=MonitorItemResponse, summary="Watch a profile / live URL")
+    async def add_monitor(body: MonitorAddRequest, _: None = Depends(_require_auth)) -> dict:
+        try:
+            return _require_monitor().add_url(body.url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/monitor/{item_id}", summary="Stop watching")
+    async def remove_monitor(item_id: str, _: None = Depends(_require_auth)) -> dict:
+        if not _require_monitor().remove(item_id):
+            raise HTTPException(status_code=404, detail="Monitor item not found")
+        return {"detail": "Removed"}
+
+    @app.post("/api/monitor/{item_id}/cancel", summary="Stop the recording but keep watching")
+    async def cancel_monitor(item_id: str, _: None = Depends(_require_auth)) -> dict:
+        if not _require_monitor().cancel(item_id):
+            raise HTTPException(status_code=404, detail="Monitor item not found")
+        return {"detail": "Cancelled"}
+
+    @app.post("/api/monitor/{item_id}/pause", summary="Pause per-link live check")
+    async def pause_monitor_item(item_id: str, _: None = Depends(_require_auth)) -> dict:
+        if not _require_monitor().pause_item(item_id):
+            raise HTTPException(status_code=404, detail="Monitor item not found")
+        return {"id": item_id, "paused": True}
+
+    @app.post("/api/monitor/{item_id}/resume", summary="Resume per-link live check")
+    async def resume_monitor_item(item_id: str, _: None = Depends(_require_auth)) -> dict:
+        if not _require_monitor().resume_item(item_id):
+            raise HTTPException(status_code=404, detail="Monitor item not found")
+        return {"id": item_id, "paused": False}
+
+    @app.post("/api/monitor/{item_id}/check-now", summary="Force an immediate live check")
+    async def check_monitor_now(item_id: str, _: None = Depends(_require_auth)) -> dict:
+        svc = _require_monitor()
+        if not svc.check_now(item_id):
+            raise HTTPException(status_code=404, detail="Monitor item not found")
+        return {"detail": "Check queued"}
+
+    @app.post("/api/monitor/pause", summary="Pause new live checks")
+    async def pause_monitor(_: None = Depends(_require_auth)) -> dict:
+        _require_monitor().pause()
+        return {"paused": True}
+
+    @app.post("/api/monitor/resume", summary="Resume live checks")
+    async def resume_monitor(_: None = Depends(_require_auth)) -> dict:
+        _require_monitor().resume()
+        return {"paused": False}
+
     # ── SSE ───────────────────────────────────────────────────────────────
 
     @app.get("/api/events")
@@ -1438,11 +1571,12 @@ def create_app(
         Keepalive comments are sent every _PING_INTERVAL seconds so iOS
         Safari does not close idle connections.
         """
-        client_q: queue.Queue = queue.Queue(maxsize=200)
+        client_q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        loop = asyncio.get_running_loop()
         with _sse_lock:
-            _sse_clients.append(client_q)
+            _sse_clients.append((client_q, loop))
 
-        def _stream() -> Generator[str, None, None]:
+        async def _stream():
             # Initial full snapshot so the client doesn't need a separate
             # GET /api/queue call on first connect.
             snapshot = [_task_to_dict(t) for t in service.get_all_tasks()]
@@ -1461,23 +1595,25 @@ def create_app(
                 if convert_snap:
                     yield f"event: convert_snapshot\ndata: {json.dumps(convert_snap)}\n\n"
 
-            last_ping = time.monotonic()
+            # Live-monitor snapshot so a reconnecting client restores its watch
+            # list and recording state without a separate GET /api/monitor call.
+            if live_monitor is not None:
+                monitor_snap = live_monitor.list_items()
+                yield f"event: monitor_snapshot\ndata: {json.dumps(monitor_snap)}\n\n"
+
             try:
                 while True:
                     try:
-                        msg = client_q.get(timeout=1.0)
-                        yield msg
-                    except queue.Empty:
-                        now = time.monotonic()
-                        if now - last_ping >= _PING_INTERVAL:
-                            yield ": ping\n\n"
-                            last_ping = now
+                        msg = await asyncio.wait_for(client_q.get(), timeout=_PING_INTERVAL)
+                    except asyncio.TimeoutError:
+                        yield ": ping\n\n"
+                        continue
+                    if msg is None:
+                        break  # evicted by _offer_sse — queue overflowed
+                    yield msg
             finally:
                 with _sse_lock:
-                    try:
-                        _sse_clients.remove(client_q)
-                    except ValueError:
-                        pass
+                    _sse_clients[:] = [(cq, cl) for cq, cl in _sse_clients if cq is not client_q]
 
         return StreamingResponse(
             _stream(),
@@ -1490,31 +1626,36 @@ def create_app(
 
     # ── Web UI ────────────────────────────────────────────────────────────
 
+    # Read the PWA once at factory time — GET / is unauthenticated, so per-request
+    # disk reads would be a free event-loop stall lever (~92 KB read_text).
+    #
+    # Path resolution order (handles both source-run and PyInstaller bundle):
+    #   1. Path(__file__).parent / "static" — works in source mode and in most
+    #      frozen builds where __file__ resolves inside sys._MEIPASS/api/.
+    #   2. sys._MEIPASS / "api" / "static" — explicit PyInstaller fallback for
+    #      edge cases where __file__ does not resolve as expected inside the
+    #      bundle (e.g. some one-file builds).
+    # Both paths target the same file when the bundle is built with:
+    #   --add-data "api/static:api/static"  (macOS / Linux)
+    #   --add-data "api/static;api/static"  (Windows)
+    _html_path = Path(__file__).parent / "static" / "index.html"
+    if not _html_path.exists() and getattr(sys, "frozen", False):
+        _html_path = Path(sys._MEIPASS) / "api" / "static" / "index.html"  # type: ignore[attr-defined]
+    _web_ui_html: Optional[str] = _html_path.read_text(encoding="utf-8") if _html_path.exists() else None
+
+    async def _rate_limit_only(request: Request) -> None:
+        """For unauthenticated routes — they must not bypass the rate limiter."""
+        client_ip = request.client.host if request.client else "unknown"
+        if not _check_rate_limit(client_ip):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded — try again later")
+
     # No auth on GET / — HTML shell only; all actual API calls still require Bearer token.
     @app.get("/", response_class=HTMLResponse)
-    async def web_ui():
-        """Serve the mobile PWA web interface.
-
-        Path resolution order (handles both source-run and PyInstaller bundle):
-          1. Path(__file__).parent / "static" — works in source mode and in most
-             frozen builds where __file__ resolves inside sys._MEIPASS/api/.
-          2. sys._MEIPASS / "api" / "static" — explicit PyInstaller fallback for
-             edge cases where __file__ does not resolve as expected inside the
-             bundle (e.g. some one-file builds).
-        Both paths target the same file when the bundle is built with:
-          --add-data "api/static:api/static"  (macOS / Linux)
-          --add-data "api/static;api/static"  (Windows)
-        """
-        # Primary path: works in source mode and standard onedir frozen builds.
-        html_path = Path(__file__).parent / "static" / "index.html"
-
-        # Fallback: explicit _MEIPASS lookup for PyInstaller frozen builds.
-        if not html_path.exists() and getattr(sys, "frozen", False):
-            html_path = Path(sys._MEIPASS) / "api" / "static" / "index.html"  # type: ignore[attr-defined]
-
-        if html_path.exists():
+    async def web_ui(_: None = Depends(_rate_limit_only)):
+        """Serve the mobile PWA web interface (cached in memory at startup)."""
+        if _web_ui_html is not None:
             return HTMLResponse(
-                content=html_path.read_text(encoding="utf-8"),
+                content=_web_ui_html,
                 headers={"Cache-Control": "no-cache"},
             )
         return HTMLResponse(
@@ -1556,13 +1697,18 @@ def stop_api_server(timeout: float = 8.0) -> None:
     # take >4s to drain its completion queue during shutdown, causing the
     # socket to remain bound when restart_api_server() tries to rebind
     # immediately after → [Errno 10048] address already in use.
-    global _active_server, _active_thread
+    global _active_server, _active_thread, _active_monitor
 
     with _server_lock:
         srv = _active_server
         thr = _active_thread
+        mon = _active_monitor
         _active_server = None
         _active_thread = None
+        _active_monitor = None
+
+    if mon is not None:
+        mon.stop()
 
     if srv is not None:
         # Tell uvicorn to exit its event loop
@@ -1572,6 +1718,9 @@ def stop_api_server(timeout: float = 8.0) -> None:
         thr.join(timeout=timeout)
         if thr.is_alive():
             logger.warning("API server thread did not stop within %.1fs", timeout)
+
+    with _sse_lock:
+        _sse_clients.clear()
 
     logger.info("OmniDL API server stopped.")
 
@@ -1629,12 +1778,14 @@ def start_api_server(
         config.set_api_token(new_token)
         logger.info("OmniDL API: no token configured -- generated new token [stored in keyring]")
     if not config.api_token:
-        logger.warning(
-            "OmniDL API: token generation failed — server will run in OPEN MODE "
-            "(no authentication) on %s:%d. Set an API token in Settings -> Remote API.",
+        logger.error(
+            "OmniDL API: token generation failed — refusing to start an "
+            "unauthenticated server on %s:%d. Set an API token in "
+            "Settings -> Remote API to enable the API.",
             config.api_host,
             config.api_port,
         )
+        return None
 
     # Instantiate RemoteConvertService before wiring the EventBus so that
     # auto_convert_tiktok_live can be subscribed inside the _bus_wired guard.
@@ -1650,6 +1801,13 @@ def start_api_server(
         taildrop=getattr(service, "taildrop", None),  # BUG-BU: safe fallback
     )
 
+    # Headless live-stream monitor for the web client (independent of the
+    # desktop LiveMonitorTab). Pushes state changes over the SSE broadcaster.
+    from app.services.live_monitor_service import LiveMonitorService
+
+    live_monitor = LiveMonitorService(service, config, broadcast=_broadcast)
+    live_monitor.start()
+
     # Wire EventBus → SSE broadcaster before the server starts accepting
     # connections, so no events are missed.
     # BUG-CB: guard prevents duplicate subscriptions when restart_api_server()
@@ -1659,7 +1817,7 @@ def start_api_server(
         _wire_event_bus(bus)
         _bus_wired = True
 
-    app = create_app(service, config, remote_convert=remote_convert)
+    app = create_app(service, config, remote_convert=remote_convert, live_monitor=live_monitor)
 
     try:
         import uvicorn
@@ -1703,6 +1861,9 @@ def start_api_server(
                             break
                         except OSError:
                             continue
+                else:
+                    logger.error("api_ts_https: no free port found after 30 attempts — API will not start")
+                    return None
     else:
         _bind_host = config.api_host
         _bind_port = config.api_port
@@ -1738,8 +1899,9 @@ def start_api_server(
         uv_server.run()
 
     with _server_lock:
-        global _active_server, _active_thread
+        global _active_server, _active_thread, _active_monitor
         _active_server = uv_server
+        _active_monitor = live_monitor
         thread = threading.Thread(
             target=_run_server,
             daemon=True,  # exits automatically when the main process exits
