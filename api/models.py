@@ -126,6 +126,12 @@ class TaskResponse(BaseModel):
     is_live: bool = False
 
 
+class ClearItemsRequest(BaseModel):
+    """Body for DELETE /api/queue/items."""
+
+    ids: list[str]
+
+
 class QueueActionResponse(BaseModel):
     """Confirmation of a queue control action (pause / resume / cancel)."""
 
@@ -289,3 +295,36 @@ class ClipboardAnalyseRequest(BaseModel):
         url = m.group(0)
         url = url.rstrip(".,;\"')")
         return url
+
+
+class MonitorAddRequest(BaseModel):
+    """Add a profile / live URL to the live monitor watch list."""
+
+    url: str
+
+
+class MonitorItemResponse(BaseModel):
+    id: str
+    url: str
+    state: str
+    title: str = ""
+    platform: str = ""
+    task_id: Optional[str] = None
+    error_msg: str = ""
+    is_profile_watch: bool = False
+    username: str = ""
+    filename: str = ""
+    paused: bool = False
+    added_at: float = 0.0
+    last_check: float = 0.0
+    rate_limited_until: float = 0.0
+
+
+class MonitorIntervalRequest(BaseModel):
+    interval: int
+
+
+class MonitorListResponse(BaseModel):
+    items: list[MonitorItemResponse]
+    interval: int = 30
+    paused: bool = False
