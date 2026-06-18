@@ -547,6 +547,85 @@
     }
     .hist-sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
 
+    /* ── Monitor items ────────────────────────────────────────────────── */
+    .mon-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+    .mon-item:last-child { margin-bottom: 0; }
+    .mon-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .mon-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .mon-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .mon-tags { display: flex; gap: 6px; align-items: center; }
+    .mon-platform-tag, .mon-paused-tag {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .4px;
+      padding: 2px 7px;
+      border-radius: 20px;
+      text-transform: uppercase;
+    }
+    .mon-platform-tag {
+      background: var(--surface3);
+      color: var(--text2);
+      border: 1px solid var(--border2);
+    }
+    .mon-paused-tag {
+      background: rgba(245,158,11,.12);
+      color: var(--warn);
+      border: 1px solid rgba(245,158,11,.3);
+    }
+    .mon-title {
+      font-size: 15px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+    .mon-meta {
+      font-size: 12px;
+      color: var(--text2);
+      margin-bottom: 10px;
+    }
+    .mon-progress {
+      height: 3px;
+      background: var(--surface3);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .mon-progress-fill {
+      height: 100%;
+      background: var(--success);
+      border-radius: 2px;
+      transition: width .4s linear;
+    }
+    .mon-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+
     /* ── Settings panel ───────────────────────────────────────────────── */
     #settings-overlay {
       position: fixed; inset: 0;
@@ -777,9 +856,9 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
       Hàng đợi
     </button>
-    <button class="tab-btn" onclick="switchTab('history',this)" id="tab-history">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      Lịch sử
+    <button class="tab-btn" onclick="switchTab('monitor',this)" id="tab-monitor">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      Live Monitor
     </button>
     <button class="tab-btn" onclick="switchTab('files',this)" id="tab-files">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
@@ -862,9 +941,30 @@
       <div id="queue-list"></div>
     </div>
 
-    <!-- ── History tab ───────────────────────────────────────────────── -->
-    <div class="tab-panel" id="panel-history">
-      <div id="history-list"></div>
+    <!-- ── Live Monitor tab ──────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-monitor">
+      <div class="card">
+        <label>Theo dõi profile / live URL (TikTok, Instagram)</label>
+        <div id="url-wrap">
+          <input type="url" id="monitor-input" placeholder="https://www.tiktok.com/@user" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </div>
+        <div id="monitor-status" style="font-size:12px; color:var(--text3); margin-top:8px;">
+          Tự động ghi lại dưới dạng <code>.ts</code> khi stream bắt đầu.
+        </div>
+        <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <label for="monitor-interval" style="font-size:12px; color:var(--text3);">Kiểm tra mỗi (giây):</label>
+          <select id="monitor-interval" onchange="setMonitorInterval(this.value)" style="font-size:12px;">
+            <option value="15">15</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+            <option value="120">120</option>
+            <option value="300">300</option>
+          </select>
+          <button id="monitor-add-btn" class="btn btn-secondary btn-sm" onclick="addMonitorUrl()" style="margin-left:8px;">Theo dõi</button>
+          <button id="monitor-pause-btn" class="btn btn-secondary btn-sm" onclick="toggleMonitorPause()" style="margin-left:4px;">Tạm ngưng</button>
+        </div>
+      </div>
+      <div id="monitor-list"></div>
     </div>
 
     <!-- ── Files tab ────────────────────────────────────────────────── -->
@@ -999,6 +1099,8 @@ let evtSrc = null;             // EventSource instance
 let connected = false;
 let _analyseAbortCtrl = null;  // AbortController for the in-flight analyse fetch
 let convertJobs = {};          // job_id → ConversionJob snapshot
+let monitorItems = {};         // monitor item id → item object
+let monitorPaused = false;     // global pause state for live monitor
 let _pendingConvertTaskId = null; // task_id being configured in the convert sheet
 let _pendingFilePath = null;   // absolute file path being configured in convert sheet (Files tab)
 let _fileJobMap = {};          // absolute filePath → job_id (file-based convert jobs)
@@ -1060,6 +1162,7 @@ function connectSSE() {
       tasks[t.id] = t;
       renderQueue();
       updateQueueBadge();
+      renderMonitor();  // reflect recording progress in the monitor list
     });
   });
 
@@ -1137,6 +1240,27 @@ function connectSSE() {
     _maybeRenderFileBrowser();
   });
 
+  // ── Live monitor events ──────────────────────────────────────────────
+  evtSrc.addEventListener('monitor_snapshot', e => {
+    monitorItems = {};
+    JSON.parse(e.data).forEach(m => monitorItems[m.id] = m);
+    renderMonitor();
+  });
+  evtSrc.addEventListener('monitor_update', e => {
+    const m = JSON.parse(e.data);
+    monitorItems[m.id] = m;
+    renderMonitor();
+  });
+  evtSrc.addEventListener('monitor_remove', e => {
+    delete monitorItems[JSON.parse(e.data).id];
+    renderMonitor();
+  });
+  evtSrc.addEventListener('monitor_state', e => {
+    const { paused } = JSON.parse(e.data);
+    monitorPaused = paused;
+    _updateMonitorPauseBtn();
+  });
+
   evtSrc.addEventListener('file_transfer_done', e => {
     const d = JSON.parse(e.data);
     const fname = (d.path || '').split(/[\\/]/).pop();
@@ -1181,7 +1305,7 @@ function switchTab(name, btn) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('panel-' + name).classList.add('active');
-  if (name === 'history') loadHistory();
+  if (name === 'monitor') loadMonitor();
   if (name === 'files')   browseFiles();
 }
 
@@ -1944,32 +2068,162 @@ function previewConvertFile(jobId, title) {
 }
 
 
-async function loadHistory() {
-  const list = document.getElementById('history-list');
-  list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
+async function loadMonitor() {
   try {
-    const { items = [] } = await api('GET', '/api/history');
-    if (!items.length) {
-      list.innerHTML = `<div class="empty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        <p>No history yet</p></div>`;
-      return;
-    }
-    list.innerHTML = `<div class="card">${items.slice(0,50).map(histItemHtml).join('')}</div>`;
+    const { items = [], interval = 30, paused = false } = await api('GET', '/api/monitor');
+    monitorItems = {};
+    items.forEach(m => monitorItems[m.id] = m);
+    const sel = document.getElementById('monitor-interval');
+    if (sel) sel.value = String(interval);
+    monitorPaused = paused;
+    _updateMonitorPauseBtn();
   } catch(e) {
-    list.innerHTML = `<div class="empty"><p style="color:var(--danger)">${escHtml(e.message)}</p></div>`;
+    toast(e.message, 'error');
+  }
+  renderMonitor();
+}
+
+async function toggleMonitorPause() {
+  const endpoint = monitorPaused ? '/api/monitor/resume' : '/api/monitor/pause';
+  try {
+    const { paused } = await api('POST', endpoint);
+    monitorPaused = paused;
+    _updateMonitorPauseBtn();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function _updateMonitorPauseBtn() {
+  const btn = document.getElementById('monitor-pause-btn');
+  if (!btn) return;
+  btn.textContent = monitorPaused ? 'Tiếp tục' : 'Tạm ngưng';
+}
+
+async function setMonitorInterval(value) {
+  try {
+    await api('POST', '/api/monitor/interval', { interval: +value });
+  } catch(e) {
+    toast(e.message, 'error');
   }
 }
 
-function histItemHtml(h) {
-  const icon = { COMPLETED:'✓', FAILED:'✗', CANCELLED:'⊘' }[h.status] || '?';
-  const iconColor = { COMPLETED:'var(--success)', FAILED:'var(--danger)', CANCELLED:'var(--text3)' }[h.status] || 'var(--text3)';
-  const date = h.finished_at ? new Date(h.finished_at * 1000).toLocaleDateString() : '';
-  return `<div class="hist-item">
-    <div class="hist-icon" style="color:${iconColor}; font-size:18px;">${icon}</div>
-    <div class="hist-body">
-      <div class="hist-title">${escHtml(h.title || h.url)}</div>
-      <div class="hist-sub">${escHtml(h.platform || '')} ${date ? '· ' + date : ''}</div>
+async function addMonitorUrl() {
+  const input = document.getElementById('monitor-input');
+  const url = input.value.trim();
+  if (!url) return;
+  const btn = document.getElementById('monitor-add-btn');
+  btn.disabled = true;
+  try {
+    const m = await api('POST', '/api/monitor', { url });
+    monitorItems[m.id] = m;
+    input.value = '';
+    renderMonitor();
+  } catch(e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeMonitorItem(id) {
+  try {
+    await api('DELETE', '/api/monitor/' + id);
+    delete monitorItems[id];
+    renderMonitor();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function cancelMonitorItem(id) {
+  try {
+    await api('POST', '/api/monitor/' + id + '/cancel');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function toggleItemPause(id) {
+  const m = monitorItems[id];
+  if (!m) return;
+  const ep = m.paused ? `/api/monitor/${id}/resume` : `/api/monitor/${id}/pause`;
+  try {
+    const { paused } = await api('POST', ep);
+    if (monitorItems[id]) monitorItems[id].paused = paused;
+    renderMonitor();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function checkMonitorNow(id) {
+  try {
+    await api('POST', `/api/monitor/${id}/check-now`);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+const _MON_STATE = {
+  WAITING:   { label:'Chờ live',        color:'var(--text3)'  },
+  CHECKING:  { label:'Đang kiểm tra…',  color:'var(--text2)'  },
+  LIVE:      { label:'Đang LIVE',       color:'var(--danger)' },
+  RECORDING: { label:'Đang ghi',        color:'var(--success)'},
+  ENDED:     { label:'Đã ghi xong',     color:'var(--text2)'  },
+  ERROR:     { label:'Lỗi',             color:'var(--danger)' },
+};
+
+function renderMonitor() {
+  const list = document.getElementById('monitor-list');
+  if (!list) return;
+  const items = Object.values(monitorItems).sort((a,b) => (a.added_at || 0) - (b.added_at || 0));
+  if (!items.length) {
+    list.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      <p>Chưa theo dõi stream nào</p></div>`;
+    return;
+  }
+  list.innerHTML = items.map(monitorItemHtml).join('');
+}
+
+function monitorItemHtml(m) {
+  const st = _MON_STATE[m.state] || _MON_STATE.WAITING;
+  const who = m.title || (m.username ? '@' + m.username : m.url);
+  let sub = '', pct = 0;
+  if (m.state === 'RECORDING' && m.task_id && tasks[m.task_id]) {
+    const t = tasks[m.task_id];
+    pct = t.progress != null ? (parseFloat(t.progress) || 0) : 0;
+    const pctStr = pct.toFixed(0) + '%';
+    sub = [t.eta, t.speed, pctStr].filter(Boolean).join('  ·  ') || 'Đang ghi…';
+  } else if (m.state === 'ENDED' && m.filename) {
+    sub = 'Đã lưu: ' + (m.filename.split(/[\\/]/).pop());
+  } else if (m.state === 'ERROR' && m.error_msg) {
+    sub = m.error_msg;
+  } else if (m.platform) {
+    sub = m.platform;
+  }
+
+  const paused = m.paused && ['WAITING','CHECKING','LIVE','RECORDING'].includes(m.state);
+
+  const progressBar = m.state === 'RECORDING'
+    ? `<div class="mon-progress"><div class="mon-progress-fill" style="width:${pct}%"></div></div>` : '';
+
+  const platform = m.platform
+    ? `<span class="mon-platform-tag">${escHtml(m.platform)}</span>` : '';
+  const pausedTag = paused
+    ? `<span class="mon-paused-tag">Tạm ngưng</span>` : '';
+
+  const cancelBtn = m.state === 'RECORDING'
+    ? `<button class="btn btn-danger btn-sm" onclick="cancelMonitorItem('${m.id}')">Dừng ghi</button>` : '';
+  const pauseBtn = ['WAITING','CHECKING','LIVE','RECORDING'].includes(m.state)
+    ? `<button class="btn btn-secondary btn-sm" onclick="toggleItemPause('${m.id}')">${paused ? 'Tiếp tục' : 'Tạm ngưng'}</button>` : '';
+  const checkNowBtn = ['WAITING','ERROR'].includes(m.state)
+    ? `<button class="btn btn-secondary btn-sm" onclick="checkMonitorNow('${m.id}')">Kiểm tra ngay</button>` : '';
+
+  return `<div class="mon-item">
+    <div class="mon-header">
+      <div class="mon-status" style="color:${st.color}">
+        <span class="mon-dot" style="background:${st.color}"></span>${st.label}
+      </div>
+      <div class="mon-tags">${platform}${pausedTag}</div>
+    </div>
+    <div class="mon-title">${escHtml(who)}</div>
+    ${sub ? `<div class="mon-meta">${escHtml(sub)}</div>` : ''}
+    ${progressBar}
+    <div class="mon-actions">
+      ${pauseBtn}${cancelBtn}${checkNowBtn}
+      <button class="btn btn-secondary btn-sm" onclick="removeMonitorItem('${m.id}')">Gỡ</button>
     </div>
   </div>`;
 }
