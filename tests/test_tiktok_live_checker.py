@@ -104,6 +104,8 @@ def _install_ui_stubs():
             T = MagicMock()
             T.register = lambda cb: None
             m.T = T
+            m.TAB_ACCENTS = {}
+            m.THEME_NAMES = []
             sys.modules[mod_name] = m
 
 
@@ -215,7 +217,8 @@ def _make_session_mock(resp: MagicMock) -> MagicMock:
 
 def _patch_session(resp: MagicMock):
     """Context manager: patch _get_impersonate_session to return a mock session
-    and also suppress _verify_room_alive so tests don't need webcast API calls.
+    and also suppress _verify_room_alive and _fetch_hls_from_webcast_room_info
+    so tests don't need webcast API calls.
     """
     import contextlib
 
@@ -230,6 +233,10 @@ def _patch_session(resp: MagicMock):
             patch(
                 "utils.tiktok_live_checker._verify_room_alive",
                 return_value=True,
+            ),
+            patch(
+                "utils.tiktok_live_checker._fetch_hls_from_webcast_room_info",
+                return_value="https://fake.example.com/hls.m3u8",
             ),
             patch(
                 "utils.tiktok_live_checker._ROOM_ID_CACHE",
