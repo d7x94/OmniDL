@@ -78,7 +78,7 @@ def _scale_to_process_size(img: Image.Image) -> Image.Image:
     if h <= _MAX_PROCESS_HEIGHT:
         return img
     scale = _MAX_PROCESS_HEIGHT / h
-    return img.resize((max(1, int(w * scale)), _MAX_PROCESS_HEIGHT), Image.BILINEAR)
+    return img.resize((max(1, int(w * scale)), _MAX_PROCESS_HEIGHT), Image.BILINEAR)  # type: ignore[attr-defined]  # BILINEAR alias exists at runtime, removed from stubs in Pillow 10
 
 
 def _apply_effects(img: Image.Image, params: EffectParams) -> Image.Image:
@@ -130,9 +130,9 @@ def _draw_text(img: Image.Image, params: EffectParams) -> Image.Image:
     if params.text_pos == 0:
         y = padding
     elif params.text_pos == 1:
-        y = (h - th) // 2
+        y = (h - th) // 2  # type: ignore[assignment]  # textbbox stubs return float but runtime is int
     else:
-        y = h - th - padding * 2
+        y = h - th - padding * 2  # type: ignore[assignment]  # textbbox stubs return float but runtime is int
 
     color = _TEXT_COLORS.get(params.text_color, (255, 255, 255, 255))
 
@@ -157,7 +157,7 @@ def _pil_to_pixmap(img: Image.Image, display_size: QSize) -> QPixmap:
         if scale < 1.0:
             nw = max(1, int(iw * scale))
             nh = max(1, int(ih * scale))
-            img = img.resize((nw, nh), Image.BILINEAR)
+            img = img.resize((nw, nh), Image.BILINEAR)  # type: ignore[attr-defined]  # BILINEAR alias exists at runtime, removed from stubs in Pillow 10
     data = img.tobytes("raw", "RGBA")
     qimg = QImage(data, img.width, img.height, img.width * 4, QImage.Format.Format_RGBA8888)
     return QPixmap.fromImage(qimg)

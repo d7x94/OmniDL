@@ -965,7 +965,7 @@ class FfmpegConvertService:
                 exc,
             )
             _encoder_cache_invalidate()
-            encode_settings = dataclass_replace(encode_settings, encoder_key="cpu")  # type: ignore[union-attr]
+            encode_settings = dataclass_replace(encode_settings, encoder_key="cpu")  # type: ignore[union-attr,type-var]  # None guarded by outer check
             return self._fresh_encode(
                 ffmpeg_bin,
                 source,

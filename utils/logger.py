@@ -20,7 +20,7 @@ class _InterceptHandler(logging.Handler):
             level = record.levelno
         frame, depth = logging.currentframe(), 2
         while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
-            frame = frame.f_back
+            frame = frame.f_back  # type: ignore[assignment]  # f_back is FrameType|None but while-guard ensures non-None
             depth += 1
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 

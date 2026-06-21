@@ -234,7 +234,7 @@ def _cmd(**overrides) -> list:
         duration_s=10.0,
     )
     kw.update(overrides)
-    return _build_cmd(**kw)
+    return _build_cmd(**kw)  # type: ignore[arg-type]  # dict[str,object] from mixed literal dict; keys match signature
 
 
 class TestBuildCmdBranches:

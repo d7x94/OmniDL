@@ -34,7 +34,7 @@ def _cmd(**kwargs) -> list[str]:
         Path("/out.mp4"),
         0.0,
         10.0,
-        **defaults,
+        **defaults,  # type: ignore[arg-type]  # dict[str,mixed] from literal dict; keys match signature
     )
 
 

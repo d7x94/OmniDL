@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygon
+from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QWidget
 
 from ui.themes.tokens import T
@@ -196,7 +196,7 @@ class TimelineWidget(QWidget):
 
     # ── Mouse events ────────────────────────────────────────────────────────────
 
-    def mousePressEvent(self, event: object) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._duration_ms <= 0:
             return
         x = event.position().x()
@@ -212,7 +212,7 @@ class TimelineWidget(QWidget):
             self.seeked.emit(self._x_to_ms(x))
         event.accept()
 
-    def mouseMoveEvent(self, event: object) -> None:
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         x = event.position().x()
         if self._drag is None or self._duration_ms <= 0:
             # Update cursor hint even without drag
@@ -239,6 +239,6 @@ class TimelineWidget(QWidget):
             self.update()
         event.accept()
 
-    def mouseReleaseEvent(self, event: object) -> None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self._drag = None
         event.accept()
