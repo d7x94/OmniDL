@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPropertyAnimation, Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -35,14 +36,11 @@ class QueueTab(QWidget):
         self._select_mode = False
         self._selected_ids: set[str] = set()
         self._build()
+        T.register(self._on_theme)
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(500)
         self._poll_timer.timeout.connect(self._poll)
-        self._poll_timer.start()
-
-        from PySide6.QtCore import QPropertyAnimation
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
 
         self._fade_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._fade_effect)
@@ -69,13 +67,7 @@ class QueueTab(QWidget):
         hdr_layout.addStretch()
 
         self._count_lbl = QLabel("")
-        self._count_lbl.setStyleSheet(f"""
-            color: {T.text2};
-            background-color: {T.surface2};
-            border-radius: 8px;
-            font-size: 11px;
-            padding: 4px 12px;
-        """)
+        self._style_count_lbl()
         hdr_layout.addWidget(self._count_lbl)
 
         self._select_btn = QPushButton("Chọn")
@@ -100,6 +92,7 @@ class QueueTab(QWidget):
             }}
         """)
         self._select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_btn.setToolTip("Chọn nhiều tác vụ")
         self._select_btn.clicked.connect(self._toggle_select_mode)
         hdr_layout.addWidget(self._select_btn)
 
@@ -149,7 +142,8 @@ class QueueTab(QWidget):
     def _poll(self) -> None:
         try:
             tasks = self._app.service.get_all_tasks()
-        except Exception:
+        except Exception as exc:
+            logger.warning("_poll: %s", exc)
             return
 
         current_ids = {t.id for t in tasks}
@@ -261,11 +255,28 @@ class QueueTab(QWidget):
             self._app.toast(f"📲  Đang gửi đến {len(nodes)} thiết bị: {node_list_str}", "info")
         except Exception as exc:
             logger.warning("QueueTab _on_send error: %s", exc)
-            self._app.toast(f"❌  Lỗi gửi file: {exc}", "error")
+            self._app.toast(f"❌  Lỗi gửi file: {str(exc)[:80]}", "error")
         finally:
             QTimer.singleShot(800, restore_btn)
 
+    def _style_count_lbl(self) -> None:
+        self._count_lbl.setStyleSheet(f"""
+            color: {T.text2};
+            background-color: {T.surface2};
+            border-radius: 8px;
+            font-size: 11px;
+            padding: 4px 12px;
+        """)
+
+    def _on_theme(self) -> None:
+        self._style_count_lbl()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._poll_timer.stop()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._poll_timer.start()
         self._fade_anim.stop()
         self._fade_anim.start()

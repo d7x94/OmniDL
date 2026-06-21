@@ -234,7 +234,7 @@ class DownloadManager:
             time.sleep(1)
         if task.is_cancellation_requested:
             return False
-        from utils.tiktok_live_checker import _fetch_hls_from_live_page  # noqa: PLC0415
+        from utils.tiktok_live_checker import check_tiktok_live  # noqa: PLC0415
 
         _raw_cookie = task._cookie_override or self._config.get_cookie_for_platform("tiktok") or ""
         _cookie_txt, _cookie_is_temp = "", False
@@ -242,7 +242,7 @@ class DownloadManager:
             _cookie_txt, _cookie_is_temp = _prepare_cookie_for_use(_raw_cookie)
         try:
             still_live = bool(
-                _fetch_hls_from_live_page(username, proxy=self._config.proxy or "", cookie_file=_cookie_txt)
+                check_tiktok_live(username, proxy=self._config.proxy or "", cookie_file=_cookie_txt)
             )
         except Exception:
             still_live = False
@@ -552,6 +552,16 @@ class DownloadManager:
                 # stream has genuinely ended and further retries only cause 429s.
                 _is_not_live_err = "not currently live" in msg or "channel is not currently live" in msg
                 if _is_not_live_err and _is_live_task:
+                    if getattr(task.media_info, "source_engine", "") == "instagram_live":
+                        # InstagramLiveEngine already spent the full CDP window
+                        # confirming nothing streams — not a stale-API race like
+                        # TikTok. Retrying relaunches a 120s browser for nothing.
+                        logger.info(
+                            "Task %s: Instagram live not streaming — stopping retries",
+                            task.id,
+                        )
+                        last_exc = exc
+                        break
                     _consecutive_not_live += 1
                     last_exc = exc
                     if _consecutive_not_live >= 3:

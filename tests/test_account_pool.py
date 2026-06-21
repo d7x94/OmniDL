@@ -284,22 +284,14 @@ class TestTikTokAccountPool:
         pool = TikTokAccountPool([acc])
 
         entered = threading.Event()
-        second_acquired = threading.Event()
+        release = threading.Event()
 
         def first_holder():
             with pool.acquire():
                 entered.set()
-                time.sleep(0.2)
-
-        def second_waiter():
-            second_acquired.wait(timeout=0.05)  # wait for first to enter
-            with pool.acquire():
-                second_acquired.set()
+                release.wait(timeout=5.0)
 
         t1 = threading.Thread(target=first_holder)
-        _t2 = threading.Thread(
-            target=lambda: (entered.wait(), pool.acquire().__enter__() and second_acquired.set())
-        )
 
         t1.start()
         entered.wait(timeout=1.0)
@@ -316,6 +308,7 @@ class TestTikTokAccountPool:
         t_waiter.start()
         blocked.wait(timeout=1.0)
         assert not unblocked.wait(timeout=0.1), "Should be blocked while slot full"
+        release.set()
         t1.join(timeout=1.0)
         assert unblocked.wait(timeout=1.0), "Should unblock after first holder exits"
         t_waiter.join(timeout=1.0)

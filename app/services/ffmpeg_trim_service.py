@@ -12,28 +12,21 @@ from app.services.ffmpeg_convert_service import (
     FfmpegConvertService,
 )
 from utils.ffmpeg_locator import locate_ffmpeg
+from utils.font_finder import find_font_path
 
 logger = logging.getLogger(__name__)
 
 _TEXT_Y_EXPR = {0: "20", 1: "(h-th)/2", 2: "h-th-20"}
 _TEXT_COLORS = {"white", "black", "yellow", "red"}
 
-_WINDOWS_FONTS = [
-    "C:/Windows/Fonts/arial.ttf",
-    "C:/Windows/Fonts/calibri.ttf",
-    "C:/Windows/Fonts/verdana.ttf",
-    "C:/Windows/Fonts/tahoma.ttf",
-]
-
 
 def _font_clause() -> str:
-    """Return 'fontfile=...:' for drawtext, or '' if no Windows font found."""
-    for p in _WINDOWS_FONTS:
-        if Path(p).exists():
-            # Escape the drive colon so ffmpeg parses it as a path, not option separator
-            escaped = p.replace("C:/", "C\\:/")
-            return f"fontfile={escaped}:"
-    return ""
+    """Return 'fontfile=...:' for drawtext, or '' if no font found."""
+    p = find_font_path()
+    if p is None:
+        return ""
+    escaped = p.replace("C:/", "C\\:/")
+    return f"fontfile={escaped}:"
 
 
 def _escape_drawtext(s: str) -> str:

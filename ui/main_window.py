@@ -596,6 +596,12 @@ class ServiceFacade:
     def clear_finished(self, exclude_ids=None):
         self._svc.clear_finished(exclude_ids=exclude_ids)
 
+    def clear_specific(self, ids: list) -> None:
+        self._svc.clear_specific(ids)
+
+    def rebuild_tiktok_pool(self) -> None:
+        self._svc.rebuild_tiktok_pool()
+
     def get_all_tasks(self):
         return self._svc.get_all_tasks()
 

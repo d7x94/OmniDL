@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 from uuid import uuid4
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 from PySide6.QtWidgets import (
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.services.ffmpeg_trim_service import trim_video
 from ui.components.frame_processor import EffectParams, FrameProcessor
 from ui.components.timeline_widget import TimelineWidget
 from ui.signals import ui_bridge
@@ -129,6 +130,7 @@ class EditorTab(QWidget):
         self._preview_mode: bool = False
         self._preview_temp: Optional[Path] = None
         self._cancel_preview: Optional[Callable[[], None]] = None
+        self._preview_gen: int = 0
         self._frame_processor = FrameProcessor()
         self._saved_effect_params: EffectParams = EffectParams()
         self._file_path: str = ""
@@ -344,7 +346,7 @@ class EditorTab(QWidget):
         self._export_btn.setFixedHeight(32)
         self._export_btn.setEnabled(False)
         self._export_btn.setStyleSheet(
-            f"QPushButton {{ background: #EC4899; color: white; border: none;"
+            f"QPushButton {{ background: {T.edit_text}; color: white; border: none;"
             f" border-radius: 8px; font-size: 12px; font-weight: 600; padding: 0 18px; }}"
             f" QPushButton:hover {{ background: #DB2777; }}"
             f" QPushButton:disabled {{ background: {T.surface3}; color: {T.text3}; }}"
@@ -586,7 +588,7 @@ class EditorTab(QWidget):
         self._audio_output = QAudioOutput()
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio_output)
-        self._video_sink = QVideoSink()
+        self._video_sink = QVideoSink(self._player)
         self._player.setVideoOutput(self._video_sink)
         self._video_sink.videoFrameChanged.connect(self._on_video_frame)
         self._player.positionChanged.connect(self._on_position_changed)
@@ -639,36 +641,15 @@ class EditorTab(QWidget):
             logger.warning("editor_tab: file not found: %s", path)
             return
         self._cleanup_preview()
+        if self._cancel_trim is not None:
+            self._cancel_trim()
+            self._cancel_trim = None
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(p)))
         self._file_path = str(p)
         self._current_source = p
         self._original_duration = 0
-        self._play_btn.setEnabled(True)
-        self._timeline.setEnabled(True)
-        self._set_in_btn.setEnabled(True)
-        self._set_out_btn.setEnabled(True)
-        self._rotate_combo.setEnabled(True)
-        self._mute_check.setEnabled(True)
-        self._speed_combo.setEnabled(True)
-        self._volume_combo.setEnabled(True)
-        self._text_input.setEnabled(True)
-        self._text_pos_combo.setEnabled(True)
-        self._text_size_spin.setEnabled(True)
-        self._text_color_combo.setEnabled(True)
-        self._export_btn.setEnabled(True)
-        self._preview_btn.setEnabled(True)
-        self._toggle_ctrl_btn.setEnabled(True)
-        self._toggle_effects_btn.setEnabled(True)
-        self._brightness_slider.setEnabled(True)
-        self._contrast_slider.setEnabled(True)
-        self._saturation_slider.setEnabled(True)
-        self._hue_slider.setEnabled(True)
-        self._blur_slider.setEnabled(True)
-        self._fade_in_slider.setEnabled(True)
-        self._fade_out_slider.setEnabled(True)
-        self._text_box_check.setEnabled(True)
-        self._text_shadow_check.setEnabled(True)
+        self._set_all_controls_enabled(True)
         self._clear_btn.setVisible(True)
         self._empty_lbl.setVisible(False)
         self._preview_label.setVisible(True)
@@ -717,32 +698,8 @@ class EditorTab(QWidget):
         self._file_path = ""
         self._current_source = None
         self._original_duration = 0
-        self._play_btn.setEnabled(False)
-        self._timeline.setEnabled(False)
+        self._set_all_controls_enabled(False)
         self._timeline.reset()
-        self._set_in_btn.setEnabled(False)
-        self._set_out_btn.setEnabled(False)
-        self._rotate_combo.setEnabled(False)
-        self._mute_check.setEnabled(False)
-        self._speed_combo.setEnabled(False)
-        self._volume_combo.setEnabled(False)
-        self._text_input.setEnabled(False)
-        self._text_pos_combo.setEnabled(False)
-        self._text_size_spin.setEnabled(False)
-        self._text_color_combo.setEnabled(False)
-        self._export_btn.setEnabled(False)
-        self._preview_btn.setEnabled(False)
-        self._toggle_ctrl_btn.setEnabled(False)
-        self._toggle_effects_btn.setEnabled(False)
-        self._brightness_slider.setEnabled(False)
-        self._contrast_slider.setEnabled(False)
-        self._saturation_slider.setEnabled(False)
-        self._hue_slider.setEnabled(False)
-        self._blur_slider.setEnabled(False)
-        self._fade_in_slider.setEnabled(False)
-        self._fade_out_slider.setEnabled(False)
-        self._text_box_check.setEnabled(False)
-        self._text_shadow_check.setEnabled(False)
         self._clear_btn.setVisible(False)
         self._preview_label.clear_frame()
         self._preview_label.setVisible(False)
@@ -759,6 +716,7 @@ class EditorTab(QWidget):
         self._preview_btn.setText("▶ Xem thử")
 
     def _cleanup_preview(self) -> None:
+        self._preview_gen += 1
         if self._cancel_preview is not None:
             self._cancel_preview()
             self._cancel_preview = None
@@ -777,9 +735,12 @@ class EditorTab(QWidget):
     # ── Preview ───────────────────────────────────────────────────────────────
 
     def _on_preview_click(self) -> None:
+        if self._cancel_trim is not None:
+            return
         if self._preview_mode:
             self._back_to_original()
         elif self._cancel_preview is not None:
+            self._preview_gen += 1
             self._cancel_preview()
             self._cancel_preview = None
             self._preview_btn.setText("▶ Xem thử")
@@ -798,13 +759,13 @@ class EditorTab(QWidget):
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         self._export_status.setText("Đang tạo xem thử...")
 
-        from app.services.ffmpeg_trim_service import trim_video
+        gen = self._preview_gen
 
         def _on_done(path: Path) -> None:
-            ui_bridge.post(lambda p=path: self._on_preview_done(p))
+            ui_bridge.post(lambda p=path, g=gen: self._on_preview_done(p, g))
 
         def _on_err(msg: str) -> None:
-            ui_bridge.post(lambda m=msg: self._on_preview_error(m))
+            ui_bridge.post(lambda m=msg, g=gen: self._on_preview_error(m, g))
 
         self._cancel_preview = trim_video(
             self._current_source,
@@ -816,12 +777,20 @@ class EditorTab(QWidget):
             on_error=_on_err,
         )
 
-    def _on_preview_done(self, temp_path: Path) -> None:
+    def _on_preview_done(self, temp_path: Path, gen: int) -> None:
+        if gen != self._preview_gen:
+            temp_path.unlink(missing_ok=True)
+            return
         self._cancel_preview = None
         self._preview_mode = True
         self._preview_temp = temp_path
         self._saved_effect_params = self._frame_processor.params
         self._frame_processor.update_params(EffectParams())
+        self._timeline.setEnabled(False)
+        self._set_in_btn.setEnabled(False)
+        self._set_out_btn.setEnabled(False)
+        self._export_btn.setEnabled(False)
+        self._set_effect_controls_enabled(False)
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(temp_path)))
         self._player.play()
@@ -829,7 +798,9 @@ class EditorTab(QWidget):
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         self._export_status.setText("Đang xem thử (10s)")
 
-    def _on_preview_error(self, msg: str) -> None:
+    def _on_preview_error(self, msg: str, gen: int) -> None:
+        if gen != self._preview_gen:
+            return
         self._cancel_preview = None
         self._preview_btn.setText("▶ Xem thử")
         self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
@@ -840,6 +811,11 @@ class EditorTab(QWidget):
         old_temp = self._preview_temp
         self._preview_temp = None
         self._frame_processor.update_params(self._saved_effect_params)
+        self._timeline.setEnabled(True)
+        self._set_in_btn.setEnabled(True)
+        self._set_out_btn.setEnabled(True)
+        self._export_btn.setEnabled(True)
+        self._set_effect_controls_enabled(True)
         self._player.stop()
         if self._current_source:
             self._player.setSource(QUrl.fromLocalFile(str(self._current_source)))
@@ -848,6 +824,54 @@ class EditorTab(QWidget):
             old_temp.unlink(missing_ok=True)
         self._preview_btn.setText("▶ Xem thử")
         self._export_status.setText("")
+
+    def _set_all_controls_enabled(self, enabled: bool) -> None:
+        for w in (
+            self._play_btn,
+            self._timeline,
+            self._set_in_btn,
+            self._set_out_btn,
+            self._rotate_combo,
+            self._mute_check,
+            self._speed_combo,
+            self._volume_combo,
+            self._export_btn,
+            self._preview_btn,
+            self._toggle_ctrl_btn,
+            self._toggle_effects_btn,
+            self._brightness_slider,
+            self._contrast_slider,
+            self._saturation_slider,
+            self._hue_slider,
+            self._blur_slider,
+            self._fade_in_slider,
+            self._fade_out_slider,
+            self._text_input,
+            self._text_pos_combo,
+            self._text_size_spin,
+            self._text_color_combo,
+            self._text_box_check,
+            self._text_shadow_check,
+        ):
+            w.setEnabled(enabled)
+
+    def _set_effect_controls_enabled(self, enabled: bool) -> None:
+        for w in (
+            self._brightness_slider,
+            self._contrast_slider,
+            self._saturation_slider,
+            self._hue_slider,
+            self._blur_slider,
+            self._fade_in_slider,
+            self._fade_out_slider,
+            self._text_input,
+            self._text_pos_combo,
+            self._text_size_spin,
+            self._text_color_combo,
+            self._text_box_check,
+            self._text_shadow_check,
+        ):
+            w.setEnabled(enabled)
 
     # ── Trim controls ─────────────────────────────────────────────────────────
 
@@ -907,8 +931,6 @@ class EditorTab(QWidget):
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         self._export_status.setText("Đang xuất...")
 
-        from app.services.ffmpeg_trim_service import trim_video
-
         def _on_progress(pct: float) -> None:
             ui_bridge.post(lambda p=pct: self._export_status.setText(f"{p:.0f}%"))
 
@@ -958,7 +980,6 @@ class EditorTab(QWidget):
     def _on_timeline_seek(self, ms: int) -> None:
         self._seeking = True
         self._player.setPosition(ms)
-        from PySide6.QtCore import QTimer
 
         QTimer.singleShot(100, self._clear_seeking)
 
@@ -979,13 +1000,13 @@ class EditorTab(QWidget):
             self._timeline.set_position(pos)
 
     def _on_duration_changed(self, dur: int) -> None:
-        self._timeline.set_duration(dur)
-        self._time_lbl.setText(f"0:00 / {_fmt_ms(dur)}")
         if not self._preview_mode:
+            self._timeline.set_duration(dur)
             self._original_duration = dur
             if self._out_ms < 0:
                 self._out_lbl.setText(f"Out: {_fmt_ms(dur)}")
                 self._timeline.set_out(-1)
+        self._time_lbl.setText(f"{_fmt_ms(self._player.position())} / {_fmt_ms(dur)}")
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         if state == QMediaPlayer.PlaybackState.PlayingState:

@@ -377,6 +377,7 @@ class SpecialDlTab(QWidget):
         ).start()
 
     def _worker(self, platform_key: str, url: str, browser: str) -> None:
+        self._last_dest = None
         try:
             if platform_key == "facebook_story":
                 results = [self._run_facebook_story(url, browser)]
@@ -490,11 +491,10 @@ class SpecialDlTab(QWidget):
     # ── Post-download handlers ────────────────────────────────────────────────
 
     def _on_post_convert(self, file_path: Path, target_ext: str, encode_settings=None) -> None:
-        try:
-            convert_svc = self._app.service.convert_to_mp4
-        except AttributeError:
+        if not hasattr(self._app, "service") or not hasattr(self._app.service, "convert_to_mp4"):
             self._post_actions.notify_convert_error("Convert service không khả dụng.")
             return
+        convert_svc = self._app.service.convert_to_mp4
 
         def _on_progress(pct: float) -> None:
             ui_bridge.post(lambda p=pct: self._progress.setValue(int(p)))
@@ -505,6 +505,7 @@ class SpecialDlTab(QWidget):
             ui_bridge.post(lambda: self._set_status("success", f"Convert xong: {output_path.name}", 100))
 
         def _on_error(msg: str) -> None:
+            logger.error("Convert error: %s", msg)
             ui_bridge.post(lambda m=msg: self._post_actions.notify_convert_error(m))
 
         self._set_status("info", f"Đang chuyển đổi → .{target_ext}…", 0)
@@ -523,7 +524,7 @@ class SpecialDlTab(QWidget):
     def _on_post_send(self, file_path: Path, restore_btn, specific_files=None) -> None:
         cfg = self._config
         nodes = cfg.taildrop_target_nodes
-        if not nodes:
+        if not isinstance(nodes, (list, tuple)) or not nodes:
             self._set_status("warning", "Chưa cấu hình thiết bị đích trong Settings → Taildrop")
             restore_btn()
             return

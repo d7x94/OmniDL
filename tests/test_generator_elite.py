@@ -1480,11 +1480,11 @@ class TestDownloadServiceClose:
     def test_convert_to_mp4_delegates_to_converter(self, tmp_path):
         svc, mgr = self._make_service(tmp_path)
         called = []
-        svc._converter = MagicMock(convert=lambda **kw: called.append(kw))
+        svc._convert_queue = MagicMock(submit=lambda **kw: (called.append(kw), lambda: None)[1])
         fake_src = tmp_path / "video.webm"
         fake_src.write_bytes(b"fake")
         svc.convert_to_mp4(source=fake_src)
-        assert called, "convert_to_mp4 must delegate to _converter.convert()"
+        assert called, "convert_to_mp4 must delegate to _convert_queue.submit()"
         mgr.shutdown(wait=False)
         svc.close()
 
@@ -1496,12 +1496,12 @@ class TestDownloadServiceClose:
 
         svc, mgr = self._make_service(tmp_path)
         captured = []
-        svc._converter = MagicMock(convert=lambda **kw: captured.append(kw))
+        svc._convert_queue = MagicMock(submit=lambda **kw: (captured.append(kw), lambda: None)[1])
         fake_src = tmp_path / "video.webm"
         fake_src.write_bytes(b"fake")
         enc = EncodeSettings(encoder_key="cpu", quality="custom", speed_preset="balanced", custom_quality=20)
         svc.convert_to_mp4(source=fake_src, target_ext="mkv", encode_settings=enc)
-        assert captured, "convert_to_mp4 must call _converter.convert()"
+        assert captured, "convert_to_mp4 must call _convert_queue.submit()"
         kw = captured[0]
         assert kw.get("target_ext") == "mkv", "target_ext must be forwarded to converter (BUG BK)"
         assert kw.get("encode_settings") is enc, "encode_settings must be forwarded to converter (BUG BK)"

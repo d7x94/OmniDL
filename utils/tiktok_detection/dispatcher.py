@@ -37,8 +37,9 @@ class LiveDetectionDispatcher:
 
         last_error: Optional[RuntimeError] = None
 
-        with ThreadPoolExecutor(max_workers=len(runnable)) as ex:
-            futures = {ex.submit(s.check, ctx): s for s in runnable}
+        executor = ThreadPoolExecutor(max_workers=len(runnable))
+        try:
+            futures = {executor.submit(s.check, ctx): s for s in runnable}
             done, pending = wait(futures, return_when=FIRST_COMPLETED, timeout=20.0)
 
             # Positive result wins over StreamConfirmedEndedError: profile page
@@ -61,20 +62,29 @@ class LiveDetectionDispatcher:
                 except Exception as exc:
                     logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
 
-            for f in as_completed(pending, timeout=10.0):
-                try:
-                    r = f.result()
-                    if r is not None:
-                        return r.live_url, r.room_id
-                except StreamConfirmedEndedError:
-                    confirmed_ended = True
-                except RuntimeError as exc:
-                    last_error = exc
-                except Exception as exc:
-                    logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
+            try:
+                for f in as_completed(pending, timeout=10.0):
+                    try:
+                        r = f.result()
+                        if r is not None:
+                            return r.live_url, r.room_id
+                    except StreamConfirmedEndedError:
+                        confirmed_ended = True
+                    except RuntimeError as exc:
+                        last_error = exc
+                    except Exception as exc:
+                        logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
+            except TimeoutError:
+                pass
+
+            still_running = [futures[f].name for f in pending if not f.done()]
+            if still_running:
+                logger.debug("tiktok_detection: strategies timed out (abandoned): %s", still_running)
 
             if confirmed_ended:
                 return None
+        finally:
+            executor.shutdown(wait=False)
 
         if last_error is not None:
             raise last_error

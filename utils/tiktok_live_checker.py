@@ -89,7 +89,7 @@ _TIKTOK_USER_LIVE_API = "https://www.tiktok.com/api/live/detail/"
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
+    "Chrome/146.0.0.0 Safari/537.36"
 )
 
 
@@ -340,7 +340,7 @@ def _fetch_tiktok_profile_page(username: str, proxy: str = "", cookie_file: str 
         "Accept-Encoding": "gzip, deflate, br",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
-        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+        "Sec-Ch-Ua": '"Google Chrome";v="146", "Chromium";v="146", "Not_A Brand";v="24"',
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"Windows"',
         "Sec-Fetch-Dest": "document",
@@ -765,8 +765,24 @@ def _fetch_hls_from_webcast_room_info(
         if _primary:
             _candidates.append(_primary)
         for _u in _hls_map.values():
-            if _u and _u not in _candidates:
+            if isinstance(_u, str) and _u and _u not in _candidates:
                 _candidates.append(_u)
+        # Hoist FLV candidates so they are available in both the no-HLS branch
+        # and the HLS-all-excluded fallback (BUG-TT-HLS404 FIX) further down.
+        # BUG-TT-PRELIVE FIX: TikTok's stream_url.flv_pull_url is a
+        # {quality: url} dict (no flv_pull_url_map key), so iterate its values.
+        # Tolerate the legacy string form too.
+        _flv_raw = stream_url.get("flv_pull_url")
+        _flv_candidates: list[str] = []
+        if isinstance(_flv_raw, dict):
+            for _u in _flv_raw.values():
+                if isinstance(_u, str) and _u and _u not in _flv_candidates:
+                    _flv_candidates.append(_u)
+        elif isinstance(_flv_raw, str) and _flv_raw:
+            _flv_candidates.append(_flv_raw)
+        for _u in (stream_url.get("flv_pull_url_map") or {}).values():
+            if isinstance(_u, str) and _u and _u not in _flv_candidates:
+                _flv_candidates.append(_u)
         if not _candidates:
             _su_keys = list(stream_url.keys())
             logger.debug(
@@ -779,14 +795,6 @@ def _fetch_hls_from_webcast_room_info(
             # flv_pull_url is populated. The BUG-TT-16 download path already routes
             # .flv URLs to FFmpeg (yt_dlp_engine.py BUG-TT-FLV-CURL), so returning
             # the FLV URL here is sufficient to unblock the download.
-            _flv_primary = stream_url.get("flv_pull_url") or ""
-            _flv_map = stream_url.get("flv_pull_url_map") or {}
-            _flv_candidates: list[str] = []
-            if _flv_primary:
-                _flv_candidates.append(_flv_primary)
-            for _u in _flv_map.values():
-                if _u and _u not in _flv_candidates:
-                    _flv_candidates.append(_u)
             for _url in _flv_candidates:
                 if _url.split("?")[0] not in exclude_bases:
                     logger.info(
@@ -801,6 +809,18 @@ def _fetch_hls_from_webcast_room_info(
             if _url.split("?")[0] not in exclude_bases:
                 logger.info(
                     "tiktok_live_checker: room/info @%s room %s -> HLS URL obtained",
+                    username,
+                    room_id,
+                )
+                return _url, room_id
+        # BUG-TT-HLS404 FIX: every HLS variant is on an excluded (persistent-404) CDN
+        # base, but the room is live (status=2). FLV pull infra (pull-flv-*) is separate
+        # from HLS (pull-hls-*) and frequently serves when the HLS playlist 404s. Try FLV
+        # before returning a known-dead HLS URL (mirrors BUG-TT-24 in yt_dlp_engine).
+        for _url in _flv_candidates:
+            if _url.split("?")[0] not in exclude_bases:
+                logger.info(
+                    "tiktok_live_checker: room/info HLS exhausted — FLV fallback for @%s room %s",
                     username,
                     room_id,
                 )
@@ -844,13 +864,14 @@ def _fetch_hls_from_live_page(
             return None
         su = lr.get("streamUrl") or lr.get("stream_url") or {}
         # BUG-TT-FLV FIX: fall back to FLV if HLS is absent in the page JSON.
+        _flv = su.get("flv_pull_url")
         url = (
             su.get("hls_pull_url")
             or next(iter((su.get("hls_pull_url_map") or {}).values()), "")
-            or su.get("flv_pull_url")
+            or (next(iter(_flv.values()), "") if isinstance(_flv, dict) else (_flv or ""))
             or next(iter((su.get("flv_pull_url_map") or {}).values()), "")
         )
-        return (url, rid) if url else None
+        return (url, rid) if isinstance(url, str) and url else None
 
     # Path 1: SIGI_STATE (legacy, still used in some regions)
     sigi = _extract_json_blob(page_text, "SIGI_STATE") or _extract_json_blob(page_text, "sigi-persisted-data")
@@ -896,6 +917,9 @@ def _fetch_hls_from_live_page(
             return result
 
     logger.debug("tiktok_live_checker: BUG-TT-26 no HLS URL in SIGI_STATE/URD for @%s", username)
+    if cookie_file:
+        logger.debug("tiktok_live_checker: BUG-TT-26NC retrying without cookies for @%s", username)
+        return _fetch_hls_from_live_page(username, proxy=proxy, cookie_file="")
     return None
 
 
@@ -913,9 +937,16 @@ def _get_dispatcher() -> "Any":
             Pass1ProfilePage,
             Pass2LivePage,
             Pass3UserApi,
+            Pass4ApiLiveRoom,
         )
 
-        strategies = [Pass0WebcastApi(), Pass1ProfilePage(), Pass2LivePage(), Pass3UserApi()]
+        strategies = [
+            Pass4ApiLiveRoom(),
+            Pass0WebcastApi(),
+            Pass1ProfilePage(),
+            Pass2LivePage(),
+            Pass3UserApi(),
+        ]
         registry = StrategyHealthRegistry()
         _dispatcher = LiveDetectionDispatcher(strategies, registry)
         _health_daemon = HealthDaemon(strategies, registry)
@@ -950,8 +981,24 @@ def _check_tiktok_live_with_room_id(
     result = _get_dispatcher().check(ctx)
 
     if result is not None:
-        _ROOM_ID_CACHE[username] = (result[1], time.monotonic())
-        return result
+        if _verify_room_alive(result[1], username, proxy=proxy, cookie_file=cookie_file):
+            # BUG-TT-PRELIVE FIX: TikTok pre-populates SIGI_STATE.LiveRoom.roomId and
+            # check_alive returns alive=True for scheduled streams before they start.
+            # Require room/info status=2 + HLS URL as the authoritative "broadcasting" signal.
+            hls_check = _fetch_hls_from_webcast_room_info(
+                result[1], username, proxy=proxy, cookie_file=cookie_file
+            )
+            if hls_check is None:
+                logger.debug(
+                    "tiktok_live_checker: @%s roomId=%s alive but room/info status!=2"
+                    " -- scheduled stream, not live yet",
+                    username,
+                    result[1],
+                )
+                return None
+            _ROOM_ID_CACHE[username] = (result[1], time.monotonic())
+            return result
+        # roomId found but stream already ended -- fall through to cached/None path
 
     # All passes failed (IP rate-limit serving minimal HTML).
     # If we have a recent cached room_id, verify via check_alive -- that
@@ -961,6 +1008,18 @@ def _check_tiktok_live_with_room_id(
         cached_room_id, ts = cached
         if time.monotonic() - ts < _ROOM_ID_CACHE_TTL:
             if _verify_room_alive(cached_room_id, username, proxy=proxy, cookie_file=cookie_file):
+                # BUG-TT-PRELIVE FIX: also gate cached path on room/info status=2.
+                hls_check = _fetch_hls_from_webcast_room_info(
+                    cached_room_id, username, proxy=proxy, cookie_file=cookie_file
+                )
+                if hls_check is None:
+                    logger.debug(
+                        "tiktok_live_checker: @%s cached roomId=%s alive but room/info status!=2 -- evicting",
+                        username,
+                        cached_room_id,
+                    )
+                    del _ROOM_ID_CACHE[username]
+                    return None
                 logger.info(
                     "tiktok_live_checker: @%s LIVE via cached roomId=%s (detection blocked)",
                     username,

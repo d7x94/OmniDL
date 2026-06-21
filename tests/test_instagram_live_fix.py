@@ -14,6 +14,7 @@ Covers:
   9. Live monitor _CHECKING_TIMEOUT_S constant exists and > 0
  10. _recover_stuck_checks — method exists on LiveMonitorTab class
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -39,15 +40,15 @@ def _make_cookie_file(extras: dict[str, str] | None = None) -> str:
         cookies.update(extras)
 
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False,
+        mode="w",
+        suffix=".txt",
+        delete=False,
         prefix="omnidl_test_cookie_",
     )
     tmp.write(_NETSCAPE_HEADER)
     for name, value in cookies.items():
         # domain  httponly  path  secure  expiry  name  value
-        tmp.write(
-            f".instagram.com\tTRUE\t/\tTRUE\t9999999999\t{name}\t{value}\n"
-        )
+        tmp.write(f".instagram.com\tTRUE\t/\tTRUE\t9999999999\t{name}\t{value}\n")
     tmp.close()
     return tmp.name
 
@@ -68,6 +69,7 @@ def _make_response(status: int = 200, json_data: dict | None = None, text: str =
 # 1. X-CSRFToken header is sent
 # ---------------------------------------------------------------------------
 
+
 class TestCSRFTokenHeader:
     """The X-CSRFToken header must be populated from the cookie jar."""
 
@@ -77,6 +79,7 @@ class TestCSRFTokenHeader:
 
         with patch("requests.get", return_value=resp) as mock_get:
             from utils.instagram_live_checker import check_instagram_live
+
             check_instagram_live("someuser", cookie_path)
 
         _, kwargs = mock_get.call_args
@@ -91,19 +94,17 @@ class TestCSRFTokenHeader:
         _make_cookie_file()  # has csrftoken by default
         # Manually write a cookie file without csrftoken
         no_csrf = tmp_path / "no_csrf.txt"
-        no_csrf.write_text(
-            _NETSCAPE_HEADER
-            + ".instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\tabc\n"
-        )
+        no_csrf.write_text(_NETSCAPE_HEADER + ".instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\tabc\n")
         resp = _make_response(200, {"data": {"user": {}}})
 
         with patch("requests.get", return_value=resp) as mock_get:
             from utils.instagram_live_checker import check_instagram_live
+
             check_instagram_live("someuser", str(no_csrf))
 
         headers = mock_get.call_args.kwargs.get("headers", {})
         assert "X-CSRFToken" in headers
-        assert headers["X-CSRFToken"] == ""   # graceful fallback
+        assert headers["X-CSRFToken"] == ""  # graceful fallback
 
     def test_x_ig_www_claim_sent(self, tmp_path):
         cookie_path = _make_cookie_file()
@@ -111,6 +112,7 @@ class TestCSRFTokenHeader:
 
         with patch("requests.get", return_value=resp) as mock_get:
             from utils.instagram_live_checker import check_instagram_live
+
             check_instagram_live("someuser", cookie_path)
 
         headers = mock_get.call_args.kwargs.get("headers", {})
@@ -122,6 +124,7 @@ class TestCSRFTokenHeader:
 
         with patch("requests.get", return_value=resp) as mock_get:
             from utils.instagram_live_checker import check_instagram_live
+
             check_instagram_live("someuser", cookie_path)
 
         headers = mock_get.call_args.kwargs.get("headers", {})
@@ -131,6 +134,7 @@ class TestCSRFTokenHeader:
 # ---------------------------------------------------------------------------
 # 2. New 2024+ live-status fields
 # ---------------------------------------------------------------------------
+
 
 class TestLiveFieldDetection:
     """is_live should be True for any known live-status field."""
@@ -143,6 +147,7 @@ class TestLiveFieldDetection:
         resp = _make_response(200, {"data": {"user": user_data}})
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             return check_instagram_live("testuser", self.cookie_path)
 
     def test_is_live_field(self):
@@ -196,6 +201,7 @@ class TestLiveFieldDetection:
         resp = _make_response(200, {"user": {"is_live": True}})
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             result = check_instagram_live("testuser", self.cookie_path)
         assert result is not None
 
@@ -203,6 +209,7 @@ class TestLiveFieldDetection:
 # ---------------------------------------------------------------------------
 # 3. Empty user data → returns None
 # ---------------------------------------------------------------------------
+
 
 class TestEmptyUserData:
     @pytest.fixture(autouse=True)
@@ -213,18 +220,21 @@ class TestEmptyUserData:
         resp = _make_response(200, {"data": {"user": {}}})
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             assert check_instagram_live("nobody", self.cookie_path) is None
 
     def test_null_user(self):
         resp = _make_response(200, {"data": {"user": None}})
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             assert check_instagram_live("nobody", self.cookie_path) is None
 
     def test_missing_data_key(self):
         resp = _make_response(200, {"status": "ok"})
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             assert check_instagram_live("nobody", self.cookie_path) is None
 
 
@@ -232,24 +242,27 @@ class TestEmptyUserData:
 # 4. Missing sessionid raises RuntimeError with "login:" prefix
 # ---------------------------------------------------------------------------
 
+
 class TestMissingSessionId:
     def test_no_sessionid_raises(self, tmp_path):
         no_session = tmp_path / "nosession.txt"
         no_session.write_text(
-            _NETSCAPE_HEADER
-            + ".instagram.com\tTRUE\t/\tTRUE\t9999999999\tcsrftoken\tXYZ\n"
+            _NETSCAPE_HEADER + ".instagram.com\tTRUE\t/\tTRUE\t9999999999\tcsrftoken\tXYZ\n"
         )
         from utils.instagram_live_checker import check_instagram_live
+
         with pytest.raises(RuntimeError, match="login:"):
             check_instagram_live("user", str(no_session))
 
     def test_missing_cookie_file_raises(self):
         from utils.instagram_live_checker import check_instagram_live
+
         with pytest.raises(RuntimeError, match="login:"):
             check_instagram_live("user", "/nonexistent/path.txt")
 
     def test_empty_cookie_path_raises(self):
         from utils.instagram_live_checker import check_instagram_live
+
         with pytest.raises(RuntimeError, match="login:"):
             check_instagram_live("user", "")
 
@@ -257,6 +270,7 @@ class TestMissingSessionId:
 # ---------------------------------------------------------------------------
 # 5. HTTP error codes
 # ---------------------------------------------------------------------------
+
 
 class TestHTTPErrors:
     @pytest.fixture(autouse=True)
@@ -267,6 +281,7 @@ class TestHTTPErrors:
         resp = _make_response(status, json_data=None, text="error")
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             check_instagram_live("user", self.cookie_path)
 
     def test_401_raises_login_error(self):
@@ -292,6 +307,7 @@ class TestHTTPErrors:
         resp.json.side_effect = ValueError("no json")
         with patch("requests.get", return_value=resp):
             from utils.instagram_live_checker import check_instagram_live
+
             with pytest.raises(RuntimeError):
                 check_instagram_live("user", self.cookie_path)
 
@@ -300,6 +316,7 @@ class TestHTTPErrors:
 # 6. Network errors → RuntimeError
 # ---------------------------------------------------------------------------
 
+
 class TestNetworkErrors:
     @pytest.fixture(autouse=True)
     def _cookie(self):
@@ -307,22 +324,28 @@ class TestNetworkErrors:
 
     def test_connection_error(self):
         import requests as req_mod
+
         with patch("requests.get", side_effect=req_mod.exceptions.ConnectionError("refused")):
             from utils.instagram_live_checker import check_instagram_live
+
             with pytest.raises(RuntimeError, match="kết nối"):
                 check_instagram_live("user", self.cookie_path)
 
     def test_timeout_error(self):
         import requests as req_mod
+
         with patch("requests.get", side_effect=req_mod.exceptions.Timeout()):
             from utils.instagram_live_checker import check_instagram_live
+
             with pytest.raises(RuntimeError, match="thời gian"):
                 check_instagram_live("user", self.cookie_path)
 
     def test_generic_request_error(self):
         import requests as req_mod
+
         with patch("requests.get", side_effect=req_mod.exceptions.RequestException("boom")):
             from utils.instagram_live_checker import check_instagram_live
+
             with pytest.raises(RuntimeError, match="HTTP"):
                 check_instagram_live("user", self.cookie_path)
 
@@ -331,14 +354,17 @@ class TestNetworkErrors:
 # 7. _MonitorItem.consecutive_failures field
 # ---------------------------------------------------------------------------
 
+
 class TestMonitorItemFailureField:
     def test_consecutive_failures_default_zero(self):
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         item = _MonitorItem(url="https://www.instagram.com/test/")
         assert item.consecutive_failures == 0
 
     def test_consecutive_failures_is_int(self):
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         item = _MonitorItem(url="https://www.instagram.com/test/")
         item.consecutive_failures += 1
         assert item.consecutive_failures == 1
@@ -348,25 +374,30 @@ class TestMonitorItemFailureField:
 # 8 & 9. Constants
 # ---------------------------------------------------------------------------
 
+
 class TestLiveMonitorConstants:
     def test_max_consecutive_failures_positive(self):
         from ui.tabs.live_monitor_tab import MAX_CONSECUTIVE_FAILURES
+
         assert isinstance(MAX_CONSECUTIVE_FAILURES, int)
         assert MAX_CONSECUTIVE_FAILURES > 0
 
     def test_checking_timeout_positive(self):
         from ui.tabs.live_monitor_tab import _CHECKING_TIMEOUT_S
+
         assert isinstance(_CHECKING_TIMEOUT_S, (int, float))
         assert _CHECKING_TIMEOUT_S > 0
 
     def test_max_failures_sane_upper_bound(self):
         """Shouldn't be too high — user needs feedback within a reasonable time."""
         from ui.tabs.live_monitor_tab import MAX_CONSECUTIVE_FAILURES
+
         assert MAX_CONSECUTIVE_FAILURES <= 20
 
     def test_checking_timeout_at_least_30s(self):
         """Should be long enough for slow networks but not forever."""
         from ui.tabs.live_monitor_tab import _CHECKING_TIMEOUT_S
+
         assert _CHECKING_TIMEOUT_S >= 30
 
 
@@ -374,9 +405,11 @@ class TestLiveMonitorConstants:
 # 10. _recover_stuck_checks method exists
 # ---------------------------------------------------------------------------
 
+
 class TestRecoverStuckChecksMethod:
     def test_method_exists(self):
         from ui.tabs.live_monitor_tab import LiveMonitorTab
+
         assert hasattr(LiveMonitorTab, "_recover_stuck_checks")
         assert callable(LiveMonitorTab._recover_stuck_checks)
 
@@ -385,16 +418,19 @@ class TestRecoverStuckChecksMethod:
 # 11. _on_check_error escalation logic (unit test without full UI)
 # ---------------------------------------------------------------------------
 
+
 class TestCheckErrorEscalation:
     """Verify consecutive_failures counter and ERROR escalation without spinning up CTk."""
 
     def _make_item(self, url="https://www.instagram.com/u/"):
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         return _MonitorItem(url=url)
 
     def test_transient_error_increments_counter(self):
         """A non-hard transient error should increment consecutive_failures."""
         from ui.tabs.live_monitor_tab import _MonitorItem, _MonitorState
+
         item = _MonitorItem(url="https://www.instagram.com/u/")
         # Simulate what _on_check_error does for transient errors
         item.consecutive_failures += 1
@@ -403,21 +439,30 @@ class TestCheckErrorEscalation:
 
     def test_hard_error_keywords(self):
         """Keywords that should trigger ERROR immediately (not increment counter)."""
-        hard_keywords = ["private", "not found", "404", "login", "checkpoint",
-                         "unsupported url", "removed"]
+        hard_keywords = ["private", "not found", "404", "login", "checkpoint", "unsupported url", "removed"]
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         _MonitorItem(url="https://www.instagram.com/u/")
         for kw in hard_keywords:
             err_l = kw.lower()
-            is_hard = any(k in err_l for k in (
-                "private", "not found", "404", "login", "checkpoint",
-                "unsupported url", "removed",
-            ))
+            is_hard = any(
+                k in err_l
+                for k in (
+                    "private",
+                    "not found",
+                    "404",
+                    "login",
+                    "checkpoint",
+                    "unsupported url",
+                    "removed",
+                )
+            )
             assert is_hard, f"Expected '{kw}' to be detected as hard error"
 
     def test_escalation_threshold(self):
         """After MAX_CONSECUTIVE_FAILURES, item should be in ERROR state."""
         from ui.tabs.live_monitor_tab import MAX_CONSECUTIVE_FAILURES, _MonitorItem
+
         item = _MonitorItem(url="https://www.instagram.com/u/")
         item.consecutive_failures = MAX_CONSECUTIVE_FAILURES - 1
         # One more transient failure should trigger escalation
@@ -427,6 +472,7 @@ class TestCheckErrorEscalation:
     def test_failure_counter_reset_on_success(self):
         """consecutive_failures resets to 0 when a check succeeds."""
         from ui.tabs.live_monitor_tab import _MonitorItem
+
         item = _MonitorItem(url="https://www.instagram.com/u/")
         item.consecutive_failures = 5
         # Simulate success
@@ -437,6 +483,7 @@ class TestCheckErrorEscalation:
 # ---------------------------------------------------------------------------
 # 12. _recover_stuck_checks — unit logic (no CTk)
 # ---------------------------------------------------------------------------
+
 
 class TestRecoverStuckChecksLogic:
     """Verify the timeout guard logic without instantiating CTk."""
@@ -451,9 +498,7 @@ class TestRecoverStuckChecksLogic:
         item.last_check = time.time() - (_CHECKING_TIMEOUT_S + 10)
 
         elapsed = time.time() - item.last_check
-        assert elapsed > _CHECKING_TIMEOUT_S, (
-            "Item should be considered stuck based on elapsed time"
-        )
+        assert elapsed > _CHECKING_TIMEOUT_S, "Item should be considered stuck based on elapsed time"
 
     def test_non_stuck_checking_not_affected(self):
         """An item that just started checking should NOT be timed out."""
@@ -464,38 +509,212 @@ class TestRecoverStuckChecksLogic:
         item.last_check = time.time() - 5  # only 5s ago
 
         elapsed = time.time() - item.last_check
-        assert elapsed < _CHECKING_TIMEOUT_S, (
-            "Item should NOT be considered stuck — check just started"
-        )
+        assert elapsed < _CHECKING_TIMEOUT_S, "Item should NOT be considered stuck — check just started"
 
 
 # ---------------------------------------------------------------------------
 # 13. URL helpers (smoke tests — not changed but verify no regression)
 # ---------------------------------------------------------------------------
 
+
 class TestUrlHelpers:
     def test_is_instagram_profile_url_true(self):
         from utils.instagram_live_checker import is_instagram_profile_url
+
         assert is_instagram_profile_url("https://www.instagram.com/someuser/")
         assert is_instagram_profile_url("https://instagram.com/someuser")
 
     def test_is_instagram_profile_url_false_for_live(self):
         from utils.instagram_live_checker import is_instagram_profile_url
+
         assert not is_instagram_profile_url("https://www.instagram.com/someuser/live/")
 
     def test_is_instagram_profile_url_false_for_post(self):
         from utils.instagram_live_checker import is_instagram_profile_url
+
         assert not is_instagram_profile_url("https://www.instagram.com/p/ABC123/")
 
     def test_extract_instagram_username(self):
         from utils.instagram_live_checker import extract_instagram_username
+
         assert extract_instagram_username("https://www.instagram.com/TestUser/") == "testuser"
         assert extract_instagram_username("https://instagram.com/SomeOne") == "someone"
 
     def test_extract_instagram_username_none_for_post(self):
         from utils.instagram_live_checker import extract_instagram_username
+
         assert extract_instagram_username("https://www.instagram.com/p/ABC123/") is None
 
     def test_extract_instagram_username_none_for_live(self):
         from utils.instagram_live_checker import extract_instagram_username
+
         assert extract_instagram_username("https://www.instagram.com/user/live/") is None
+
+
+# ---------------------------------------------------------------------------
+# 14. InstagramLiveEngine — browser fallback (M1)
+# ---------------------------------------------------------------------------
+
+
+class TestBrowserFallback:
+    def test_falls_back_to_other_browser(self, tmp_path, monkeypatch):
+        import infrastructure.downloader.instagram_live_engine as eng
+
+        chrome = tmp_path / "chrome.exe"
+        chrome.write_text("")
+
+        def fake_candidates(name):
+            return [str(chrome)] if name == "chrome" else [str(tmp_path / "missing.exe")]
+
+        monkeypatch.setattr(eng, "_browser_candidates", fake_candidates)
+        assert eng._find_browser_exe("brave") == str(chrome)
+
+    def test_raises_when_no_browser_found(self, tmp_path, monkeypatch):
+        import infrastructure.downloader.instagram_live_engine as eng
+
+        monkeypatch.setattr(eng, "_browser_candidates", lambda name: [str(tmp_path / "missing.exe")])
+        with pytest.raises(RuntimeError):
+            eng._find_browser_exe("brave")
+
+
+# ---------------------------------------------------------------------------
+# 15. _cdp_intercept_hls — explicit cookie/cancel params (M2 / H2)
+# ---------------------------------------------------------------------------
+
+
+class TestCdpInterceptSignature:
+    def test_cookie_and_cancel_params_exist(self):
+        import inspect
+
+        from infrastructure.downloader.instagram_live_engine import _cdp_intercept_hls
+
+        params = inspect.signature(_cdp_intercept_hls).parameters
+        assert "cookie_file" in params
+        assert "cancel_check" in params
+
+    def test_function_attribute_channel_removed(self):
+        """The racy _cookie_file function-attribute passing is gone."""
+        import inspect
+
+        from infrastructure.downloader import instagram_live_engine as eng
+
+        assert '"_cookie_file"' not in inspect.getsource(eng)
+
+
+# ---------------------------------------------------------------------------
+# 16. download() — cancellation before API fallback (H2)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadCancellation:
+    def test_cancelled_task_aborts_before_api_fallback(self, monkeypatch):
+        import sys
+
+        import yt_dlp
+
+        from domain.models.download_task import DownloadTask
+        from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
+        monkeypatch.setattr(sys, "platform", "linux")  # skip CDP phase
+        task = DownloadTask(url="https://www.instagram.com/someuser/live/")
+        task.cancel()
+        engine = InstagramLiveEngine(MagicMock())
+
+        with patch.object(InstagramLiveEngine, "_api_hls_fallback") as fb:
+            with pytest.raises(yt_dlp.utils.DownloadError, match="Cancelled by user"):
+                engine.download(task)
+        fb.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 17. download() — "not currently live" marker (H3)
+# ---------------------------------------------------------------------------
+
+
+class TestNotLiveErrorMarker:
+    def test_not_live_message_contains_marker(self, monkeypatch):
+        import sys
+
+        from domain.models.download_task import DownloadTask
+        from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        task = DownloadTask(url="https://www.instagram.com/someuser/live/")
+        engine = InstagramLiveEngine(MagicMock())
+
+        with patch.object(InstagramLiveEngine, "_api_hls_fallback", return_value=None):
+            with pytest.raises(RuntimeError, match="not currently live"):
+                engine.download(task)
+
+
+# ---------------------------------------------------------------------------
+# 18. /live/<id> URL form (M3)
+# ---------------------------------------------------------------------------
+
+
+class TestLiveIdUrlForm:
+    def test_extract_username_falls_back_for_live_id(self):
+        from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
+        engine = InstagramLiveEngine(MagicMock())
+        assert engine._extract_username("https://www.instagram.com/live/17912345/") == "instagram"
+
+    def test_broadcast_id_extracted_from_live_id_form(self):
+        from infrastructure.downloader.instagram_live_engine import _BROADCAST_ID_FROM_URL_RE
+
+        m = _BROADCAST_ID_FROM_URL_RE.search("https://www.instagram.com/live/17912345/")
+        assert m is not None
+        assert m.group(1) == "17912345"
+
+    def test_broadcast_id_still_extracted_from_user_form(self):
+        from infrastructure.downloader.instagram_live_engine import _BROADCAST_ID_FROM_URL_RE
+
+        m = _BROADCAST_ID_FROM_URL_RE.search("https://www.instagram.com/someuser/live/17912345/")
+        assert m is not None
+        assert m.group(1) == "17912345"
+
+    def test_unsupported_url_marker_on_unparseable(self):
+        from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
+        engine = InstagramLiveEngine(MagicMock())
+        with pytest.raises(RuntimeError, match="unsupported url"):
+            engine._extract_username("https://example.com/whatever")
+
+
+# ---------------------------------------------------------------------------
+# 19. FFmpeg invocation — quiet stderr (H1)
+# ---------------------------------------------------------------------------
+
+
+class TestFfmpegInvocation:
+    def test_loglevel_warning_in_cmd(self, tmp_path, monkeypatch):
+        import sys
+
+        from domain.models.download_task import DownloadTask
+        from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        task = DownloadTask(url="https://www.instagram.com/someuser/live/")
+        task.output_dir = str(tmp_path)
+        engine = InstagramLiveEngine(MagicMock())
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            raise FileNotFoundError("ffmpeg")
+
+        loc = MagicMock()
+        loc.ffmpeg_bin = "/usr/bin/ffmpeg"
+
+        with (
+            patch.object(InstagramLiveEngine, "_api_hls_fallback", return_value="https://cdn.example/x.m3u8"),
+            patch.object(InstagramLiveEngine, "_build_ffmpeg_headers", return_value="UA: x\r\n"),
+            patch("utils.ffmpeg_locator.locate_ffmpeg", return_value=loc),
+            patch("subprocess.Popen", side_effect=fake_popen),
+        ):
+            with pytest.raises(RuntimeError):
+                engine.download(task)
+
+        assert "-loglevel" in captured["cmd"]
+        assert "warning" in captured["cmd"]

@@ -61,7 +61,6 @@ class HomeTab(QWidget):
         self._app = app
         self._media_info: Optional[MediaInfo] = None
         self._selected_quality = QUALITY_PRESETS[0][1]
-        self._selected_format = "mp4"
         self._selected_quality_idx = 0
         self._quality_cards: list[QFrame] = []
         self._thumb_token: int = 0
@@ -264,7 +263,7 @@ class HomeTab(QWidget):
 
         # Horizontal scroll for quality cards
         q_scroll = QScrollArea()
-        q_scroll.setFixedHeight(90)
+        q_scroll.setFixedHeight(96)
         q_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         q_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         q_scroll.setWidgetResizable(True)
@@ -336,15 +335,16 @@ class HomeTab(QWidget):
 
     def _make_quality_card(self, label: str, fmt_id: str, icon: str, idx: int) -> QFrame:
         card = QFrame()
+        card.setObjectName("qualityCard")
         card.setFixedSize(120, 76)
         is_selected = idx == 0
         card.setStyleSheet(f"""
-            QFrame {{
+            QFrame#qualityCard {{
                 background-color: {"" + T.primary_dim if is_selected else T.surface2};
                 border: 1px solid {T.primary if is_selected else T.border};
                 border-radius: 12px;
             }}
-            QFrame:hover {{
+            QFrame#qualityCard:hover {{
                 border-color: {T.primary};
             }}
         """)
@@ -358,7 +358,7 @@ class HomeTab(QWidget):
         icon_lbl = QLabel(icon)
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         is_ascii = len(icon) <= 3 and icon.isascii()
-        icon_style = "font-size: 9px; font-weight: bold;" if is_ascii else "font-size: 16px;"
+        icon_style = "font-size: 14px; font-weight: bold;" if is_ascii else "font-size: 16px;"
         icon_lbl.setStyleSheet(f"color: {T.primary_text}; {icon_style} background: transparent;")
         card_layout.addWidget(icon_lbl)
 
@@ -374,20 +374,23 @@ class HomeTab(QWidget):
             for i, c in enumerate(self._quality_cards):
                 if i == ci:
                     c.setStyleSheet(f"""
-                        QFrame {{
+                        QFrame#qualityCard {{
                             background-color: {T.primary_dim};
                             border: 1px solid {T.primary};
                             border-radius: 12px;
                         }}
+                        QFrame#qualityCard:hover {{
+                            border-color: {T.primary};
+                        }}
                     """)
                 else:
                     c.setStyleSheet(f"""
-                        QFrame {{
+                        QFrame#qualityCard {{
                             background-color: {T.surface2};
                             border: 1px solid {T.border};
                             border-radius: 12px;
                         }}
-                        QFrame:hover {{
+                        QFrame#qualityCard:hover {{
                             border-color: {T.primary};
                         }}
                     """)
@@ -473,6 +476,8 @@ class HomeTab(QWidget):
             m, s = divmod(info.duration, 60)
             h, m = divmod(m, 60)
             self._duration_lbl.setText(f"⏱  {h}:{m:02d}:{s:02d}" if h else f"⏱  {m:02d}:{s:02d}")
+        else:
+            self._duration_lbl.setText("")
 
         is_photo = not info.is_live and not info.formats and info.duration == 0
         if is_photo:
@@ -480,13 +485,14 @@ class HomeTab(QWidget):
             self._q_sec.hide()
             self._set_status("🖼  Photo / image — downloading at best available resolution", T.text2)
         else:
+            self._selected_quality = QUALITY_PRESETS[self._selected_quality_idx][1]
             self._q_sec.show()
             if not info.is_live:
                 self._set_status("", T.text3)
 
-        # Thumbnail
-        self._thumb_lbl.setText("...")
+        # Thumbnail — setPixmap clears any text, so set the placeholder after
         self._thumb_lbl.setPixmap(QPixmap())
+        self._thumb_lbl.setText("...")
 
         if info.thumbnail:
             self._thumb_token += 1
@@ -541,6 +547,7 @@ class HomeTab(QWidget):
         self._welcome.show()
         self._media_info = None
         self._custom_output_dir = None
+        self._folder_lbl.setText(self._short_path(self._app.service.get_download_dir()))
         toolbar = self._app.get_toolbar()
         if toolbar:
             toolbar.set_url("")

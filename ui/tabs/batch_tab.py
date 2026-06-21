@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import MediaInfo
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
@@ -340,7 +341,7 @@ class BatchTab(QWidget):
             if url and is_valid_url(url) and url not in seen:
                 seen.add(url)
                 result.append(url)
-        return result[:MAX_BATCH_URLS]
+        return result
 
     # ── Import ────────────────────────────────────────────────────────────────
 
@@ -393,12 +394,15 @@ class BatchTab(QWidget):
     # ── Batch analysis ────────────────────────────────────────────────────────
 
     def _start_batch_analyse(self) -> None:
-        urls = self._parse_textarea()
+        urls = self._parse_textarea()[:MAX_BATCH_URLS]
         if not urls:
             return
 
         self._batch_token += 1
         my_token = self._batch_token
+
+        self._stop_seq_timer()
+        self._seq_queue.clear()
 
         self._items = [_BatchItem(url=u) for u in urls]
         self._analysing_count = 0
@@ -440,11 +444,12 @@ class BatchTab(QWidget):
                 return
             ui_bridge.post(lambda i=pending, e=err: self._on_item_error(i, e, token))
 
+        is_first = all(
+            i.state in (_ItemState.PENDING, _ItemState.ANALYSING) for i in self._items if i is not pending
+        )
+
         def _delayed_analyse() -> None:
             delay = self._get_analysis_delay(url)
-            is_first = all(
-                i.state in (_ItemState.PENDING, _ItemState.ANALYSING) for i in self._items if i is not pending
-            )
             if not is_first and delay > 0:
                 _time.sleep(delay)
             if token != self._batch_token:
@@ -485,10 +490,10 @@ class BatchTab(QWidget):
 
         if errors > 0:
             self._retry_btn.setEnabled(True)
-            self._retry_btn.setText(f"Retry {errors} lỗi")
+            self._retry_btn.setText(f"Thử lại {errors} lỗi")
         else:
             self._retry_btn.setEnabled(False)
-            self._retry_btn.setText("Retry errors")
+            self._retry_btn.setText("Thử lại lỗi")
 
         if ready == 0:
             self._status_lbl.setText(f"Không có URL nào hợp lệ ({errors} lỗi)")
@@ -721,7 +726,7 @@ class BatchTab(QWidget):
                 self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
                 self._app.navigate_to("queue")
 
-    def _submit_one(self, item: _BatchItem, format_id: str, output_ext: str) -> bool:
+    def _submit_one(self, item: _BatchItem, format_id: str, output_ext: str) -> str | None:
         try:
             task = self._app.service.start_download(
                 url=item.url,
@@ -792,6 +797,9 @@ class BatchTab(QWidget):
         self._batch_token += 1
         my_token = self._batch_token
 
+        self._stop_seq_timer()
+        self._seq_queue.clear()
+
         for item in error_items:
             item.state = _ItemState.PENDING
             item.error_msg = ""
@@ -800,7 +808,7 @@ class BatchTab(QWidget):
 
         self._analysing_count = 0
         self._retry_btn.setEnabled(False)
-        self._retry_btn.setText("Retry errors")
+        self._retry_btn.setText("Thử lại lỗi")
         self._analyse_btn.setEnabled(False)
         self._analyse_btn.setText("Đang thử lại…")
         self._queue_all_btn.setEnabled(False)
@@ -830,7 +838,7 @@ class BatchTab(QWidget):
         self._queue_all_btn.setEnabled(False)
         self._queue_all_btn.setText("Thêm tất cả")
         self._retry_btn.setEnabled(False)
-        self._retry_btn.setText("Retry errors")
+        self._retry_btn.setText("Thử lại lỗi")
         self._url_count_lbl.setText("")
         self._status_lbl.setText("")
         self._select_all_chk.setVisible(False)

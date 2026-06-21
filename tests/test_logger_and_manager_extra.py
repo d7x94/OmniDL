@@ -116,7 +116,7 @@ class TestShutdown:
         try:
             task = make_task()
             mgr.enqueue(task)
-            time.sleep(0.1)  # let it start
+            assert wait_for_status(task, DownloadStatus.DOWNLOADING), "Task did not start"
         finally:
             mgr.shutdown(wait=False)
         # After shutdown, enqueue should raise
@@ -167,7 +167,7 @@ class TestClearTerminal:
         try:
             task = make_task()
             mgr.enqueue(task)
-            time.sleep(0.1)  # let it start downloading
+            assert wait_for_status(task, DownloadStatus.DOWNLOADING), "Task did not start"
             mgr.clear_terminal()
             # Active task should still be tracked
             assert mgr.get_task(task.id) is not None
@@ -188,7 +188,7 @@ class TestPauseResumeCancel:
         try:
             task = make_task()
             mgr.enqueue(task)
-            time.sleep(0.1)
+            assert wait_for_status(task, DownloadStatus.DOWNLOADING), "Task did not start"
             mgr.pause(task.id)
             assert bus.publish.called
         finally:
@@ -200,7 +200,7 @@ class TestPauseResumeCancel:
         try:
             task = make_task()
             mgr.enqueue(task)
-            time.sleep(0.1)
+            assert wait_for_status(task, DownloadStatus.DOWNLOADING), "Task did not start"
             mgr.cancel(task.id)
             assert task.is_cancellation_requested
         finally:

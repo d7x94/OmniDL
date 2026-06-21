@@ -1057,6 +1057,8 @@ class YtDlpEngine:
                 and (
                     "status code 10231" in str(last_exc).lower()
                     or "unexpected response from webpage request" in str(last_exc).lower()
+                    # BUG-TT-REHYDRATE: transient bot/challenge page with no rehydration JSON.
+                    or "unable to extract universal data for rehydration" in str(last_exc).lower()
                 )
             )
             if _tt_web_blocked_ei:
@@ -2140,7 +2142,7 @@ class YtDlpEngine:
                                     _tt16_attempt += 1
                                     for _i in range(2):
                                         if task.is_cancellation_requested:
-                                            raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                            raise yt_dlp.utils.DownloadError("Cancelled by user") from None
                                         time.sleep(1)
                                     continue
                                 else:
@@ -2215,7 +2217,9 @@ class YtDlpEngine:
                                         _tt16_attempt += 1
                                         for _i in range(2):
                                             if task.is_cancellation_requested:
-                                                raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                                raise yt_dlp.utils.DownloadError(
+                                                    "Cancelled by user"
+                                                ) from None
                                             time.sleep(1)
                                         continue
                                     raise  # no alternative CDN path available
@@ -2254,7 +2258,9 @@ class YtDlpEngine:
                                         _tt16_attempt += 1
                                         for _i in range(2):
                                             if task.is_cancellation_requested:
-                                                raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                                raise yt_dlp.utils.DownloadError(
+                                                    "Cancelled by user"
+                                                ) from None
                                             time.sleep(1)
                                         continue
                                     if not _tt16_grace_wait_done:
@@ -2269,7 +2275,9 @@ class YtDlpEngine:
                                         )
                                         for _i in range(30):
                                             if task.is_cancellation_requested:
-                                                raise yt_dlp.utils.DownloadError("Cancelled by user")
+                                                raise yt_dlp.utils.DownloadError(
+                                                    "Cancelled by user"
+                                                ) from None
                                             time.sleep(1)
                                         _tt16_bad_bases.clear()
                                         _tt16_stall_counts.clear()
@@ -2665,8 +2673,14 @@ class YtDlpEngine:
                     # returns 10231. app_name alone has no effect (see BUG-TT-10231).
                     # BUG-TT-CHALLENGE: same Android API fallback for the anti-bot JS
                     # challenge ("Unexpected response from webpage request").
+                    # BUG-TT-REHYDRATE: TikTok sometimes serves a bot/challenge webpage
+                    # with no rehydration JSON ("Unable to extract universal data for
+                    # rehydration"). It is transient (re-adding the same link succeeds);
+                    # route it through the same Android app_info bypass.
                     _tt_web_blocked = (
-                        "status code 10231" in _exc_l or "unexpected response from webpage request" in _exc_l
+                        "status code 10231" in _exc_l
+                        or "unexpected response from webpage request" in _exc_l
+                        or "unable to extract universal data for rehydration" in _exc_l
                     )
                     if _tt_web_blocked and _is_tiktok_vod and not is_live:
                         _10231_dl_ok = False

@@ -746,8 +746,10 @@ class TestP1DebouncedSave:
         # Timer has 500ms delay — saves should not have fired yet
         immediate_count = save_count[0]
 
-        # Wait for the debounce timer to flush
-        time.sleep(0.8)
+        # Wait for the debounce timer to flush (poll instead of fixed sleep)
+        deadline = time.time() + 5.0
+        while save_count[0] <= immediate_count and time.time() < deadline:
+            time.sleep(0.05)
         final_count = save_count[0]
 
         assert immediate_count <= 1, (
@@ -759,6 +761,52 @@ class TestP1DebouncedSave:
         # Verify the last value was persisted
         config2 = ConfigManager(config_path)
         assert config2.max_concurrent == 9
+
+
+class TestBugTT29Recheck:
+    """BUG-TT-29: _tt29_live_recheck must confirm liveness via check_tiktok_live
+    (full dispatcher, incl. Pass-4 API) instead of the bot-blockable HTML scrape."""
+
+    def _make_manager(self):
+        from types import SimpleNamespace
+
+        from infrastructure.downloader.download_manager import DownloadManager
+
+        mgr = DownloadManager.__new__(DownloadManager)
+        mgr._config = SimpleNamespace(proxy="", get_cookie_for_platform=lambda p: "")
+        return mgr
+
+    def _make_task(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            id="t1",
+            url="https://www.tiktok.com/@liveuser/live",
+            is_cancellation_requested=False,
+            _cookie_override=None,
+        )
+
+    def test_recheck_true_when_check_tiktok_live_returns_url(self):
+        mgr = self._make_manager()
+        task = self._make_task()
+        with (
+            patch("infrastructure.downloader.download_manager.time.sleep"),
+            patch(
+                "utils.tiktok_live_checker.check_tiktok_live",
+                return_value="https://www.tiktok.com/@liveuser/live",
+            ) as m,
+        ):
+            assert mgr._tt29_live_recheck(task, "12345") is True
+            m.assert_called_once()
+
+    def test_recheck_false_when_check_tiktok_live_returns_none(self):
+        mgr = self._make_manager()
+        task = self._make_task()
+        with (
+            patch("infrastructure.downloader.download_manager.time.sleep"),
+            patch("utils.tiktok_live_checker.check_tiktok_live", return_value=None),
+        ):
+            assert mgr._tt29_live_recheck(task, "12345") is False
 
 
 class TestSEC4ThumbnailSSRF:

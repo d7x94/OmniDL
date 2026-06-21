@@ -75,7 +75,8 @@ class DownloadItemWidget(QFrame):
         self.setObjectName("download_card")
         self._build()
         self._set_active_accent(False)
-        T.register(self._on_theme)
+        self._theme_cb = self._on_theme
+        T.register(self._theme_cb)
 
     def _build(self) -> None:
         outer = QVBoxLayout(self)
@@ -159,6 +160,7 @@ class DownloadItemWidget(QFrame):
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._folder_btn.setToolTip("Mở thư mục chứa file")
         self._folder_btn.clicked.connect(self._open_folder)
         self._folder_btn.hide()
         btn_row.addWidget(self._folder_btn)
@@ -170,6 +172,7 @@ class DownloadItemWidget(QFrame):
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._preview_btn.setToolTip("Xem / phát file")
         self._preview_btn.clicked.connect(self._open_preview)
         self._preview_btn.hide()
         btn_row.addWidget(self._preview_btn)
@@ -182,6 +185,7 @@ class DownloadItemWidget(QFrame):
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._convert_btn.setToolTip("Chuyển đổi định dạng")
         self._convert_btn.clicked.connect(self._on_convert_click)
         self._convert_btn.hide()
         btn_row.addWidget(self._convert_btn)
@@ -189,11 +193,12 @@ class DownloadItemWidget(QFrame):
         self._edit_btn = QPushButton("✂  Sửa")
         self._edit_btn.setFixedHeight(30)
         self._edit_btn.setStyleSheet(
-            "background: #FCE7F3; color: #EC4899; border-radius: 10px; border: none;"
-            " font-size: 11px; font-weight: 600; padding: 0 12px;"
-            ' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+            f"background: {T.edit_bg}; color: {T.edit_text}; border-radius: 10px; border: none;"
+            f" font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._edit_btn.setToolTip("Cắt / chỉnh sửa video")
         self._edit_btn.clicked.connect(self._on_edit_click)
         self._edit_btn.hide()
         btn_row.addWidget(self._edit_btn)
@@ -285,7 +290,7 @@ class DownloadItemWidget(QFrame):
                 self._url_lbl.setText(f"🔗 {url_display[:100]}")
                 self._url_lbl.show()
             if task.error_msg:
-                self._err_lbl.setText(f"  {task.error_msg}")
+                self._err_lbl.setText(task.error_msg)
                 self._err_lbl.show()
         else:
             self._url_lbl.hide()
@@ -302,14 +307,13 @@ class DownloadItemWidget(QFrame):
             self._pause_btn.hide()
             self._cancel_btn.hide()
         elif processing:
-            self._pause_btn.setEnabled(False)
+            self._pause_btn.hide()
             self._cancel_btn.setEnabled(True)
-            self._pause_btn.show()
             self._cancel_btn.show()
         else:
             self._pause_btn.setEnabled(not is_gallery_dl)
             self._cancel_btn.setEnabled(True)
-            self._pause_btn.setText("⏸")
+            self._pause_btn.setText("▶" if st == DownloadStatus.PAUSED else "⏸")
             self._pause_btn.show()
             self._cancel_btn.show()
 
@@ -325,6 +329,7 @@ class DownloadItemWidget(QFrame):
             self._pause_btn.hide()
             self._cancel_btn.hide()
         elif not terminal:
+            self._completed_path = ""
             self._folder_btn.hide()
             self._preview_btn.hide()
             self._convert_btn.hide()
@@ -361,35 +366,7 @@ class DownloadItemWidget(QFrame):
             """)
 
     def _on_theme(self) -> None:
-        st = self.task.status
-        is_active = st in (DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)
-        self._set_active_accent(is_active)
-        s_label, s_dot_key, s_bg_key = _STATUS.get(st, ("Unknown", "text3", "surface2"))
-        s_color = getattr(T, s_dot_key)
-        s_bg = getattr(T, s_bg_key)
-        self._status_badge.setStyleSheet(f"""
-            color: {s_color}; background-color: {s_bg};
-            border-radius: 8px; font-size: 10px; font-weight: 600;
-            padding: 3px 10px; letter-spacing: 0.2px;
-        """)
-        self._pause_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {T.primary_dim}; color: {T.primary_text};
-                border-radius: 10px; border: 1.5px solid {T.primary}; font-size: 12px;
-                padding: 0;
-                font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
-            }}
-            QPushButton:hover {{ background: {T.primary}; color: white; }}
-        """)
-        self._cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {T.error_bg}; color: {T.error_text};
-                border-radius: 10px; border: 1.5px solid {T.error}; font-size: 12px;
-                padding: 0;
-                font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
-            }}
-            QPushButton:hover {{ background: {T.error}; color: white; }}
-        """)
+        self.refresh(self.task)
 
     def _on_cancel_click(self) -> None:
         if (
@@ -486,6 +463,10 @@ class DownloadItemWidget(QFrame):
                     self._checkbox.toggled.disconnect()
                 except RuntimeError:
                     pass
+
+    def deleteLater(self) -> None:
+        T.unregister(self._theme_cb)
+        super().deleteLater()
 
     @staticmethod
     def _trunc(s: str, n: int) -> str:

@@ -22,6 +22,7 @@ Platform support:
   Windows, macOS (same as facebook_story_engine).
   Linux: not supported (raises RuntimeError).
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import Callable, Optional
@@ -44,21 +46,15 @@ from utils.helpers import sanitise_filename as _sanitise_filename
 
 logger = logging.getLogger(__name__)
 
-_IG_APP_ID       = "936619743392459"
-_PROFILE_API     = "https://i.instagram.com/api/v1/users/web_profile_info/"
+_IG_APP_ID = "936619743392459"
+_PROFILE_API = "https://i.instagram.com/api/v1/users/web_profile_info/"
 _REQUEST_TIMEOUT = 15
 
 _WIN_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-_INSTAGRAM_LIVE_RE = re.compile(
-    r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I
-)
-_USER_LIVE_RE = re.compile(
-    r"instagram\.com/([A-Za-z0-9._]+)/live", re.I
-)
-_BROADCAST_ID_FROM_URL_RE = re.compile(
-    r"instagram\.com/[^/]+/live/(\d+)", re.I
-)
+_INSTAGRAM_LIVE_RE = re.compile(r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I)
+_USER_LIVE_RE = re.compile(r"instagram\.com/([A-Za-z0-9._]+)/live", re.I)
+_BROADCAST_ID_FROM_URL_RE = re.compile(r"instagram\.com/(?:[^/]+/)?live/(\d+)", re.I)
 
 # Instagram Live streams come from cdninstagram.com or Instagram's edge CDN.
 # 2025+: Instagram migrated from HLS-only to DASH (MPD) for some live streams.
@@ -82,10 +78,12 @@ _CDP_HLS_WAIT_S = 120.0
 # Serialize CDP browser launches to prevent profile lock conflicts
 _CDP_LOCK: "threading.Lock | None" = None
 
+
 def _get_cdp_lock() -> "threading.Lock":
     global _CDP_LOCK
     if _CDP_LOCK is None:
         import threading
+
         _CDP_LOCK = threading.Lock()
     return _CDP_LOCK
 
@@ -105,62 +103,66 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _find_browser_exe(browser: str) -> str:
-    browser = browser.lower()
-    candidates: list[str] = []
+def _browser_candidates(browser: str) -> list[str]:
     if sys.platform == "win32":
         if browser == "brave":
-            candidates = [
+            return [
                 r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
                 r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
             ]
-        else:
-            candidates = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            ]
-    elif sys.platform == "darwin":
+        return [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    if sys.platform == "darwin":
         home = Path.home()
         if browser == "brave":
-            candidates = [
+            return [
                 "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
                 str(home / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
             ]
-        else:
-            candidates = [
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                str(home / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            ]
-    else:
-        raise RuntimeError(
-            "Instagram Live CDP chi ho tro Windows va macOS.\n"
-            "Linux chua duoc ho tro."
-        )
-    exe = next((p for p in candidates if Path(p).exists()), None)
-    if not exe:
-        raise RuntimeError(
-            f"Khong tim thay {browser.title()}. Hay cai dat trinh duyet truoc.\n"
-            "Dam bao da dang nhap Instagram trong trinh duyet do."
-        )
-    return exe
+        return [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            str(home / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ]
+    raise RuntimeError("Instagram Live CDP chi ho tro Windows va macOS.\nLinux chua duoc ho tro.")
+
+
+def _find_browser_exe(browser: str) -> str:
+    browser = browser.lower()
+    # Fall back to the other Chromium browser when the configured one is not
+    # installed — a wrong cookies_browser setting should degrade, not hard-fail.
+    for name in (browser, "chrome" if browser == "brave" else "brave"):
+        exe = next((p for p in _browser_candidates(name) if Path(p).exists()), None)
+        if exe:
+            return exe
+    raise RuntimeError(
+        f"Khong tim thay {browser.title()} (hoac Brave/Chrome thay the). "
+        "Hay cai dat trinh duyet truoc.\n"
+        "Dam bao da dang nhap Instagram trong trinh duyet do."
+    )
 
 
 def _cdp_intercept_hls(
-    live_url: str, browser: str, timeout: float
+    live_url: str,
+    browser: str,
+    timeout: float,
+    cookie_file: Optional[str] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> tuple[Optional[str], dict]:
     """
     Launch browser, navigate to live_url, intercept HLS .m3u8 URL via CDP.
-    Returns the HLS URL string, or None if not found within timeout.
+    Returns the HLS URL string, or None if not found within timeout
+    (also None when *cancel_check* returns True mid-wait).
     """
+    _cancelled = cancel_check or (lambda: False)
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: I001
         from playwright._impl._api_structures import SetCookieParam  # noqa: PLC0415
     except ImportError as err:
-        raise RuntimeError(
-            "Thieu thu vien Playwright.\nChay: pip install playwright"
-        ) from err
+        raise RuntimeError("Thieu thu vien Playwright.\nChay: pip install playwright") from err
 
-    exe  = _find_browser_exe(browser)
+    exe = _find_browser_exe(browser)
     port = _free_port()
 
     # Use a temp user-data-dir so the browser always spawns as a fresh process
@@ -173,7 +175,8 @@ def _cdp_intercept_hls(
         exe,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={tmp_profile}",
-        "--no-first-run", "--no-default-browser-check",
+        "--no-first-run",
+        "--no-default-browser-check",
         "--disable-features=Translate",
         "--restore-last-session=false",
         "--no-session-crashed-bubble",
@@ -203,10 +206,18 @@ def _cdp_intercept_hls(
     try:
         with sync_playwright() as pw:
             cdp_browser = None
-            deadline    = time.monotonic() + 30.0
-            last_exc    = None
+            deadline = time.monotonic() + 30.0
+            last_exc = None
 
             while time.monotonic() < deadline:
+                if _cancelled():
+                    return None, {}
+                if proc.poll() is not None:
+                    raise RuntimeError(
+                        "Khong ket noi duoc CDP: trinh duyet thoat ngay sau khi khoi dong "
+                        f"(exit code {proc.returncode}).\n"
+                        "Dong hoan toan trinh duyet (ke ca System Tray) roi thu lai."
+                    )
                 try:
                     cdp_browser = pw.chromium.connect_over_cdp(
                         f"http://127.0.0.1:{port}",
@@ -234,13 +245,13 @@ def _cdp_intercept_hls(
             # Solution: always create a new_context() and pass cookies via
             # storage_state so the browser sends them on the first request.
             playwright_cookies: list[SetCookieParam] = []
-            _cookie_file_for_inject = getattr(_cdp_intercept_hls, "_cookie_file", None)
-            if _cookie_file_for_inject:
+            if cookie_file:
                 try:
                     from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
                         _prepare_cookie_for_use,
                     )
-                    usable_ck, is_temp_ck = _prepare_cookie_for_use(_cookie_file_for_inject)
+
+                    usable_ck, is_temp_ck = _prepare_cookie_for_use(cookie_file)
                     try:
                         jar = MozillaCookieJar()
                         jar.load(usable_ck, ignore_discard=True, ignore_expires=True)
@@ -252,10 +263,9 @@ def _cdp_intercept_hls(
                                 # Playwright requires domain WITH leading dot for
                                 # subdomain matching; instagram.com cookies must
                                 # also match www.instagram.com.
-                                "domain": (
-                                    c.domain if c.domain.startswith(".")
-                                    else f".{c.domain}"
-                                ) if c.domain else ".instagram.com",
+                                "domain": (c.domain if c.domain.startswith(".") else f".{c.domain}")
+                                if c.domain
+                                else ".instagram.com",
                                 "path": c.path or "/",
                                 "secure": bool(c.secure),
                                 "httpOnly": False,
@@ -346,7 +356,7 @@ def _cdp_intercept_hls(
                 nonlocal hls_url
                 if hls_url:
                     return
-                u  = response.url
+                u = response.url
                 ct = response.headers.get("content-type", "").lower()
                 if (
                     "application/vnd.apple.mpegurl" in ct
@@ -391,11 +401,7 @@ def _cdp_intercept_hls(
                     if hls_url:
                         return
                     headers = params.get("response", {}).get("headers", {})
-                    ct = (
-                        headers.get("content-type")
-                        or headers.get("Content-Type")
-                        or ""
-                    ).lower()
+                    ct = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
                     u = params.get("response", {}).get("url", "")
                     if (
                         "application/dash+xml" in ct
@@ -404,7 +410,8 @@ def _cdp_intercept_hls(
                     ):
                         logger.info(
                             "CDP[C]: stream via responseReceived MIME (%s): %.120s",
-                            ct, u,
+                            ct,
+                            u,
                         )
                         hls_url = u
 
@@ -493,13 +500,15 @@ def _cdp_intercept_hls(
                 logger.debug("CDP: tap-to-play inject failed (non-fatal): %s", exc)
 
             # Poll loop - deadline starts now (after navigation + gesture)
-            loop_deadline   = time.monotonic() + timeout
+            loop_deadline = time.monotonic() + timeout
             _last_gesture_t = time.monotonic()
             _GESTURE_INTERVAL = 5.0  # re-inject gesture every 5s until URL found
-            _poll_tick      = 0
+            _poll_tick = 0
             while time.monotonic() < loop_deadline:
                 if hls_url:
                     break
+                if _cancelled():
+                    return None, {}
 
                 # Re-inject gesture every 5s -- Instagram SPA may render the
                 # live player at any point during the 120s window.
@@ -549,7 +558,7 @@ def _cdp_intercept_hls(
                             "for(var gi=0;gi<globs.length;gi++){"
                             " try{"
                             "  var src=JSON.stringify(window[globs[gi]]||{});"
-                            "  var m=src.match(/\"(https:[^\"]+\\.(?:m3u8|mpd)[^\"]*)\"/i);"
+                            '  var m=src.match(/"(https:[^"]+\\.(?:m3u8|mpd)[^"]*)"/i);'
                             "  if(m)return decodeURIComponent(m[1].replace(/\\\\\\\\/g,'/'));"
                             " }catch(ex2){}"
                             "}"
@@ -557,7 +566,7 @@ def _cdp_intercept_hls(
                             "var scripts=document.querySelectorAll('script[type=\"application/json\"]');"
                             "for(var si=0;si<scripts.length;si++){"
                             " try{"
-                            "  var re2=/\"(https:[^\"]+\\.(?:m3u8|mpd)[^\"]*)\"/i;"
+                            '  var re2=/"(https:[^"]+\\.(?:m3u8|mpd)[^"]*)"/i;'
                             "  var m2=scripts[si].textContent.match(re2);"
                             "  if(m2)return decodeURIComponent(m2[1].replace(/\\\\\\\\/g,'/'));"
                             " }catch(ex3){}"
@@ -644,38 +653,51 @@ class InstagramLiveEngine:
         on_progress: Optional[Callable[[DownloadTask], None]] = None,
         on_postprocess: Optional[Callable[[DownloadTask], None]] = None,
     ) -> None:
-        url      = task.url
+        url = task.url
         username = self._extract_username(url, task)
 
         # Primary: CDP intercept
         hls_url: Optional[str] = None
         _browser_headers: dict = {}
         if sys.platform in ("win32", "darwin"):
-            browser = getattr(self._config, "browser", "brave") or "brave"
+            browser = getattr(self._config, "cookies_browser", "brave") or "brave"
             try:
                 from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
                     _resolve_cookie,
                 )
-                # Pass cookie file path to _cdp_intercept_hls via function attribute
-                # so it can inject Instagram session cookies into the fresh temp profile.
-                _cdp_intercept_hls._cookie_file = (  # type: ignore[attr-defined]
-                    _resolve_cookie(url, self._config)
+
+                hls_url, _browser_headers = _cdp_intercept_hls(
+                    url,
+                    browser,
+                    _CDP_HLS_WAIT_S,
+                    cookie_file=_resolve_cookie(url, self._config),
+                    cancel_check=lambda: task.is_cancellation_requested,
                 )
-                hls_url, _browser_headers = _cdp_intercept_hls(url, browser, _CDP_HLS_WAIT_S)
             except RuntimeError as exc:
                 logger.warning("CDP HLS intercept failed: %s -- trying API fallback", exc)
             except Exception as exc:
                 logger.warning("CDP HLS intercept error: %s -- trying API fallback", exc)
-            finally:
-                _cdp_intercept_hls._cookie_file = None  # type: ignore[attr-defined]
+
+        if task.is_cancellation_requested:
+            import yt_dlp  # noqa: PLC0415
+
+            raise yt_dlp.utils.DownloadError("Cancelled by user")
 
         # Fallback: API
         if not hls_url:
-            hls_url = self._api_hls_fallback(url, username)
+            hls_url = self._api_hls_fallback(
+                url, username, cancel_check=lambda: task.is_cancellation_requested
+            )
+            if task.is_cancellation_requested:
+                import yt_dlp  # noqa: PLC0415
+
+                raise yt_dlp.utils.DownloadError("Cancelled by user")
 
         if not hls_url:
+            # "not currently live" marker: download_manager skips retries and the
+            # live monitor tab resets the item to WAITING instead of ERROR.
             raise RuntimeError(
-                f"@{username} hien khong co live stream nao dang phat, "
+                f"not currently live: @{username} hien khong co live stream nao dang phat, "
                 "hoac khong the lay duoc HLS URL.\n\n"
                 "Hay dam bao:\n"
                 "- Da dang nhap Instagram trong Brave/Chrome va luu cookies\n"
@@ -684,24 +706,21 @@ class InstagramLiveEngine:
             )
 
         # Build output path
-        output_dir = (
-            Path(task.output_dir) if task.output_dir else self._config.download_dir
-        ).resolve()
+        output_dir = (Path(task.output_dir) if task.output_dir else self._config.download_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        bid_match    = _BROADCAST_ID_FROM_URL_RE.search(url)
+        bid_match = _BROADCAST_ID_FROM_URL_RE.search(url)
         broadcast_id = bid_match.group(1)[:12] if bid_match else "live"
-        rec_ts       = time.strftime("%Y-%m-%d %H-%M")
-        raw_name     = _sanitise_filename(
-            f"{username} - [LIVE] {rec_ts} [{broadcast_id}]", max_len=180
-        ) + ".ts"
-        output_path  = output_dir / raw_name
+        rec_ts = time.strftime("%Y-%m-%d %H-%M")
+        raw_name = _sanitise_filename(f"{username} - [LIVE] {rec_ts} [{broadcast_id}]", max_len=180) + ".ts"
+        output_path = output_dir / raw_name
 
         with task._lock:
             task.filename = str(output_path)
 
         # Locate FFmpeg
         from utils.ffmpeg_locator import locate_ffmpeg  # noqa: PLC0415
+
         loc = locate_ffmpeg()
         if loc is None:
             raise RuntimeError(
@@ -717,9 +736,7 @@ class InstagramLiveEngine:
         if _browser_headers:
             _SKIP_HEADERS = {"accept-encoding", "connection", "host", "content-length"}
             headers_arg = "".join(
-                f"{k}: {v}\r\n"
-                for k, v in _browser_headers.items()
-                if k.lower() not in _SKIP_HEADERS
+                f"{k}: {v}\r\n" for k, v in _browser_headers.items() if k.lower() not in _SKIP_HEADERS
             )
             logger.debug("FFmpeg: using %d browser-captured headers", len(_browser_headers))
         else:
@@ -741,22 +758,35 @@ class InstagramLiveEngine:
         # DASH MPD needs different demuxer flags than HLS
         if is_dash:
             input_args = [
-                "-reconnect", "1",
-                "-reconnect_on_network_error", "1",
-                "-reconnect_delay_max", "5",
-                "-timeout", "10000000",
-                "-allowed_extensions", "ALL",
-                "-headers", headers_arg,
-                "-i", hls_url,
+                "-reconnect",
+                "1",
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_delay_max",
+                "5",
+                "-timeout",
+                "10000000",
+                "-allowed_extensions",
+                "ALL",
+                "-headers",
+                headers_arg,
+                "-i",
+                hls_url,
             ]
         else:
             input_args = [
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-timeout", "10000000",
-                "-headers", headers_arg,
-                "-i", hls_url,
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_delay_max",
+                "5",
+                "-timeout",
+                "10000000",
+                "-headers",
+                headers_arg,
+                "-i",
+                hls_url,
             ]
 
         if is_dash:
@@ -772,15 +802,24 @@ class InstagramLiveEngine:
         cmd = [
             ffmpeg_bin,
             "-y",
+            # Without -loglevel warning, FFmpeg's per-segment stats fill the
+            # stderr pipe buffer (~64KB) on long recordings; once full, FFmpeg
+            # blocks on write and the stall watchdog kills a healthy recording.
+            "-hide_banner",
+            "-loglevel",
+            "warning",
             *input_args,
             *map_args,
-            "-c", "copy",
+            "-c",
+            "copy",
             *container_args,
             str(output_path),
         ]
         logger.info(
             "InstagramLiveEngine: FFmpeg | user=@%s | broadcast=%s | out=%s",
-            username, broadcast_id, output_path,
+            username,
+            broadcast_id,
+            output_path,
         )
 
         try:
@@ -793,9 +832,26 @@ class InstagramLiveEngine:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                f"Khong khoi dong duoc FFmpeg ({ffmpeg_bin}).\n"
-                "Kiem tra lai bundle hoac cai FFmpeg vao PATH."
+                f"Khong khoi dong duoc FFmpeg ({ffmpeg_bin}).\nKiem tra lai bundle hoac cai FFmpeg vao PATH."
             ) from exc
+
+        # Drain stderr continuously so the pipe never fills and blocks FFmpeg
+        # (same pattern as the TikTok live recorder in yt_dlp_engine).
+        _stderr_lines: deque[str] = deque(maxlen=40)
+
+        def _drain_stderr(pipe, lines: "deque[str]") -> None:
+            try:
+                for raw in pipe:
+                    lines.append(raw.decode("utf-8", errors="replace").rstrip())
+            except Exception:
+                pass
+
+        if proc.stderr:
+            threading.Thread(
+                target=_drain_stderr,
+                args=(proc.stderr, _stderr_lines),
+                daemon=True,
+            ).start()
 
         _prev_size = 0
         _prev_time = time.monotonic()
@@ -814,16 +870,17 @@ class InstagramLiveEngine:
                     except subprocess.TimeoutExpired:
                         proc.kill()
                     import yt_dlp  # noqa: PLC0415
+
                     raise yt_dlp.utils.DownloadError("Cancelled by user")
 
                 ret = proc.poll()
                 if ret is not None:
                     break
 
-                now      = time.monotonic()
-                elapsed  = max(now - _prev_time, 0.001)
+                now = time.monotonic()
+                elapsed = max(now - _prev_time, 0.001)
                 cur_size = output_path.stat().st_size if output_path.exists() else 0
-                delta    = cur_size - _prev_size
+                delta = cur_size - _prev_size
                 speed_bs = delta / elapsed if elapsed > 0 else 0
 
                 if delta > 0:
@@ -835,21 +892,7 @@ class InstagramLiveEngine:
                     # FFmpeg is running but writing 0 bytes -- stream ended or
                     # CDN URL is inaccessible.  Kill so the task fails cleanly
                     # instead of hanging indefinitely.
-                    _stall_stderr = b""
-                    if proc.stderr:
-                        try:
-                            import os as _os
-                            try:
-                                _stall_stderr = _os.read(proc.stderr.fileno(), 8192)
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
-                    _stall_msg = (
-                        _stall_stderr.decode("utf-8", errors="replace")[-600:]
-                        if _stall_stderr
-                        else "(empty - pipe may have data after kill)"
-                    )
+                    _stall_msg = "\n".join(_stderr_lines)[-600:] or "(no stderr output)"
                     logger.warning(
                         "InstagramLiveEngine: FFmpeg stalled"
                         " (no bytes written in %.0fs) -- terminating | stderr: %s",
@@ -861,26 +904,15 @@ class InstagramLiveEngine:
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-                    # Read remaining stderr after process ends
-                    if proc.stderr and not _stall_stderr:
-                        try:
-                            _stall_stderr = proc.stderr.read(8192)
-                            if _stall_stderr:
-                                logger.warning(
-                                    "InstagramLiveEngine: FFmpeg stderr after kill: %s",
-                                    _stall_stderr.decode("utf-8", errors="replace")[-600:],
-                                )
-                        except Exception:
-                            pass
                     break
 
                 with task._lock:
-                    task.status           = DownloadStatus.DOWNLOADING
+                    task.status = DownloadStatus.DOWNLOADING
                     task.downloaded_bytes = cur_size
-                    task.total_bytes      = 0
-                    task.progress         = 50.0
-                    task.speed            = _fmt_speed(speed_bs)
-                    task.eta              = ""
+                    task.total_bytes = 0
+                    task.progress = 50.0
+                    task.speed = _fmt_speed(speed_bs)
+                    task.eta = ""
 
                 if on_progress:
                     on_progress(task)
@@ -896,19 +928,13 @@ class InstagramLiveEngine:
                 pass
 
         if ret is not None and ret != 0:
-            stderr_bytes = b""
-            if proc.stderr:
-                try:
-                    stderr_bytes = proc.stderr.read()
-                except Exception:
-                    pass
             logger.error(
                 "InstagramLiveEngine: FFmpeg exited %d | stderr: %s",
-                ret, stderr_bytes.decode("utf-8", errors="replace")[-600:],
+                ret,
+                "\n".join(_stderr_lines)[-600:],
             )
             raise RuntimeError(
-                f"FFmpeg ket thuc voi ma loi {ret}.\n"
-                "Kiem tra omnidl_run.log de biet chi tiet."
+                f"FFmpeg ket thuc voi ma loi {ret}.\nKiem tra omnidl_run.log de biet chi tiet."
             )
         if ret is None:
             # Stall kill path: ffmpeg was terminated due to no output
@@ -929,12 +955,21 @@ class InstagramLiveEngine:
             uploader = (task.media_info.uploader or "").strip()
             if uploader:
                 return uploader.lower().lstrip("@")
+        if _INSTAGRAM_LIVE_RE.search(url):
+            # /live/<id> form carries no username; the broadcast id in the URL
+            # still distinguishes the output filename.
+            return "instagram"
         raise RuntimeError(
-            "Khong the trich xuat username tu URL Instagram Live.\n"
+            "unsupported url: Khong the trich xuat username tu URL Instagram Live.\n"
             "Dung dinh dang: https://www.instagram.com/username/live/"
         )
 
-    def _api_hls_fallback(self, url: str, username: str) -> Optional[str]:
+    def _api_hls_fallback(
+        self,
+        url: str,
+        username: str,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
         import requests  # noqa: PLC0415
 
         from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
@@ -948,7 +983,7 @@ class InstagramLiveEngine:
 
         usable, is_temp = _prepare_cookie_for_use(cookie_path)
         try:
-            return self._api_get_hls(url, username, usable, requests)
+            return self._api_get_hls(url, username, usable, requests, cancel_check=cancel_check)
         except Exception as exc:
             logger.debug("API fallback failed: %s", exc)
             return None
@@ -960,8 +995,14 @@ class InstagramLiveEngine:
                     pass
 
     def _api_get_hls(
-        self, url: str, username: str, cookie_file: str, requests
+        self,
+        url: str,
+        username: str,
+        cookie_file: str,
+        requests,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Optional[str]:
+        _cancelled = cancel_check or (lambda: False)
         jar = MozillaCookieJar()
         try:
             jar.load(cookie_file, ignore_discard=True, ignore_expires=True)
@@ -996,15 +1037,14 @@ class InstagramLiveEngine:
             "Accept": "*/*",
             "Accept-Language": "en-US",
         }
-        proxies = (
-            {"http": self._config.proxy, "https": self._config.proxy}
-            if self._config.proxy else None
-        )
+        proxies = {"http": self._config.proxy, "https": self._config.proxy} if self._config.proxy else None
 
-        bid_match    = _BROADCAST_ID_FROM_URL_RE.search(url)
+        bid_match = _BROADCAST_ID_FROM_URL_RE.search(url)
         broadcast_id = bid_match.group(1) if bid_match else ""
 
         if not broadcast_id:
+            if _cancelled():
+                return None
             try:
                 resp = requests.get(
                     _PROFILE_API,
@@ -1016,10 +1056,7 @@ class InstagramLiveEngine:
                 )
                 if resp.ok:
                     data = resp.json()
-                    user = (
-                        data.get("data", {}).get("user")
-                        or data.get("user") or {}
-                    )
+                    user = data.get("data", {}).get("user") or data.get("user") or {}
                     broadcast_id = (
                         str(user.get("live_broadcast_id") or "")
                         or str((user.get("broadcast") or {}).get("id") or "")
@@ -1035,16 +1072,21 @@ class InstagramLiveEngine:
             f"https://i.instagram.com/api/v1/live/{broadcast_id}/get_info/",
             f"https://i.instagram.com/api/v1/live/{broadcast_id}/heartbeat_and_get_viewer_count/",
         ):
+            if _cancelled():
+                return None
             try:
                 r = requests.get(
-                    endpoint, headers=mobile_headers, cookies=jar,
-                    proxies=proxies, timeout=_REQUEST_TIMEOUT,
+                    endpoint,
+                    headers=mobile_headers,
+                    cookies=jar,
+                    proxies=proxies,
+                    timeout=_REQUEST_TIMEOUT,
                 )
                 if not r.ok:
                     continue
-                d        = r.json()
+                d = r.json()
                 broadcast = d.get("broadcast") or d
-                hls      = (
+                hls = (
                     broadcast.get("playback_url")
                     or broadcast.get("dash_abr_playback_url")
                     or broadcast.get("dash_live_master_template_url")
@@ -1064,17 +1106,13 @@ class InstagramLiveEngine:
         )
 
         cookie_header = ""
-        cookie_path   = _resolve_cookie(url, self._config)
+        cookie_path = _resolve_cookie(url, self._config)
         if cookie_path:
             usable, is_temp = _prepare_cookie_for_use(cookie_path)
             try:
                 jar = MozillaCookieJar()
                 jar.load(usable, ignore_discard=True, ignore_expires=True)
-                cookie_header = "; ".join(
-                    f"{c.name}={c.value}"
-                    for c in jar
-                    if "instagram.com" in c.domain
-                )
+                cookie_header = "; ".join(f"{c.name}={c.value}" for c in jar if "instagram.com" in c.domain)
             except Exception:
                 pass
             finally:
@@ -1097,6 +1135,7 @@ class InstagramLiveEngine:
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
+
 
 def _fmt_speed(bps: float) -> str:
     if bps <= 0:

@@ -440,13 +440,13 @@ class NetworkPanel(_BasePanel):
         self._tt_add_ytdlp_btn.clicked.connect(self._add_form_extract_ytdlp)
         cookie_hl.addWidget(self._tt_add_ytdlp_btn)
 
-        self._tt_add_browse_btn = QPushButton("Chon")
+        self._tt_add_browse_btn = QPushButton("Chọn")
         self._tt_add_browse_btn.setFixedSize(48, 28)
         self._tt_add_browse_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
         self._tt_add_browse_btn.clicked.connect(self._add_form_browse)
         cookie_hl.addWidget(self._tt_add_browse_btn)
 
-        self._tt_add_cookie_lbl = QLabel("Chua chon cookie")
+        self._tt_add_cookie_lbl = QLabel("Chưa chọn cookie")
         self._tt_add_cookie_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         cookie_hl.addWidget(self._tt_add_cookie_lbl, 1)
         form_vbox.addWidget(cookie_row)
@@ -455,7 +455,7 @@ class NetworkPanel(_BasePanel):
         btn_row.setStyleSheet("background: transparent;")
         btn_hl = QHBoxLayout(btn_row)
         btn_hl.setContentsMargins(0, 4, 0, 0)
-        self._tt_add_save_btn = QPushButton("Luu")
+        self._tt_add_save_btn = QPushButton("Lưu")
         self._tt_add_save_btn.setFixedHeight(28)
         self._tt_add_save_btn.setEnabled(False)
         self._tt_add_save_btn.setStyleSheet(
@@ -464,7 +464,7 @@ class NetworkPanel(_BasePanel):
         )
         self._tt_add_save_btn.clicked.connect(self._save_new_tiktok_account)
         btn_hl.addStretch()
-        cancel_btn = QPushButton("Huy")
+        cancel_btn = QPushButton("Hủy")
         cancel_btn.setFixedHeight(28)
         cancel_btn.setStyleSheet(
             f"background: {T.surface3}; color: {T.text2}; border-radius: 6px; border: none;"
@@ -491,7 +491,7 @@ class NetworkPanel(_BasePanel):
 
         accounts = self._app.config.tiktok_account_pool
         if not accounts:
-            empty_lbl = QLabel("Chua co account nao. Nhan '+ Them account' de them.")
+            empty_lbl = QLabel("Chưa có account nào. Nhấn '+ Thêm account' để thêm.")
             empty_lbl.setStyleSheet(
                 f"color: {T.text3}; font-size: 11px; background: transparent; padding: 8px 16px 4px;"
             )
@@ -550,7 +550,7 @@ class NetworkPanel(_BasePanel):
             )
             hl.addWidget(pause_btn)
 
-            del_btn = QPushButton("Xoa")
+            del_btn = QPushButton("Xóa")
             del_btn.setFixedSize(40, 26)
             del_btn.setStyleSheet(f"background: {T.error_bg}; color: {T.error}; {_btn_ss}")
             del_btn.clicked.connect(lambda _, aid=acc_id: self._remove_tiktok_account(aid))
@@ -563,7 +563,7 @@ class NetworkPanel(_BasePanel):
     def _show_tiktok_add_form(self) -> None:
         self._tt_add_pending_cookie = ""
         self._tt_add_name.setText("")
-        self._tt_add_cookie_lbl.setText("Chua chon cookie")
+        self._tt_add_cookie_lbl.setText("Chưa chọn cookie")
         self._tt_add_cookie_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         self._tt_add_save_btn.setEnabled(False)
         self._tt_add_form.show()
@@ -586,7 +586,7 @@ class NetworkPanel(_BasePanel):
         import shutil
 
         chosen, _ = QFileDialog.getOpenFileName(
-            self, "Chon cookie file TikTok (Netscape format)", "", "Cookie files (*.txt);;All files (*.*)"
+            self, "Chọn cookie file TikTok (Netscape format)", "", "Cookie files (*.txt);;All files (*.*)"
         )
         if not chosen:
             return

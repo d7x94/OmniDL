@@ -8,6 +8,7 @@ Covers:
 - JSONL migration from old JSON-array format (Issue #14)
 - Concurrent add() calls do not corrupt the in-memory list
 """
+
 import json
 import threading
 import time
@@ -20,11 +21,13 @@ from infrastructure.storage.history_repository import HistoryRepository
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 def make_task(title="Test Video", status=DownloadStatus.COMPLETED) -> DownloadTask:
     t = DownloadTask(url="https://example.com/video", status=status)
     t.filename = "/tmp/test.mp4"  # nosec B108
     if t.media_info is None:
         from domain.models.download_task import MediaInfo
+
         t.media_info = MediaInfo(url=t.url, title=title)
     t.finished_at = time.time()
     return t
@@ -37,6 +40,7 @@ def make_repo(tmp_path, limit=500) -> HistoryRepository:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestHistoryAdd:
     def test_add_single_entry(self, tmp_path):
@@ -51,7 +55,7 @@ class TestHistoryAdd:
         repo = make_repo(tmp_path)
         task = make_task()
         repo.add(task)
-        repo.add(task)   # second add of same task
+        repo.add(task)  # second add of same task
         assert len(repo.all()) == 1
 
     def test_add_inserts_at_front(self, tmp_path):
@@ -102,7 +106,7 @@ class TestHistorySearch:
         # Original: empty string IS a substring of every string, returns all
         # This test documents the existing behaviour (not a regression target)
         results = repo.search("")
-        assert len(results) >= 0   # implementation-defined
+        assert len(results) >= 0  # implementation-defined
 
 
 class TestHistoryMutableRefSafety:
@@ -156,6 +160,23 @@ class TestHistoryJsonlMigration:
         assert first_char == "{"
 
 
+class TestHistorySearchNullFields:
+    def test_search_tolerates_null_fields(self, tmp_path):
+        """Legacy entries may have null url/title/filename — search must not crash."""
+        hist_file = tmp_path / "history.jsonl"
+        hist_file.write_text(
+            json.dumps({"id": "x1", "title": None, "url": None, "filename": None})
+            + "\n"
+            + json.dumps({"id": "x2", "title": "Real Video", "url": "https://e.com", "filename": "a.mp4"})
+            + "\n",
+            encoding="utf-8",
+        )
+        repo = HistoryRepository(hist_file, limit=500)
+        results = repo.search("real")
+        assert len(results) == 1
+        assert results[0]["id"] == "x2"
+
+
 class TestHistoryConcurrency:
     def test_concurrent_adds_do_not_corrupt(self, tmp_path):
         repo = make_repo(tmp_path, limit=1000)
@@ -175,3 +196,38 @@ class TestHistoryConcurrency:
 
         assert not errors
         assert len(repo.all()) == 20
+
+    def test_concurrent_add_and_remove_keep_disk_consistent(self, tmp_path):
+        """add() appends while remove() rewrites — disk must match memory after."""
+        repo = make_repo(tmp_path, limit=1000)
+        seed = [make_task(f"Seed {i}") for i in range(10)]
+        for t in seed:
+            repo.add(t)
+        errors = []
+
+        def adder():
+            try:
+                for _ in range(10):
+                    repo.add(make_task("Added"))
+            except Exception as exc:
+                errors.append(exc)
+
+        def remover():
+            try:
+                for t in seed:
+                    repo.remove(t.id)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=adder) for _ in range(4)] + [threading.Thread(target=remover)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        in_memory_ids = {e["id"] for e in repo.all()}
+        reloaded = HistoryRepository(tmp_path / "history.jsonl", limit=1000)
+        on_disk_ids = {e["id"] for e in reloaded.all()}
+        # Every entry that survived in memory must also be on disk.
+        assert in_memory_ids <= on_disk_ids

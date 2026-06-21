@@ -886,3 +886,105 @@ class TestHealthDaemonDisablesBrokenStrategy:
 
         assert result is None
         broken.check.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# BUG-TT-HLS404: _fetch_hls_from_webcast_room_info FLV fallback when all
+# HLS CDN bases are in exclude_bases (persistent 404).
+# ---------------------------------------------------------------------------
+
+_HLS_URL = "https://pull-hls-x.tiktokcdn.com/a/index.m3u8"
+_FLV_URL = "https://pull-flv-x.tiktokcdn.com/a/stream.flv"
+
+
+def _room_info_response(stream_url: dict) -> MagicMock:
+    """Build a mock HTTP response with room/info JSON (status=2)."""
+    import json as _json
+
+    body = {"data": {"status": 2, "stream_url": stream_url}}
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.text = _json.dumps(body)
+    return resp
+
+
+def _patch_room_info_session(resp: MagicMock):
+    """Patch session + cookie jar so _fetch_hls_from_webcast_room_info is testable."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        session = MagicMock()
+        session.get.return_value = resp
+        with (
+            patch("utils.tiktok_live_checker._get_impersonate_session", return_value=session),
+            patch("utils.tiktok_live_checker._load_cookie_jar", return_value=None),
+        ):
+            yield
+
+    return _ctx()
+
+
+class TestFetchHlsFromRoomInfoFlvFallback:
+    def test_hls_excluded_returns_flv(self):
+        """BUG-TT-HLS404: all HLS bases excluded -> FLV fallback returned."""
+        from utils.tiktok_live_checker import _fetch_hls_from_webcast_room_info
+
+        resp = _room_info_response({"hls_pull_url": _HLS_URL, "flv_pull_url": _FLV_URL})
+        with _patch_room_info_session(resp):
+            result = _fetch_hls_from_webcast_room_info(
+                "12345",
+                "chipiu.001",
+                exclude_bases=frozenset({_HLS_URL}),
+            )
+        assert result is not None
+        url, room_id = result
+        assert url == _FLV_URL
+        assert room_id == "12345"
+
+    def test_hls_excluded_no_flv_returns_hls_primary(self):
+        """No FLV candidate -> last-resort HLS primary still returned."""
+        from utils.tiktok_live_checker import _fetch_hls_from_webcast_room_info
+
+        resp = _room_info_response({"hls_pull_url": _HLS_URL})
+        with _patch_room_info_session(resp):
+            result = _fetch_hls_from_webcast_room_info(
+                "12345",
+                "chipiu.001",
+                exclude_bases=frozenset({_HLS_URL}),
+            )
+        assert result is not None
+        url, _ = result
+        assert url == _HLS_URL
+
+    def test_flv_only_dict_returns_flv(self):
+        """@toni.hsni.s repro: flv_pull_url is a {quality: url} dict, no HLS."""
+        from utils.tiktok_live_checker import _fetch_hls_from_webcast_room_info
+
+        _flv2 = "https://pull-flv-y.tiktokcdn.com/a/stream2.flv"
+        resp = _room_info_response({"flv_pull_url": {"FULL_HD1": _FLV_URL, "HD1": _flv2}})
+        with _patch_room_info_session(resp):
+            result = _fetch_hls_from_webcast_room_info(
+                "12345",
+                "toni.hsni.s",
+                exclude_bases=frozenset(),
+            )
+        assert result is not None
+        url, room_id = result
+        assert url == _FLV_URL
+        assert room_id == "12345"
+
+    def test_empty_exclude_returns_hls(self):
+        """Detection path (empty exclude_bases) -> HLS returned unchanged."""
+        from utils.tiktok_live_checker import _fetch_hls_from_webcast_room_info
+
+        resp = _room_info_response({"hls_pull_url": _HLS_URL, "flv_pull_url": _FLV_URL})
+        with _patch_room_info_session(resp):
+            result = _fetch_hls_from_webcast_room_info(
+                "12345",
+                "chipiu.001",
+                exclude_bases=frozenset(),
+            )
+        assert result is not None
+        url, _ = result
+        assert url == _HLS_URL

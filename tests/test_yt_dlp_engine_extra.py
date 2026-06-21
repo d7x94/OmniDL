@@ -11,6 +11,7 @@ Fills coverage gaps left by test_yt_dlp_engine.py:
 - _detect_platform: all known platforms + unknown
 """
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1609,6 +1610,56 @@ class TestBugTtProd:
 
         assert call_count[0] == 2, "BUG-TT-SHOP-5: web path fallback download attempted after EC block"
 
+    def test_rehydration_failure_falls_back_to_app_info(self, tmp_path):
+        """BUG-TT-REHYDRATE: a transient 'Unable to extract universal data for
+        rehydration' web-path error must trigger the Android app_info bypass and
+        succeed instead of failing the task."""
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        engine, task = self._make_engine_task(tmp_path)
+        retry_file = tmp_path / "rehydrate.mp4"
+        call_count = [0]
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self._opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def download(self, urls):
+                call_count[0] += 1
+                ea = self._opts.get("extractor_args", {}).get("tiktok", {})
+                if not ea.get("app_info"):
+                    raise mod.yt_dlp.utils.DownloadError(
+                        "[TikTok] 7123456789012345678: Unable to extract universal data for rehydration"
+                    )
+                retry_file.write_bytes(b"x" * 200_000)
+                for hook in self._opts.get("postprocessor_hooks", []):
+                    hook(
+                        {
+                            "status": "finished",
+                            "postprocessor": "FFmpegVideoRemuxer",
+                            "info_dict": {
+                                "vcodec": "h264",
+                                "acodec": "aac",
+                                "format_id": "h264_540p",
+                                "ext": "mp4",
+                                "filepath": str(retry_file),
+                                "__real_download_filename": str(retry_file),
+                            },
+                        }
+                    )
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.download(task)  # must not raise
+
+        assert call_count[0] >= 2, "BUG-TT-REHYDRATE: app_info retry must run after rehydration error"
+        assert retry_file.exists(), "BUG-TT-REHYDRATE: app_info retry output must be kept"
+
 
 # ---------------------------------------------------------------------------
 # Tests — _TikTokRateLimiter
@@ -1867,37 +1918,47 @@ class TestBuildFfmpegCookieHeader:
 
 
 class TestDiagLogger:
-    def test_debug_matching_keyword_logs(self):
+    _LOGGER_NAME = "infrastructure.downloader.yt_dlp_engine"
+
+    def test_debug_matching_keyword_logs(self, caplog):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
 
         diag = _DiagLogger()
-        # Should not raise — just exercises the branch
-        diag.debug("merging formats into output")
-        diag.debug("downloading segment")
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER_NAME):
+            diag.debug("merging formats into output")
+        assert any("merging formats into output" in r.message for r in caplog.records)
 
-    def test_debug_non_matching_does_not_log(self):
+    def test_debug_non_matching_does_not_log(self, caplog):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
 
         diag = _DiagLogger()
-        diag.debug("some irrelevant message about nothing special")
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER_NAME):
+            diag.debug("some irrelevant message about nothing special")
+        assert not caplog.records
 
-    def test_info_is_noop(self):
+    def test_info_is_noop(self, caplog):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
 
         diag = _DiagLogger()
-        diag.info("progress bar output")  # must not raise
+        with caplog.at_level(logging.DEBUG, logger=self._LOGGER_NAME):
+            diag.info("progress bar output")
+        assert not caplog.records
 
-    def test_warning_logs(self):
+    def test_warning_logs(self, caplog):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
 
         diag = _DiagLogger()
-        diag.warning("some yt-dlp warning")  # must not raise
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER_NAME):
+            diag.warning("some yt-dlp warning")
+        assert any("some yt-dlp warning" in r.message for r in caplog.records)
 
-    def test_error_logs(self):
+    def test_error_logs(self, caplog):
         from infrastructure.downloader.yt_dlp_engine import _DiagLogger
 
         diag = _DiagLogger()
-        diag.error("some yt-dlp error")  # must not raise
+        with caplog.at_level(logging.ERROR, logger=self._LOGGER_NAME):
+            diag.error("some yt-dlp error")
+        assert any("some yt-dlp error" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

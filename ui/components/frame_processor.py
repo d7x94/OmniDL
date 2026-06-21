@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import colorsys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QImage, QPixmap
+
+from utils.font_finder import find_font_path
 
 if TYPE_CHECKING:
     from PySide6.QtMultimedia import QVideoFrame
@@ -25,12 +28,6 @@ _TEXT_COLORS: dict[str, tuple[int, int, int, int]] = {
     "red": (255, 0, 0, 255),
 }
 
-_FONT_CANDIDATES = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-]
-
 
 @dataclass
 class EffectParams:
@@ -45,6 +42,26 @@ class EffectParams:
     text_color: str = "white"
     text_box: bool = False
     text_shadow: bool = False
+
+
+@lru_cache(maxsize=720)  # covers -180..180 integer degrees
+def _make_hue_lut(h_offset_deg: int) -> ImageFilter.Color3DLUT:
+    """Build a 17^3 color LUT for hue rotation. Cached per integer degree."""
+    h_offset = h_offset_deg / 360.0
+    size = 17
+    step = 1.0 / (size - 1)
+    table: list[float] = []
+    for b_i in range(size):
+        for g_i in range(size):
+            for r_i in range(size):
+                r_v = r_i * step
+                g_v = g_i * step
+                b_v = b_i * step
+                h, s, v = colorsys.rgb_to_hsv(r_v, g_v, b_v)
+                h = (h + h_offset) % 1.0
+                nr, ng, nb = colorsys.hsv_to_rgb(h, s, v)
+                table.extend([nr, ng, nb])
+    return ImageFilter.Color3DLUT(size, table)
 
 
 def _qframe_to_pil(frame: QVideoFrame) -> Optional[Image.Image]:
@@ -68,8 +85,10 @@ def _apply_effects(img: Image.Image, params: EffectParams) -> Image.Image:
     """Apply PIL color/blur effects. Input and output are RGBA."""
     rgb = img.convert("RGB")
 
-    factor = max(0.0, 1.0 + params.brightness)
-    rgb = ImageEnhance.Brightness(rgb).enhance(factor)
+    if params.brightness != 0.0:
+        offset = int(params.brightness * 255)
+        lut = [max(0, min(255, i + offset)) for i in range(256)]
+        rgb = rgb.point(lut * 3)
     rgb = ImageEnhance.Contrast(rgb).enhance(max(0.0, params.contrast))
     rgb = ImageEnhance.Color(rgb).enhance(max(0.0, params.saturation))
 
@@ -77,15 +96,7 @@ def _apply_effects(img: Image.Image, params: EffectParams) -> Image.Image:
         rgb = rgb.filter(ImageFilter.GaussianBlur(radius=params.blur))
 
     if params.hue != 0.0:
-        h_offset = params.hue / 360.0
-        pixels = list(rgb.getdata())
-        new_pixels = []
-        for r, g, b in pixels:
-            h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-            h = (h + h_offset) % 1.0
-            nr, ng, nb = colorsys.hsv_to_rgb(h, s, v)
-            new_pixels.append((int(nr * 255), int(ng * 255), int(nb * 255)))
-        rgb.putdata(new_pixels)
+        rgb = rgb.filter(_make_hue_lut(round(params.hue)))
 
     r, g, b = rgb.split()
     _, _, _, a = img.split()
@@ -101,12 +112,12 @@ def _draw_text(img: Image.Image, params: EffectParams) -> Image.Image:
     w, h = img.size
 
     font: Optional[ImageFont.FreeTypeFont | ImageFont.ImageFont] = None
-    for path in _FONT_CANDIDATES:
+    path = find_font_path()
+    if path is not None:
         try:
             font = ImageFont.truetype(path, params.text_size)
-            break
         except (OSError, IOError):
-            continue
+            pass
     if font is None:
         font = ImageFont.load_default()
 
@@ -182,7 +193,12 @@ class FrameProcessor:
         img = _qframe_to_pil(frame)
         if img is None:
             return None
+        orig_h = img.size[1]
         img = _scale_to_process_size(img)
-        img = _apply_effects(img, self.params)
-        img = _draw_text(img, self.params)
+        params = self.params
+        if orig_h > 0 and img.size[1] != orig_h:
+            scale = img.size[1] / orig_h
+            params = replace(params, text_size=max(1, round(params.text_size * scale)))
+        img = _apply_effects(img, params)
+        img = _draw_text(img, params)
         return _pil_to_pixmap(img, display_size)

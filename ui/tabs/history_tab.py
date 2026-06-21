@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
@@ -67,7 +67,9 @@ class HistoryTab(QWidget):
         self._app = app
         self._entries: list[dict] = []
         self._rendered: int = 0
-        self._debounce: Optional[QTimer] = None
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self.refresh)
         self._build()
 
         from PySide6.QtCore import QPropertyAnimation
@@ -145,11 +147,6 @@ class HistoryTab(QWidget):
         layout.addWidget(scroll, 1)
 
     def _on_search_change(self) -> None:
-        if self._debounce:
-            self._debounce.stop()
-        self._debounce = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.timeout.connect(self.refresh)
         self._debounce.start(300)
 
     def refresh(self) -> None:
@@ -320,6 +317,9 @@ class HistoryTab(QWidget):
 
     def _delete_entry(self, task_id: str, card: QFrame) -> None:
         self._app.service.delete_history_entry(task_id)
+        before = len(self._entries)
+        self._entries = [e for e in self._entries if e.get("id") != task_id]
+        self._rendered -= before - len(self._entries)
         card.setParent(None)
         card.deleteLater()
 

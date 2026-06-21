@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
-from app.services.ffmpeg_convert_service import FfmpegConvertService
+from app.services.ffmpeg_convert_service import ConvertQueue
 from app.services.taildrop_service import TaildropService
 from app.services.thumbnail_service import ThumbnailService
 from domain.enums.download_status import DownloadStatus
@@ -87,7 +87,7 @@ class DownloadService:
             max_workers=1, thread_name_prefix="omnidl-history"
         )
 
-        self._converter = FfmpegConvertService()
+        self._convert_queue = ConvertQueue(max_concurrent=2)
         self._thumbnail_svc = ThumbnailService()
 
         # Wire completion → history save (DEF-018: one handler for all terminal states)
@@ -292,7 +292,7 @@ class DownloadService:
                                 # handle brief TikTok API race; then BUG-TT-XX.
                                 import time as _time_tt19  # noqa: PLC0415
 
-                                for _retry_delay in (30, 90):
+                                for _retry_delay in (10, 20):
                                     if _time_tt19.monotonic() < _tt_bughxx_until.get(_username, 0.0):
                                         break
                                     logger.info(
@@ -523,24 +523,14 @@ class DownloadService:
         on_progress: Optional[Callable[[float], None]] = None,
         on_done: Optional[Callable[[Path], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
-    ) -> None:
-        """Convert *source* to the requested format in a background thread.
+    ) -> Callable[[], None]:
+        """Convert *source* to the requested format via the shared ConvertQueue.
 
-        Parameters
-        ----------
-        source:
-            Path to the source media file.
-        target_ext:
-            Target container extension without the dot: ``"mp4"`` (default),
-            ``"mp3"``, ``"mkv"``, or ``"avi"``.
-        encode_settings:
-            Optional ``EncodeSettings`` for custom encoder/quality.
-            Forwarded verbatim to ``FfmpegConvertService.convert()``.
-        on_progress / on_done / on_error:
-            Callbacks fire on the worker thread — UI callers must marshal to
-            the main thread (e.g. via ``_ui_queue``).
+        Returns a cancel callable; calling it stops the job as soon as possible.
+        Callbacks fire on the worker thread — UI callers must marshal to the
+        main thread (e.g. via ``_ui_queue``).
         """
-        self._converter.convert(
+        return self._convert_queue.submit(
             source=source,
             target_ext=target_ext,
             encode_settings=encode_settings,
@@ -633,26 +623,34 @@ class DownloadService:
         import threading
 
         from utils.tiktok_live_checker import (
+            _resolve_short_link,
             check_tiktok_live,
             extract_tiktok_username,
+            extract_tiktok_username_from_live_url,
         )
 
         proxy = self._config.proxy
-        username = extract_tiktok_username(url, proxy=proxy)
-        if not username:
-            on_error("Không thể lấy username từ URL TikTok.")
-            return
-
-        # BUG-TT-07 FIX: resolve and decrypt TikTok cookie so check_tiktok_live
-        # can authenticate the profile page fetch.
-        _tt_cookie_raw = _resolve_cookie("https://www.tiktok.com/", self._config) or ""
-        _tt_cookie_txt = ""
-        _tt_cookie_is_temp = False
-        if _tt_cookie_raw:
-            _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(_tt_cookie_raw)
 
         def _worker() -> None:
+            _tt_cookie_txt = ""
+            _tt_cookie_is_temp = False
             try:
+                # Username extraction stays in the worker: vt/vm short links
+                # resolve over the network and must not block the UI thread.
+                target = url
+                if "vt.tiktok.com" in url or "vm.tiktok.com" in url:
+                    target = _resolve_short_link(url, proxy=proxy)
+                username = extract_tiktok_username(target) or extract_tiktok_username_from_live_url(target)
+                if not username:
+                    on_error("Không thể lấy username từ URL TikTok.")
+                    return
+
+                # BUG-TT-07 FIX: resolve and decrypt TikTok cookie so
+                # check_tiktok_live can authenticate the profile page fetch.
+                _tt_cookie_raw = _resolve_cookie("https://www.tiktok.com/", self._config) or ""
+                if _tt_cookie_raw:
+                    _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(_tt_cookie_raw)
+
                 live_url = check_tiktok_live(
                     username=username,
                     proxy=proxy,

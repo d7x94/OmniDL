@@ -40,6 +40,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
@@ -166,6 +167,9 @@ class FfmpegMediaInfo:
     duration_s: float = 0.0
     bitrate_bps: int = 0
     video_nb_frames: int = 0
+    video_fps: float = 0.0
+    video_duration_s: float = 0.0
+    audio_duration_s: float = 0.0
 
 
 class ConversionError(RuntimeError):
@@ -576,6 +580,8 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
         width = height = 0
         video_nb_frames = 0
         video_fps = 0.0
+        video_duration_s = 0.0
+        audio_duration_s = 0.0
 
         for stream in streams:
             codec_type = stream.get("codec_type", "")
@@ -584,8 +590,9 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
                 width = _ff_int(stream.get("width"))
                 height = _ff_int(stream.get("height"))
                 video_nb_frames = _ff_int(stream.get("nb_frames"))
+                video_duration_s = _ff_float(stream.get("duration"))
                 if not duration_s:
-                    duration_s = _ff_float(stream.get("duration"))
+                    duration_s = video_duration_s
                 # Parse r_frame_rate ("30/1", "25/1") for nb_frames fallback
                 rfr = stream.get("r_frame_rate", "")
                 if rfr and "/" in rfr:
@@ -597,8 +604,9 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
                         pass
             elif codec_type == "audio" and not audio_codec:
                 audio_codec = stream.get("codec_name", "")
+                audio_duration_s = _ff_float(stream.get("duration"))
                 if not duration_s:
-                    duration_s = _ff_float(stream.get("duration"))
+                    duration_s = audio_duration_s
 
         # Fallback: estimate from frame count for FLV livestream (Duration: N/A)
         if not duration_s and video_nb_frames and video_fps > 0:
@@ -612,6 +620,9 @@ def probe_media_info(source: Path) -> Optional[FfmpegMediaInfo]:
             duration_s=duration_s,
             bitrate_bps=bitrate_bps,
             video_nb_frames=video_nb_frames,
+            video_fps=video_fps,
+            video_duration_s=video_duration_s,
+            audio_duration_s=audio_duration_s,
         )
     except Exception as exc:
         logger.debug("probe_media_info failed for %s: %s", source, exc)
@@ -801,6 +812,12 @@ class FfmpegConvertService:
                 logger.info("Deleted stale .part file before restart: %s", _stale.name)
             except OSError:
                 pass
+        for _stale_trim in dest_dir.glob(f"{source.stem}_iPhone*.part.trim.mp4"):
+            try:
+                _stale_trim.unlink(missing_ok=True)
+                logger.info("Deleted stale .part.trim.mp4 file: %s", _stale_trim.name)
+            except OSError:
+                pass
 
         output = self._try_encode_with_fallback(
             ffmpeg_bin,
@@ -841,9 +858,21 @@ class FfmpegConvertService:
             candidate = dest_dir / f"{source.stem}_{i}.mp3"
             i += 1
 
-        temp_mp3 = dest_dir / f"{source.stem}.part.mp3"
-        if temp_mp3.exists():
-            temp_mp3.unlink(missing_ok=True)
+        _mp3_job_id = uuid.uuid4().hex[:8]
+        temp_mp3 = dest_dir / f"{source.stem}_{_mp3_job_id}.part.mp3"
+        _UUID_PART_MP3_RE = re.compile(r"_[0-9a-f]{8}\.part\.mp3$")
+        _now_mp3 = time.time()
+        for _stale_mp3 in dest_dir.glob(f"{source.stem}*.part.mp3"):
+            try:
+                if (
+                    _UUID_PART_MP3_RE.search(_stale_mp3.name)
+                    and _now_mp3 - _stale_mp3.stat().st_mtime <= 3600
+                ):
+                    continue
+                _stale_mp3.unlink(missing_ok=True)
+                logger.info("Deleted stale .part.mp3 file: %s", _stale_mp3.name)
+            except OSError:
+                pass
 
         duration_s = self._probe_duration(ffmpeg_bin, source)
 
@@ -936,7 +965,7 @@ class FfmpegConvertService:
                 exc,
             )
             _encoder_cache_invalidate()
-            encode_settings.encoder_key = "cpu"  # type: ignore[union-attr]
+            encode_settings = dataclass_replace(encode_settings, encoder_key="cpu")  # type: ignore[union-attr]
             return self._fresh_encode(
                 ffmpeg_bin,
                 source,
@@ -974,6 +1003,7 @@ class FfmpegConvertService:
         # For non-mp4 containers we pass a temporary .part.mp4 to FFmpeg for
         # the encode, then remux losslessly into the target container.  This
         # keeps the proven .part.mp4 temp workflow intact.
+        src_info = probe_media_info(source)
         cmd = self._build_cmd(
             ffmpeg_bin,
             source,
@@ -982,8 +1012,11 @@ class FfmpegConvertService:
             seek=0.0,
             encode_settings=encode_settings,
         )
+        _watchdog_s = 120.0 if source.suffix.lower() in {".flv", ".ts"} else 30.0
         try:
-            self._run_ffmpeg(cmd, duration_s, on_progress, cancel_event=cancel_event)
+            self._run_ffmpeg(
+                cmd, duration_s, on_progress, watchdog_timeout_s=_watchdog_s, cancel_event=cancel_event
+            )
         except Exception:
             temp_output.unlink(missing_ok=True)  # BUG 8: clean up on any failure
             raise
@@ -995,7 +1028,6 @@ class FfmpegConvertService:
         # recover from the bitstream, so the bug is iPhone-specific.
         # Also check video_nb_frames > 0: a zero-frame H.264 track passes codec
         # detection (header metadata) but produces an unplayable file on iPhone/VLC.
-        src_info = probe_media_info(source)
         if src_info and src_info.video_codec:
             out_info = probe_media_info(temp_output)
             if not out_info or not out_info.video_codec or out_info.video_nb_frames == 0:
@@ -1005,6 +1037,42 @@ class FfmpegConvertService:
                     "codec (HEVC) or has missing SPS/PPS. "
                     "Try re-downloading with yt-dlp instead of IDM."
                 )
+            # TS/FLV: audio track may extend beyond video due to unmatched demuxer
+            # timestamp offset accumulation at the tail. Trim audio to video duration.
+            is_flv_ts_source = source.suffix.lower() in {".flv", ".ts"}
+            if (
+                is_flv_ts_source
+                and out_info.video_duration_s > 0
+                and out_info.audio_duration_s > out_info.video_duration_s + 5.0
+            ):
+                trim_to = out_info.video_duration_s
+                trim_tmp = temp_output.with_suffix(".trim.mp4")
+                trim_cmd = [
+                    str(ffmpeg_bin),
+                    "-y",
+                    "-i",
+                    str(temp_output),
+                    "-t",
+                    f"{trim_to:.3f}",
+                    "-c",
+                    "copy",
+                    str(trim_tmp),
+                ]
+                r = subprocess.run(trim_cmd, capture_output=True, timeout=120, creationflags=_WIN_NO_WINDOW)
+                if r.returncode == 0:
+                    temp_output.unlink(missing_ok=True)
+                    trim_tmp.rename(temp_output)
+                    logger.info(
+                        "Trimmed audio tail: %.1f s → %.1f s",
+                        out_info.audio_duration_s,
+                        trim_to,
+                    )
+                else:
+                    trim_tmp.unlink(missing_ok=True)
+                    logger.warning(
+                        "Audio trim remux failed (code %d) — keeping original",
+                        r.returncode,
+                    )
 
         # Remux to target container when target_ext differs from mp4.
         # mkv and avi accept the H.264+AAC stream without re-encode (-c copy).
@@ -1023,6 +1091,7 @@ class FfmpegConvertService:
             result = subprocess.run(remux_cmd, capture_output=True, timeout=120, creationflags=_WIN_NO_WINDOW)
             temp_output.unlink(missing_ok=True)
             if result.returncode != 0:
+                remux_output.unlink(missing_ok=True)
                 tail = result.stderr[-200:].decode("utf-8", errors="replace")
                 raise ConversionError(f"Remux to .{target_ext} failed: {tail}")
             self._validate_output(remux_output)
@@ -1173,6 +1242,21 @@ class FfmpegConvertService:
             vf_parts = [preset["scale"]]
 
         is_flv_ts = source.suffix.lower() in {".flv", ".ts"}
+        # TS/FLV live streams have mid-stream timestamp discontinuities (TikTok segment
+        # boundaries). setpts=PTS-STARTPTS only normalises the start offset; it cannot
+        # handle backward mid-stream jumps, which produce non-monotonic output PTS and
+        # cause strict players (Infuse/iOS) to drop the video track permanently.
+        # Passing +genpts-corrected timestamps through unchanged is the safest approach.
+        # setpts=N/FR/TB is skipped for TS/FLV: N resets on decoder reinit at each
+        # segment boundary, producing a backward jump in output PTS.
+        if not is_flv_ts:
+            vf_parts.append("setpts=N/FR/TB")
+        # QSV hw-encode requires nv12 frames at encoder input. Decoded frames
+        # from software decoders are yuv420p; without this explicit conversion
+        # the auto-inserted format filter can silently produce corrupt picture
+        # data — valid H.264 bitstream, non-zero frame count, but blank video.
+        if encode_settings is not None and encode_settings.encoder_key == "qsv":
+            vf_parts.append("format=nv12")
 
         cmd: list[str] = [str(ffmpeg_bin), "-y"]
 
@@ -1182,22 +1266,24 @@ class FfmpegConvertService:
         # receive 0 frames and the output MP4 has no video track — iPhone's
         # hardware decoder then falls back to audio-only while desktop players
         # recover by parsing NALUs directly from the bitstream.
-        # -fflags +genpts fixes DTS/PTS gaps common in IDM live captures.
+        # +genpts applied to all inputs: regenerates container PTS before the encoder
+        # sees them, preventing broken DTS in re-encoded live-stream MP4s from
+        # propagating into the output.
+        fflags = "+genpts"
         if is_flv_ts:
-            # +discardcorrupt silently drops corrupt packets at segment boundaries
-            # (from TikTok live token-rotation TS concat) instead of decoding errors.
-            # 30M (30s) is sufficient for SPS/PPS detection; 200M caused 5-min analysis
-            # stalls on TikTok live files with large DTS discontinuities.
-            # +igndts removed: it caused FFmpeg to use PTS regenerated from broken DTS,
-            # which carried mid-stream timestamp jumps → 1000+ duplicate frames inserted.
+            # 30M is sufficient for SPS/PPS detection in TikTok live files.
+            # +discardcorrupt removed: it dropped keyframes at TS segment boundaries
+            # (TikTok live token-rotation concat), causing the h264 decoder to lose its
+            # reference frame and produce black video for the remainder of the file.
+            # +igndts removed: caused PTS regenerated from broken DTS to carry
+            # mid-stream timestamp jumps → 1000+ duplicate frames inserted.
             cmd += [
                 "-analyzeduration",
                 "30M",
                 "-probesize",
                 "200M",
-                "-fflags",
-                "+genpts",
             ]
+        cmd += ["-fflags", fflags]
 
         if seek > 0:
             cmd += ["-ss", f"{seek:.3f}"]
@@ -1243,7 +1329,9 @@ class FfmpegConvertService:
                     cmd += FfmpegConvertService._build_gpu_flags(hw_spec, encode_settings)
 
         # ── Common output flags ───────────────────────────────────────────
-        pix_fmt = "yuv420p"
+        # QSV encoders only accept nv12; libx264/NVENC/AMF work with yuv420p
+        is_qsv = encode_settings is not None and encode_settings.encoder_key == "qsv"
+        pix_fmt = "nv12" if is_qsv else "yuv420p"
         cmd += [
             "-pix_fmt",
             pix_fmt,
@@ -1264,8 +1352,12 @@ class FfmpegConvertService:
         # picks when the container has non-standard stream ordering.
         # 0:a? makes audio optional — handles video-only FLV without crashing.
         if is_flv_ts:
-            # aresample=async=1000: insert/drop samples to maintain A/V sync when
-            # audio also has timestamp discontinuities (up to 1000ms correction).
+            # aresample=async=1000: compensates A/V drift up to 1s per discontinuity.
+            # asetpts=PTS-STARTPTS: normalises audio PTS to start at 0 using the
+            # demuxer-corrected timestamps. This keeps audio duration tied to actual
+            # decoded packet timestamps rather than a sample counter, preventing the
+            # NB_CONSUMED_SAMPLES overcount from tail segments (interleaved mid-stream)
+            # from causing aresample to drop samples and audio to end before real content.
             cmd += ["-af", "aresample=async=1000,asetpts=PTS-STARTPTS"]
             cmd += ["-map", "0:v:0", "-map", "0:a?"]
         cmd += [str(output)]
@@ -1552,6 +1644,10 @@ class ConvertQueue:
         def _worker() -> None:
             self._semaphore.acquire()
             try:
+                if cancel_event.is_set():
+                    if on_error:
+                        on_error("Đã huỷ")
+                    return
                 if on_start:
                     on_start()
                 self._svc._run(

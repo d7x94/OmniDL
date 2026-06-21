@@ -13,6 +13,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QWidget,
 )
@@ -111,7 +112,7 @@ class RemoteApiPanel(_BasePanel):
         self._api_rotate_btn.setFixedHeight(32)
         self._api_rotate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._api_rotate_btn.setStyleSheet(
-            f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 12px;"
+            f"background: {T.warning_bg}; color: {T.warning_text}; border-radius: 8px; border: none; font-size: 12px;"
         )
         self._api_rotate_btn.clicked.connect(self._on_api_rotate_token)
         tahl.addWidget(self._api_rotate_btn)
@@ -162,8 +163,8 @@ class RemoteApiPanel(_BasePanel):
             f"color: {T.primary_text}; font-size: 11px; font-family: monospace;"
         )
         tth.addWidget(self._ts_https_token_lbl, 1)
-        self._ts_https_copy_btn = QPushButton("Copy")
-        self._ts_https_copy_btn.setFixedSize(70, 28)
+        self._ts_https_copy_btn = QPushButton("📋 Copy")
+        self._ts_https_copy_btn.setFixedSize(80, 28)
         self._ts_https_copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ts_https_copy_btn.setStyleSheet(
             f"background: {T.surface3}; color: {T.text2}; border-radius: 6px; border: none; font-size: 11px; padding: 0 6px;"
@@ -180,7 +181,7 @@ class RemoteApiPanel(_BasePanel):
         self._ts_https_reset_btn.setFixedHeight(32)
         self._ts_https_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ts_https_reset_btn.setStyleSheet(
-            "background: #d97706; color: #ffffff; border-radius: 8px; border: none; font-size: 12px;"
+            f"background: {T.warning_bg}; color: {T.warning_text}; border-radius: 8px; border: none; font-size: 12px;"
         )
         self._ts_https_reset_btn.clicked.connect(self._on_ts_https_reset)
         trh.addWidget(self._ts_https_reset_btn)
@@ -282,9 +283,16 @@ class RemoteApiPanel(_BasePanel):
         self._app.toast("✅  Token đã sao chép vào clipboard.", "success")
 
     def _on_api_rotate_token(self) -> None:
-        import secrets as _sec
-
-        new_token = _sec.token_urlsafe(24)
+        reply = QMessageBox.question(
+            self,
+            "Tạo token mới",
+            "Token hiện tại sẽ bị vô hiệu hóa.\nTất cả thiết bị đang kết nối cần cập nhật token mới.\n\nTiếp tục?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        new_token = _secrets.token_urlsafe(24)
         cfg = self._app.config
         cfg.set_api_token(new_token)
         self._refresh_api_token_label()
@@ -492,14 +500,22 @@ class RemoteApiPanel(_BasePanel):
             self._app.toast("Hãy bật HTTPS Profile trước khi reset.", "error")
             return
 
+        reply = QMessageBox.question(
+            self,
+            "Reset Profile",
+            "Thao tác này sẽ:\n• Tạo lại Tailscale serve profile\n• Tạo token mới (thiết bị cần cập nhật)\n\nTiếp tục?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
         new_port = _pick_bindable_port()
         new_token = _secrets.token_urlsafe(24)
         cfg.set("api_ts_https_internal_port", new_port)
         cfg.set("api_ts_https_dns_name", "")
-        cfg.set_api_token(new_token)
         cfg.save()
         self._refresh_ts_https_status()
-        self._refresh_api_token_label()
 
         st = self._ts_https_reset_status
         st.setText("Đang reset...")
@@ -539,9 +555,10 @@ class RemoteApiPanel(_BasePanel):
                     )
                     return
                 dns = get_tailscale_dns_name()
+                cfg.set_api_token(new_token)
                 if dns:
                     cfg.set("api_ts_https_dns_name", dns)
-                    cfg.save()
+                cfg.save()
                 try:
                     from api.server import restart_api_server
                     from app.event_bus import bus as _bus
@@ -552,6 +569,7 @@ class RemoteApiPanel(_BasePanel):
                 except Exception as exc:
                     logger.exception("HTTPS Profile reset: API restart error: %s", exc)
                 ui_bridge.post(self._refresh_ts_https_status)
+                ui_bridge.post(self._refresh_api_token_label)
                 ui_bridge.post(lambda: st.setText(""))
                 if dns:
                     ui_bridge.post(

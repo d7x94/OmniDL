@@ -359,7 +359,7 @@ def _audio_matches_video(audio_url: str, video_url: Optional[str]) -> bool:
                 ma.group(1), mv.group(1),
             )
             return False
-    return True
+    return True  # fail-open: one or both URLs lack manifest number — accept
 
 
 def _full_video_url(cdn_url: str) -> str:
@@ -1380,6 +1380,8 @@ def download_story(
             "Hãy dán URL dạng facebook.com/stories/..."
         )
 
+    if not config.download_dir:
+        raise RuntimeError("Thư mục tải về chưa được thiết lập")
     output_dir = Path(config.download_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     m    = re.search(r"/stories/(\d+)", url)

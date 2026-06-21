@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -94,7 +94,7 @@ class FileJob:
     error_msg: str = ""
     media_info: Optional[FfmpegMediaInfo] = field(default=None)
     output_media_info: Optional[FfmpegMediaInfo] = field(default=None)
-    cancel_fn: Optional[object] = field(default=None, repr=False)
+    cancel_fn: Optional[Callable[[], None]] = field(default=None, repr=False)
 
 
 # ── Clickable card frame ──────────────────────────────────────────────────────
@@ -402,7 +402,7 @@ class FileCard(QFrame):
         else:
             self._prev_after_lbl.setText("Đang đọc…")
 
-    def update_output_info(self, info: Optional[FfmpegMediaInfo]) -> None:
+    def update_output_info(self) -> None:
         if self._preview_panel.isVisible():
             self._refresh_preview_content()
 
@@ -449,7 +449,6 @@ class ConvertTab(QWidget):
         self._jobs: dict[str, FileJob] = {}
         self._cards: dict[str, FileCard] = {}
         self._quality = "standard"
-        self._output_dir: Optional[Path] = None
         self._cfg_collapsed = False
         self._queue = ConvertQueue(max_concurrent=_MAX_CONCURRENT)
         self._active_count = 0
@@ -521,8 +520,8 @@ class ConvertTab(QWidget):
         self._folder_btn.clicked.connect(self._browse_folder)
         hdr_layout.addWidget(self._folder_btn)
 
-        self._clear_btn = QPushButton("Xóa xong")
-        self._clear_btn.setFixedSize(90, 30)
+        self._clear_btn = QPushButton("Xóa xong/lỗi")
+        self._clear_btn.setFixedSize(110, 30)
         self._clear_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
         )
@@ -595,7 +594,6 @@ class ConvertTab(QWidget):
         cr_layout.setContentsMargins(0, 0, 0, 0)
         cr_layout.setSpacing(6)
 
-        QLabel("").setParent(None)  # spacer-style
         spacer_lbl = QLabel("")
         spacer_lbl.setFixedWidth(90)
         cr_layout.addWidget(spacer_lbl)
@@ -723,7 +721,6 @@ class ConvertTab(QWidget):
         empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.setSpacing(8)
 
-        QLabel("Chưa có file nào").setParent(None)
         el1 = QLabel("Chưa có file nào")
         el1.setAlignment(Qt.AlignmentFlag.AlignCenter)
         el1.setStyleSheet(f"color: {T.text3}; font-size: 16px; font-weight: bold;")
@@ -922,8 +919,7 @@ class ConvertTab(QWidget):
             "",
             f"Video files ({ext_filter});;All files (*.*)",
         )
-        for p in paths:
-            self._add_file(Path(p))
+        self._add_files([Path(p) for p in paths])
         self._refresh_ui()
 
     def _browse_folder(self) -> None:
@@ -943,8 +939,7 @@ class ConvertTab(QWidget):
         ui_bridge.post(lambda f=found, d=folder: self._add_files_from_scan(f, d))
 
     def _add_files_from_scan(self, files: list[Path], folder: Path) -> None:
-        for f in files:
-            self._add_file(f)
+        self._add_files(files)
         self._refresh_ui()
         if not files:
             self._status_lbl.setText(f"Không tìm thấy video trong {folder.name}")
@@ -962,19 +957,25 @@ class ConvertTab(QWidget):
         self._refresh_ui()
 
     def _add_file(self, path: Path) -> None:
+        self._add_files([path])
+
+    def _add_files(self, paths: list[Path]) -> None:
         existing = {j.source.resolve() for j in self._jobs.values()}
-        if path.resolve() in existing:
-            return
-        if path.suffix.lower().lstrip(".") not in SUPPORTED_EXTS:
-            return
-        job = FileJob(source=path)
-        self._jobs[job.id] = job
-        threading.Thread(
-            target=self._probe_info_async,
-            args=(job,),
-            daemon=True,
-            name=f"omnidl-probe-{path.stem[:16]}",
-        ).start()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in existing:
+                continue
+            if path.suffix.lower().lstrip(".") not in SUPPORTED_EXTS:
+                continue
+            existing.add(resolved)
+            job = FileJob(source=path)
+            self._jobs[job.id] = job
+            threading.Thread(
+                target=self._probe_info_async,
+                args=(job,),
+                daemon=True,
+                name=f"omnidl-probe-{path.stem[:16]}",
+            ).start()
 
     def _probe_info_async(self, job: FileJob) -> None:
         info = probe_media_info(job.source)
@@ -992,8 +993,6 @@ class ConvertTab(QWidget):
         pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
         if not pending:
             return
-
-        output_dir: Optional[Path] = self._output_dir
 
         encoder_key = self._encoder_key
         if encoder_key not in self._available_encoders:
@@ -1017,7 +1016,7 @@ class ConvertTab(QWidget):
             self._rebuild_card(job)
 
         for job in pending:
-            self._submit_job(job, self._quality, output_dir, encode_settings)
+            self._submit_job(job, self._quality, encode_settings)
 
         self._refresh_ui()
 
@@ -1025,7 +1024,6 @@ class ConvertTab(QWidget):
         self,
         job: FileJob,
         quality: str,
-        output_dir: Optional[Path],
         encode_settings: Optional[EncodeSettings] = None,
     ) -> None:
         def on_start() -> None:
@@ -1055,7 +1053,6 @@ class ConvertTab(QWidget):
         job.cancel_fn = self._queue.submit(
             source=job.source,
             quality=quality,
-            output_dir=output_dir,
             on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,
@@ -1067,7 +1064,11 @@ class ConvertTab(QWidget):
 
     def _rebuild_card(self, job: FileJob) -> None:
         old = self._cards.pop(job.id, None)
+        idx = self._items_layout.count()
         if old:
+            old_idx = self._items_layout.indexOf(old)
+            if old_idx != -1:
+                idx = old_idx
             self._items_layout.removeWidget(old)
             old.deleteLater()
         card = FileCard(
@@ -1078,8 +1079,9 @@ class ConvertTab(QWidget):
             on_cancel=self._cancel_job,
             on_delete_output=self._delete_output,
         )
-        self._items_layout.insertWidget(self._items_layout.count(), card)
+        self._items_layout.insertWidget(idx, card)
         self._cards[job.id] = card
+        card.refresh()
 
     def _tick_card(self, job: FileJob) -> None:
         card = self._cards.get(job.id)
@@ -1110,7 +1112,7 @@ class ConvertTab(QWidget):
     def _update_card_output_info(self, job: FileJob) -> None:
         card = self._cards.get(job.id)
         if card:
-            card.update_output_info(job.output_media_info)
+            card.update_output_info()
 
     def _refresh_ui(self) -> None:
         for jid in list(self._cards):
@@ -1169,7 +1171,9 @@ class ConvertTab(QWidget):
             self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
 
     def _remove_job(self, job_id: str) -> None:
-        self._jobs.pop(job_id, None)
+        job = self._jobs.pop(job_id, None)
+        if job and job.state in (FileState.QUEUED, FileState.CONVERTING) and job.cancel_fn is not None:
+            job.cancel_fn()
         self._refresh_ui()
 
     def _cancel_job(self, job_id: str) -> None:
