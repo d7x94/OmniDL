@@ -66,7 +66,7 @@ class StubService:
 
 def _make(service: StubService):
     events: list[tuple[str, dict]] = []
-    svc = LiveMonitorService(service, MagicMock(), broadcast=lambda ev, data: events.append((ev, data)))
+    svc = LiveMonitorService(service, MagicMock(), broadcast=lambda ev, data: events.append((ev, data)))  # type: ignore[arg-type]  # StubService duck-types DownloadService
     return svc, events
 
 
@@ -220,7 +220,7 @@ def test_start_stop_runs_poll_thread():
 def test_classify_instagram_and_tiktok_variants(monkeypatch):
     import infrastructure.downloader.yt_dlp_engine as ytmod
 
-    monkeypatch.setattr(ytmod, "_resolve_cookie", lambda *a, **k: "/tmp/ig.txt")
+    monkeypatch.setattr(ytmod, "_resolve_cookie", lambda *a, **k: "/tmp/ig.txt")  # nosec B108
     svc, _ = _make(StubService())
 
     ig = svc.add_url("https://www.instagram.com/someone/")

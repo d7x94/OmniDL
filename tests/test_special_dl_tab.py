@@ -98,6 +98,7 @@ def _platform_stub():
 class TestSetStatus:
     def _call(self, tab, kind, message, pct=-1, speed=""):
         from ui.tabs.special_dl_tab import SpecialDlTab
+
         SpecialDlTab._set_status(tab, kind, message, pct, speed)
 
     def test_error_shows_retry_row(self):
@@ -139,6 +140,7 @@ class TestSetStatus:
 class TestClearStatus:
     def _call(self, tab):
         from ui.tabs.special_dl_tab import SpecialDlTab
+
         SpecialDlTab._clear_status(tab)
 
     def test_hides_retry_row(self):
@@ -152,7 +154,7 @@ class TestClearStatus:
         assert not tab._btn_row.isVisible()
 
     def test_clears_last_dest(self):
-        tab = _status_stub(last_dest=Path("/tmp/foo.mp4"))
+        tab = _status_stub(last_dest=Path("/tmp/foo.mp4"))  # nosec B108
         self._call(tab)
         assert tab._last_dest is None
 
@@ -182,6 +184,7 @@ class TestClearStatus:
 class TestOnPlatformChange:
     def _call(self, tab, name):
         from ui.tabs.special_dl_tab import SpecialDlTab
+
         SpecialDlTab._on_platform_change(tab, name)
 
     def test_facebook_story_shows_browser_row(self):
@@ -233,36 +236,37 @@ def _send_stub(nodes, enabled=True):
 class TestOnPostSendValidation:
     def _call(self, tab, file_path, restore, specific_files=None):
         from ui.tabs.special_dl_tab import SpecialDlTab
+
         SpecialDlTab._on_post_send(tab, file_path, restore, specific_files)
 
     def test_empty_nodes_warns_and_restores(self):
         tab = _send_stub(nodes=[])
         restore = MagicMock()
-        self._call(tab, Path("/tmp/f.mp4"), restore)
+        self._call(tab, Path("/tmp/f.mp4"), restore)  # nosec B108
         assert any(k == "warning" for k, _ in tab._recorded)
         restore.assert_called_once()
 
     def test_none_nodes_warns_and_restores(self):
         tab = _send_stub(nodes=None)
         restore = MagicMock()
-        self._call(tab, Path("/tmp/f.mp4"), restore)
+        self._call(tab, Path("/tmp/f.mp4"), restore)  # nosec B108
         restore.assert_called_once()
 
     def test_non_iterable_nodes_warns_and_restores(self):
         tab = _send_stub(nodes=42)
         restore = MagicMock()
-        self._call(tab, Path("/tmp/f.mp4"), restore)
+        self._call(tab, Path("/tmp/f.mp4"), restore)  # nosec B108
         restore.assert_called_once()
 
     def test_taildrop_disabled_warns_and_restores(self):
         tab = _send_stub(nodes=["node1"], enabled=False)
         restore = MagicMock()
-        self._call(tab, Path("/tmp/f.mp4"), restore)
+        self._call(tab, Path("/tmp/f.mp4"), restore)  # nosec B108
         assert any(k == "warning" for k, _ in tab._recorded)
         restore.assert_called_once()
 
     def test_valid_config_attempts_send(self):
         tab = _send_stub(nodes=["node1"], enabled=True)
         restore = MagicMock()
-        self._call(tab, Path("/tmp/f.mp4"), restore)
+        self._call(tab, Path("/tmp/f.mp4"), restore)  # nosec B108
         tab._app.taildrop.send_file_to_nodes.assert_called_once()

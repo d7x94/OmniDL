@@ -325,7 +325,7 @@ class TestInstagramLiveUrlClassification:
         import infrastructure.downloader.yt_dlp_engine as yde
         from ui.tabs.live_monitor_tab import LiveMonitorTab
 
-        monkeypatch.setattr(yde, "_resolve_cookie", lambda *a, **k: "/tmp/cookies.txt")
+        monkeypatch.setattr(yde, "_resolve_cookie", lambda *a, **k: "/tmp/cookies.txt")  # nosec B108
 
         tab = _make_tab_stub("https://www.instagram.com/SomeUser/live/")
         LiveMonitorTab._add_url(tab)
@@ -351,7 +351,7 @@ class TestInstagramLiveUrlClassification:
         import infrastructure.downloader.yt_dlp_engine as yde
         from ui.tabs.live_monitor_tab import LiveMonitorTab
 
-        monkeypatch.setattr(yde, "_resolve_cookie", lambda *a, **k: "/tmp/cookies.txt")
+        monkeypatch.setattr(yde, "_resolve_cookie", lambda *a, **k: "/tmp/cookies.txt")  # nosec B108
 
         tab = _make_tab_stub("https://www.instagram.com/someuser/")
         LiveMonitorTab._add_url(tab)
