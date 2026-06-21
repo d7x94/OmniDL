@@ -42,6 +42,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libegl1
+
       - name: Install dependencies
         run: uv sync --extra api --extra dev
 
@@ -55,6 +58,8 @@ jobs:
             --no-strict-optional
 
       - name: Run test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           uv run pytest \
             --ignore=tests/test_e2e.py \
