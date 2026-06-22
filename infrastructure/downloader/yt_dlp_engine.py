@@ -823,6 +823,21 @@ def _tt29_cookie_sources(
     return out
 
 
+def _live_final_name(task: "DownloadTask", rec_ts: str, live_vid_id: str) -> str:
+    """Build the standard descriptive filename for a finished or partial live recording."""
+    from utils.naming import build_filename as _bfn  # noqa: PLC0415
+
+    _mi = task.media_info
+    uploader = (_mi.uploader if _mi and _mi.uploader else "") or ""
+    if not uploader:
+        _upl_url = (_mi.url if _mi and _mi.url else "") or task.url or ""
+        _m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)", _upl_url, re.I)
+        uploader = _m.group(1) if _m else "Unknown"
+    title = (_mi.title if _mi and _mi.title else "") or ""
+    video_id = (_mi.video_id if _mi and _mi.video_id else live_vid_id)[:20]
+    return _bfn(uploader=uploader, date_label=f"[LIVE] {rec_ts}", title=title, video_id=video_id, ext="ts")
+
+
 class YtDlpEngine:
     """
     Handles:
@@ -2345,34 +2360,20 @@ class YtDlpEngine:
                                     task.filename = str(_partial)
                             else:
                                 task.filename = str(_partial)
-                            # Rename to descriptive name (mirrors BUG-LN-WIN post-download rename)
+                            # Rename to standard descriptive name with in-place fallback on disk-full
+                            _cur_c = Path(task.filename)
                             try:
-                                from utils.naming import build_filename as _build_fn_c  # noqa: PLC0415
-
-                                _mi_c = task.media_info
-                                _upl_c = (_mi_c.uploader if _mi_c and _mi_c.uploader else "") or ""
-                                if not _upl_c:
-                                    import re as _re_c  # noqa: PLC0415
-
-                                    _upl_url_c = (_mi_c.url if _mi_c and _mi_c.url else "") or task.url or ""
-                                    _upl_m_c = _re_c.search(
-                                        r"tiktok\.com/@([A-Za-z0-9_.]+)", _upl_url_c, _re_c.I
-                                    )
-                                    _upl_c = _upl_m_c.group(1) if _upl_m_c else "Unknown"
-                                _title_c = (_mi_c.title if _mi_c and _mi_c.title else "") or ""
-                                _vid_c = (_mi_c.video_id if _mi_c and _mi_c.video_id else _live_vid_id)[:20]
-                                _new_name_c = _build_fn_c(
-                                    uploader=_upl_c,
-                                    date_label=f"[LIVE] {rec_ts}",
-                                    title=_title_c,
-                                    video_id=_vid_c,
-                                    ext="ts",
-                                )
-                                _cur_c = Path(task.filename)
+                                _new_name_c = _live_final_name(task, rec_ts, _live_vid_id)
                                 _new_path_c = output_dir / _new_name_c
                                 if _new_path_c != _cur_c and _cur_c.is_file():
-                                    _cur_c.rename(_new_path_c)
-                                    task.filename = str(_new_path_c)
+                                    try:
+                                        _cur_c.rename(_new_path_c)
+                                        task.filename = str(_new_path_c)
+                                    except OSError:
+                                        _inplace_c = _cur_c.parent / _new_name_c
+                                        if _inplace_c.resolve() != _cur_c.resolve():
+                                            _cur_c.rename(_inplace_c)
+                                        task.filename = str(_inplace_c)
                             except Exception as _rn_c:
                                 logger.warning("BUG-TT-CANCEL-SEG: rename on cancel failed: %s", _rn_c)
                             logger.info("Partial TikTok live saved on cancel: %s", task.filename)
@@ -3026,59 +3027,37 @@ class YtDlpEngine:
             except Exception as e:
                 logger.warning("Size scan failed: %s", e)
 
-        # BUG-BW FIX: Move live recording from ASCII temp dir to output_dir.
-        # On Windows, outtmpl was redirected to tempdir to avoid Unicode named
-        # pipe paths.  Now that ffmpeg has finished writing, move the .ts file
-        # to where the user expects it (output_dir).
-        import sys as _sys_mv
+        # BUG-BW / BUG-LN-WIN FIX: move live recording from temp dir to output_dir
+        # and rename to standard descriptive name, on all platforms.
+        # Neutral live_<ts>_<id>.ts names are always finalized; descriptive names
+        # (non-Windows yt-dlp fallback path) are left untouched.
+        import shutil as _shutil_fin
 
-        if is_live and _sys_mv.platform == "win32" and task.filename:
+        if is_live and task.filename:
             _src = Path(task.filename)
-            if _src.is_file() and _src.parent.resolve() != output_dir.resolve():
-                try:
-                    import shutil as _shutil
-
-                    _dst = output_dir / _src.name
-                    _shutil.move(str(_src), str(_dst))
-                    task.filename = str(_dst)
-                    logger.info("Live recording moved to output dir: %s", task.filename)
-                except Exception as _mv_exc:
-                    logger.warning("Failed to move live recording to output dir: %s", _mv_exc)
-
-        # BUG-LN-WIN FIX: outtmpl for Windows live uses only timestamp+id to
-        # avoid Unicode named-pipe crash (BUG-BW2).  After the file is in
-        # output_dir, rename it to a full descriptive name using media_info.
-        # Non-Windows and non-live paths are unaffected.
-        if is_live and _sys_mv.platform == "win32" and task.filename:
-            _cur = Path(task.filename)
-            if _cur.is_file() and _cur.parent.resolve() == output_dir.resolve():
-                try:
-                    from utils.naming import build_filename as _build_fn
-
-                    _mi = task.media_info
-                    _uploader = (_mi.uploader if _mi and _mi.uploader else "") or ""
-                    if not _uploader:
-                        import re as _re_upl  # noqa: PLC0415
-
-                        _upl_url = (_mi.url if _mi and _mi.url else "") or task.url or ""
-                        _upl_m = _re_upl.search(r"tiktok\.com/@([A-Za-z0-9_.]+)", _upl_url, _re_upl.I)
-                        _uploader = _upl_m.group(1) if _upl_m else "Unknown"
-                    _title = _mi.title if _mi and _mi.title else ""
-                    _vid_id = (_mi.video_id if _mi and _mi.video_id else _live_vid_id)[:20]
-                    _new_name = _build_fn(
-                        uploader=_uploader,
-                        date_label=f"[LIVE] {rec_ts}",
-                        title=_title,
-                        video_id=_vid_id,
-                        ext="ts",
-                    )
-                    _new_path = output_dir / _new_name
-                    if _new_path != _cur:
-                        _cur.rename(_new_path)
-                        task.filename = str(_new_path)
-                        logger.info("Live recording renamed: %s", task.filename)
-                except Exception as _rn_exc:
-                    logger.warning("Failed to rename live recording: %s", _rn_exc)
+            _needs_finalize = _src.is_file() and (
+                _src.parent.resolve() != output_dir.resolve() or _src.name.startswith("live_")
+            )
+            if _needs_finalize:
+                _new_name = _live_final_name(task, rec_ts, _live_vid_id)
+                _dst = output_dir / _new_name
+                if _src.resolve() != _dst.resolve():
+                    try:
+                        _shutil_fin.move(str(_src), str(_dst))
+                        task.filename = str(_dst)
+                        logger.info("Live recording finalized: %s", task.filename)
+                    except Exception as _mv_exc:
+                        logger.warning("Failed to move live recording to output dir: %s", _mv_exc)
+                        try:
+                            _inplace = _src.parent / _new_name
+                            if _inplace.resolve() != _src.resolve():
+                                _src.rename(_inplace)
+                            task.filename = str(_inplace)
+                            logger.warning(
+                                "Live recording kept with standard name (disk full?): %s", task.filename
+                            )
+                        except Exception as _rn_exc:
+                            logger.warning("Failed to rename live recording in place: %s", _rn_exc)
 
         # Always clean up the decrypted temp cookie file, even on error
         if _cookie_temp_dl:

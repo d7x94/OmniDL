@@ -2209,3 +2209,157 @@ class TestBuildFfmpegCookieHeader2:
         cookie_file.write_text(".youtube.com\tTRUE\t/\tFALSE\t0\ttoken\tval\n")
         result = _build_ffmpeg_cookie_header(str(cookie_file))
         assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# _live_final_name and live finalize block tests
+# ---------------------------------------------------------------------------
+
+
+def _make_task_with_media(uploader="", title="", video_id="", url="https://www.tiktok.com/@handle/live"):
+    task = MagicMock()
+    task.url = url
+    mi = MagicMock()
+    mi.uploader = uploader
+    mi.title = title
+    mi.video_id = video_id
+    mi.url = url
+    task.media_info = mi
+    return task
+
+
+class TestLiveFinalName:
+    def test_full_media_info(self):
+        from infrastructure.downloader.yt_dlp_engine import _live_final_name
+
+        task = _make_task_with_media(uploader="khoa29983", title="My Stream", video_id="123456789")
+        result = _live_final_name(task, "2026-06-22 08-19", "ROOMID")
+        assert "khoa29983" in result
+        assert "My Stream" in result
+        assert result.endswith(".ts")
+
+    def test_empty_uploader_extracted_from_url(self):
+        from infrastructure.downloader.yt_dlp_engine import _live_final_name
+
+        task = _make_task_with_media(
+            uploader="", title="", video_id="", url="https://www.tiktok.com/@extracted_user/live"
+        )
+        result = _live_final_name(task, "2026-06-22 08-19", "ROOMID")
+        assert "extracted_user" in result
+
+    def test_all_empty_falls_back_to_unknown(self):
+        from infrastructure.downloader.yt_dlp_engine import _live_final_name
+
+        task = _make_task_with_media(uploader="", title="", video_id="", url="https://example.com/notiktok")
+        result = _live_final_name(task, "2026-06-22 08-19", "ROOMID")
+        assert "Unknown" in result
+        assert result.endswith(".ts")
+
+    def test_live_vid_id_fallback(self):
+        from infrastructure.downloader.yt_dlp_engine import _live_final_name
+
+        task = _make_task_with_media(uploader="user", title="t", video_id="")
+        task.media_info.video_id = ""
+        result = _live_final_name(task, "2026-06-22 08-19", "FALLBACK_ID_12345678901234567890")
+        assert "FALLBACK_ID_12345678" in result
+
+
+class TestLiveFinalizeBlock:
+    def test_disk_full_renames_in_place(self, tmp_path):
+        """WinError 112 case: move fails, file stays in temp with standard name."""
+        import shutil
+
+        from infrastructure.downloader.yt_dlp_engine import _live_final_name
+
+        temp_dir = tmp_path / "omnidl_live"
+        temp_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        ts_file = temp_dir / "live_2026-06-22 08-19_7654008928535776008.ts"
+        ts_file.write_bytes(b"\x47" * 188)
+
+        task = _make_task_with_media(uploader="khoa29983", title="Stream", video_id="7654008928535776008")
+        task.filename = str(ts_file)
+
+        rec_ts = "2026-06-22 08-19"
+        live_vid_id = "7654008928535776008"
+        expected_name = _live_final_name(task, rec_ts, live_vid_id)
+
+        # Simulate disk-full: shutil.move raises OSError
+        original_move = shutil.move
+
+        def failing_move(src, dst):
+            raise OSError("No space left on device")
+
+        with patch("shutil.move", side_effect=failing_move):
+            _src = Path(task.filename)
+            _needs_finalize = _src.is_file() and (
+                _src.parent.resolve() != output_dir.resolve() or _src.name.startswith("live_")
+            )
+            assert _needs_finalize
+            _dst = output_dir / expected_name
+            if _src.resolve() != _dst.resolve():
+                try:
+                    shutil.move(str(_src), str(_dst))
+                    task.filename = str(_dst)
+                except Exception:
+                    _inplace = _src.parent / expected_name
+                    if _inplace.resolve() != _src.resolve():
+                        _src.rename(_inplace)
+                    task.filename = str(_inplace)
+
+        assert Path(task.filename).name == expected_name
+        assert Path(task.filename).parent.resolve() == temp_dir.resolve()
+        assert Path(task.filename).is_file()
+
+    def test_neutral_name_in_output_dir_renamed(self, tmp_path):
+        """Non-Windows direct path: live_<ts>_<id>.ts already in output_dir gets renamed."""
+        from infrastructure.downloader.yt_dlp_engine import _live_final_name
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        ts_file = output_dir / "live_2026-06-22 08-19_7654008928535776008.ts"
+        ts_file.write_bytes(b"\x47" * 188)
+
+        task = _make_task_with_media(uploader="khoa29983", title="Stream", video_id="7654008928535776008")
+        task.filename = str(ts_file)
+
+        rec_ts = "2026-06-22 08-19"
+        live_vid_id = "7654008928535776008"
+        expected_name = _live_final_name(task, rec_ts, live_vid_id)
+
+        _src = Path(task.filename)
+        _needs_finalize = _src.is_file() and (
+            _src.parent.resolve() != output_dir.resolve() or _src.name.startswith("live_")
+        )
+        assert _needs_finalize
+
+        _dst = output_dir / expected_name
+        if _src.resolve() != _dst.resolve():
+            import shutil
+
+            shutil.move(str(_src), str(_dst))
+            task.filename = str(_dst)
+
+        assert Path(task.filename).name == expected_name
+        assert Path(task.filename).parent.resolve() == output_dir.resolve()
+
+    def test_descriptive_name_untouched(self, tmp_path):
+        """Non-Windows yt-dlp descriptive name is not re-finalized."""
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        descriptive = "khoa29983 - [LIVE] 2026-06-22 08-19 - Stream [7654008928].ts"
+        ts_file = output_dir / descriptive
+        ts_file.write_bytes(b"\x47" * 188)
+
+        task = _make_task_with_media(uploader="khoa29983", title="Stream", video_id="7654008928535776008")
+        task.filename = str(ts_file)
+
+        _src = Path(task.filename)
+        _needs_finalize = _src.is_file() and (
+            _src.parent.resolve() != output_dir.resolve() or _src.name.startswith("live_")
+        )
+        assert not _needs_finalize
