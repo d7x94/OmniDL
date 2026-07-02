@@ -381,7 +381,15 @@ def _cdp_intercept_waaw(
                         last_click = time.monotonic()
                         next_click_gap = random.uniform(4.0, 7.0)
 
-                    for req_id in get_md5_request_ids - get_md5_done:
+                    # get_md5_request_ids is mutated from the CDP callback thread —
+                    # a set diff/copy racing that mutation can raise "Set changed
+                    # size during iteration"; just skip this tick and retry.
+                    try:
+                        pending_ids = tuple(get_md5_request_ids - get_md5_done)
+                    except RuntimeError:
+                        pending_ids = ()
+
+                    for req_id in pending_ids:
                         try:
                             body_result = cdp_session.send("Network.getResponseBody", {"requestId": req_id})
                         except Exception:
