@@ -1,5 +1,6 @@
 """Tests for infrastructure/downloader/waaw_engine.py URL matching and HLS fallback."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from infrastructure.downloader.waaw_engine import (
     WaawEngine,
     _hls_download,
     _is_waaw_cdn_url,
+    _parse_get_md5_manifest,
     _un,
     is_waaw_url,
 )
@@ -146,6 +148,27 @@ class TestUnDeobfuscator:
         # groups for each decoded char.
         obf = "!" + "02f02f077061061077"
         assert _un(obf) == "//waaw"
+
+
+class TestParseGetMd5Manifest:
+    def test_valid_obf_link_builds_manifest(self):
+        # obf_link "//host.cfeucdn.com/x.m3u8" has a "." so _un() passes it through.
+        body = json.dumps({"obf_link": "//host.cfeucdn.com/x.m3u8"})
+        assert _parse_get_md5_manifest(body) == "https://host.cfeucdn.com/x.m3u8"
+
+    def test_missing_obf_link_returns_none(self):
+        assert _parse_get_md5_manifest(json.dumps({})) is None
+
+    def test_empty_obf_link_returns_none(self):
+        assert _parse_get_md5_manifest(json.dumps({"obf_link": ""})) is None
+
+    def test_decoy_obf_link_returns_none(self):
+        body = json.dumps({"obf_link": "//127.0.0.1/no_video.mp4.m3u8"})
+        assert _parse_get_md5_manifest(body) is None
+
+    def test_invalid_json_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_get_md5_manifest("not json")
 
 
 class TestGetMd5RoutingFix:

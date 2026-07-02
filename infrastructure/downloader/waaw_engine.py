@@ -120,6 +120,23 @@ def _un(obf: str) -> str:
     return "".join(chr(int("0" + body[i : i + 3], 16)) for i in range(0, len(body), 3))
 
 
+def _parse_get_md5_manifest(body: str) -> Optional[str]:
+    """Parse a player/get_md5.php response body into a CDN manifest URL.
+
+    Raises if `body` isn't valid JSON (caller decides how to handle that —
+    unready/partial bodies are expected during polling). Returns None if the
+    JSON has no usable `obf_link` (missing/empty) or it decodes to one of the
+    known decoy hosts — either case means "not a real manifest", not an error."""
+    data = json.loads(body)
+    obf = data.get("obf_link", "")
+    if not obf:
+        return None
+    manifest = "https:" + _un(obf)
+    if any(bad in manifest for bad in ("no_video", "//127.0.0.1", "//localhost")):
+        return None
+    return manifest
+
+
 def _trusted_click_waaw(page, logger_: logging.Logger) -> bool:
     """CDP-level trusted click (isTrusted=True) on the video element, unlike
     page.evaluate() dispatched events which anti-bot checks can detect and ignore.
@@ -396,14 +413,14 @@ def _cdp_intercept_waaw(
                             continue  # body not ready yet — retry next iteration
                         get_md5_done.add(req_id)
                         try:
-                            data = json.loads(body_result.get("body", ""))
-                            manifest = "https:" + _un(data.get("obf_link", ""))
-                            if not captured and not any(
-                                bad in manifest for bad in ("no_video", "//127.0.0.1", "//localhost")
-                            ):
-                                captured.append(manifest)
+                            manifest = _parse_get_md5_manifest(body_result.get("body", ""))
                         except Exception:
-                            pass
+                            continue  # not valid JSON — not this response's body yet
+                        if manifest is None:
+                            logger.debug("waaw: get_md5.php body parsed but had no usable obf_link")
+                            continue
+                        if not captured:
+                            captured.append(manifest)
 
                     if captured:
                         cdn_url = captured[0]
