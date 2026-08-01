@@ -13,7 +13,9 @@ The sampler shipped with three defects that made its own log unusable:
 from __future__ import annotations
 
 import collections
+import gc
 import threading
+import time
 import tracemalloc
 
 import pytest
@@ -118,3 +120,30 @@ def test_start_then_stop_leaves_tracing_off(monkeypatch):
 def test_stop_is_a_noop_when_never_started(monkeypatch):
     monkeypatch.setattr(memtrace, "_started", False)
     memtrace.stop()  # must not raise
+
+
+def test_loop_samples_and_recovers_from_a_failed_sample(monkeypatch):
+    """Drives utils/memtrace.py's background _loop through both its
+    success path and its except-and-continue path (a single bad sample
+    must not kill the sampler thread)."""
+    monkeypatch.setenv("OMNIDL_MEMTRACE", "1")
+    monkeypatch.setattr(memtrace, "_started", False)
+
+    orig_get_objects = gc.get_objects
+    calls = {"n": 0}
+
+    def flaky_get_objects():
+        calls["n"] += 1
+        if calls["n"] == 2:  # first call is inside start(); this is loop iteration 1
+            raise RuntimeError("simulated sample failure")
+        return orig_get_objects()
+
+    monkeypatch.setattr(memtrace.gc, "get_objects", flaky_get_objects)
+
+    memtrace.start(interval=0.05)
+    deadline = time.monotonic() + 2.0
+    while calls["n"] < 3 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    memtrace.stop()
+
+    assert calls["n"] >= 3, "sampler thread did not survive the failed sample"

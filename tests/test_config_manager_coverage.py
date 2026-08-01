@@ -195,3 +195,66 @@ class TestDebugLogging:
     def test_debug_logging_true(self, tmp_path):
         cfg = _cfg(tmp_path, {"debug_logging": True})
         assert cfg.debug_logging is True
+
+
+# ---------------------------------------------------------------------------
+# _save chmod OSError swallowed (lines 175-176)
+# ---------------------------------------------------------------------------
+
+class TestSaveChmodOSError:
+    def test_chmod_failure_is_swallowed(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        with patch("os.chmod", side_effect=OSError("not permitted")):
+            cfg._save()  # must not raise
+        assert cfg.config_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# _is_safe_cookie_path (lines 385, 390-391)
+# ---------------------------------------------------------------------------
+
+class TestIsSafeCookiePath:
+    def test_empty_path_is_always_safe(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        assert cfg._is_safe_cookie_path("") is True
+
+    def test_unresolvable_path_is_unsafe(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        assert cfg._is_safe_cookie_path("bad\x00path") is False
+
+
+# ---------------------------------------------------------------------------
+# set_cookie_for_platform rejects unsafe path (lines 400-404)
+# ---------------------------------------------------------------------------
+
+class TestSetCookieForPlatformRejectsUnsafe:
+    def test_path_outside_data_dir_is_rejected(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        outside = str(Path(tmp_path).parent / "outside" / "cookie.txt")
+        cfg.set_cookie_for_platform("tiktok", outside)
+        assert cfg.get_cookie_for_platform("tiktok") == ""
+
+
+# ---------------------------------------------------------------------------
+# tiktok_account_pool / set_tiktok_account_pool (lines 416, 420-431)
+# ---------------------------------------------------------------------------
+
+class TestTiktokAccountPool:
+    def test_non_list_value_returns_empty(self, tmp_path):
+        cfg = _cfg(tmp_path, {"tiktok_account_pool": "not-a-list"})
+        assert cfg.tiktok_account_pool == []
+
+    def test_set_filters_unsafe_cookie_files_and_keeps_safe_ones(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        safe_cookie = str(tmp_path / "acct.txt")
+        unsafe_cookie = str(Path(tmp_path).parent / "outside" / "acct.txt")
+        accounts = [
+            {"name": "safe_acct", "cookie_file": safe_cookie},
+            {"name": "unsafe_acct", "cookie_file": unsafe_cookie},
+            {"name": "no_cookie_acct", "cookie_file": ""},
+        ]
+        cfg.set_tiktok_account_pool(accounts)
+        names = [a["name"] for a in cfg.tiktok_account_pool]
+        assert "safe_acct" in names
+        assert "no_cookie_acct" in names
+        assert "unsafe_acct" not in names
