@@ -18,7 +18,7 @@ from api.models import DownloadRequest, FileConvertRequest
 class TestFileConvertRequestTargetExt:
     @pytest.mark.parametrize("ext", ["mp4", "mkv", "mov", "avi", "webm", "mp3", None])
     def test_allowed_values_pass(self, ext):
-        req = FileConvertRequest(file_path="/tmp/x.mp4", target_ext=ext)
+        req = FileConvertRequest(file_path="/tmp/x.mp4", target_ext=ext)  # nosec B108
         assert req.target_ext == ext
 
     @pytest.mark.parametrize(
@@ -32,7 +32,7 @@ class TestFileConvertRequestTargetExt:
     )
     def test_disallowed_values_raise(self, ext):
         with pytest.raises(ValidationError):
-            FileConvertRequest(file_path="/tmp/x.mp4", target_ext=ext)
+            FileConvertRequest(file_path="/tmp/x.mp4", target_ext=ext)  # nosec B108
 
 
 class TestDownloadRequestOutputExt:
