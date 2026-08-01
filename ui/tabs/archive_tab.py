@@ -54,6 +54,26 @@ _MODE_TOGGLE_QSS = f"""
     }}
 """
 
+_PW_TOGGLE_QSS = f"""
+    QPushButton {{
+        background: {T.surface2};
+        color: {T.text2};
+        border: 1px solid {T.border2};
+        border-radius: 8px;
+        font-size: 14px;
+        padding: 0;
+        font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
+    }}
+    QPushButton:hover {{
+        background: {T.surface3};
+    }}
+    QPushButton:checked {{
+        background: {T.primary_dim};
+        color: {T.primary_text};
+        border: 1px solid {T.primary};
+    }}
+"""
+
 
 class ArchiveTab(QWidget):
     def __init__(self, app: "MainWindow") -> None:
@@ -190,7 +210,9 @@ class ArchiveTab(QWidget):
         self._compress_pw_entry.setPlaceholderText("Để trống nếu không đặt mật khẩu")
         pw_row.addWidget(self._compress_pw_entry)
         compress_pw_toggle = QPushButton("👁")
-        compress_pw_toggle.setFixedWidth(32)
+        compress_pw_toggle.setFixedSize(38, 38)
+        compress_pw_toggle.setStyleSheet(_PW_TOGGLE_QSS)
+        compress_pw_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         compress_pw_toggle.setCheckable(True)
         compress_pw_toggle.toggled.connect(self._toggle_compress_pw_visibility)
         pw_row.addWidget(compress_pw_toggle)
@@ -202,6 +224,9 @@ class ArchiveTab(QWidget):
         name_row.addWidget(self._archive_name_entry)
         self._use_orig_name_chk = QCheckBox("Dùng tên gốc")
         self._use_orig_name_chk.setEnabled(False)
+        self._use_orig_name_chk.toggled.connect(
+            lambda checked: self._archive_name_entry.setEnabled(not checked)
+        )
         name_row.addWidget(self._use_orig_name_chk)
         v.addLayout(name_row)
 
@@ -254,7 +279,9 @@ class ArchiveTab(QWidget):
         self._extract_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
         pw_row.addWidget(self._extract_pw_entry)
         extract_pw_toggle = QPushButton("👁")
-        extract_pw_toggle.setFixedWidth(32)
+        extract_pw_toggle.setFixedSize(38, 38)
+        extract_pw_toggle.setStyleSheet(_PW_TOGGLE_QSS)
+        extract_pw_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         extract_pw_toggle.setCheckable(True)
         extract_pw_toggle.toggled.connect(self._toggle_extract_pw_visibility)
         pw_row.addWidget(extract_pw_toggle)
@@ -323,6 +350,8 @@ class ArchiveTab(QWidget):
 
     def _refresh_name_controls(self) -> None:
         can_use_orig = len(self._compress_sources) == 1 and not self._individually_chk.isChecked()
+        if not can_use_orig:
+            self._use_orig_name_chk.setChecked(False)
         self._use_orig_name_chk.setEnabled(can_use_orig)
 
     # ── File pickers ─────────────────────────────────────────────────────
