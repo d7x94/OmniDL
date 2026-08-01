@@ -8,6 +8,7 @@ Covers:
 - get_task() O(1) lookup
 - shutdown() cancels active tasks
 """
+
 import threading
 import time
 from unittest.mock import MagicMock
@@ -22,6 +23,7 @@ from infrastructure.downloader.download_manager import DownloadManager
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def make_config(max_concurrent=2, max_retries=1):
     cfg = MagicMock()
     cfg.max_concurrent = max_concurrent
@@ -31,12 +33,14 @@ def make_config(max_concurrent=2, max_retries=1):
 
 def make_engine(fail=False, delay=0.0):
     engine = MagicMock()
+
     def fake_download(task, on_progress=None, on_postprocess=None):
         if delay:
             time.sleep(delay)
         if fail:
             raise RuntimeError("Simulated failure")
         task.filename = "/tmp/fake.mp4"  # nosec B108
+
     engine.download.side_effect = fake_download
     return engine
 
@@ -56,6 +60,7 @@ def make_task() -> DownloadTask:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestDownloadManagerDI:
     def test_uses_injected_engine(self):
@@ -185,11 +190,13 @@ class TestRetryBehavior:
         call_count = {"n": 0}
 
         engine = MagicMock()
+
         def flaky_download(task, on_progress=None, on_postprocess=None):
             call_count["n"] += 1
             if call_count["n"] == 1:
-                raise RuntimeError("Network timeout")   # transient
+                raise RuntimeError("Network timeout")  # transient
             task.filename = "/tmp/ok.mp4"  # nosec B108
+
         engine.download.side_effect = flaky_download
 
         cfg = make_config(max_retries=2)
@@ -203,7 +210,7 @@ class TestRetryBehavior:
                 time.sleep(0.05)
                 assert time.time() < deadline, "Timed out waiting for completion"
             assert task.status == DownloadStatus.COMPLETED
-            assert call_count["n"] == 2   # 1 failure + 1 success
+            assert call_count["n"] == 2  # 1 failure + 1 success
         finally:
             mgr.shutdown(wait=False)
 
@@ -211,9 +218,7 @@ class TestRetryBehavior:
         """Private-video error must fail immediately — no retry."""
         cfg = make_config(max_retries=3)
         engine = MagicMock()
-        engine.download.side_effect = RuntimeError(
-            "Content is private. Try enabling cookies."
-        )
+        engine.download.side_effect = RuntimeError("Content is private. Try enabling cookies.")
         mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
         mgr.start()
         try:
@@ -224,7 +229,26 @@ class TestRetryBehavior:
                 time.sleep(0.05)
                 assert time.time() < deadline, "Timed out"
             assert task.status == DownloadStatus.FAILED
-            assert engine.download.call_count == 1   # never retried
+            assert engine.download.call_count == 1  # never retried
+        finally:
+            mgr.shutdown(wait=False)
+
+    def test_instagram_cookie_expired_not_retried(self):
+        """BUG-IG-COOKIE: expired IG session cookie error must fail immediately."""
+        cfg = make_config(max_retries=3)
+        engine = MagicMock()
+        engine.download.side_effect = RuntimeError("Cookie Instagram hết hạn - làm mới cookie trong Settings")
+        mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
+        mgr.start()
+        try:
+            task = make_task()
+            mgr.enqueue(task)
+            deadline = time.time() + 5
+            while task.status not in DownloadStatus.terminal_states():
+                time.sleep(0.05)
+                assert time.time() < deadline, "Timed out"
+            assert task.status == DownloadStatus.FAILED
+            assert engine.download.call_count == 1  # never retried
         finally:
             mgr.shutdown(wait=False)
 
@@ -245,7 +269,7 @@ class TestRetryBehavior:
                 time.sleep(0.05)
                 assert time.time() < deadline, "Timed out"
             assert task.status == DownloadStatus.FAILED
-            assert engine.download.call_count == 1   # never retried
+            assert engine.download.call_count == 1  # never retried
         finally:
             mgr.shutdown(wait=False)
 
@@ -279,10 +303,12 @@ class TestRetryBehavior:
 # Branch coverage: _on_progress, _on_future_done with exception
 # ---------------------------------------------------------------------------
 
+
 class TestProgressAndFutureDone:
     def test_on_progress_publishes_event(self):
         """_on_progress must publish DOWNLOAD_PROGRESS event."""
         from app.event_bus import EventBus
+
         bus = make_bus()
         mgr = DownloadManager(config=make_config(), engine=make_engine(), event_bus=bus)
         mgr.start()
@@ -362,6 +388,7 @@ class TestPauseResumeCancelGetAll:
 
     def test_pause_publishes_progress(self):
         from app.event_bus import EventBus
+
         mgr, bus = self._make_mgr()
         try:
             task = make_task()
@@ -381,6 +408,7 @@ class TestPauseResumeCancelGetAll:
 
     def test_resume_publishes_progress(self):
         from app.event_bus import EventBus
+
         mgr, bus = self._make_mgr()
         try:
             task = make_task()
@@ -432,6 +460,7 @@ class TestPauseResumeCancelGetAll:
         import time
 
         from domain.enums.download_status import DownloadStatus
+
         engine = make_engine()
         engine.download.return_value = None  # instant success
         bus = make_bus()
@@ -452,6 +481,7 @@ class TestPauseResumeCancelGetAll:
         import time
 
         from domain.enums.download_status import DownloadStatus
+
         engine = make_engine()
         engine.download.return_value = None
         bus = make_bus()

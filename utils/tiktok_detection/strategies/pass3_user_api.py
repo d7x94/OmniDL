@@ -61,6 +61,10 @@ class Pass3UserApi(LiveDetectionStrategy):
         except Exception as exc:
             logger.debug("tiktok_detection: @%s pass-3 network error: %s", ctx.username, exc)
             return None
+        finally:
+            # Unclosed curl_cffi Sessions pin native libcurl memory the GC
+            # cannot account for.
+            session.close()
 
         if resp.status_code != 200:
             logger.debug(

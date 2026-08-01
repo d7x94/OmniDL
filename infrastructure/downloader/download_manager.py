@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
     from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
     from infrastructure.downloader.kuaishou_engine import KuaishouEngine
+    from infrastructure.downloader.waaw_engine import WaawEngine
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class DownloadManager:
     # Max simultaneous downloads per platform. Caps concurrent authenticated
     # requests to a single account, reducing HTTP 429 and account flag risk.
     _PLATFORM_CONCURRENCY: dict[str, int] = {
-        "instagram": 2,
+        "instagram": 1,
         "tiktok": 2,
         "facebook": 3,
         "twitter": 2,
@@ -60,6 +61,7 @@ class DownloadManager:
         story_engine_enabled: bool = False,
         instagram_live_engine: Optional[InstagramLiveEngine] = None,
         kuaishou_engine: Optional[KuaishouEngine] = None,
+        waaw_engine: Optional[WaawEngine] = None,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
@@ -78,6 +80,7 @@ class DownloadManager:
         # Optional Kuaishou engine — direct API download, bypasses yt-dlp.
         # Injected from main.py; None in tests (yt-dlp fallback).
         self._kuaishou_engine = kuaishou_engine
+        self._waaw_engine = waaw_engine
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
@@ -291,6 +294,7 @@ class DownloadManager:
         # Instagram-specific — account/auth issues that retrying cannot fix
         "checkpoint",  # account checkpoint verification required
         "challenge_required",  # two-factor / bot challenge
+        "cookie instagram hết hạn",  # yt-dlp flagged the IG session cookie invalid (_IGCookieLogger)
         "no video in this post",  # photo-only post — retry cannot add video
         "no video formats found",  # photo-only post (with cookies, yt-dlp >= 2024)
         # Vietnamese translations of the two photo-only yt-dlp messages above.
@@ -475,6 +479,68 @@ class DownloadManager:
                         )
                         last_exc = None
                         break  # success — skip yt-dlp / gallery routing
+
+                # ── Route: waaw.ac → WaawEngine (CDP, Playwright) ────────────
+                if self._waaw_engine is not None:
+                    from infrastructure.downloader.waaw_engine import (  # noqa: PLC0415
+                        is_waaw_cdn_link,
+                        is_waaw_url,
+                    )
+
+                    _is_waaw = (
+                        is_waaw_url(task.url)
+                        or is_waaw_cdn_link(task.url)
+                        or (
+                            task.media_info is not None
+                            and getattr(task.media_info, "source_engine", "") == "waaw"
+                        )
+                    )
+                    if _is_waaw:
+                        self._waaw_engine.download(
+                            task,
+                            on_progress=self._on_progress,
+                            on_postprocess=self._on_progress,
+                        )
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
+                # ── Route: pasted Instagram CDN URL → anonymous streaming ────
+                # IDM parity: a pre-signed fbcdn.net/cdninstagram.com URL needs
+                # no Instagram API call and no session cookie at all.
+                from infrastructure.downloader.instagram_cdn_engine import (  # noqa: PLC0415
+                    download_ig_cdn_url,
+                    is_ig_cdn_url,
+                )
+
+                _is_ig_cdn = is_ig_cdn_url(task.url) or (
+                    task.media_info is not None and getattr(task.media_info, "source_engine", "") == "ig_cdn"
+                )
+                if _is_ig_cdn:
+
+                    def _ig_cdn_progress(pct: int, speed: str) -> None:
+                        with task._lock:
+                            task.progress = float(pct)
+                            task.speed = speed
+                        self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+
+                    _ig_cdn_output_dir = (
+                        Path(task.output_dir) if task.output_dir else self._config.download_dir
+                    )
+                    _ig_cdn_hint = (
+                        task.media_info.video_id
+                        if task.media_info and task.media_info.video_id
+                        else "instagram_cdn"
+                    )
+                    result_path = download_ig_cdn_url(
+                        url=task.url,
+                        output_dir=_ig_cdn_output_dir,
+                        filename_hint=_ig_cdn_hint,
+                        on_progress=_ig_cdn_progress,
+                    )
+                    with task._lock:
+                        task.filename = str(result_path)
+                    last_exc = None
+                    break  # success — skip yt-dlp / gallery routing
 
                 # Route to gallery-dl engine when MediaInfo carries the hint.
                 # Falls back to yt-dlp if gallery engine is not wired (e.g. tests).

@@ -20,7 +20,7 @@ import yt_dlp
 
 # BUG-CB FIX: curl_cffi provides libcurl-impersonate TLS fingerprinting.
 # Sites like Kuaishou reject Python's default TLS fingerprint with
-# SSL RECORD_LAYER_FAILURE. Requires curl-cffi>=0.10.0,<0.15 (yt-dlp constraint).
+# SSL RECORD_LAYER_FAILURE. Requires curl-cffi>=0.15.0 (pyproject constraint).
 # opts["impersonate"] must be an ImpersonateTarget object, not a plain string.
 # BUG-CC FIX: log non-ImportError failures so curl_cffi load problems are visible
 # in debug log (previously silently fell back to _CURL_CFFI_AVAILABLE=False).
@@ -111,6 +111,18 @@ from infrastructure.config.config_manager import ConfigManager
 from utils.ffmpeg_locator import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
+
+# BUG-IG-ANTIBOT: yt-dlp's InstagramBaseIE defaults to the private mobile API
+# host (i.instagram.com) while sending web app-id/headers — a host/identity
+# combination only a script produces. Point it at the web host instead, the
+# same one a real browser tab calls. Guarded: a yt-dlp upgrade that renames
+# the attribute degrades to yt-dlp's own default rather than crashing.
+try:
+    from yt_dlp.extractor.instagram import InstagramBaseIE as _InstagramBaseIE
+
+    _InstagramBaseIE._API_BASE_URL = "https://www.instagram.com/api/v1"
+except Exception as _ig_patch_err:
+    logger.debug("BUG-IG-ANTIBOT: InstagramBaseIE._API_BASE_URL patch skipped: %s", _ig_patch_err)
 
 
 class _PlatformRateLimiter:
@@ -760,6 +772,60 @@ def _resolve_kuaishou_url(url: str) -> str:
     return url
 
 
+_FACEBOOK_SHARE_RE = re.compile(r"facebook\.com/share/(?:v|r|p)/", re.I)
+
+
+def _resolve_facebook_share_url(url: str) -> str:
+    """Resolve a Facebook /share/{v,r,p}/ link to its canonical URL.
+
+    FB share links 302-redirect to the canonical story.php / reel URL.  yt-dlp's
+    FacebookIE does not match the /share/ form, so it falls through to the Generic
+    extractor and fails.  We follow ONLY the first redirect (allow_redirects=False)
+    and return its Location header — following further hops would land on the login
+    wall for auth-gated videos.  Falls back to the original URL on any failure.
+    """
+    if not _CURL_CFFI_AVAILABLE:
+        return url
+    try:
+        from curl_cffi import requests as _cffi_req
+
+        for _method in (_cffi_req.head, _cffi_req.get):
+            resp = _method(
+                url,
+                impersonate=_IMPERSONATE_STRING,  # type: ignore[arg-type]
+                allow_redirects=False,
+                timeout=15,
+            )
+            loc = resp.headers.get("location") or resp.headers.get("Location")
+            if loc and "/login" not in loc and "facebook.com" in loc:
+                logger.debug("Facebook share URL resolved: %s -> %s", url, loc)
+                return loc
+    except Exception as exc:
+        logger.debug("Facebook share pre-resolve failed (%s) — using original", exc)
+    return url
+
+
+class _FacebookMetaFixupPP(yt_dlp.postprocessor.common.PostProcessor):
+    """Correct uploader/title before outtmpl renders, for Facebook's generic-page fallback.
+
+    Facebook's story.php-style URLs (resolved from /share/r/ links) often lack
+    owner data in the embedded JSON, and yt-dlp falls back to the page's bare
+    "Facebook" <title> tag when the real post title can't be found. Both leave
+    the outtmpl with "Unknown"/"Facebook" instead of real values.
+    """
+
+    def run(self, info):
+        if info.get("extractor_key") != "Facebook":
+            return [], info
+        if not info.get("uploader") and not info.get("channel") and info.get("uploader_id"):
+            info["uploader"] = f"FB_{info['uploader_id']}"
+        title = (info.get("title") or "").strip()
+        if title == "Facebook" or not title:
+            desc = (info.get("description") or "").strip()
+            info["title"] = desc[:100] if desc else f"Facebook video {info.get('id', '')}"
+        return [], info
+
+
 # BUG-BQ DIAGNOSTIC: yt-dlp logger bridge — captures format selection,
 # FFmpegMergerPP activity, and fallback events into omnidl_run.log.
 # Read-only: zero effect on download logic or output.
@@ -793,6 +859,32 @@ class _DiagLogger:
 
     def error(self, msg: str) -> None:
         logger.error("[yt-dlp] %s", msg.strip())
+
+
+# BUG-IG-COOKIE FIX: yt-dlp's Instagram extractor detects an expired/invalid
+# session cookie and emits a warning ("The provided Instagram account cookies
+# are no longer valid") before silently clearing the cookie and retrying
+# logged-out. With quiet=True/no_warnings=True and no logger attached, this
+# warning was previously swallowed entirely (report_warning() only reaches
+# no_warnings' no-op path when params["logger"] is None) — the user only saw
+# a generic downstream login-required error. Attaching this logger surfaces
+# the warning in the debug log and records it on the instance so the caller
+# can classify a subsequent failure as a non-retryable cookie problem rather
+# than retrying with the same stale cookie file.
+_IG_COOKIE_INVALID_RE = re.compile(r"cookies? .*no longer valid", re.I)
+
+
+class _IGCookieLogger(_DiagLogger):
+    def __init__(self) -> None:
+        self.cookie_invalid = False
+
+    def warning(self, msg: str) -> None:
+        if _IG_COOKIE_INVALID_RE.search(msg):
+            self.cookie_invalid = True
+        super().warning(msg)
+
+
+_IG_COOKIE_EXPIRED_MSG = "Cookie Instagram hết hạn - làm mới cookie trong Settings"
 
 
 def _tt29_cookie_sources(
@@ -887,6 +979,17 @@ class YtDlpEngine:
         if _KUAISHOU_SHORT_RE.search(url):
             url = _resolve_kuaishou_url(url)
 
+        # BUG-FB FIX: Resolve Facebook /share/{v,r,p}/ links to their canonical
+        # story.php / reel URL.  yt-dlp's FacebookIE does not match the /share/
+        # form, so it falls through to the Generic extractor and fails.
+        if _FACEBOOK_SHARE_RE.search(url):
+            url = _resolve_facebook_share_url(url)
+
+        # BUG-IG-COOKIE FIX: attach the cookie-invalidation watcher for
+        # Instagram URLs so the "cookies are no longer valid" warning is both
+        # logged and available for classification if extraction then fails.
+        _ig_cookie_logger = _IGCookieLogger() if platform_for_url(url) == "instagram" else None
+
         # ── Profile / channel / playlist fast-path ────────────────────────
         # When URL is a profile or channel page (TikTok @user, YouTube channel,
         # Twitter/X @user, Instagram profile, Threads @user, YouTube playlist),
@@ -914,6 +1017,8 @@ class YtDlpEngine:
             # FIX-FINAL: JS challenge solver for YouTube n-challenge
             # Must be a list — str causes yt-dlp to iterate characters (BUG-BQ).
             "remote_components": ["ejs:github"],
+            # BUG-IG-COOKIE: None safely ignored by yt-dlp for non-Instagram URLs.
+            "logger": _ig_cookie_logger,
         }
         # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
         if _CURL_CFFI_AVAILABLE:
@@ -976,6 +1081,19 @@ class YtDlpEngine:
                 msg_l = msg.lower()
                 if "status code 10231" in msg_l:
                     _saw_10231 = True
+
+                # BUG-IG-COOKIE FIX: the account cookie was flagged invalid by
+                # yt-dlp during this extraction attempt (see _IGCookieLogger
+                # above). Whatever error follows, retrying with the same stale
+                # cookie file cannot help — fail fast with an actionable message
+                # (matches the "retries never help" note in download_manager.py).
+                if _ig_cookie_logger is not None and _ig_cookie_logger.cookie_invalid:
+                    if _cookie_temp_ei:
+                        try:
+                            Path(_cookie_temp_ei).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    raise RuntimeError(_IG_COOKIE_EXPIRED_MSG) from exc
 
                 # FIX-A: Instagram photo posts raise one of two errors during
                 # extract_info depending on the yt-dlp version and whether
@@ -1303,6 +1421,15 @@ class YtDlpEngine:
         output_dir = (Path(task.output_dir) if task.output_dir else self._config.download_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # BUG-FB FIX: Defensive resolve for a direct /api/download call made with
+        # a raw share URL (analyse-cache miss).  Idempotent once canonical.
+        if _FACEBOOK_SHARE_RE.search(task.url):
+            task.url = _resolve_facebook_share_url(task.url)
+
+        # BUG-IG-COOKIE FIX: attach the cookie-invalidation watcher for
+        # Instagram downloads (see _IGCookieLogger / extract_info() above).
+        _ig_dl_cookie_logger = _IGCookieLogger() if platform_for_url(task.url) == "instagram" else None
+
         # ── Livestream detection ──────────────────────────────────────────
         # yt-dlp may not always set is_live=True for TikTok live during
         # extract_info (race between go-live and extraction timing).
@@ -1565,10 +1692,20 @@ class YtDlpEngine:
             # hls_prefer_native=True switches HlsFD for m3u8 but NOT for m3u8_native
             # (HlsFD is already used). Force m3u8_native first, then m3u8, then
             # any https stream, then best -- never FLV/RTMP which always use FFmpegFD.
+            # BUG-YT-LIVE-FMT FIX: yt-dlp 2026.07.04 added live adaptive format
+            # support for YouTube — quality-specific formats (1080p/720p/...) are
+            # now offered during a live broadcast, not just after it ends. Honour
+            # the user's quality preset for YouTube live via "<preset>/best" (falls
+            # back to best if the preset isn't available yet). Other live platforms
+            # (Instagram, Twitch) have no such adaptive live formats — keep "best".
             "format": (
                 "best[protocol=m3u8_native]/best[protocol^=m3u8]/best[protocol^=https]/best"
                 if (is_live and (_TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)))
-                else ("best" if is_live else _format_id)
+                else (
+                    (f"{_format_id}/best" if platform_for_url(task.url) == "youtube" else "best")
+                    if is_live
+                    else _format_id
+                )
             ),
             # FIX-FINAL: JS challenge solver for YouTube n-challenge.
             # BUG-BQ FIX: must be a list — str causes yt-dlp to iterate over
@@ -1583,9 +1720,10 @@ class YtDlpEngine:
             **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
             # Also enable for TikTok live to log which protocol/format is selected.
+            # BUG-IG-COOKIE: also enable for Instagram to catch cookie-invalidation.
             "logger": _DiagLogger()
             if (_is_tiktok_vod and not is_live) or (is_live and _TIKTOK_LIVE_RE.search(task.url))
-            else None,
+            else _ig_dl_cookie_logger,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
             # BUG-TT-03 FIX: fragment_retries=0 caused entire live recordings to
@@ -1798,6 +1936,13 @@ class YtDlpEngine:
                 _cookie_temp_dl = _usable
         if not opts.get("cookiefile") and self._config.use_cookies:
             opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+
+        # Rate-limit per-platform on the download path too — extract_info()
+        # already acquires this; without it here, an analyse+download pair
+        # fired close together bypasses the per-platform floor entirely.
+        _dl_rl = _get_platform_rl(task.url)
+        if _dl_rl is not None:
+            _dl_rl.acquire()
 
         # Extra user-supplied yt-dlp args
         self._apply_extra_args(opts)
@@ -2457,6 +2602,9 @@ class YtDlpEngine:
 
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
+                    # BUG-FB-META FIX: fix garbage uploader/title before outtmpl
+                    # renders, for Facebook's generic-page metadata fallback.
+                    ydl.add_post_processor(_FacebookMetaFixupPP(), when="pre_process")
                     ydl.download([task.url])
             except yt_dlp.utils.DownloadError as exc:
                 # Check the task's own cancellation flag rather than parsing the
@@ -2502,6 +2650,14 @@ class YtDlpEngine:
                         except OSError as cleanup_exc:
                             logger.warning("Part-file cleanup failed: %s", cleanup_exc)
                     raise  # let _run_task handle the CANCELLED / PARTIAL_SAVED transition
+
+                # BUG-IG-COOKIE FIX: the account cookie was flagged invalid by
+                # yt-dlp during this download attempt (see _IGCookieLogger
+                # above). Retrying with the same stale cookie file cannot help —
+                # fail fast with an actionable message (matches the "retries
+                # never help" note in download_manager.py).
+                if _ig_dl_cookie_logger is not None and _ig_dl_cookie_logger.cookie_invalid:
+                    raise RuntimeError(_IG_COOKIE_EXPIRED_MSG) from exc
 
                 # BUG-TT-02 FIX: TikTok HLS tokens expire after ~1-2 minutes.
                 # When ffmpeg exits with an error on a live stream, re-extract a

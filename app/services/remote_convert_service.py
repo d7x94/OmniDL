@@ -59,6 +59,7 @@ _VALID_ENCODERS: frozenset[str] = frozenset(_HW_ENCODER_CATALOG.keys()) | {"cpu"
 _VALID_QUALITIES: frozenset[str] = frozenset({"high", "standard", "small", "custom"})
 _VALID_SPEEDS: frozenset[str] = frozenset({"quality", "balanced", "fast"})
 _VALID_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1"})
+_VALID_EXTS: frozenset[str] = frozenset({"mp4", "mkv", "mov", "avi", "webm", "mp3"})
 _CRF_MIN, _CRF_MAX = 0, 51
 
 # Maximum number of jobs kept in memory (oldest terminal jobs purged first)
@@ -120,6 +121,7 @@ class RemoteConvertService:
         • encoder_key validated against _VALID_ENCODERS allowlist.
         • quality validated against _VALID_QUALITIES allowlist.
         • speed_preset validated against _VALID_SPEEDS allowlist.
+        • target_ext validated against _VALID_EXTS allowlist.
         • custom_crf clamped to [0, 51] (FFmpeg CRF valid range).
         • file_path must already have passed the path traversal guard in
           the endpoint — this service trusts the resolved Path object.
@@ -140,6 +142,8 @@ class RemoteConvertService:
             raise ValueError(
                 f"output_codec '{output_codec}' is not allowed. Valid values: {sorted(_VALID_CODECS)}"
             )
+        if target_ext not in _VALID_EXTS:
+            raise ValueError(f"target_ext '{target_ext}' is not allowed. Valid values: {sorted(_VALID_EXTS)}")
 
         # Resolve "auto" → best available GPU encoder, fallback to CPU
         if encoder_key == "auto":

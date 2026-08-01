@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -584,3 +585,169 @@ class TestFindBrowserExe:
         # "BRAVE" should resolve same as "brave"
         result = eng._find_browser_exe("BRAVE")
         assert result == brave_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# download_story — download-strategy priority chain
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDownloadStoryPriority:
+    """download_story picks the right download path given what _cdp_intercept found.
+
+    _cdp_intercept and the download/mux helpers are mocked out — no browser,
+    Playwright, ffmpeg, or network required.
+    """
+
+    URL = "https://www.facebook.com/stories/122114830586207697/UzpfSVND/"
+    VIDEO_URL = "https://scontent.fna.fbcdn.net/o1/v/t2/f2/m367/VIDEO.mp4?oh=v&oe=1"
+    AUDIO_URL = "https://scontent.fna.fbcdn.net/o1/a/t2/f2/m367/AUDIO.mp4?oh=a&oe=1"
+    PROGRESSIVE_URL = "https://scontent.fna.fbcdn.net/v/t42/PROG.mp4?oh=p&oe=1"
+
+    def _config(self, tmp_path):
+        import types
+
+        return types.SimpleNamespace(download_dir=str(tmp_path))
+
+    @staticmethod
+    def _write_mux(video_url, audio_url, dest, on_progress=None):
+        dest.write_bytes(b"\x00" * 200_000)
+        return dest
+
+    @staticmethod
+    def _write_cdn(cdn_url, dest, on_progress=None):
+        dest.write_bytes(b"\x00" * 200_000)
+        return dest
+
+    def test_audio_and_video_captured_uses_mux_first(self, tmp_path):
+        import infrastructure.downloader.facebook_story_engine as eng
+
+        with (
+            patch.object(
+                eng,
+                "_cdp_intercept",
+                return_value=(self.VIDEO_URL, self.AUDIO_URL, None),
+            ),
+            patch.object(eng, "_ffmpeg_mux", side_effect=self._write_mux) as mux,
+            patch.object(eng, "_download_cdn_url") as dl_cdn,
+            patch.object(eng, "_ffmpeg_download_with_audio") as dl_dash_all,
+            patch.object(eng, "_ffmpeg_download") as dl_single,
+        ):
+            result = eng.download_story(self.URL, self._config(tmp_path))
+
+        mux.assert_called_once()
+        assert mux.call_args[0][0] == self.VIDEO_URL
+        assert mux.call_args[0][1] == self.AUDIO_URL
+        dl_cdn.assert_not_called()
+        dl_dash_all.assert_not_called()
+        dl_single.assert_not_called()
+        assert result.exists()
+
+    def test_no_audio_progressive_present_skips_dash_all(self, tmp_path):
+        import infrastructure.downloader.facebook_story_engine as eng
+
+        with (
+            patch.object(
+                eng,
+                "_cdp_intercept",
+                return_value=(self.VIDEO_URL, None, self.PROGRESSIVE_URL),
+            ),
+            # Real derivation from VIDEO_URL would attempt a live HTTP probe —
+            # stub it out (matches production: derive+probe always 403s).
+            patch.object(eng, "_probe_audio_url", return_value=None),
+            patch.object(eng, "_ffmpeg_mux") as mux,
+            patch.object(eng, "_download_cdn_url", side_effect=self._write_cdn) as dl_cdn,
+            patch.object(eng, "_ffmpeg_download_with_audio") as dl_dash_all,
+            patch.object(eng, "_ffmpeg_download") as dl_single,
+            patch("utils.ffmpeg_locator.locate_ffmpeg", return_value=None),
+        ):
+            result = eng.download_story(self.URL, self._config(tmp_path))
+
+        mux.assert_not_called()
+        dl_cdn.assert_called_once()
+        assert dl_cdn.call_args[0][0] == self.PROGRESSIVE_URL
+        dl_dash_all.assert_not_called()
+        dl_single.assert_not_called()
+        assert result.exists()
+
+    def test_no_audio_no_progressive_falls_back_to_existing_chain(self, tmp_path):
+        import infrastructure.downloader.facebook_story_engine as eng
+
+        with (
+            patch.object(
+                eng,
+                "_cdp_intercept",
+                return_value=(self.VIDEO_URL, None, None),
+            ),
+            patch.object(eng, "_probe_audio_url", return_value=None),
+            patch.object(eng, "_ffmpeg_mux") as mux,
+            patch.object(eng, "_download_cdn_url", side_effect=self._write_cdn) as dl_cdn,
+            patch.object(eng, "_ffmpeg_download_with_audio", return_value=None) as dl_dash_all,
+            patch.object(eng, "_ffmpeg_download") as dl_single,
+        ):
+            result = eng.download_story(self.URL, self._config(tmp_path))
+
+        mux.assert_not_called()
+        dl_dash_all.assert_called_once()
+        assert dl_dash_all.call_args[0][0] == self.VIDEO_URL
+        dl_cdn.assert_called_once()
+        assert dl_cdn.call_args[0][0] == self.VIDEO_URL
+        dl_single.assert_not_called()
+        assert result.exists()
+
+    def test_no_video_but_progressive_succeeds_without_raising(self, tmp_path):
+        import infrastructure.downloader.facebook_story_engine as eng
+
+        with (
+            patch.object(
+                eng,
+                "_cdp_intercept",
+                return_value=(None, None, self.PROGRESSIVE_URL),
+            ),
+            patch.object(eng, "_ffmpeg_mux") as mux,
+            patch.object(eng, "_download_cdn_url", side_effect=self._write_cdn) as dl_cdn,
+            patch.object(eng, "_ffmpeg_download_with_audio") as dl_dash_all,
+            patch.object(eng, "_ffmpeg_download") as dl_single,
+            patch("utils.ffmpeg_locator.locate_ffmpeg", return_value=None),
+        ):
+            result = eng.download_story(self.URL, self._config(tmp_path))
+
+        mux.assert_not_called()
+        dl_cdn.assert_called_once()
+        assert dl_cdn.call_args[0][0] == self.PROGRESSIVE_URL
+        dl_dash_all.assert_not_called()
+        dl_single.assert_not_called()
+        assert result.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _POLL_PROGRESSIVE_JS / _POLL_AUDIO_JS — JS source string assertions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPollJsConstants:
+    """JS cannot execute under pytest, so sanity-check the source text
+    contains the expected key literals (same approach used elsewhere in this
+    suite for JS constants).
+    """
+
+    def test_poll_progressive_js_contains_hd_keys(self):
+        from infrastructure.downloader.facebook_story_engine import _POLL_PROGRESSIVE_JS
+
+        assert "playable_url_quality_hd" in _POLL_PROGRESSIVE_JS
+        assert "browser_native_hd_url" in _POLL_PROGRESSIVE_JS
+
+    def test_poll_progressive_js_contains_sd_keys(self):
+        from infrastructure.downloader.facebook_story_engine import _POLL_PROGRESSIVE_JS
+
+        assert "browser_native_sd_url" in _POLL_PROGRESSIVE_JS
+        assert "playable_url" in _POLL_PROGRESSIVE_JS
+        assert "progressive_url" in _POLL_PROGRESSIVE_JS
+
+    def test_poll_audio_js_strategy4_broadened_keys(self):
+        from infrastructure.downloader.facebook_story_engine import _POLL_AUDIO_JS
+
+        assert "dash_manifest" in _POLL_AUDIO_JS
+        assert "dash_manifest_xml_string" in _POLL_AUDIO_JS
+        assert "manifest_xml" in _POLL_AUDIO_JS
+        assert "playlist" in _POLL_AUDIO_JS

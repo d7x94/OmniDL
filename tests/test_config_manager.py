@@ -88,6 +88,17 @@ class TestConfigManagerPersistence:
         cfg.save()  # should not raise
 
 
+class TestConfigManagerPermissions:
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions only")
+    def test_saved_config_is_not_group_or_world_readable(self, tmp_path):
+        """M1: config.json (may hold the plaintext API bearer token) must not
+        be readable by other users on the machine."""
+        cfg = make_config(tmp_path)
+        cfg.set("max_concurrent", 5)
+        mode = (tmp_path / "config.json").stat().st_mode
+        assert mode & 0o077 == 0
+
+
 class TestConfigManagerThreadSafety:
     def test_concurrent_sets_do_not_corrupt(self, tmp_path):
         cfg = make_config(tmp_path)

@@ -522,3 +522,106 @@ class TestProfileWatchRearm:
         LiveMonitorTab._refresh_recording_items(tab)
 
         assert len(tab._items) == 2  # ENDED item + the pre-existing watch
+
+
+# ---------------------------------------------------------------------------
+# Instagram Live Monitor 429 death-spiral fix — desktop parity with
+# LiveMonitorService (check_now / _trigger_check headline bugs).
+# ---------------------------------------------------------------------------
+
+
+class TestForceCheckNow:
+    def _item(self, state):
+        from ui.tabs.live_monitor_tab import _MonitorItem
+
+        item = _MonitorItem(url="https://www.instagram.com/u/")
+        item.state = state
+        item.consecutive_failures = 3
+        item.error_msg = "blocked: rate limit"
+        return item
+
+    def test_resets_state_and_triggers_check(self):
+        import time
+
+        from ui.tabs.live_monitor_tab import LiveMonitorTab, _MonitorState
+
+        tab = _make_tab_stub()
+        item = self._item(_MonitorState.ERROR)
+        item.rate_limited_until = time.time() + 1000
+        tab._items = [item]
+        tab._checking_item = None
+        tab._paused = False
+        tab._refresh_item_ui = lambda i: None
+        triggered = []
+        tab._trigger_check = lambda i: triggered.append(i)
+
+        LiveMonitorTab._force_check_now(tab, item)
+
+        assert item.consecutive_failures == 0
+        assert item.error_msg == ""
+        assert item.rate_limited_until == 0.0
+        assert item.last_check == 0.0
+        assert item.state == _MonitorState.WAITING
+        assert triggered == [item]
+
+    def test_noop_when_recording(self):
+        from ui.tabs.live_monitor_tab import LiveMonitorTab, _MonitorState
+
+        tab = _make_tab_stub()
+        item = self._item(_MonitorState.RECORDING)
+        tab._items = [item]
+        tab._refresh_item_ui = lambda i: None
+
+        LiveMonitorTab._force_check_now(tab, item)
+
+        assert item.state == _MonitorState.RECORDING
+        assert item.consecutive_failures == 3  # untouched
+
+
+class TestDesktopTriggerCheckDeepFlag:
+    def _item(self, last_check):
+        from ui.tabs.live_monitor_tab import _MonitorItem
+
+        item = _MonitorItem(
+            url="https://www.instagram.com/testuser/",
+            is_profile_watch=True,
+            profile_platform="instagram",
+            username="testuser",
+        )
+        item.last_check = last_check
+        return item
+
+    def _tab(self, item):
+        tab = _make_tab_stub()
+        tab._items = [item]
+        tab._checking_item = None
+        tab._refresh_item_ui = lambda i: None
+        calls = []
+        tab._app.service = types.SimpleNamespace(
+            check_profile_live=lambda url, on_done, on_error, deep=False: calls.append(
+                {"url": url, "deep": deep}
+            )
+        )
+        return tab, calls
+
+    def test_deep_true_for_new_item(self):
+        from ui.tabs.live_monitor_tab import LiveMonitorTab
+
+        item = self._item(last_check=0.0)
+        tab, calls = self._tab(item)
+
+        LiveMonitorTab._trigger_check(tab, item)
+
+        assert calls[-1]["deep"] is True
+
+    def test_deep_false_on_periodic_poll(self):
+        import time
+
+        from ui.tabs.live_monitor_tab import LiveMonitorTab
+
+        item = self._item(last_check=time.time())
+        tab, calls = self._tab(item)
+
+        LiveMonitorTab._trigger_check(tab, item)
+
+        assert calls[-1]["deep"] is False

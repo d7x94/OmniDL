@@ -70,6 +70,9 @@ def fake_ydl_class(info_dict=None, raise_exc=None):
         def __exit__(self, *a):
             pass
 
+        def add_post_processor(self, pp, when=None):
+            pass
+
         def extract_info(self, url, download=False):
             if raise_exc:
                 raise raise_exc
@@ -275,6 +278,9 @@ class TestExtractInfoErrors:
                 def __exit__(self, *a):
                     pass
 
+                def add_post_processor(self, pp, when=None):
+                    pass
+
                 def extract_info(self, url, download=False):
                     return info_dict
 
@@ -312,6 +318,9 @@ class TestExtractInfoErrors:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, url, download=False):
                 return info_dict
 
@@ -337,6 +346,9 @@ class TestBackoffOpts:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def download(self, urls):
@@ -392,6 +404,9 @@ class TestCookieFileBoundary:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def extract_info(self, url, download=False):
@@ -606,6 +621,9 @@ class TestFinalFilenameResolution:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 # Simulate FFmpeg creating the final merged file.
                 # Must be > 50,000 bytes to pass the engine's size-scan threshold.
@@ -653,6 +671,9 @@ class TestFinalFilenameResolution:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 real_file.write_bytes(b"real" * 15000)  # >50KB to pass size-scan
                 part_file.write_bytes(b"partial")
@@ -680,6 +701,9 @@ class TestFinalFilenameResolution:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def download(self, urls):
@@ -742,6 +766,9 @@ class TestOutputDirAlwaysAbsolute:
                 def __exit__(self, *a):
                     pass
 
+                def add_post_processor(self, pp, when=None):
+                    pass
+
                 def download(self, urls):
                     # Create a dummy file so size-scan doesn't fail
                     dl_dir = exe_dir / "downloads"
@@ -786,6 +813,9 @@ class TestOutputDirAlwaysAbsolute:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def download(self, urls):
@@ -883,6 +913,9 @@ class TestInstagramLive:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, u, download):
                 return fake_info
 
@@ -928,6 +961,9 @@ class TestInstagramLive:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, u, download):
                 return fake_info
 
@@ -962,6 +998,9 @@ class TestInstagramLive:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def extract_info(self, u, download):
@@ -1002,6 +1041,9 @@ class TestInstagramLive:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def extract_info(self, u, download):
@@ -1102,6 +1144,145 @@ class TestInstagramLive:
 # ---------------------------------------------------------------------------
 
 
+class TestInstagramCookieInvalidation:
+    """BUG-IG-COOKIE: yt-dlp 2026.07.04 Instagram extractor rework detects an
+    expired/invalid session cookie mid-extraction and emits a warning
+    ("...cookies are no longer valid") before clearing the cookie and
+    retrying logged-out. With quiet=True/no_warnings=True and no logger
+    attached, this warning was previously swallowed entirely — the user only
+    saw a generic downstream login-required error. Attaching a logger for
+    Instagram surfaces the warning and lets a subsequent failure be
+    reclassified as a non-retryable, actionable cookie-refresh error.
+    """
+
+    def test_extract_info_actionable_after_cookie_warning(self):
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self._logger = opts.get("logger")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
+            def extract_info(self, url, download=False):
+                if self._logger is not None:
+                    self._logger.warning("The provided Instagram account cookies are no longer valid")
+                raise yt_dlp.utils.DownloadError(
+                    "This content is only available for registered users who follow this account"
+                )
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with pytest.raises(RuntimeError, match="[Cc]ookie"):
+                engine.extract_info("https://www.instagram.com/p/ABC123xyz/")
+
+    def test_extract_info_no_logger_for_non_instagram_url(self):
+        """Only Instagram URLs get the cookie-watch logger attached."""
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        captured = {}
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured.update(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
+            def extract_info(self, url, download=False):
+                return {
+                    "title": "T",
+                    "uploader": "U",
+                    "duration": 1,
+                    "thumbnail": "",
+                    "formats": [],
+                    "is_live": False,
+                    "was_live": False,
+                }
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.extract_info("https://youtube.com/watch?v=abc")
+        assert captured.get("logger") is None
+
+    def test_extract_info_unrelated_warning_not_misclassified(self):
+        """A different IG warning must NOT trigger the cookie-expired message —
+        the underlying error's own friendly translation should surface instead."""
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self._logger = opts.get("logger")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
+            def extract_info(self, url, download=False):
+                if self._logger is not None:
+                    self._logger.warning("No CSRF token set by Instagram API")
+                raise yt_dlp.utils.DownloadError("This video is private")
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with pytest.raises(RuntimeError) as exc_info:
+                engine.extract_info("https://www.instagram.com/p/ABC123xyz/")
+        assert "hết hạn" not in str(exc_info.value)
+        assert "private" in str(exc_info.value).lower()
+
+    def test_download_actionable_after_cookie_warning(self):
+        cfg = make_config()
+        engine = YtDlpEngine(cfg)
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        url = "https://www.instagram.com/p/ABC123xyz/"
+        task = DownloadTask(url=url, format_id="best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="IG post", is_live=False)
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self._logger = opts.get("logger")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
+            def download(self, urls):
+                if self._logger is not None:
+                    self._logger.warning("The provided Instagram account cookies are no longer valid")
+                raise yt_dlp.utils.DownloadError("The webpage request was redirected to the login page.")
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            with pytest.raises(RuntimeError, match="[Cc]ookie"):
+                engine.download(task)
+
+
 class TestInstagramPhoto:
     """Regression tests for Instagram photo post handling.
 
@@ -1177,6 +1358,9 @@ class TestInstagramPhoto:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, u, download):
                 raise yt_dlp.utils.DownloadError(error_msg)
 
@@ -1217,6 +1401,9 @@ class TestInstagramPhoto:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def extract_info(self, u, download):
@@ -1262,6 +1449,9 @@ class TestInstagramPhoto:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def extract_info(self, u, download):
@@ -1330,6 +1520,9 @@ class TestInstagramPhoto:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, u, download):
                 call_count["n"] += 1
                 raise yt_dlp.utils.DownloadError(
@@ -1389,6 +1582,9 @@ class TestBugTtProd:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def download(self, urls):
@@ -1490,6 +1686,9 @@ class TestBugTtProd:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, url, download=False):
                 # musical_ly app_info client exposes h264 format; others audio-only
                 ea = self._opts.get("extractor_args", {}).get("tiktok", {})
@@ -1576,6 +1775,9 @@ class TestBugTtProd:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, url, download=False):
                 # All clients return audio-only formats — no video track available
                 return {"formats": [{"format_id": "audio", "vcodec": "none", "ext": "m4a"}]}
@@ -1628,6 +1830,9 @@ class TestBugTtProd:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def download(self, urls):
@@ -2363,3 +2568,56 @@ class TestLiveFinalizeBlock:
             _src.parent.resolve() != output_dir.resolve() or _src.name.startswith("live_")
         )
         assert not _needs_finalize
+
+
+# ---------------------------------------------------------------------------
+# _FacebookMetaFixupPP — BUG-FB-META garbage uploader/title fallback
+# ---------------------------------------------------------------------------
+
+
+class TestFacebookMetaFixupPP:
+    def test_missing_uploader_and_generic_title_with_description(self):
+        from infrastructure.downloader.yt_dlp_engine import _FacebookMetaFixupPP
+
+        info = {
+            "extractor_key": "Facebook",
+            "title": "Facebook",
+            "uploader_id": "61562087491066",
+            "description": "A real post description here",
+        }
+        _, out = _FacebookMetaFixupPP().run(info)
+        assert out["uploader"] == "FB_61562087491066"
+        assert out["title"] == "A real post description here"
+
+    def test_generic_title_no_description_falls_back_to_id(self):
+        from infrastructure.downloader.yt_dlp_engine import _FacebookMetaFixupPP
+
+        info = {
+            "extractor_key": "Facebook",
+            "title": "Facebook",
+            "uploader_id": "61562087491066",
+            "id": "134526052442",
+        }
+        _, out = _FacebookMetaFixupPP().run(info)
+        assert out["title"] == "Facebook video 134526052442"
+
+    def test_existing_uploader_not_overwritten(self):
+        from infrastructure.downloader.yt_dlp_engine import _FacebookMetaFixupPP
+
+        info = {
+            "extractor_key": "Facebook",
+            "title": "Real title",
+            "uploader": "Real Uploader",
+            "uploader_id": "61562087491066",
+        }
+        _, out = _FacebookMetaFixupPP().run(info)
+        assert out["uploader"] == "Real Uploader"
+        assert out["title"] == "Real title"
+
+    def test_non_facebook_extractor_is_noop(self):
+        from infrastructure.downloader.yt_dlp_engine import _FacebookMetaFixupPP
+
+        info = {"extractor_key": "Instagram", "title": "Facebook", "uploader_id": "123"}
+        _, out = _FacebookMetaFixupPP().run(info)
+        assert out["title"] == "Facebook"
+        assert "uploader" not in out

@@ -1967,6 +1967,15 @@ class TestFindOutputPathCollisions:
         result = FfmpegConvertService._find_output_path(tmp_path, src, ".mkv")
         assert result.suffix == ".mkv"
 
+    def test_allowlisted_exts_stay_under_dest(self, tmp_path: Path):
+        """H2 regression: every allowlisted target_ext must resolve under dest_dir."""
+        from app.services.remote_convert_service import _VALID_EXTS
+
+        src = tmp_path / "clip.mkv"
+        for ext in _VALID_EXTS:
+            result = FfmpegConvertService._find_output_path(tmp_path, src, ext)
+            assert result.resolve().is_relative_to(tmp_path.resolve())
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FfmpegConvertService._validate_output

@@ -1,19 +1,25 @@
 """Tests for infrastructure/downloader/waaw_engine.py URL matching and HLS fallback."""
 
 import json
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from domain.models.download_task import DownloadTask
+from infrastructure.downloader.download_manager import DownloadManager
 from infrastructure.downloader.waaw_engine import (
     _AD_BLOCK_URLS,
     _JS_MATCH,
     WaawEngine,
+    _handle_request_paused,
     _hls_download,
     _is_waaw_cdn_url,
+    _needs_captcha,
     _parse_get_md5_manifest,
     _un,
+    is_waaw_cdn_link,
     is_waaw_url,
 )
 
@@ -27,23 +33,25 @@ class TestAdBlockUrls:
     def test_non_empty(self):
         assert _AD_BLOCK_URLS
 
-    def test_contains_log_grounded_ad_hosts(self):
+    def test_contains_overlay_click_stealer_hosts(self):
         blob = " ".join(_AD_BLOCK_URLS)
-        assert "bigboxads.com" in blob
-        assert "videocdnmetrika.com" in blob
         assert "counter.yadro.ru" in blob
+        assert "/ad/banner/" in blob
 
-    def test_contains_vast_waterfall_hosts(self):
-        # BUG-WAAW-01: waaw.ac's preroll VAST waterfall (player/waterfall.php
-        # -> these five ad exchanges tried in sequence) was consuming the
-        # full 60s poll window before the real CDN request ever fired.
+    def test_does_not_block_vast_waterfall_hosts(self):
+        # BUG-WAAW-02: these exchanges feed get_md5.php's `adscore` field.
+        # Blocking them left adscore empty and the player stuck on
+        # need_captcha forever, so they must stay unblocked.
         blob = " ".join(_AD_BLOCK_URLS)
-        assert "twinrdsyte.com" in blob
-        assert "megawebify.my" in blob
-        assert "videosprofitnetwork.com" in blob
-        assert "magsrv.com" in blob
-        assert "vstserv.com" in blob
-        assert "yomeno.xyz" in blob
+        assert "twinrdsyte.com" not in blob
+        assert "megawebify.my" not in blob
+        assert "videosprofitnetwork.com" not in blob
+        assert "magsrv.com" not in blob
+        assert "vstserv.com" not in blob
+        assert "yomeno.xyz" not in blob
+        assert "bigboxads.com" not in blob
+        assert "videocdnmetrika.com" not in blob
+        assert "netu.php" not in blob
 
 
 class TestIsWaawUrl:
@@ -170,6 +178,38 @@ class TestParseGetMd5Manifest:
         with pytest.raises(json.JSONDecodeError):
             _parse_get_md5_manifest("not json")
 
+    def test_sentinel_obf_link_returns_none(self):
+        # obf_link "0" decodes to "" -> manifest "https:" -- junk that must
+        # not be accepted as a real manifest URL.
+        assert _parse_get_md5_manifest(json.dumps({"obf_link": "0"})) is None
+
+    def test_pending_response_returns_none(self):
+        body = json.dumps({"pending": "1", "obf_link": "0"})
+        assert _parse_get_md5_manifest(body) is None
+
+    def test_blocked_response_returns_none(self):
+        assert _parse_get_md5_manifest(json.dumps({"blocked": "1"})) is None
+
+    def test_ready_response_with_valid_obf_link_builds_manifest(self):
+        # Regression guard for BUG-WAAW-03: pending:"0" must not be treated
+        # as truthy (bool("0") is True in Python) and discard a ready response.
+        body = json.dumps({"pending": "0", "need_captcha": "0", "obf_link": "//host.cfeucdn.com/x.m3u8"})
+        assert _parse_get_md5_manifest(body) == "https://host.cfeucdn.com/x.m3u8"
+
+    def test_need_captcha_response_returns_none(self):
+        # Real anti-bot wall body: obf_link is the "#" sentinel.
+        body = json.dumps(
+            {
+                "pending": "0",
+                "need_captcha": "1",
+                "adscore": "",
+                "try_again": "1",
+                "updatecxt": "1",
+                "obf_link": "#",
+            }
+        )
+        assert _parse_get_md5_manifest(body) is None
+
 
 class TestGetMd5RoutingFix:
     def _make_task(self, tmp_path):
@@ -205,3 +245,188 @@ class TestGetMd5RoutingFix:
             engine.download(task)
         stream.assert_called_once()
         hls.assert_not_called()
+
+
+class TestNeedsCaptcha:
+    def test_true_on_captcha_wall_body(self):
+        body = json.dumps(
+            {"pending": "0", "need_captcha": "1", "adscore": "", "try_again": "1", "obf_link": "#"}
+        )
+        assert _needs_captcha(body)
+
+    def test_false_on_ready_body(self):
+        body = json.dumps({"pending": "0", "need_captcha": "0", "obf_link": "//host.cfeucdn.com/x.m3u8"})
+        assert not _needs_captcha(body)
+
+    def test_false_on_non_captcha_junk(self):
+        assert not _needs_captcha("not json, no urls here at all")
+
+
+class TestParseGetMd5ManifestRegexFallback:
+    def test_non_json_body_with_real_manifest_url_returns_it(self):
+        body = '<html><script>var x={"other":1,"m":"https://f9rw3r.cfglobalcdn.com/x/y.m3u8?t=1"}</script></html>'
+        assert _parse_get_md5_manifest(body) == "https://f9rw3r.cfglobalcdn.com/x/y.m3u8?t=1"
+
+    def test_non_json_body_with_obf_link_key_returns_manifest(self):
+        body = '<html>{"obf_link": "//host.cfeucdn.com/x.m3u8", garbage</html>'
+        assert _parse_get_md5_manifest(body) == "https://host.cfeucdn.com/x.m3u8"
+
+    def test_non_json_body_with_only_decoy_url_returns_none(self):
+        body = "<html>redirect to https://127.0.0.1/no_video.mp4.m3u8</html>"
+        assert _parse_get_md5_manifest(body) is None
+
+    def test_garbage_body_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_get_md5_manifest("not json, no urls here at all")
+
+    def test_non_json_body_with_junk_obf_link_returns_none(self):
+        body = '<html>{"obf_link": "0", garbage</html>'
+        assert _parse_get_md5_manifest(body) is None
+
+
+class FakeCdpSession:
+    def __init__(self, response_body: dict):
+        self._response_body = response_body
+        self.sent: list[tuple[str, dict]] = []
+
+    def send(self, method: str, params: dict | None = None):
+        self.sent.append((method, params or {}))
+        if method == "Fetch.getResponseBody":
+            return self._response_body
+        return {}
+
+
+class TestHandleRequestPaused:
+    def test_get_md5_response_stage_with_valid_body_captures_manifest(self):
+        body = json.dumps({"obf_link": "//host.cfeucdn.com/x.m3u8"})
+        session = FakeCdpSession({"body": body, "base64Encoded": False})
+        captured: list[str] = []
+        captcha_event = threading.Event()
+        params = {
+            "requestId": "req1",
+            "responseStatusCode": 200,
+            "request": {"url": "https://waaw.ac/player/get_md5.php?id=1"},
+        }
+        _handle_request_paused(session, params, captured, captcha_event)
+        assert captured == ["https://host.cfeucdn.com/x.m3u8"]
+        assert ("Fetch.continueResponse", {"requestId": "req1"}) in session.sent
+        assert not captcha_event.is_set()
+
+    def test_ad_url_pause_sends_vast_stub(self):
+        session = FakeCdpSession({})
+        captured: list[str] = []
+        captcha_event = threading.Event()
+        params = {"requestId": "req2", "request": {"url": "https://bigboxads.com/x"}}
+        _handle_request_paused(session, params, captured, captcha_event)
+        assert captured == []
+        methods = [m for m, _ in session.sent]
+        assert "Fetch.fulfillRequest" in methods
+        assert "Fetch.getResponseBody" not in methods
+
+    def test_get_md5_unparseable_body_still_continues_response(self):
+        # Body that makes _parse_get_md5_manifest raise (no JSON, no
+        # recoverable obf_link/manifest URL). The paused Fetch request must
+        # still be resumed, or the browser hangs on this request forever.
+        session = FakeCdpSession({"body": "not json, no urls here at all", "base64Encoded": False})
+        captured: list[str] = []
+        captcha_event = threading.Event()
+        params = {
+            "requestId": "req3",
+            "responseStatusCode": 200,
+            "request": {"url": "https://waaw.ac/player/get_md5.php?id=1"},
+        }
+        _handle_request_paused(session, params, captured, captcha_event)
+        assert captured == []
+        assert ("Fetch.continueResponse", {"requestId": "req3"}) in session.sent
+
+    def test_captcha_wall_body_sets_event_and_still_continues_response(self):
+        body = json.dumps(
+            {
+                "pending": "0",
+                "need_captcha": "1",
+                "adscore": "",
+                "try_again": "1",
+                "obf_link": "#",
+            }
+        )
+        session = FakeCdpSession({"body": body, "base64Encoded": False})
+        captured: list[str] = []
+        captcha_event = threading.Event()
+        params = {
+            "requestId": "req4",
+            "responseStatusCode": 200,
+            "request": {"url": "https://waaw.ac/player/get_md5.php?id=1"},
+        }
+        _handle_request_paused(session, params, captured, captcha_event)
+        assert captured == []
+        assert captcha_event.is_set()
+        assert ("Fetch.continueResponse", {"requestId": "req4"}) in session.sent
+
+
+class TestIsWaawCdnLink:
+    def test_accepts_cfglobalcdn_m3u8(self):
+        url = (
+            "https://f9rw3r.cfglobalcdn.com/silverlight/secip/213969/0/"
+            "WQPVj8WRlOiJOC3iC4RR8w/MTYwLjE4Ny4xNDguMTQ0/1782980549/"
+            "hls-vod-s0013/flv/api/files/videos/2026/03/15/1773568531d5pmp.mp4.m3u8"
+        )
+        assert is_waaw_cdn_link(url)
+
+    def test_accepts_cfeucdn_mp4(self):
+        assert is_waaw_cdn_link("https://edge1.cfeucdn.com/x/y/video.mp4")
+
+    def test_rejects_waaw_page_url(self):
+        assert not is_waaw_cdn_link("https://waaw.ac/f/ofYvCQ2DQBDk")
+
+    def test_rejects_random_m3u8_host(self):
+        assert not is_waaw_cdn_link("https://example.com/x/y.m3u8")
+
+    def test_rejects_localhost_decoy(self):
+        assert not is_waaw_cdn_link("https://127.0.0.1/no_video.mp4.m3u8")
+
+
+class TestCdnLinkShortCircuit:
+    def test_cdn_link_skips_intercept_and_derives_filename(self, tmp_path):
+        cdn_url = (
+            "https://f9rw3r.cfglobalcdn.com/silverlight/secip/213969/0/"
+            "WQPVj8WRlOiJOC3iC4RR8w/MTYwLjE4Ny4xNDguMTQ0/1782980549/"
+            "hls-vod-s0013/flv/api/files/videos/2026/03/15/1773568531d5pmp.mp4.m3u8"
+        )
+        task = DownloadTask(url=cdn_url, output_dir=str(tmp_path))
+        engine = WaawEngine(config=MagicMock())
+        with (
+            patch("infrastructure.downloader.waaw_engine._cdp_intercept_waaw") as intercept,
+            patch("infrastructure.downloader.waaw_engine._hls_download") as hls,
+            patch("infrastructure.downloader.waaw_engine._stream_download") as stream,
+        ):
+            engine.download(task)
+        intercept.assert_not_called()
+        hls.assert_called_once()
+        stream.assert_not_called()
+        assert task.filename == str(tmp_path / "waaw_1773568531d5pmp.mp4")
+
+
+class TestDownloadManagerCdnLinkRouting:
+    def test_cdn_link_routes_to_waaw_engine(self, tmp_path):
+        yt_engine = MagicMock()
+        waaw_engine = MagicMock()
+        cfg = MagicMock()
+        cfg.max_concurrent = 2
+        cfg.max_retries = 1
+        bus = MagicMock()
+        bus.publish = MagicMock()
+        mgr = DownloadManager(config=cfg, engine=yt_engine, event_bus=bus, waaw_engine=waaw_engine)
+        mgr.start()
+        try:
+            task = DownloadTask(
+                url="https://f9rw3r.cfglobalcdn.com/x/video.mp4",
+                output_dir=str(tmp_path),
+            )
+            mgr.enqueue(task)
+            deadline = time.time() + 5
+            while not waaw_engine.download.called and time.time() < deadline:
+                time.sleep(0.02)
+            waaw_engine.download.assert_called_once()
+            yt_engine.download.assert_not_called()
+        finally:
+            mgr.shutdown(wait=False)

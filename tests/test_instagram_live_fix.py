@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 import tempfile
 import time
 from unittest.mock import MagicMock, patch
@@ -53,16 +54,30 @@ def _make_cookie_file(extras: dict[str, str] | None = None) -> str:
     return tmp.name
 
 
-def _make_response(status: int = 200, json_data: dict | None = None, text: str = "") -> MagicMock:
-    """Build a mock requests.Response."""
+def _make_response(
+    status: int = 200,
+    json_data: dict | None = None,
+    text: str = "",
+    headers: dict | None = None,
+) -> MagicMock:
+    """Build a mock curl_cffi/requests Response."""
     resp = MagicMock()
     resp.status_code = status
     resp.text = text
+    resp.headers = headers or {}
     if json_data is not None:
         resp.json.return_value = json_data
     else:
         resp.json.side_effect = ValueError("no json")
     return resp
+
+
+def _make_session_mock(resp: MagicMock) -> MagicMock:
+    """Return a mock session whose .get() returns *resp*."""
+    session = MagicMock()
+    session.get.return_value = resp
+    session.cookies = MagicMock()
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -76,17 +91,14 @@ class TestCSRFTokenHeader:
     def test_csrftoken_sent_in_header(self, tmp_path):
         cookie_path = _make_cookie_file({"csrftoken": "mytoken123"})
         resp = _make_response(200, {"data": {"user": {}}})
+        session = _make_session_mock(resp)
 
-        with patch("requests.get", return_value=resp) as mock_get:
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             check_instagram_live("someuser", cookie_path)
 
-        _, kwargs = mock_get.call_args
-        headers = kwargs.get("headers") or mock_get.call_args[0][1] if len(mock_get.call_args[0]) > 1 else {}
-        # headers may be in kwargs
-        if not headers:
-            headers = mock_get.call_args.kwargs.get("headers", {})
+        headers = session.get.call_args.kwargs.get("headers", {})
         assert headers.get("X-CSRFToken") == "mytoken123"
 
     def test_csrftoken_empty_string_when_cookie_absent(self, tmp_path):
@@ -96,38 +108,41 @@ class TestCSRFTokenHeader:
         no_csrf = tmp_path / "no_csrf.txt"
         no_csrf.write_text(_NETSCAPE_HEADER + ".instagram.com\tTRUE\t/\tTRUE\t9999999999\tsessionid\tabc\n")
         resp = _make_response(200, {"data": {"user": {}}})
+        session = _make_session_mock(resp)
 
-        with patch("requests.get", return_value=resp) as mock_get:
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             check_instagram_live("someuser", str(no_csrf))
 
-        headers = mock_get.call_args.kwargs.get("headers", {})
+        headers = session.get.call_args.kwargs.get("headers", {})
         assert "X-CSRFToken" in headers
         assert headers["X-CSRFToken"] == ""  # graceful fallback
 
     def test_x_ig_www_claim_sent(self, tmp_path):
         cookie_path = _make_cookie_file()
         resp = _make_response(200, {"data": {"user": {}}})
+        session = _make_session_mock(resp)
 
-        with patch("requests.get", return_value=resp) as mock_get:
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             check_instagram_live("someuser", cookie_path)
 
-        headers = mock_get.call_args.kwargs.get("headers", {})
+        headers = session.get.call_args.kwargs.get("headers", {})
         assert "X-IG-WWW-Claim" in headers
 
     def test_origin_header_sent(self, tmp_path):
         cookie_path = _make_cookie_file()
         resp = _make_response(200, {"data": {"user": {}}})
+        session = _make_session_mock(resp)
 
-        with patch("requests.get", return_value=resp) as mock_get:
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             check_instagram_live("someuser", cookie_path)
 
-        headers = mock_get.call_args.kwargs.get("headers", {})
+        headers = session.get.call_args.kwargs.get("headers", {})
         assert headers.get("Origin") == "https://www.instagram.com"
 
 
@@ -145,7 +160,8 @@ class TestLiveFieldDetection:
 
     def _run(self, user_data: dict):
         resp = _make_response(200, {"data": {"user": user_data}})
-        with patch("requests.get", return_value=resp):
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             return check_instagram_live("testuser", self.cookie_path)
@@ -199,7 +215,8 @@ class TestLiveFieldDetection:
     def test_fallback_user_key(self):
         """API sometimes returns data at top-level 'user' key, not 'data.user'."""
         resp = _make_response(200, {"user": {"is_live": True}})
-        with patch("requests.get", return_value=resp):
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             result = check_instagram_live("testuser", self.cookie_path)
@@ -218,24 +235,41 @@ class TestEmptyUserData:
 
     def test_empty_user_dict(self):
         resp = _make_response(200, {"data": {"user": {}}})
-        with patch("requests.get", return_value=resp):
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             assert check_instagram_live("nobody", self.cookie_path) is None
 
     def test_null_user(self):
         resp = _make_response(200, {"data": {"user": None}})
-        with patch("requests.get", return_value=resp):
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             assert check_instagram_live("nobody", self.cookie_path) is None
 
     def test_missing_data_key(self):
         resp = _make_response(200, {"status": "ok"})
-        with patch("requests.get", return_value=resp):
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             assert check_instagram_live("nobody", self.cookie_path) is None
+
+    def test_empty_user_logs_warning(self, caplog):
+        """Empty user data was silently logger.debug before — must now be a WARNING."""
+        resp = _make_response(200, {"data": {"user": {}}})
+        session = _make_session_mock(resp)
+        caplog.set_level(logging.WARNING)
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            result = check_instagram_live("nobody", self.cookie_path)
+
+        assert result is None
+        assert "empty user data" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +313,8 @@ class TestHTTPErrors:
 
     def _run(self, status: int):
         resp = _make_response(status, json_data=None, text="error")
-        with patch("requests.get", return_value=resp):
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             check_instagram_live("user", self.cookie_path)
@@ -301,15 +336,35 @@ class TestHTTPErrors:
             self._run(429)
 
     def test_invalid_json_200_raises(self):
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.text = "<html>not json</html>"
-        resp.json.side_effect = ValueError("no json")
-        with patch("requests.get", return_value=resp):
+        resp = _make_response(200, json_data=None, text="<html>not json</html>")
+        session = _make_session_mock(resp)
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
             with pytest.raises(RuntimeError):
                 check_instagram_live("user", self.cookie_path)
+
+    @pytest.mark.parametrize("status", [401, 403, 404, 429])
+    def test_error_status_logs_warning(self, caplog, status):
+        """Every non-200 status must be logged as a WARNING (was blind before)."""
+        caplog.set_level(logging.WARNING)
+        with pytest.raises(RuntimeError):
+            self._run(status)
+        assert str(status) in caplog.text
+
+    def test_429_logs_retry_after(self, caplog):
+        resp = _make_response(429, json_data=None, text="error", headers={"Retry-After": "120"})
+        session = _make_session_mock(resp)
+        caplog.set_level(logging.WARNING)
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            with pytest.raises(RuntimeError, match=r"blocked.*Rate limit"):
+                check_instagram_live("user", self.cookie_path)
+
+        assert "429" in caplog.text
+        assert "120" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -322,32 +377,136 @@ class TestNetworkErrors:
     def _cookie(self):
         self.cookie_path = _make_cookie_file()
 
-    def test_connection_error(self):
-        import requests as req_mod
-
-        with patch("requests.get", side_effect=req_mod.exceptions.ConnectionError("refused")):
+    def _run_with_session_error(self, exc: Exception):
+        session = MagicMock()
+        session.get.side_effect = exc
+        session.cookies = MagicMock()
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
             from utils.instagram_live_checker import check_instagram_live
 
-            with pytest.raises(RuntimeError, match="kết nối"):
-                check_instagram_live("user", self.cookie_path)
+            check_instagram_live("user", self.cookie_path)
+
+    def test_connection_error(self):
+        # curl_cffi exceptions are not requests.exceptions subclasses — the
+        # checker matches by message substring instead.
+        with pytest.raises(RuntimeError, match="kết nối"):
+            self._run_with_session_error(Exception("Connection refused"))
 
     def test_timeout_error(self):
-        import requests as req_mod
-
-        with patch("requests.get", side_effect=req_mod.exceptions.Timeout()):
-            from utils.instagram_live_checker import check_instagram_live
-
-            with pytest.raises(RuntimeError, match="thời gian"):
-                check_instagram_live("user", self.cookie_path)
+        with pytest.raises(RuntimeError, match="thời gian"):
+            self._run_with_session_error(Exception("Request timeout"))
 
     def test_generic_request_error(self):
-        import requests as req_mod
+        with pytest.raises(RuntimeError, match="HTTP"):
+            self._run_with_session_error(Exception("something went wrong"))
 
-        with patch("requests.get", side_effect=req_mod.exceptions.RequestException("boom")):
+
+# ---------------------------------------------------------------------------
+# 6b. Impersonation routing — checker must use the shared curl_cffi session
+# ---------------------------------------------------------------------------
+
+
+class TestImpersonationRouting:
+    def test_routes_through_impersonate_session_with_jar(self, tmp_path):
+        from http.cookiejar import MozillaCookieJar
+
+        cookie_path = _make_cookie_file()
+        resp = _make_response(200, {"data": {"user": {}}})
+        session = _make_session_mock(resp)
+
+        with patch(
+            "utils.instagram_live_checker.get_shared_session", return_value=session
+        ) as mock_get_session:
             from utils.instagram_live_checker import check_instagram_live
 
-            with pytest.raises(RuntimeError, match="HTTP"):
-                check_instagram_live("user", self.cookie_path)
+            check_instagram_live("someuser", cookie_path)
+
+        mock_get_session.assert_called_once()
+        (jar_arg,), _kwargs = mock_get_session.call_args
+        assert isinstance(jar_arg, MozillaCookieJar)
+        # BUG-IG-ANTIBOT: the session is now long-lived (get_shared_session
+        # keeps it alive across polls) -- it must NOT be closed after a check.
+        session.close.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 6c. Deep story-feed fallback
+# ---------------------------------------------------------------------------
+
+
+class TestDeepStoryFallback:
+    @pytest.fixture(autouse=True)
+    def _cookie(self):
+        self.cookie_path = _make_cookie_file()
+
+    def test_deep_false_makes_single_request(self):
+        resp = _make_response(200, {"data": {"user": {"id": "999", "is_live": False}}})
+        session = _make_session_mock(resp)
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            result = check_instagram_live("user", self.cookie_path, deep=False)
+
+        assert result is None
+        assert session.get.call_count == 1
+
+    def test_deep_true_story_broadcast_detected(self):
+        profile_resp = _make_response(200, {"data": {"user": {"id": "999", "is_live": False}}})
+        story_resp = _make_response(200, {"broadcast": {"id": "bcast1"}})
+        session = MagicMock()
+        session.get.side_effect = [profile_resp, story_resp]
+        session.cookies = MagicMock()
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            result = check_instagram_live("user", self.cookie_path, deep=True)
+
+        assert result == "https://www.instagram.com/user/live/"
+        assert session.get.call_count == 2
+        story_call = session.get.call_args_list[1]
+        story_url = story_call.args[0]
+        assert "/feed/user/999/story/" in story_url
+
+    def test_deep_true_story_error_returns_none_without_raising(self):
+        profile_resp = _make_response(200, {"data": {"user": {"id": "999", "is_live": False}}})
+        session = MagicMock()
+        session.get.side_effect = [profile_resp, Exception("boom")]
+        session.cookies = MagicMock()
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            result = check_instagram_live("user", self.cookie_path, deep=True)
+
+        assert result is None
+
+    def test_deep_true_story_500_returns_none(self):
+        profile_resp = _make_response(200, {"data": {"user": {"id": "999", "is_live": False}}})
+        story_resp = _make_response(500, json_data=None, text="error")
+        session = MagicMock()
+        session.get.side_effect = [profile_resp, story_resp]
+        session.cookies = MagicMock()
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            result = check_instagram_live("user", self.cookie_path, deep=True)
+
+        assert result is None
+
+    def test_deep_true_missing_user_id_skips_story_call(self):
+        profile_resp = _make_response(200, {"data": {"user": {"is_live": False}}})  # no id/pk
+        session = _make_session_mock(profile_resp)
+
+        with patch("utils.instagram_live_checker.get_shared_session", return_value=session):
+            from utils.instagram_live_checker import check_instagram_live
+
+            result = check_instagram_live("user", self.cookie_path, deep=True)
+
+        assert result is None
+        assert session.get.call_count == 1  # story API never called
 
 
 # ---------------------------------------------------------------------------
@@ -718,3 +877,264 @@ class TestFfmpegInvocation:
 
         assert "-loglevel" in captured["cmd"]
         assert "warning" in captured["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# 20. Re-capture + resume loop (BUG-IG-RESUME)
+# ---------------------------------------------------------------------------
+
+
+class TestResumeLoop:
+    """download() must survive a mid-stream stall by re-capturing a fresh URL
+    and resuming, only failing when nothing was recorded."""
+
+    def _setup(self, tmp_path, monkeypatch, captures, records):
+        """Patch capture/record/ffmpeg. *captures* and *records* are lists of
+        return values popped per call. Returns (engine, task, calls)."""
+        import infrastructure.downloader.instagram_live_engine as eng_mod
+        from domain.models.download_task import DownloadTask
+        from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+
+        task = DownloadTask(url="https://www.instagram.com/someuser/live/17900000000000000/")
+        task.output_dir = str(tmp_path)
+        engine = InstagramLiveEngine(MagicMock())
+
+        calls = {"capture_timeouts": [], "record_paths": []}
+
+        def fake_capture(self, task, url, username, timeout):
+            calls["capture_timeouts"].append(timeout)
+            return captures.pop(0)
+
+        def fake_record(
+            self, task, hls_url, headers, url, output_path, is_dash, ffmpeg_bin, base, on_progress
+        ):
+            calls["record_paths"].append(output_path)
+            reason, n = records.pop(0)
+            if n > 0:
+                from pathlib import Path as _P
+
+                _P(output_path).write_bytes(b"x" * n)
+            return reason, n
+
+        loc = MagicMock()
+        loc.ffmpeg_bin = "/usr/bin/ffmpeg"
+        concat_mock = MagicMock()
+
+        monkeypatch.setattr(InstagramLiveEngine, "_capture_stream_url", fake_capture)
+        monkeypatch.setattr(InstagramLiveEngine, "_record_segment", fake_record)
+        monkeypatch.setattr(eng_mod, "_concat_parts", concat_mock)
+        monkeypatch.setattr("utils.ffmpeg_locator.locate_ffmpeg", lambda: loc)
+
+        return engine, task, calls, concat_mock, eng_mod
+
+    def test_recapture_resumes_and_concats_multiple_parts(self, tmp_path, monkeypatch):
+        import infrastructure.downloader.instagram_live_engine as eng_mod
+
+        big = eng_mod._MIN_PART_BYTES + 10
+        engine, task, calls, concat_mock, _ = self._setup(
+            tmp_path,
+            monkeypatch,
+            captures=[
+                ("https://x.fbcdn.net/live-dash/y.mpd", {"a": "b"}),
+                ("https://x.fbcdn.net/live-dash/y2.mpd", {"a": "b"}),
+                (None, {}),
+            ],
+            records=[("stall", big), ("stall", big)],
+        )
+
+        engine.download(task)  # must not raise
+
+        # First capture uses the full 120s window; resume uses the shorter one.
+        from infrastructure.downloader.instagram_live_engine import (
+            _CDP_HLS_WAIT_S,
+            _RESUME_CDP_WAIT_S,
+        )
+
+        assert calls["capture_timeouts"][0] == _CDP_HLS_WAIT_S
+        assert _RESUME_CDP_WAIT_S in calls["capture_timeouts"][1:]
+        # Two recorded parts -> concat into the final file.
+        assert concat_mock.call_count == 1
+        _bin, parts, out = concat_mock.call_args[0]
+        assert len(parts) == 2
+        assert str(task.filename) == str(out)
+
+    def test_single_part_renamed_to_output(self, tmp_path, monkeypatch):
+        import infrastructure.downloader.instagram_live_engine as eng_mod
+
+        big = eng_mod._MIN_PART_BYTES + 10
+        engine, task, calls, concat_mock, _ = self._setup(
+            tmp_path,
+            monkeypatch,
+            captures=[("https://x.fbcdn.net/live-dash/y.mpd", {"a": "b"}), (None, {})],
+            records=[("stall", big)],
+        )
+
+        engine.download(task)  # must not raise
+
+        assert concat_mock.call_count == 0  # single part -> rename, no concat
+        from pathlib import Path
+
+        assert Path(task.filename).exists()
+        assert Path(task.filename).suffix == ".mkv"  # DASH .mpd -> matroska
+
+    def test_no_data_ever_raises_after_empty_parts(self, tmp_path, monkeypatch):
+        import infrastructure.downloader.instagram_live_engine as eng_mod
+
+        # Capture always succeeds, but every record returns 0 bytes.
+        engine, task, calls, concat_mock, _ = self._setup(
+            tmp_path,
+            monkeypatch,
+            captures=[("https://x.fbcdn.net/live-dash/y.mpd", {}) for _ in range(10)],
+            records=[("stall", 0) for _ in range(eng_mod._MAX_EMPTY_PARTS)],
+        )
+
+        with pytest.raises(RuntimeError, match="khong ghi duoc du lieu"):
+            engine.download(task)
+        assert concat_mock.call_count == 0
+
+    def test_ffmpeg_error_with_no_data_raises(self, tmp_path, monkeypatch):
+        engine, task, calls, concat_mock, _ = self._setup(
+            tmp_path,
+            monkeypatch,
+            captures=[("https://x.fbcdn.net/live-dash/y.mpd", {})],
+            records=[("ffmpeg_error", 0)],
+        )
+
+        with pytest.raises(RuntimeError):
+            engine.download(task)
+        assert concat_mock.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 21. _concat_parts + _fmt_bytes helpers
+# ---------------------------------------------------------------------------
+
+
+class TestConcatParts:
+    def test_builds_concat_demuxer_command(self, tmp_path):
+        from infrastructure.downloader.instagram_live_engine import _concat_parts
+
+        p1 = tmp_path / "out.mkv.part0"
+        p2 = tmp_path / "out.mkv.part1"
+        out = tmp_path / "out.mkv"
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            r = MagicMock()
+            r.returncode = 0
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _concat_parts("/usr/bin/ffmpeg", [p1, p2], out)
+
+        cmd = captured["cmd"]
+        assert "concat" in cmd
+        assert "-safe" in cmd and "0" in cmd
+        assert "-c" in cmd and "copy" in cmd
+        assert str(out) == cmd[-1]
+
+    def test_nonzero_returncode_raises(self, tmp_path):
+        from infrastructure.downloader.instagram_live_engine import _concat_parts
+
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 1
+            r.stderr = b"boom"
+            return r
+
+        with patch("subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="concat"):
+                _concat_parts("/usr/bin/ffmpeg", [tmp_path / "a", tmp_path / "b"], tmp_path / "o.mkv")
+
+
+class TestFmtBytes:
+    def test_fmt_bytes_units(self):
+        from infrastructure.downloader.instagram_live_engine import _fmt_bytes
+
+        assert _fmt_bytes(500) == "500 B"
+        assert _fmt_bytes(2048).endswith("KiB")
+        assert _fmt_bytes(5 * 1_048_576).endswith("MiB")
+
+
+class TestCheckProfileLiveDecryptsCookie:
+    """Regression: check_profile_live must decrypt the .enc cookie before
+    handing it to check_instagram_live. Passing the raw encrypted path made
+    MozillaCookieJar.load read binary as text → on Windows
+    "'charmap' codec can't decode byte 0x9d in position 6".
+    """
+
+    def _run(self, tmp_path, prepare_side_effect):
+        """Drive check_profile_live to completion; return (called_with, done, err)."""
+        import threading
+
+        from app.services.download_service import DownloadService
+
+        enc_path = str(tmp_path / "instagram_brave_cdp_cookies.enc")
+
+        svc = DownloadService.__new__(DownloadService)
+        svc._config = MagicMock(proxy="")
+
+        captured = {}
+
+        def fake_check(username, cookie_file, proxy="", deep=False):
+            captured["username"] = username
+            captured["cookie_file"] = cookie_file
+            return None
+
+        done_event = threading.Event()
+        result = {"done": "__unset__", "err": None}
+
+        def on_done(live_url):
+            result["done"] = live_url
+            done_event.set()
+
+        def on_error(msg):
+            result["err"] = msg
+            done_event.set()
+
+        with (
+            patch("app.services.download_service._resolve_cookie", return_value=enc_path),
+            patch(
+                "app.services.download_service._prepare_cookie_for_use",
+                side_effect=prepare_side_effect,
+            ),
+            patch("utils.instagram_live_checker.check_instagram_live", side_effect=fake_check),
+        ):
+            svc.check_profile_live(
+                url="https://www.instagram.com/baki_babyboy/",
+                on_done=on_done,
+                on_error=on_error,
+            )
+            assert done_event.wait(timeout=5), "worker thread did not finish"
+
+        return captured, result
+
+    def test_passes_decrypted_path_not_enc(self, tmp_path):
+        decrypted = tmp_path / "omnidl_dec_test.txt"
+        decrypted.write_text(_NETSCAPE_HEADER)
+
+        captured, result = self._run(tmp_path, prepare_side_effect=lambda p: (str(decrypted), True))
+
+        assert result["err"] is None
+        assert captured["cookie_file"] == str(decrypted)
+        assert not captured["cookie_file"].endswith(".enc")
+
+    def test_temp_cookie_unlinked(self, tmp_path):
+        decrypted = tmp_path / "omnidl_dec_test.txt"
+        decrypted.write_text(_NETSCAPE_HEADER)
+
+        self._run(tmp_path, prepare_side_effect=lambda p: (str(decrypted), True))
+
+        assert not decrypted.exists(), "temp decrypted cookie was not cleaned up"
+
+    def test_plaintext_cookie_not_unlinked(self, tmp_path):
+        # is_temp=False (plaintext .txt) must NOT be deleted.
+        plain = tmp_path / "cookies.txt"
+        plain.write_text(_NETSCAPE_HEADER)
+
+        captured, result = self._run(tmp_path, prepare_side_effect=lambda p: (str(plain), False))
+
+        assert result["err"] is None
+        assert captured["cookie_file"] == str(plain)
+        assert plain.exists()

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -169,6 +170,10 @@ class ConfigManager:
             with tmp.open("w", encoding="utf-8") as f:
                 f.write(buf.getvalue())
             tmp.replace(self._path)
+            try:
+                os.chmod(self._path, 0o600)
+            except OSError as exc:
+                logger.debug("Config chmod 0o600 failed: %s", exc)
         except OSError as exc:
             logger.error("Config save failed: %s", exc)
             tmp.unlink(missing_ok=True)

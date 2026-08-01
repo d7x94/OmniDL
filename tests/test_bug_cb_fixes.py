@@ -135,6 +135,9 @@ class TestCurlCffiExtractInfoOpts:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, url, download=False):
                 return {
                     "id": "abc",
@@ -209,6 +212,9 @@ class TestCurlCffiDownloadOpts:
                 return self
 
             def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
                 pass
 
             def download(self, urls):
@@ -453,6 +459,9 @@ class TestKuaishhouPreResolver:
             def __exit__(self, *a):
                 pass
 
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, url, download=False):
                 captured_urls.append(url)
                 return fake_info
@@ -471,3 +480,78 @@ class TestKuaishhouPreResolver:
 
         mock_resolve.assert_called_once_with("https://v.kuaishou.com/nsLRaZq3")
         assert captured_urls == [resolved]
+
+
+class TestFacebookSharePreResolver:
+    """BUG-FB: _resolve_facebook_share_url and _FACEBOOK_SHARE_RE."""
+
+    _CANONICAL = "https://www.facebook.com/story.php?story_fbid=988617514144307&id=100066813840421"
+
+    def test_regex_matches_share_variants(self):
+        from infrastructure.downloader.yt_dlp_engine import _FACEBOOK_SHARE_RE
+
+        assert _FACEBOOK_SHARE_RE.search("https://www.facebook.com/share/v/1VFdTDzXCL/")
+        assert _FACEBOOK_SHARE_RE.search("https://www.facebook.com/share/r/abc/")
+        assert _FACEBOOK_SHARE_RE.search("https://www.facebook.com/share/p/xyz/")
+
+    def test_regex_does_not_match_other(self):
+        from infrastructure.downloader.yt_dlp_engine import _FACEBOOK_SHARE_RE
+
+        assert not _FACEBOOK_SHARE_RE.search("https://www.facebook.com/watch/?v=123")
+        assert not _FACEBOOK_SHARE_RE.search("https://www.facebook.com/reel/123")
+        assert not _FACEBOOK_SHARE_RE.search("https://www.facebook.com/story.php?story_fbid=1&id=2")
+
+    def _patched(self, fake_requests):
+        import curl_cffi
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        return mod, (
+            patch.object(mod, "_CURL_CFFI_AVAILABLE", True),
+            patch.object(curl_cffi, "requests", fake_requests),
+        )
+
+    def test_resolve_returns_canonical_on_success(self):
+        fake_resp = MagicMock()
+        fake_resp.headers = {"location": self._CANONICAL}
+        fake_requests = MagicMock()
+        fake_requests.head.return_value = fake_resp
+
+        mod, patches = self._patched(fake_requests)
+        with patches[0], patches[1]:
+            result = mod._resolve_facebook_share_url("https://www.facebook.com/share/v/1VFdTDzXCL/")
+
+        assert result == self._CANONICAL
+
+    def test_resolve_ignores_login_wall_redirect(self):
+        fake_resp = MagicMock()
+        fake_resp.headers = {"location": "https://www.facebook.com/login/?next=foo"}
+        fake_requests = MagicMock()
+        fake_requests.head.return_value = fake_resp
+        fake_requests.get.return_value = fake_resp
+
+        original = "https://www.facebook.com/share/v/1VFdTDzXCL/"
+        mod, patches = self._patched(fake_requests)
+        with patches[0], patches[1]:
+            result = mod._resolve_facebook_share_url(original)
+
+        assert result == original
+
+    def test_resolve_falls_back_on_exception(self):
+        fake_requests = MagicMock()
+        fake_requests.head.side_effect = Exception("DNS failure")
+        fake_requests.get.side_effect = Exception("DNS failure")
+
+        original = "https://www.facebook.com/share/v/1VFdTDzXCL/"
+        mod, patches = self._patched(fake_requests)
+        with patches[0], patches[1]:
+            result = mod._resolve_facebook_share_url(original)
+
+        assert result == original
+
+    def test_resolve_skipped_when_curl_cffi_unavailable(self):
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        original = "https://www.facebook.com/share/v/1VFdTDzXCL/"
+        with patch.object(mod, "_CURL_CFFI_AVAILABLE", False):
+            assert mod._resolve_facebook_share_url(original) == original

@@ -160,6 +160,12 @@ def main() -> None:
 
     setup_logging(LOG_DIR)
 
+    # Opt-in memory sampler (OMNIDL_MEMTRACE=1). Started before the heavy
+    # imports below so tracemalloc attributes them to their real call sites.
+    from utils import memtrace
+
+    memtrace.start()
+
     # Hide the console window so PowerShell never surfaces over OmniDL.
     # Must be called AFTER setup_logging() so the RotatingFileHandler is
     # already configured before we hide the console.
@@ -233,6 +239,10 @@ def main() -> None:
 
     kuaishou_engine = KuaishouEngine(config)
 
+    from infrastructure.downloader.waaw_engine import WaawEngine
+
+    waaw_engine = WaawEngine(config)
+
     # Inject bundled Deno into PATH once on the main thread before any worker
     # thread starts.  os.environ.update() is not thread-safe on CPython — calling
     # it from ThreadPoolExecutor workers (the old approach) was a latent race.
@@ -255,6 +265,7 @@ def main() -> None:
         story_engine_enabled=True,
         instagram_live_engine=instagram_live_engine,
         kuaishou_engine=kuaishou_engine,
+        waaw_engine=waaw_engine,
     )
     manager.start()
 
@@ -319,6 +330,7 @@ def main() -> None:
         manager.shutdown(wait=True)
         service.close()
         config.save()
+        memtrace.stop()
         logger.info("OmniDL shutdown complete")
         if sys.platform == "win32":
             _close_console()

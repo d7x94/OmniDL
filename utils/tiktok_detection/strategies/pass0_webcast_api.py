@@ -59,67 +59,76 @@ class Pass0WebcastApi(LiveDetectionStrategy):
             param_combos.append({"aid": "1988", "user_id": ctx.user_id})
 
         last_body = ""
-        for params in param_combos:
-            try:
-                resp = session.get(
-                    _WEBCAST_ROOM_LIST_API,
-                    params=params,
-                    headers=headers,
-                    proxies=proxies,
-                    timeout=10,
-                )
-            except Exception as exc:
-                raise RuntimeError(f"pass0 network error: {exc}") from exc
+        try:
+            for params in param_combos:
+                try:
+                    resp = session.get(
+                        _WEBCAST_ROOM_LIST_API,
+                        params=params,
+                        headers=headers,
+                        proxies=proxies,
+                        timeout=10,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(f"pass0 network error: {exc}") from exc
 
-            if resp.status_code != 200:
-                # Webcast API errors are not authoritative (user may still exist).
-                # Only Pass-1 (profile page) raises hard 404/429 errors.
-                logger.debug(
-                    "tiktok_detection: @%s pass-0 HTTP %s (params=%s)",
-                    ctx.username,
-                    resp.status_code,
-                    list(params.keys()),
-                )
-                return None
-
-            data = json.loads(resp.text)
-            status_code = data.get("status_code", 0)
-            if status_code == 10013:
-                # API rejected this param combo (signing required) — try next
-                last_body = resp.text
-                logger.debug(
-                    "tiktok_detection: @%s pass-0 10013 with params=%s, trying next combo",
-                    ctx.username,
-                    list(params.keys()),
-                )
-                continue
-
-            room_list = data.get("data", {}).get("room_list") or []
-            for room in room_list:
-                r_id = _valid_room_id(room.get("id_str") or room.get("id"))
-                if r_id and room.get("status") == 2:
-                    live_url = f"https://www.tiktok.com/@{ctx.username}/live"
-                    logger.info(
-                        "tiktok_detection: @%s LIVE via pass-0 roomId=%s params=%s",
+                if resp.status_code != 200:
+                    # Webcast API errors are not authoritative (user may still exist).
+                    # Only Pass-1 (profile page) raises hard 404/429 errors.
+                    logger.debug(
+                        "tiktok_detection: @%s pass-0 HTTP %s (params=%s)",
                         ctx.username,
-                        r_id,
+                        resp.status_code,
                         list(params.keys()),
                     )
-                    return LiveCheckResult(live_url=live_url, room_id=r_id, strategy_name=self.name)
+                    return None
 
-            logger.debug(
-                "tiktok_detection: @%s pass-0 no active room (rooms=%d) params=%s body=%.200s",
-                ctx.username,
-                len(room_list),
-                list(params.keys()),
-                resp.text,
-            )
-            return None  # got a valid response with no live rooms — no point trying other combos
+                data = json.loads(resp.text)
+                status_code = data.get("status_code", 0)
+                if status_code == 10013:
+                    # API rejected this param combo (signing required) — try next
+                    last_body = resp.text
+                    logger.debug(
+                        "tiktok_detection: @%s pass-0 10013 with params=%s, trying next combo",
+                        ctx.username,
+                        list(params.keys()),
+                    )
+                    continue
+
+                room_list = data.get("data", {}).get("room_list") or []
+                for room in room_list:
+                    r_id = _valid_room_id(room.get("id_str") or room.get("id"))
+                    if r_id and room.get("status") == 2:
+                        live_url = f"https://www.tiktok.com/@{ctx.username}/live"
+                        logger.info(
+                            "tiktok_detection: @%s LIVE via pass-0 roomId=%s params=%s",
+                            ctx.username,
+                            r_id,
+                            list(params.keys()),
+                        )
+                        return LiveCheckResult(live_url=live_url, room_id=r_id, strategy_name=self.name)
+
+                logger.debug(
+                    "tiktok_detection: @%s pass-0 no active room (rooms=%d) params=%s body=%.200s",
+                    ctx.username,
+                    len(room_list),
+                    list(params.keys()),
+                    resp.text,
+                )
+                return None  # valid response with no live rooms — other combos are pointless
+        finally:
+            # Unclosed curl_cffi Sessions pin native libcurl memory the GC
+            # cannot account for.
+            session.close()
 
         logger.debug(
             "tiktok_detection: @%s pass-0 all combos returned 10013 body=%.200s",
             ctx.username,
             last_body,
         )
-        Pass0WebcastApi._all_10013_until[ctx.username] = time.monotonic() + 120.0
+        now = time.monotonic()
+        Pass0WebcastApi._all_10013_until = {
+            u: t for u, t in Pass0WebcastApi._all_10013_until.items() if t > now
+        }
+        Pass0WebcastApi._all_10013_until[ctx.username] = now + 120.0
         return None

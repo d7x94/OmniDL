@@ -10,6 +10,7 @@ Covers:
 - Cancellation detection via is_cancellation_requested (Issue #7)
 - Short-flag support in extra_args (Bug #12)
 """
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +23,7 @@ from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_config(
     extra_args="",
@@ -54,6 +56,7 @@ def make_task(url="https://youtube.com/watch?v=test") -> DownloadTask:
 # ---------------------------------------------------------------------------
 # _apply_extra_args tests
 # ---------------------------------------------------------------------------
+
 
 class TestApplyExtraArgsAllowlist:
     """Issue #3 — only whitelisted yt-dlp options should pass through."""
@@ -104,6 +107,7 @@ class TestApplyExtraArgsAllowlist:
 # Download opts composition tests
 # ---------------------------------------------------------------------------
 
+
 class TestDownloadOpts:
     """Issues #8, #9 — verify that required opts keys are present."""
 
@@ -117,14 +121,21 @@ class TestDownloadOpts:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 pass
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
         return captured
@@ -160,6 +171,7 @@ class TestDownloadOpts:
 # Cancellation detection tests
 # ---------------------------------------------------------------------------
 
+
 class TestCancellationDetection:
     """Issue #7 — cancellation must be detected via is_cancellation_requested,
     not a case-sensitive string match on the yt-dlp error message."""
@@ -176,9 +188,18 @@ class TestCancellationDetection:
         task = make_task()
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 # US spelling
                 raise real_yt_dlp.utils.DownloadError("Download canceled")
@@ -201,9 +222,18 @@ class TestCancellationDetection:
         task = make_task()
 
         class FakeYDL:
-            def __init__(self, opts): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
+            def __init__(self, opts):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 raise real_yt_dlp.utils.DownloadError("Private video")
 
@@ -215,17 +245,20 @@ class TestCancellationDetection:
 
 # ── Regression: .txt → .enc auto-fallback in cookie validation ───────────────
 
+
 class TestCookiePathEncFallback:
     """BUG BC regression: validate_cookie_path_raw must accept .enc when
     config stores .txt but encrypt_cookie_file renamed it to .enc."""
 
     def _make_config(self, tmp_path):
         from infrastructure.config.config_manager import ConfigManager
+
         cfg = ConfigManager(tmp_path / "config.json")
         return cfg
 
     def test_raw_txt_path_accepted_when_txt_exists(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         cookie_dir = cfg.config_path.parent / "cookies"
         cookie_dir.mkdir(parents=True, exist_ok=True)
@@ -237,6 +270,7 @@ class TestCookiePathEncFallback:
     def test_raw_txt_path_falls_back_to_enc(self, tmp_path):
         """Config stores .txt but only .enc exists → return .enc path."""
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         cookie_dir = cfg.config_path.parent / "cookies"
         cookie_dir.mkdir(parents=True, exist_ok=True)
@@ -249,6 +283,7 @@ class TestCookiePathEncFallback:
 
     def test_raw_outside_safe_dir_rejected(self, tmp_path):
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path_raw
+
         cfg = self._make_config(tmp_path)
         outside = tmp_path.parent / "evil_cookies.txt"
         outside.write_text("bad")
@@ -258,6 +293,7 @@ class TestCookiePathEncFallback:
     def test_global_txt_falls_back_to_enc(self, tmp_path):
         """Global cookie_file: config stores .txt, only .enc on disk → enc used."""
         from infrastructure.downloader.yt_dlp_engine import _validate_cookie_path
+
         cfg = self._make_config(tmp_path)
         cookie_dir = cfg.config_path.parent / "cookies"
         cookie_dir.mkdir(parents=True, exist_ok=True)
@@ -272,6 +308,7 @@ class TestCookiePathEncFallback:
 # ---------------------------------------------------------------------------
 # FIX-TK: TikTok VOD falsely detected as livestream
 # ---------------------------------------------------------------------------
+
 
 class TestTikTokVodLiveDetection:
     """FIX-TK — TikTok /video/<id> URLs must never resolve is_live=True,
@@ -311,9 +348,7 @@ class TestTikTokVodLiveDetection:
         url = "https://www.tiktok.com/@gracilenemonteir78900/video/7620980082118675732?is_from_webapp=1&sender_device=pc"
         info = engine.extract_info(url)
 
-        assert info.is_live is False, (
-            "TikTok /video/<id> URL must never be flagged as livestream"
-        )
+        assert info.is_live is False, "TikTok /video/<id> URL must never be flagged as livestream"
 
     @patch("yt_dlp.YoutubeDL")
     def test_tiktok_vod_clean_url_is_never_live(self, mock_ydl_cls):
@@ -343,9 +378,7 @@ class TestTikTokVodLiveDetection:
         url = "https://www.tiktok.com/@testuser/live"
         info = engine.extract_info(url)
 
-        assert info.is_live is True, (
-            "TikTok /live/ URL with is_live=True from yt-dlp must stay live"
-        )
+        assert info.is_live is True, "TikTok /live/ URL with is_live=True from yt-dlp must stay live"
 
     @patch("yt_dlp.YoutubeDL")
     def test_tiktok_vod_false_from_api_stays_false(self, mock_ydl_cls):
@@ -363,10 +396,10 @@ class TestTikTokVodLiveDetection:
         assert info.is_live is False
 
 
-
 # ---------------------------------------------------------------------------
 # FIX-TK-AUDIO-2: TikTok DASH audio format selector fix
 # ---------------------------------------------------------------------------
+
 
 class TestTikTokFormatIdPatch:
     """BUG-BP / BUG-BS / BUG-TT-SHOP-3 — For TikTok VOD URLs, download() must build the
@@ -401,14 +434,21 @@ class TestTikTokFormatIdPatch:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 pass
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
         return captured
@@ -423,7 +463,10 @@ class TestTikTokFormatIdPatch:
         """'bestvideo+bestaudio/best' → BUG-BS 7-tier chain (watermark-free h264 first)."""
         task = self._make_tiktok_task("bestvideo+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_1080p_gets_acodec_filter(self):
         """'bestvideo[height<=1080]+bestaudio/best' → BUG-BS 7-tier chain.
@@ -431,19 +474,28 @@ class TestTikTokFormatIdPatch:
         are already height-limited by TikTok CDN; the selector picks best tbr)."""
         task = self._make_tiktok_task("bestvideo[height<=1080]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_720p_gets_acodec_filter(self):
         """'bestvideo[height<=720]+bestaudio/best' → BUG-BS 7-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=720]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_360p_gets_acodec_filter(self):
         """'bestvideo[height<=360]+bestaudio/best' → BUG-BS 7-tier chain."""
         task = self._make_tiktok_task("bestvideo[height<=360]+bestaudio/best")
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_audio_only_not_modified(self):
         """'bestaudio/best' (audio-only) must NOT be modified — no bestvideo present."""
@@ -459,7 +511,10 @@ class TestTikTokFormatIdPatch:
         task = DownloadTask(url=url, format_id="best", output_ext="mp4")
         task.media_info = MediaInfo(url=url, title="Test", is_live=False)
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_non_tiktok_url_not_modified(self):
         """YouTube URLs must NOT have format_id modified."""
@@ -490,12 +545,92 @@ class TestTikTokFormatIdPatch:
         opts = self._capture_opts(task)
         fmt = opts["format"]
         # No [acodec!=none] in the new 7-tier selector
-        assert "[acodec!=none]" not in fmt, (
-            f"New 7-tier chain must not contain [acodec!=none], got: {fmt}"
+        assert "[acodec!=none]" not in fmt, f"New 7-tier chain must not contain [acodec!=none], got: {fmt}"
+        assert (
+            fmt
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
         )
-        assert fmt == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
         # Verify exactly 7 tiers
         assert len(fmt.split("/")) == 7, f"Expected 7 tiers, got: {fmt}"
+
+
+# ---------------------------------------------------------------------------
+# BUG-YT-LIVE-FMT: yt-dlp 2026.07.04 live adaptive format support for YouTube.
+# Non-TikTok live must honour the user's quality preset for YouTube via
+# "<format_id>/best"; other live platforms (Instagram, Twitch) keep "best".
+# ---------------------------------------------------------------------------
+
+
+class TestYouTubeLiveAdaptiveFormat:
+    def _capture_opts(self, task, cfg=None):
+        if cfg is None:
+            cfg = make_config()
+            cfg.cookie_file = ""
+            cfg.platform_cookies = {}
+            cfg.remote_components = None
+        engine = YtDlpEngine(cfg)
+        captured = {}
+
+        class FakeYDL:
+            def __init__(self, opts):
+                captured.update(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
+            def download(self, urls):
+                pass
+
+        import infrastructure.downloader.yt_dlp_engine as mod
+
+        with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
+            engine.download(task)
+        return captured
+
+    def test_youtube_live_honours_quality_preset(self):
+        url = "https://www.youtube.com/watch?v=live123"
+        task = DownloadTask(url=url, format_id="bestvideo[height<=720]+bestaudio/best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="YT Live", is_live=True)
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo[height<=720]+bestaudio/best/best"
+
+    def test_youtube_live_short_domain_honours_preset(self):
+        url = "https://youtu.be/live123"
+        task = DownloadTask(url=url, format_id="best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="YT Live", is_live=True)
+        opts = self._capture_opts(task)
+        assert opts["format"] == "best/best"
+
+    def test_instagram_live_still_uses_bare_best(self):
+        """Non-YouTube live platforms are unaffected — still plain 'best'."""
+        url = "https://www.instagram.com/someuser/live/"
+        task = DownloadTask(url=url, format_id="bestvideo+bestaudio/best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="IG Live", is_live=True)
+        opts = self._capture_opts(task)
+        assert opts["format"] == "best"
+
+    def test_tiktok_live_regression_unaffected(self):
+        """TikTok live keeps its HLS-safe chain — YouTube change must not leak in."""
+        url = "https://www.tiktok.com/@testuser/live"
+        task = DownloadTask(url=url, format_id="best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="TikTok Live", is_live=True)
+        opts = self._capture_opts(task)
+        assert opts["format"] == "best[protocol=m3u8_native]/best[protocol^=m3u8]/best[protocol^=https]/best"
+
+    def test_youtube_vod_not_modified(self):
+        """Non-live YouTube must be untouched — only the live branch changes."""
+        url = "https://www.youtube.com/watch?v=abc123"
+        task = DownloadTask(url=url, format_id="bestvideo+bestaudio/best", output_ext="mp4")
+        task.media_info = MediaInfo(url=url, title="YT VOD", is_live=False)
+        opts = self._capture_opts(task)
+        assert opts["format"] == "bestvideo+bestaudio/best"
+
 
 # ---------------------------------------------------------------------------
 # BUG-BM: TikTok short-link URLs (vt.tiktok.com / vm.tiktok.com) must also
@@ -526,14 +661,21 @@ class TestTikTokShortUrlAudioFix:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 pass
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
         return captured
@@ -552,9 +694,10 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best", (
-            f"Short URL 'vt.tiktok.com' must receive 7-tier chain, got: {opts['format']}"
-        )
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        ), f"Short URL 'vt.tiktok.com' must receive 7-tier chain, got: {opts['format']}"
 
     def test_vt_short_url_1080p_gets_acodec_filter(self):
         """vt.tiktok.com with 1080p selector → BUG-BS 7-tier chain."""
@@ -563,7 +706,10 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_vt_short_url_720p_gets_acodec_filter(self):
         """vt.tiktok.com with 720p selector → BUG-BS 7-tier chain."""
@@ -572,7 +718,10 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=720]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     # ── vm.tiktok.com ────────────────────────────────────────────────────
 
@@ -583,9 +732,10 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best", (
-            f"Short URL 'vm.tiktok.com' must receive 7-tier chain, got: {opts['format']}"
-        )
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        ), f"Short URL 'vm.tiktok.com' must receive 7-tier chain, got: {opts['format']}"
 
     def test_vm_short_url_1080p_gets_acodec_filter(self):
         """vm.tiktok.com with 1080p selector → BUG-BS 7-tier chain."""
@@ -594,7 +744,10 @@ class TestTikTokShortUrlAudioFix:
             "bestvideo[height<=1080]+bestaudio/best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     # ── Short URL edge cases ──────────────────────────────────────────────
 
@@ -615,7 +768,10 @@ class TestTikTokShortUrlAudioFix:
             "best",
         )
         opts = self._capture_opts(task)
-        assert opts["format"] == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        assert (
+            opts["format"]
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
+        )
 
     def test_vt_short_url_format_is_idempotent(self):
         """BUG-BS: 7-tier chain is idempotent for short URLs too.
@@ -626,10 +782,11 @@ class TestTikTokShortUrlAudioFix:
         )
         opts = self._capture_opts(task)
         fmt = opts["format"]
-        assert "[acodec!=none]" not in fmt, (
-            f"7-tier chain must not contain [acodec!=none], got: {fmt}"
+        assert "[acodec!=none]" not in fmt, f"7-tier chain must not contain [acodec!=none], got: {fmt}"
+        assert (
+            fmt
+            == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
         )
-        assert fmt == "best[format_id^=h264]/best[format_id=audio][ext=mp4]/download/bestvideo*+bestaudio*/bestvideo*/best[format_id=audio]/best"
         assert len(fmt.split("/")) == 7, f"Expected 7 tiers, got: {fmt}"
 
 
@@ -671,14 +828,21 @@ class TestTikTokFourTierSelector:
         class FakeYDL:
             def __init__(self, opts):
                 captured.update(opts)
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def download(self, urls):
                 pass
 
         import infrastructure.downloader.yt_dlp_engine as mod
+
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             engine.download(task)
         return captured
@@ -750,9 +914,7 @@ class TestTikTokFourTierSelector:
             task = self._make_task(url, preset)
             opts = self._capture_opts(task)
             fmt = opts["format"]
-            assert fmt == self.FOUR_TIER, (
-                f"Preset {preset!r} must produce 7-tier chain, got: {fmt}"
-            )
+            assert fmt == self.FOUR_TIER, f"Preset {preset!r} must produce 7-tier chain, got: {fmt}"
             assert len(fmt.split("/")) == 7, (
                 f"Preset {preset!r}: expected 7 tiers, got {len(fmt.split('/'))}: {fmt}"
             )
@@ -773,13 +935,20 @@ class TestTikTokShortUrlLiveDetection:
 
     def _fake_ydl_cls(self, is_live_from_api: bool):
         """Return a fake YoutubeDL class that returns is_live from API."""
+
         class FakeYDL:
             def __init__(self, opts):
                 pass
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
+
+            def add_post_processor(self, pp, when=None):
+                pass
+
             def extract_info(self, url, download=False):
                 return {
                     "id": "ABCDE12345",
@@ -791,6 +960,7 @@ class TestTikTokShortUrlLiveDetection:
                     "is_live": is_live_from_api,
                     "was_live": False,
                 }
+
         return FakeYDL
 
     def test_vt_short_url_is_live_true_when_api_returns_true(self):
@@ -798,6 +968,7 @@ class TestTikTokShortUrlLiveDetection:
         is_live=True from yt-dlp means the short link resolved to a live stream.
         """
         import infrastructure.downloader.yt_dlp_engine as mod
+
         engine = self._make_engine()
         with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=True)):
             info = engine.extract_info("https://vt.tiktok.com/ZSHNx3n8Y/")
@@ -810,6 +981,7 @@ class TestTikTokShortUrlLiveDetection:
         is_live=True from yt-dlp means the short link resolved to a live stream.
         """
         import infrastructure.downloader.yt_dlp_engine as mod
+
         engine = self._make_engine()
         with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=True)):
             info = engine.extract_info("https://vm.tiktok.com/ZMJxABCDE/")
@@ -820,6 +992,7 @@ class TestTikTokShortUrlLiveDetection:
     def test_vt_short_url_is_live_false_stays_false(self):
         """vt.tiktok.com with is_live=False from API remains False."""
         import infrastructure.downloader.yt_dlp_engine as mod
+
         engine = self._make_engine()
         with patch.object(mod.yt_dlp, "YoutubeDL", self._fake_ydl_cls(is_live_from_api=False)):
             info = engine.extract_info("https://vt.tiktok.com/ZSHNQMpEK/")
@@ -831,30 +1004,32 @@ class TestTikTokShortUrlRegex:
 
     def test_vt_tiktok_matches_short_re(self):
         from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+
         assert _TIKTOK_SHORT_RE.search("https://vt.tiktok.com/ZSHNx3n8Y/")
 
     def test_vm_tiktok_matches_short_re(self):
         from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+
         assert _TIKTOK_SHORT_RE.search("https://vm.tiktok.com/ZMJxABCDE/")
 
     def test_canonical_url_does_not_match_short_re(self):
         from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
-        assert not _TIKTOK_SHORT_RE.search(
-            "https://www.tiktok.com/@testuser/video/7620980082118675732"
-        )
+
+        assert not _TIKTOK_SHORT_RE.search("https://www.tiktok.com/@testuser/video/7620980082118675732")
 
     def test_canonical_url_matches_vod_re(self):
         from infrastructure.downloader.yt_dlp_engine import _TIKTOK_VOD_RE
-        assert _TIKTOK_VOD_RE.search(
-            "https://www.tiktok.com/@testuser/video/7620980082118675732"
-        )
+
+        assert _TIKTOK_VOD_RE.search("https://www.tiktok.com/@testuser/video/7620980082118675732")
 
     def test_live_url_matches_live_re(self):
         from infrastructure.downloader.yt_dlp_engine import _TIKTOK_LIVE_RE
+
         assert _TIKTOK_LIVE_RE.search("https://www.tiktok.com/@testuser/live")
 
     def test_live_url_does_not_match_short_re(self):
         from infrastructure.downloader.yt_dlp_engine import _TIKTOK_SHORT_RE
+
         assert not _TIKTOK_SHORT_RE.search("https://www.tiktok.com/@testuser/live")
 
     def test_youtube_does_not_match_any_tiktok_re(self):
@@ -863,6 +1038,7 @@ class TestTikTokShortUrlRegex:
             _TIKTOK_SHORT_RE,
             _TIKTOK_VOD_RE,
         )
+
         yt_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         assert not _TIKTOK_SHORT_RE.search(yt_url)
         assert not _TIKTOK_VOD_RE.search(yt_url)

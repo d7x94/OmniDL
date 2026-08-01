@@ -63,6 +63,10 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
         except Exception as exc:  # noqa: BLE001
             logger.debug("tiktok_detection: @%s pass-4 network error: %s", ctx.username, exc)
             return None
+        finally:
+            # Unclosed curl_cffi Sessions pin native libcurl memory the GC
+            # cannot account for.
+            session.close()
 
         if resp.status_code != 200:
             logger.debug("tiktok_detection: @%s pass-4 HTTP %s", ctx.username, resp.status_code)

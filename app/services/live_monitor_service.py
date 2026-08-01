@@ -13,6 +13,7 @@ to the item list / in-flight slot is guarded by a re-entrant lock.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import threading
 import time
@@ -42,11 +43,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_MONITOR_URLS = 20
-DEFAULT_CHECK_INTERVAL = 30
-MIN_CHECK_INTERVAL = 15
+# BUG-IG-ANTIBOT: ~2,880 authenticated calls/day at the old 30s interval was
+# an exact-grid, non-browser polling pattern. 180s + per-item jitter below
+# cuts that by 6x and removes the fixed-grid signal.
+DEFAULT_CHECK_INTERVAL = 180
+MIN_CHECK_INTERVAL = 60
 _POLL_S = 5
 MAX_CONSECUTIVE_FAILURES = 8
 _CHECKING_TIMEOUT_S = 90
+# Per-item random jitter applied to the check interval so polling is not on
+# a fixed grid (a hallmark of scripted, not browser, traffic).
+_JITTER_RANGE = (0.8, 1.2)
+# The deep=True story-feed probe marks stories seen on the account -- throttle
+# it to at most once per this many seconds per item, not every check.
+_DEEP_STORY_COOLDOWN_S = 1800.0
 
 _TIKTOK_SHORT_RE = re.compile(r"^https?://(?:vt|vm)\.tiktok\.com/", re.I)
 _IG_USER_LIVE_RE = re.compile(r"instagram\.com/([A-Za-z0-9._]+)/live(?:/|$|\?)", re.I)
@@ -79,6 +89,11 @@ class MonitorItem:
     consecutive_failures: int = 0
     rate_limited_until: float = 0.0
     paused: bool = False
+    # Per-item jitter multiplier on the check interval — assigned once so the
+    # due-check threshold stays stable across polls instead of flapping.
+    interval_jitter: float = field(default_factory=lambda: random.uniform(*_JITTER_RANGE))
+    # Timestamp of the last deep=True story-feed probe (0.0 = never done).
+    deep_checked_at: float = 0.0
 
     def to_dict(self) -> dict:
         title = ""
@@ -278,11 +293,13 @@ class LiveMonitorService:
             if item.state in (WAITING, ERROR):
                 item.state = WAITING
                 item.last_check = 0.0
+                item.rate_limited_until = 0.0
                 item.error_msg = ""
                 item.consecutive_failures = 0
                 self._emit(item)
             elif item.state in (CHECKING, LIVE):
                 item.last_check = 0.0
+                item.rate_limited_until = 0.0
             # RECORDING: noop — stream is already being captured
             return True
 
@@ -411,13 +428,21 @@ class LiveMonitorService:
         for item in self._items:
             if item.state != WAITING or item.paused or now < item.rate_limited_until:
                 continue
-            if now >= item.last_check + self._check_interval and item.last_check < oldest_check:
+            due_at = item.last_check + self._check_interval * item.interval_jitter
+            if now >= due_at and item.last_check < oldest_check:
                 oldest_check = item.last_check
                 candidate = item
         if candidate is not None:
             self._trigger_check(candidate)
 
     def _trigger_check(self, item: MonitorItem) -> None:
+        # Deep story-feed check on manual check + newly added items only
+        # (last_check == 0.0 exactly for those cases), never on periodic polls,
+        # and throttled to at most once per _DEEP_STORY_COOLDOWN_S even then --
+        # feed/user/{id}/story/ marks stories seen on the account.
+        deep = item.last_check == 0.0 and (time.time() - item.deep_checked_at) >= _DEEP_STORY_COOLDOWN_S
+        if deep:
+            item.deep_checked_at = time.time()
         item.state = CHECKING
         item.last_check = time.time()
         self._checking_item = item
@@ -436,7 +461,9 @@ class LiveMonitorService:
                     url=item.url, on_done=on_profile_done, on_error=on_err
                 )
             else:
-                self._service.check_profile_live(url=item.url, on_done=on_profile_done, on_error=on_err)
+                self._service.check_profile_live(
+                    url=item.url, on_done=on_profile_done, on_error=on_err, deep=deep
+                )
         else:
 
             def on_done(info: MediaInfo) -> None:
@@ -543,6 +570,17 @@ class LiveMonitorService:
                 item.error_msg = ""
                 self._emit(item)
                 return
+            # A soft block (checkpoint / bot challenge) is not a hard failure
+            # requiring user action -- back off on the same schedule as a 429
+            # so polling doesn't keep hammering an already-flagged account.
+            if "checkpoint" in err_l or "challenge_required" in err_l:
+                failures = item.consecutive_failures + 1
+                item.rate_limited_until = time.time() + min(300 * (2 ** (failures - 1)), 1800)
+                item.consecutive_failures = failures
+                item.state = WAITING
+                item.error_msg = ""
+                self._emit(item)
+                return
             hard = any(
                 k in err_l
                 for k in (
@@ -550,7 +588,6 @@ class LiveMonitorService:
                     "not found",
                     "404",
                     "login",
-                    "checkpoint",
                     "unsupported url",
                     "removed",
                     "not available",

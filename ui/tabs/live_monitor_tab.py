@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -44,12 +45,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_MONITOR_URLS: int = 20
-MIN_CHECK_INTERVAL_S = 15
-DEFAULT_CHECK_INTERVAL = 30
+# BUG-IG-ANTIBOT: mirrors app/services/live_monitor_service.py — see that
+# module for the rationale (fixed-grid authenticated polling is a bot tell).
+MIN_CHECK_INTERVAL_S = 60
+DEFAULT_CHECK_INTERVAL = 180
 _POLL_MS = 5_000
 _COOKIE_WARN_DAYS = 7
 MAX_CONSECUTIVE_FAILURES = 8
 _CHECKING_TIMEOUT_S = 90
+_JITTER_RANGE = (0.8, 1.2)
+_DEEP_STORY_COOLDOWN_S = 1800.0
 
 # vt/vm short links resolve over the network — classification must not
 # touch them on the UI thread; the service worker resolves them instead.
@@ -107,6 +112,11 @@ class _MonitorItem:
     consecutive_failures: int = 0
     rate_limited_until: float = 0.0
     paused: bool = False
+    # Per-item jitter multiplier on the check interval — assigned once so the
+    # due-check threshold stays stable across polls instead of flapping.
+    interval_jitter: float = field(default_factory=lambda: random.uniform(*_JITTER_RANGE))
+    # Timestamp of the last deep=True story-feed probe (0.0 = never done).
+    deep_checked_at: float = 0.0
     # UI widgets
     row_frame: Optional[QFrame] = field(default=None, repr=False)
     state_lbl: Optional[QLabel] = field(default=None, repr=False)
@@ -255,7 +265,7 @@ class LiveMonitorTab(QWidget):
         cr_layout.addWidget(ck_lbl)
 
         self._interval_combo = QComboBox()
-        self._interval_combo.addItems(["15", "30", "60", "120", "300"])
+        self._interval_combo.addItems(["60", "180", "300", "600"])
         self._interval_combo.setCurrentText(str(DEFAULT_CHECK_INTERVAL))
         self._interval_combo.setFixedSize(80, 28)
         cr_layout.addWidget(self._interval_combo)
@@ -894,7 +904,7 @@ class LiveMonitorTab(QWidget):
                 continue
             if now < item.rate_limited_until:
                 continue
-            due = item.last_check + interval
+            due = item.last_check + interval * item.interval_jitter
             if now >= due and item.last_check < oldest_check:
                 oldest_check = item.last_check
                 candidate = item
@@ -905,6 +915,13 @@ class LiveMonitorTab(QWidget):
         self._trigger_check(candidate)
 
     def _trigger_check(self, item: _MonitorItem) -> None:
+        # Deep story-feed check on manual check + newly added items only
+        # (last_check == 0.0 exactly for those cases), never on periodic polls,
+        # and throttled to at most once per _DEEP_STORY_COOLDOWN_S even then --
+        # feed/user/{id}/story/ marks stories seen on the account.
+        deep = item.last_check == 0.0 and (time.time() - item.deep_checked_at) >= _DEEP_STORY_COOLDOWN_S
+        if deep:
+            item.deep_checked_at = time.time()
         item.state = _MonitorState.CHECKING
         item.last_check = time.time()
         self._checking_item = item
@@ -922,7 +939,7 @@ class LiveMonitorTab(QWidget):
             if item.profile_platform == "tiktok":
                 self._app.service.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
             else:
-                self._app.service.check_profile_live(url=url, on_done=on_done, on_error=on_error)
+                self._app.service.check_profile_live(url=url, on_done=on_done, on_error=on_error, deep=deep)
         else:
             url = item.url
 
@@ -1053,6 +1070,19 @@ class LiveMonitorTab(QWidget):
             self._refresh_item_ui(item)
             return
 
+        # A soft block (checkpoint / bot challenge) is not a hard failure
+        # requiring user action -- back off on the same schedule as a 429 so
+        # polling doesn't keep hammering an already-flagged account.
+        if "checkpoint" in err_l or "challenge_required" in err_l:
+            _failures = item.consecutive_failures + 1
+            _backoff_s = min(300 * (2 ** (_failures - 1)), 1800)
+            item.rate_limited_until = time.time() + _backoff_s
+            item.consecutive_failures = _failures
+            item.state = _MonitorState.WAITING
+            item.error_msg = ""
+            self._refresh_item_ui(item)
+            return
+
         hard = any(
             k in err_l
             for k in (
@@ -1060,7 +1090,6 @@ class LiveMonitorTab(QWidget):
                 "not found",
                 "404",
                 "login",
-                "checkpoint",
                 "unsupported url",
                 "removed",
                 "not available",
@@ -1122,6 +1151,8 @@ class LiveMonitorTab(QWidget):
             return
         item.rate_limited_until = 0.0
         item.last_check = 0.0
+        item.consecutive_failures = 0
+        item.error_msg = ""
         item.state = _MonitorState.WAITING
         self._refresh_item_ui(item)
         if self._checking_item is None and not self._paused and not item.paused:

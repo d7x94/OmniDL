@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, SecretStr, field_validator
 
 # ── Requests ──────────────────────────────────────────────────────────────────
 
@@ -72,9 +72,17 @@ class DownloadRequest(BaseModel):
     @field_validator("source_engine")
     @classmethod
     def _validate_engine(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"yt_dlp", "gallery_dl", "kuaishou", "instagram_live", None}
+        allowed = {"yt_dlp", "gallery_dl", "kuaishou", "instagram_live", "waaw", "facebook_story", None}
         if v not in allowed:
             raise ValueError(f"source_engine must be one of {allowed - {None}}")
+        return v
+
+    @field_validator("output_ext")
+    @classmethod
+    def _validate_output_ext(cls, v: Optional[str]) -> Optional[str]:
+        allowed = {"mp4", "mkv", "webm", "mov", "mp3", "m4a", None, ""}
+        if v not in allowed:
+            raise ValueError(f"output_ext must be one of {allowed - {None, ''}}")
         return v
 
 
@@ -235,6 +243,14 @@ class FileConvertRequest(BaseModel):
     custom_crf: Optional[int] = 23
     output_codec: Optional[str] = "h264"
 
+    @field_validator("target_ext")
+    @classmethod
+    def _validate_ext(cls, v: Optional[str]) -> Optional[str]:
+        allowed = {"mp4", "mkv", "mov", "avi", "webm", "mp3", None}
+        if v not in allowed:
+            raise ValueError(f"target_ext must be one of {allowed - {None}}")
+        return v
+
 
 class FileConvertJobResponse(BaseModel):
     """Returned by POST /api/files/convert — client polls /api/convert/{job_id}."""
@@ -328,3 +344,55 @@ class MonitorListResponse(BaseModel):
     items: list[MonitorItemResponse]
     interval: int = 30
     paused: bool = False
+
+
+class ArchiveCompressRequest(BaseModel):
+    """Compress one or more files/dirs (within download_dir) into a .zip/.7z archive."""
+
+    sources: list[str]
+    fmt: str
+    archive_name: Optional[str] = "archive"
+    password: Optional[SecretStr] = None
+    # 7z only — real header/filename encryption. ZIP cannot encrypt filenames
+    # (format limitation); requesting this with fmt="zip" is a 422.
+    encrypt_header: bool = False
+    individually: bool = False
+
+    @field_validator("fmt")
+    @classmethod
+    def _validate_fmt(cls, v: str) -> str:
+        if v not in ("zip", "7z"):
+            raise ValueError("fmt must be 'zip' or '7z'")
+        return v
+
+
+class ArchiveExtractRequest(BaseModel):
+    """Extract an archive (within download_dir) into dest_dir (defaults under download_dir)."""
+
+    archive_path: str
+    dest_dir: Optional[str] = None
+    password: Optional[SecretStr] = None
+
+
+class ArchiveContentsRequest(BaseModel):
+    """List archive members without extracting. POST (not GET) so password never hits a query string."""
+
+    archive_path: str
+    password: Optional[SecretStr] = None
+
+
+class ArchiveMemberResponse(BaseModel):
+    name: str
+    size: int
+    compressed_size: int
+    is_dir: bool
+
+
+class ArchiveContentsResponse(BaseModel):
+    members: list[ArchiveMemberResponse]
+
+
+class ArchiveExtractResponse(BaseModel):
+    dest_dir: str
+    extracted_paths: list[str]
+    total_bytes: int

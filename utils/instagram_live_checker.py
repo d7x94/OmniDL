@@ -5,12 +5,13 @@ Check whether an Instagram user is currently broadcasting a live stream.
 Uses Instagram's internal web API — the same endpoint that yt-dlp and
 gallery-dl use when authenticated via a Netscape cookie file.
 
-No new dependencies: uses `requests` (already in requirements.txt) and
-parses the Netscape cookie format with stdlib only.
+Requests go through curl_cffi Chrome TLS impersonation (shared with
+utils/tiktok_live_checker.py) to avoid plain-requests bot detection,
+falling back to a plain requests.Session if curl_cffi is unavailable.
 
 Public interface
 ────────────────
-check_instagram_live(username, cookie_file, proxy="") -> Optional[str]
+check_instagram_live(username, cookie_file, proxy="", deep=False) -> Optional[str]
     Returns the live URL if the user is currently live, None otherwise.
     Raises RuntimeError on hard errors (auth, bad cookie, network).
 
@@ -20,20 +21,27 @@ is_instagram_profile_url(url) -> bool
 extract_instagram_username(url) -> Optional[str]
     Extracts the username from a profile URL.
 """
+
 from __future__ import annotations
 
 import logging
 import re
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from utils.instagram_http import (
+    WWW_API_BASE,
+    build_web_headers,
+    get_shared_session,
+    record_www_claim,
+)
 
 logger = logging.getLogger(__name__)
 
-# Instagram internal web API — used by yt-dlp and gallery-dl internally.
-# Requires the X-IG-App-ID header (Instagram web app ID, public constant).
-_PROFILE_API     = "https://i.instagram.com/api/v1/users/web_profile_info/"
-_IG_APP_ID       = "936619743392459"
+# Instagram web API — the same host/app-id a real browser tab uses.
+_PROFILE_API = f"{WWW_API_BASE}/users/web_profile_info/"
+_STORY_API = f"{WWW_API_BASE}/feed/user/{{user_id}}/story/"
 _REQUEST_TIMEOUT = 15  # seconds
 
 # Profile URL pattern — matches /username/ but NOT /p/, /reel/, /live/, /stories/
@@ -59,10 +67,44 @@ def extract_instagram_username(url: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+def _check_story_broadcast(
+    session: "Any",
+    user: dict,
+    username: str,
+    headers: dict,
+    proxies: Optional[dict],
+    jar: "Any" = None,
+) -> bool:
+    """Deep fallback: check the story-feed API for an active broadcast.
+
+    Never raises — any failure just means "couldn't confirm live via story
+    feed", not a hard error. Used when the profile API's live fields come
+    back falsy but the profile API response may be degraded/stripped.
+    """
+    user_id = user.get("id") or user.get("pk")
+    if not user_id:
+        return False
+    try:
+        resp = session.get(
+            _STORY_API.format(user_id=user_id),
+            headers=headers,
+            cookies=jar,
+            proxies=proxies,
+            timeout=_REQUEST_TIMEOUT,
+        )
+        record_www_claim(resp.headers)
+        data = resp.json()
+        return bool(data.get("broadcast"))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("instagram_live_checker: story broadcast check failed for @%s: %s", username, exc)
+        return False
+
+
 def check_instagram_live(
     username: str,
     cookie_file: str,
     proxy: str = "",
+    deep: bool = False,
 ) -> Optional[str]:
     """
     Check whether *username* is currently broadcasting an Instagram Live.
@@ -72,6 +114,9 @@ def check_instagram_live(
     username:    Instagram username (without @)
     cookie_file: Path to a Netscape-format .txt cookie file (Instagram cookies)
     proxy:       Optional proxy URL e.g. "http://127.0.0.1:8080"
+    deep:        If True and the profile API shows no live fields, also probe
+                 the story-feed API for an active broadcast (catches degraded/
+                 stripped profile responses). Extra request, so opt-in.
 
     Returns
     -------
@@ -82,8 +127,6 @@ def check_instagram_live(
     ------
     RuntimeError: On authentication failure, network error, or missing cookie
     """
-    import requests  # already in requirements.txt
-
     if not cookie_file or not Path(cookie_file).is_file():
         raise RuntimeError(
             "login: Cần cookie file Instagram để kiểm tra live status.\n"
@@ -95,9 +138,7 @@ def check_instagram_live(
     try:
         jar.load(cookie_file, ignore_discard=True, ignore_expires=True)
     except Exception as exc:
-        raise RuntimeError(
-            f"login: Không đọc được cookie file: {exc}"
-        ) from exc
+        raise RuntimeError(f"login: Không đọc được cookie file: {exc}") from exc
 
     # Verify we have the required sessionid cookie
     session_cookies = {c.name: c.value for c in jar if "instagram.com" in c.domain}
@@ -109,31 +150,28 @@ def check_instagram_live(
 
     # Extract CSRF token from cookies — required by Instagram's internal API
     # since late 2023. Without it the API returns empty user data or 403.
-    csrftoken = session_cookies.get("csrftoken", "")
+    csrftoken = session_cookies.get("csrftoken") or ""
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "X-IG-App-ID": _IG_APP_ID,
-        "X-CSRFToken": csrftoken,
-        "X-IG-WWW-Claim": "0",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": f"https://www.instagram.com/{username}/",
-        "X-Requested-With": "XMLHttpRequest",
-        "Origin": "https://www.instagram.com",
-        "Sec-Fetch-Site": "same-site",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-    }
+    # BUG-IG-ANTIBOT: one shared header-builder with instagram_live_engine so
+    # the two callers cannot drift into two different, script-shaped clients.
+    headers = build_web_headers(referer=f"https://www.instagram.com/{username}/", csrftoken=csrftoken)
 
     proxies = {"http": proxy, "https": proxy} if proxy else None
 
+    # BUG-IG FIX: plain requests.Session triggers Instagram bot detection via
+    # TLS fingerprinting, causing a 429 death spiral even with valid cookies.
+    # curl_cffi Chrome impersonation (shared with tiktok_live_checker) mirrors
+    # yt-dlp's impersonate=True and avoids the fingerprint-based block.
+    # BUG-IG-ANTIBOT: one long-lived shared session per process instead of a
+    # fresh TLS handshake on every poll — kept alive across calls, not closed
+    # in the finally below.
+    session = get_shared_session(jar)
     try:
-        resp = requests.get(
+        # cookies=jar is passed explicitly (not just relied on via the shared
+        # session's own mutable cookie store) so a concurrent recording-worker
+        # thread mutating that same shared jar can't race this request's
+        # cookies -- see get_shared_session()'s docstring.
+        resp = session.get(
             _PROFILE_API,
             params={"username": username},
             headers=headers,
@@ -141,12 +179,26 @@ def check_instagram_live(
             proxies=proxies,
             timeout=_REQUEST_TIMEOUT,
         )
-    except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
-    except requests.exceptions.Timeout:
-        raise RuntimeError("Instagram API hết thời gian chờ. Thử lại sau.") from None
-    except requests.exceptions.RequestException as exc:
+    except Exception as exc:
+        # curl_cffi exceptions are not requests.exceptions subclasses —
+        # match by message like tiktok_live_checker._fetch_tiktok_profile_page.
+        exc_s = str(exc)
+        if "connection" in exc_s.lower() or "connect" in exc_s.lower():
+            raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
+        if "timeout" in exc_s.lower():
+            raise RuntimeError("Instagram API hết thời gian chờ. Thử lại sau.") from None
         raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
+
+    record_www_claim(resp.headers)
+
+    if resp.status_code != 200:
+        logger.warning(
+            "instagram_live_checker: HTTP %s for @%s (retry-after=%s) body=%r",
+            resp.status_code,
+            username,
+            resp.headers.get("Retry-After"),
+            resp.text[:200],
+        )
 
     # Handle auth errors
     if resp.status_code == 401:
@@ -155,31 +207,23 @@ def check_instagram_live(
             "Refresh cookie file trong Settings → Network."
         )
     if resp.status_code == 404:
-        raise RuntimeError(
-            "not found: Tài khoản @{username} không tìm thấy.".format(
-                username=username
-            )
-        )
+        raise RuntimeError("not found: Tài khoản @{username} không tìm thấy.".format(username=username))
     if resp.status_code == 429:
-        raise RuntimeError(
-            "blocked: Rate limit — Instagram đang chặn tạm thời.\n"
-            "Chờ 5–10 phút rồi thử lại."
-        )
+        raise RuntimeError("blocked: Rate limit — Instagram đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại.")
     if resp.status_code == 403:
-        raise RuntimeError(
-            "login: Truy cập bị từ chối (403). Cookie có thể đã hết hạn."
-        )
+        raise RuntimeError("login: Truy cập bị từ chối (403). Cookie có thể đã hết hạn.")
 
     try:
         data = resp.json()
     except ValueError as exc:
         logger.debug(
             "instagram_live_checker: non-JSON response for %s (status %s): %s…",
-            username, resp.status_code, resp.text[:80],
+            username,
+            resp.status_code,
+            resp.text[:80],
         )
         raise RuntimeError(
-            "Instagram trả về phản hồi không hợp lệ. "
-            "Thử lại sau hoặc kiểm tra cookie file."
+            "Instagram trả về phản hồi không hợp lệ. Thử lại sau hoặc kiểm tra cookie file."
         ) from exc
 
     # --- Parse live status from response -----------------------------------
@@ -188,17 +232,14 @@ def check_instagram_live(
     #   is_live:             bool — currently broadcasting
     #   live_broadcast_id:   str  — broadcast ID when live
     #   has_active_broadcast:bool — alternative field name
-    user = (
-        data.get("data", {}).get("user")
-        or data.get("user")
-        or {}
-    )
+    user = data.get("data", {}).get("user") or data.get("user") or {}
 
     if not user:
-        logger.debug(
-            "instagram_live_checker: empty user data for %s. "
-            "Response keys: %s",
-            username, list(data.keys()),
+        logger.warning(
+            "instagram_live_checker: empty user data for @%s (status %s). Response keys: %s",
+            username,
+            resp.status_code,
+            list(data.keys()),
         )
         # Not an error — could mean private account or non-existent user
         return None
@@ -230,6 +271,9 @@ def check_instagram_live(
         user.get("live_broadcast_status"),
         list(user.keys())[:15],  # log first 15 keys — helps diagnose future API changes
     )
+
+    if not is_live and deep:
+        is_live = _check_story_broadcast(session, user, username, headers, proxies, jar=jar)
 
     if is_live:
         live_url = f"https://www.instagram.com/{username}/live/"

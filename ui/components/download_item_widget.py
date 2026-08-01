@@ -466,6 +466,10 @@ class DownloadItemWidget(QFrame):
 
     def deleteLater(self) -> None:
         T.unregister(self._theme_cb)
+        # Qt destroys children at the C++ level without calling their Python
+        # deleteLater() override, so the child's theme callback must be
+        # released explicitly here.
+        self._prog.deleteLater()
         super().deleteLater()
 
     @staticmethod

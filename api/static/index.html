@@ -702,6 +702,37 @@
     .node-row input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex-shrink: 0; }
     .node-row span { font-size: 15px; }
 
+    /* ── Archive (compress/extract) bottom sheets ─────────────────────── */
+    #archive-compress-overlay, #archive-extract-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #archive-compress-overlay.open, #archive-extract-overlay.open { display: flex; }
+    #archive-compress-sheet, #archive-extract-sheet {
+      background: var(--surface);
+      border-radius: 20px 20px 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 88vh;
+      overflow-y: auto;
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5);
+    }
+    #archive-compress-sheet h2, #archive-extract-sheet h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+    .archive-sheet-sub {
+      font-size: 12px; color: var(--text2); margin-bottom: 16px; word-break: break-all;
+    }
+    .archive-check-row {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    }
+    .archive-check-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
+    .archive-check-row label { font-size: 13px; color: var(--text); }
+    #archive-contents-list { margin-top: 12px; margin-bottom: 14px; max-height: 30vh; overflow-y: auto; }
+
     /* ── Empty states ─────────────────────────────────────────────────── */
     .empty {
       text-align: center;
@@ -1066,6 +1097,65 @@
   </div>
 </div>
 
+<!-- Archive compress bottom sheet -->
+<div id="archive-compress-overlay">
+  <div id="archive-compress-sheet">
+    <div class="sheet-handle"></div>
+    <h2>📦 Nén</h2>
+    <div class="archive-sheet-sub" id="archc-sheet-sub"></div>
+
+    <div class="setting-row">
+      <label>Định dạng</label>
+      <select id="archc-fmt" onchange="onArchiveFmtChanged()">
+        <option value="zip">zip</option>
+        <option value="7z">7z</option>
+      </select>
+    </div>
+    <div class="setting-row">
+      <label>Mật khẩu</label>
+      <input type="password" id="archc-pw" placeholder="Để trống nếu không đặt mật khẩu" />
+    </div>
+    <div class="archive-check-row">
+      <input type="checkbox" id="archc-headerenc" disabled onchange="void 0">
+      <label for="archc-headerenc">Mã hóa tên file (chỉ 7z)</label>
+    </div>
+    <div class="setting-row">
+      <label>Tên archive</label>
+      <input type="text" id="archc-name" disabled />
+    </div>
+    <div class="archive-check-row">
+      <input type="checkbox" id="archc-use-orig" checked onchange="onArchiveUseOrigChanged()">
+      <label for="archc-use-orig">Dùng tên gốc</label>
+    </div>
+
+    <button class="btn btn-primary" onclick="submitArchiveCompress()">📦 Bắt đầu nén</button>
+    <button class="btn btn-secondary" onclick="closeArchiveCompressSheet()" style="margin-top:8px">Huỷ</button>
+  </div>
+</div>
+
+<!-- Archive extract bottom sheet -->
+<div id="archive-extract-overlay">
+  <div id="archive-extract-sheet">
+    <div class="sheet-handle"></div>
+    <h2>📂 Giải nén</h2>
+    <div class="archive-sheet-sub" id="arche-sheet-sub"></div>
+
+    <div class="setting-row">
+      <label>Thư mục giải nén</label>
+      <input type="text" id="arche-dest" placeholder="Để trống dùng mặc định" />
+    </div>
+    <div class="setting-row">
+      <label>Mật khẩu</label>
+      <input type="password" id="arche-pw" placeholder="Để trống nếu không có mật khẩu" />
+    </div>
+    <button class="btn btn-secondary" onclick="previewArchiveContents()">👁 Xem nội dung</button>
+    <div id="archive-contents-list"></div>
+
+    <button class="btn btn-primary" onclick="submitArchiveExtract()">📂 Giải nén</button>
+    <button class="btn btn-secondary" onclick="closeArchiveExtractSheet()" style="margin-top:8px">Huỷ</button>
+  </div>
+</div>
+
 <!-- Settings bottom sheet -->
 <div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
   <div id="settings-sheet">
@@ -1133,9 +1223,40 @@ async function api(method, path, body, signal) {
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || resp.statusText);
+    let msg = err.detail;
+    if (Array.isArray(msg)) msg = msg.map(d => d.msg || JSON.stringify(d)).join('; ');
+    else if (msg && typeof msg === 'object') msg = JSON.stringify(msg);
+    throw new Error(msg || resp.statusText);
   }
   return resp.json();
+}
+
+async function apiDownload(path, body, filename) {
+  const base = cfg.host.replace(/\/+$/, '');
+  const resp = await fetch(base + path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cfg.token ? { 'Authorization': 'Bearer ' + cfg.token } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    let msg = err.detail;
+    if (Array.isArray(msg)) msg = msg.map(d => d.msg || JSON.stringify(d)).join('; ');
+    else if (msg && typeof msg === 'object') msg = JSON.stringify(msg);
+    throw new Error(msg || resp.statusText);
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ── SSE ────────────────────────────────────────────────────────────── */
@@ -1570,8 +1691,8 @@ function queueItemHtml(t) {
          style="margin-right:8px; width:16px; height:16px; accent-color:var(--primary); flex-shrink:0;">`
     : '';
 
-  const speed = t.speed ? `<span>${t.speed}</span>` : '';
-  const eta   = t.eta   ? `<span>ETA ${t.eta}</span>` : '';
+  const speed = t.speed ? `<span>${escHtml(t.speed)}</span>` : '';
+  const eta   = t.eta   ? `<span>ETA ${escHtml(t.eta)}</span>` : '';
   const pctTxt = isActive || isPaused ? `<span>${pct.toFixed(0)}%</span>` : '';
 
   const errHtml = t.error_msg
@@ -1596,7 +1717,8 @@ function queueItemHtml(t) {
       <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
         ☁ Send to iPhone
       </button>
-      <button class="btn btn-sm btn-preview" onclick="previewFile('${t.id}', '${escHtml(t.title)}')">
+      <button class="btn btn-sm btn-preview" data-tid="${t.id}" data-title="${escHtml(t.title)}"
+              onclick="previewFile(this.dataset.tid, this.dataset.title)">
         ▶ Preview
       </button>
       <button class="btn btn-sm btn-delete" style="grid-column:1/-1"
@@ -1649,8 +1771,8 @@ function queueItemHtml(t) {
         </div>
         <div class="qi-file-actions">
           <button class="btn btn-sm btn-preview"
-                  onclick="previewConvertFile('${completedJob.job_id}',
-                    '${escHtml(completedJob.output_filename || t.title)}')">
+                  data-jid="${completedJob.job_id}" data-title="${escHtml(completedJob.output_filename || t.title)}"
+                  onclick="previewConvertFile(this.dataset.jid, this.dataset.title)">
             ▶ Xem trước
           </button>
           <button class="btn btn-sm btn-delete"
@@ -1664,7 +1786,8 @@ function queueItemHtml(t) {
       // Only shown when original file still exists (nothing to convert otherwise)
       convertBlock = `<div style="margin-top:8px;">
         <button class="btn btn-sm btn-convert" style="width:100%"
-                onclick="openConvertSheet('${t.id}', '${escHtml(t.title)}')">
+                data-tid="${t.id}" data-title="${escHtml(t.title)}"
+                onclick="openConvertSheet(this.dataset.tid, this.dataset.title)">
           🎬 Convert
         </button>
       </div>`;
@@ -2261,7 +2384,8 @@ function toast(msg) {
 function escHtml(s) {
   return String(s || '')
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;').replace(/`/g,'&#96;');
 }
 
 function fmtDur(sec) {
@@ -2423,11 +2547,18 @@ function renderFileBrowser() {
         <div class="fb-icon" style="cursor:pointer" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">📁</div>
         <div class="fb-body">
           <div class="fb-name" style="cursor:pointer" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">${escHtml(item.name)}</div>
-          <button class="btn btn-sm btn-delete" style="margin-top:6px"
-            data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
-            onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
-            🗑 Xoá thư mục
-          </button>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+            <button class="btn btn-sm btn-secondary"
+              data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+              onclick="openArchiveCompressSheet(this.dataset.path,this.dataset.name)">
+              📦 Nén
+            </button>
+            <button class="btn btn-sm btn-delete"
+              data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+              onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
+              🗑 Xoá
+            </button>
+          </div>
         </div>
       </div>`;
     }
@@ -2494,6 +2625,7 @@ function renderFileBrowser() {
       </div>`;
     }
 
+    const isArchiveFile = /\.(zip|7z)$/i.test(item.name);
     const fileBtns = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
       <button class="btn btn-sm btn-preview"
         data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
@@ -2505,6 +2637,16 @@ function renderFileBrowser() {
         onclick="openNodePicker(this.dataset.path)">
         📲 Gửi
       </button>
+      <button class="btn btn-sm btn-secondary"
+        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+        onclick="openArchiveCompressSheet(this.dataset.path,this.dataset.name)">
+        📦 Nén
+      </button>
+      ${isArchiveFile ? `<button class="btn btn-sm btn-secondary"
+        data-path="${escHtml(fullPath)}"
+        onclick="openArchiveExtractSheet(this.dataset.path)">
+        📂 Giải nén
+      </button>` : ''}
     </div>`;
 
     return `<div class="fb-item">
@@ -2529,6 +2671,118 @@ async function deleteFileItem(path, name, btn) {
   } catch(e) {
     toast(`Lỗi: ${e.message}`);
     btn.disabled = false;
+  }
+}
+
+/* ── Archive (compress/extract) ────────────────────────────────────── */
+let _archiveCompressSource = null; // { path, name }
+let _archiveExtractPath = null;
+
+function _stripExt(name) {
+  return name.replace(/\.[^/.]+$/, '');
+}
+
+function openArchiveCompressSheet(path, name) {
+  _archiveCompressSource = { path, name };
+  document.getElementById('archc-sheet-sub').textContent = path;
+  document.getElementById('archc-fmt').value = 'zip';
+  document.getElementById('archc-pw').value = '';
+  document.getElementById('archc-name').value = _stripExt(name);
+  document.getElementById('archc-name').disabled = true;
+  document.getElementById('archc-use-orig').checked = true;
+  document.getElementById('archc-headerenc').checked = false;
+  document.getElementById('archc-headerenc').disabled = true;
+  document.getElementById('archive-compress-overlay').classList.add('open');
+}
+
+function closeArchiveCompressSheet() {
+  document.getElementById('archive-compress-overlay').classList.remove('open');
+  _archiveCompressSource = null;
+}
+
+function onArchiveFmtChanged() {
+  const is7z = document.getElementById('archc-fmt').value === '7z';
+  const enc = document.getElementById('archc-headerenc');
+  enc.disabled = !is7z;
+  if (!is7z) enc.checked = false;
+}
+
+function onArchiveUseOrigChanged() {
+  document.getElementById('archc-name').disabled = document.getElementById('archc-use-orig').checked;
+}
+
+async function submitArchiveCompress() {
+  const src = _archiveCompressSource;
+  if (!src) return;
+  const fmt = document.getElementById('archc-fmt').value;
+  const password = document.getElementById('archc-pw').value;
+  const useOrig = document.getElementById('archc-use-orig').checked;
+  const encryptHeader = document.getElementById('archc-headerenc').checked;
+  const archiveName = useOrig ? _stripExt(src.name) : (document.getElementById('archc-name').value.trim() || 'archive');
+
+  closeArchiveCompressSheet();
+  toast('📦 Đang nén…');
+  try {
+    await apiDownload('/api/archive/compress', {
+      sources: [src.path],
+      fmt,
+      archive_name: archiveName,
+      password: password || undefined,
+      encrypt_header: encryptHeader,
+      individually: false,
+    }, `${archiveName}.${fmt}`);
+    toast('✅ Đã nén xong');
+  } catch(e) {
+    toast('❌ ' + e.message);
+  }
+}
+
+function openArchiveExtractSheet(path) {
+  _archiveExtractPath = path;
+  document.getElementById('arche-sheet-sub').textContent = path;
+  document.getElementById('arche-dest').value = '';
+  document.getElementById('arche-pw').value = '';
+  document.getElementById('archive-contents-list').innerHTML = '';
+  document.getElementById('archive-extract-overlay').classList.add('open');
+}
+
+function closeArchiveExtractSheet() {
+  document.getElementById('archive-extract-overlay').classList.remove('open');
+  _archiveExtractPath = null;
+}
+
+async function previewArchiveContents() {
+  const archive_path = _archiveExtractPath;
+  if (!archive_path) return;
+  const password = document.getElementById('arche-pw').value;
+  const box = document.getElementById('archive-contents-list');
+  box.innerHTML = '<div style="font-size:12px;color:var(--text3)">Đang đọc…</div>';
+  try {
+    const data = await api('POST', '/api/archive/contents', { archive_path, password: password || undefined });
+    box.innerHTML = data.members.map(m =>
+      `<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)">
+        ${m.is_dir ? '📁' : '📄'} ${escHtml(m.name)}${m.is_dir ? '' : ' · ' + fmtSize(m.size)}
+      </div>`
+    ).join('') || '<div style="font-size:12px;color:var(--text3)">Archive trống</div>';
+  } catch(e) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--danger)">❌ ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function submitArchiveExtract() {
+  const archive_path = _archiveExtractPath;
+  if (!archive_path) return;
+  const dest_dir = document.getElementById('arche-dest').value.trim() || undefined;
+  const password = document.getElementById('arche-pw').value || undefined;
+
+  closeArchiveExtractSheet();
+  toast('📂 Đang giải nén…');
+  try {
+    const result = await api('POST', '/api/archive/extract', { archive_path, dest_dir, password });
+    toast(`✅ Đã giải nén ${result.extracted_paths.length} file`);
+    browseFiles(_browseData.current_path);
+  } catch(e) {
+    toast('❌ ' + e.message);
   }
 }
 
@@ -2594,6 +2848,14 @@ document.getElementById('preview-overlay').addEventListener('click', function(e)
 
 document.getElementById('nodes-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeNodePicker();
+});
+
+document.getElementById('archive-compress-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeArchiveCompressSheet();
+});
+
+document.getElementById('archive-extract-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeArchiveExtractSheet();
 });
 
 // Allow Enter key in URL input to trigger analyse

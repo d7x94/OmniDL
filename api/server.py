@@ -31,18 +31,26 @@ import mimetypes
 import secrets
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import TYPE_CHECKING, Any, Generator, NoReturn, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from api.models import (
     AnalyseRequest,
     AnalyseResponse,
+    ArchiveCompressRequest,
+    ArchiveContentsRequest,
+    ArchiveContentsResponse,
+    ArchiveExtractRequest,
+    ArchiveExtractResponse,
+    ArchiveMemberResponse,
     ClearItemsRequest,
     ClipboardAnalyseRequest,
     ConvertJobResponse,
@@ -69,6 +77,13 @@ from api.models import (
     TaskResponse,
 )
 from app.event_bus import EventBus
+from app.services.archive_service import (
+    ArchiveBombError,
+    ArchiveError,
+    ArchivePasswordError,
+    ArchivePathTraversalError,
+    ArchiveService,
+)
 from domain.models.conversion_job import ConversionJob, ConversionStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 
@@ -107,6 +122,11 @@ _PING_INTERVAL = 15  # seconds — keeps iOS Safari connections alive
 _analyse_cache: dict[str, dict] = {}
 _analyse_cache_lock = threading.Lock()
 _ANALYSE_CACHE_TTL = 30.0  # seconds to keep result after completion
+# Hard ceiling: an entry this old is dropped even when refs > 0.  Without it a
+# client that disconnects before its stream generator starts leaves refs stuck
+# at 1 and pins a full MediaInfo (raw yt-dlp format list) for the process life.
+_ANALYSE_CACHE_MAX_AGE = 300.0
+_ANALYSE_CACHE_MAX_ENTRIES = 32
 _EXTRA_MIME = {".ts": "video/mp2t"}  # missing from Python's default mimetypes DB
 
 # Per-IP sliding-window rate limiter (stdlib only, no new deps).
@@ -128,14 +148,36 @@ def _check_rate_limit(ip: str) -> bool:
         if len(bucket) >= _RATE_LIMIT:
             return False
         bucket.append(now)
-        # Prune empty buckets every 5 min to prevent unbounded growth from
+        # Prune stale buckets every 5 min to prevent unbounded growth from
         # short-lived clients (bots, scanners, one-time iOS shortcuts runs).
+        # A one-shot IP never comes back to drain its own deque, so pruning
+        # only empty deques would never remove it — compare the newest
+        # timestamp against the window instead.
         if now - _rate_last_cleanup > 300.0:
-            stale = [k for k, v in _rate_buckets.items() if not v]
+            stale = [k for k, v in _rate_buckets.items() if not v or now - v[-1] > _RATE_WINDOW]
             for k in stale:
                 del _rate_buckets[k]
             _rate_last_cleanup = now
         return True
+
+
+def _raise_for_archive_error(exc: Exception) -> NoReturn:
+    """Map ArchiveService exceptions to HTTP errors. Always raises."""
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, ArchivePasswordError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, ArchivePathTraversalError):
+        logger.warning("Archive path-traversal rejected: %s", exc)
+        raise HTTPException(status_code=400, detail="Archive contains an unsafe member path") from exc
+    if isinstance(exc, ArchiveBombError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, ArchiveError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.exception("Archive operation failed")
+    raise HTTPException(status_code=500, detail="Archive operation failed") from exc
 
 
 def _analyse_cache_cleanup() -> None:
@@ -144,10 +186,17 @@ def _analyse_cache_cleanup() -> None:
     stale = [
         k
         for k, v in _analyse_cache.items()
-        if v["done"].is_set() and v.get("refs", 0) == 0 and now - v.get("ts", now) > _ANALYSE_CACHE_TTL
+        if (v["done"].is_set() and v.get("refs", 0) == 0 and now - v.get("ts", now) > _ANALYSE_CACHE_TTL)
+        or now - v.get("created", now) > _ANALYSE_CACHE_MAX_AGE
     ]
     for k in stale:
         del _analyse_cache[k]
+
+    overflow = len(_analyse_cache) - _ANALYSE_CACHE_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(_analyse_cache, key=lambda k: _analyse_cache[k].get("created", 0.0))
+        for k in oldest[:overflow]:
+            del _analyse_cache[k]
 
 
 # ── Runtime server state (module-level so stop/restart can reach it) ─────────
@@ -156,13 +205,17 @@ _active_thread: threading.Thread | None = None
 _active_monitor: "LiveMonitorService | None" = None  # stopped on restart/shutdown
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
 _bus_wired = False  # BUG-CB: prevent duplicate subscriptions on restart
+# (bus, event, handler) recorded by _wire_event_bus so _unwire_bus can undo it.
+_bus_subscriptions: list[tuple[EventBus, str, Any]] = []
 
 
 def _broadcast(event_type: str, data: dict) -> None:
     """Push an SSE frame to all connected clients. Safe to call from any thread."""
-    msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     with _sse_lock:
         clients = list(_sse_clients)
+    if not clients:
+        return  # nobody listening — skip the json.dumps entirely
+    msg = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
     for q, loop in clients:
         try:
             loop.call_soon_threadsafe(_offer_sse, q, msg)
@@ -295,6 +348,33 @@ def _wire_event_bus(bus: EventBus) -> None:
     bus.subscribe(EventBus.CONVERT_FAILED, _on_convert_failed)
     bus.subscribe(EventBus.CONVERT_CANCELLED, _on_convert_cancelled)
 
+    _bus_subscriptions.extend(
+        (bus, event, handler)
+        for event, handler in (
+            (EventBus.DOWNLOAD_STARTED, _on_started),
+            (EventBus.DOWNLOAD_PROGRESS, _on_progress),
+            (EventBus.DOWNLOAD_COMPLETED, _on_completed),
+            (EventBus.DOWNLOAD_FAILED, _on_failed),
+            (EventBus.DOWNLOAD_CANCELLED, _on_cancelled),
+            (EventBus.TAILDROP_COMPLETED, _on_taildrop_completed),
+            (EventBus.TAILDROP_FAILED, _on_taildrop_failed),
+            (EventBus.CONVERT_STARTED, _on_convert_started),
+            (EventBus.CONVERT_PROGRESS, _on_convert_progress),
+            (EventBus.CONVERT_COMPLETED, _on_convert_completed),
+            (EventBus.CONVERT_FAILED, _on_convert_failed),
+            (EventBus.CONVERT_CANCELLED, _on_convert_cancelled),
+        )
+    )
+
+
+def _unwire_bus() -> None:
+    """Undo _wire_event_bus so a stopped server stops handling events."""
+    global _bus_wired
+    for bus, event, handler in _bus_subscriptions:
+        bus.unsubscribe(event, handler)
+    _bus_subscriptions.clear()
+    _bus_wired = False
+
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
@@ -334,24 +414,15 @@ def create_app(
 
     _token: str = config.api_token  # captured at factory time, immutable
 
+    # No config/event_bus dependency — stateless across calls, no 503 fallback needed.
+    archive_svc = ArchiveService()
+    # Bounds concurrent compress/extract/contents calls, matching
+    # RemoteConvertService's max_workers=2 for the same class of CPU/IO work.
+    _archive_semaphore = asyncio.Semaphore(2)
+
     # ── Auth dependency ───────────────────────────────────────────────────
 
-    async def _require_auth(
-        request: Request,
-        token: Optional[str] = Query(default=None),  # for EventSource (SSE)
-    ) -> None:
-        """
-        Verify Bearer token.  Accepts it from either:
-          • Authorization: Bearer <token>  header  (all endpoints)
-          • ?token=<token>                 query   (EventSource only)
-        Skipped entirely when api_token is empty (open/local-only mode).
-        """
-        client_ip = request.client.host if request.client else "unknown"
-        provided = token  # query param first (SSE path)
-        if not provided:
-            auth_header = request.headers.get("Authorization", "")
-            if auth_header.startswith("Bearer "):
-                provided = auth_header[7:]
+    def _verify_token(provided: Optional[str], client_ip: str) -> None:
         # Valid-token requests bypass the rate limiter: behind tailscale serve
         # (or any localhost-bound proxy) every client shares one IP, so letting
         # unauthenticated requests consume the bucket would allow a single bad
@@ -368,6 +439,39 @@ def create_app(
         logger.warning("API auth: invalid token from %s", client_ip)
         raise HTTPException(status_code=403, detail="Invalid token")
 
+    async def _require_auth(request: Request) -> None:
+        """
+        Verify Bearer token from the Authorization header.
+        Skipped entirely when api_token is empty (open/local-only mode).
+        """
+        client_ip = request.client.host if request.client else "unknown"
+        provided = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            provided = auth_header[7:]
+        _verify_token(provided, client_ip)
+
+    async def _require_auth_stream(
+        request: Request,
+        token: Optional[str] = Query(default=None),  # for EventSource / <video>/<img> src
+    ) -> None:
+        """
+        Verify Bearer token.  Accepts it from either:
+          • Authorization: Bearer <token>  header
+          • ?token=<token>                 query
+        Only for routes hit by EventSource or <video>/<img> tags, which cannot
+        set a custom Authorization header. All other routes use _require_auth
+        (header-only) so the token never lands in query strings / access logs.
+        Skipped entirely when api_token is empty (open/local-only mode).
+        """
+        client_ip = request.client.host if request.client else "unknown"
+        provided = token  # query param first (SSE / media-tag path)
+        if not provided:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided = auth_header[7:]
+        _verify_token(provided, client_ip)
+
     # ── Health check ──────────────────────────────────────────────────────
 
     @app.get("/api/ping")
@@ -378,7 +482,7 @@ def create_app(
     # ── URL analysis ──────────────────────────────────────────────────────
 
     @app.post("/api/analyse", response_model=AnalyseResponse)
-    async def analyse(body: AnalyseRequest, _: None = Depends(_require_auth)):
+    async def analyse(request: Request, body: AnalyseRequest, _: None = Depends(_require_auth)):
         """
         Extract metadata for a URL.
         Bridges the callback-based DownloadService.analyse_url() to a
@@ -403,6 +507,10 @@ def create_app(
         deadline = time.monotonic() + 180.0
         while not done.is_set() and time.monotonic() < deadline:
             await asyncio.sleep(0.5)
+            # Without this the handler polls for the full 180 s after the
+            # client is gone, holding result + its threading.Event alive.
+            if await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="Client disconnected")
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -436,7 +544,7 @@ def create_app(
     @app.get("/api/analyse/stream")
     async def analyse_stream(
         url: str = Query(...),
-        _: None = Depends(_require_auth),
+        _: None = Depends(_require_auth_stream),
     ):
         """
         SSE streaming analyse — deduplicates concurrent requests for same URL.
@@ -470,6 +578,7 @@ def create_app(
                     "done": threading.Event(),
                     "result": {},
                     "ts": 0.0,
+                    "created": time.monotonic(),
                     "refs": 0,
                 }
                 _analyse_cache[clean_url] = entry
@@ -494,9 +603,14 @@ def create_app(
                     clean_url[:80],
                     entry["done"].is_set(),
                 )
-            entry["refs"] += 1
 
         async def _stream():
+            # refs is incremented here, not in the handler body: Starlette may
+            # never iterate this generator when the client drops early, and the
+            # matching decrement lives in the finally below.  Registering
+            # outside would leave refs stuck above zero and pin the MediaInfo.
+            with _analyse_cache_lock:
+                entry["refs"] += 1
             try:
                 done = entry["done"]
                 result = entry["result"]
@@ -557,6 +671,7 @@ def create_app(
                     if entry["refs"] == 0 and "info" not in entry.get("result", {}):
                         # Error or timeout — evict so next request spawns a fresh job.
                         _analyse_cache.pop(clean_url, None)
+                    _analyse_cache_cleanup()
 
         return StreamingResponse(
             _stream(),
@@ -570,7 +685,9 @@ def create_app(
     # ── Clipboard analyse (Remote client sends URL from its own clipboard) ──
 
     @app.post("/api/clipboard/analyse", response_model=AnalyseResponse)
-    async def clipboard_analyse(body: ClipboardAnalyseRequest, _: None = Depends(_require_auth)):
+    async def clipboard_analyse(
+        request: Request, body: ClipboardAnalyseRequest, _: None = Depends(_require_auth)
+    ):
         """
         Analyse a URL submitted from the Remote client's clipboard.
 
@@ -596,6 +713,10 @@ def create_app(
         deadline = time.monotonic() + 180.0
         while not done.is_set() and time.monotonic() < deadline:
             await asyncio.sleep(0.5)
+            # Without this the handler polls for the full 180 s after the
+            # client is gone, holding result + its threading.Event alive.
+            if await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="Client disconnected")
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -651,6 +772,36 @@ def create_app(
             is_live=bool(body.is_live),  # forwarded from /api/analyse — avoids a second extract_info
             tiktok_room_id=_info_room_id,  # BUG-TT-25: enables signed room/info fallback
         )
+        import sys as _sys  # noqa: PLC0415
+
+        from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+            is_facebook_story_url as _is_story_url,
+        )
+
+        if _is_story_url(body.url) and _sys.platform not in ("win32", "darwin"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Facebook Story downloads require a local Brave/Chrome browser "
+                    "and are only supported on Windows and macOS. "
+                    f"This server is running on {_sys.platform}."
+                ),
+            )
+
+        from infrastructure.downloader.waaw_engine import (  # noqa: PLC0415
+            is_waaw_url as _is_waaw_url,
+        )
+
+        if _is_waaw_url(body.url) and _sys.platform not in ("win32", "darwin"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "waaw.ac downloads require a local Brave/Chrome browser "
+                    "and are only supported on Windows and macOS. "
+                    f"This server is running on {_sys.platform}."
+                ),
+            )
+
         try:
             task = service.start_download(
                 url=body.url,
@@ -882,7 +1033,7 @@ def create_app(
         "/api/queue/{task_id}/file",
         summary="Stream / preview the output file of a completed task",
     )
-    async def preview_task_file(task_id: str, _: None = Depends(_require_auth)):
+    async def preview_task_file(task_id: str, _: None = Depends(_require_auth_stream)):
         """
         Serve the output file inline so iOS Safari can preview it.
 
@@ -1130,7 +1281,7 @@ def create_app(
         "/api/convert/{job_id}/file",
         summary="Stream / preview the converted MP4 output",
     )
-    async def preview_convert_file(job_id: str, _: None = Depends(_require_auth)):
+    async def preview_convert_file(job_id: str, _: None = Depends(_require_auth_stream)):
         """
         Serve the converted MP4 inline for iOS Safari preview.
 
@@ -1434,12 +1585,140 @@ def create_app(
             detail=f"Deleted: {target.name}",
         )
 
+    # ── Archive ──────────────────────────────────────────────────────────
+
+    def _resolve_within_download_dir(raw_path: str, *, must_exist: bool) -> Path:
+        root = config.download_dir.resolve()
+        try:
+            resolved = Path(raw_path).resolve()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid path") from None
+        if not resolved.is_relative_to(root):
+            raise HTTPException(status_code=400, detail="Path is outside the allowed download directory")
+        if must_exist and not resolved.exists():
+            raise HTTPException(status_code=404, detail="Path not found on server")
+        return resolved
+
+    @app.post(
+        "/api/archive/compress",
+        summary="Compress files/dirs within download_dir into a password-protected .zip/.7z",
+    )
+    async def compress_archive(body: ArchiveCompressRequest, _: None = Depends(_require_auth)):
+        """
+        Build an archive from server-side sources and return it as a download.
+
+        individually=True requires exactly one source — one HTTP response can
+        only return one file; the service itself supports N sources -> N
+        archives for the desktop UI's batch mode.
+
+        Security:
+        - Every source resolved against config.download_dir (CWE-22 guard).
+        - password travels only in the POST body, never a query string.
+        """
+        if not body.sources:
+            raise HTTPException(status_code=422, detail="sources must not be empty")
+        if body.individually and len(body.sources) != 1:
+            raise HTTPException(
+                status_code=422, detail="individually=True is only supported for a single source over the API"
+            )
+
+        sources = [_resolve_within_download_dir(s, must_exist=True) for s in body.sources]
+        password = body.password.get_secret_value().encode("utf-8") if body.password else None
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="omnidl-archive-"))
+        try:
+            async with _archive_semaphore:
+                archives = await asyncio.to_thread(
+                    archive_svc.compress,
+                    sources,
+                    temp_dir,
+                    body.fmt,
+                    archive_name=body.archive_name or "archive",
+                    password=password,
+                    encrypt_header=body.encrypt_header,
+                    individually=body.individually,
+                )
+        except Exception as exc:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            _raise_for_archive_error(exc)
+
+        if len(archives) != 1:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=422,
+                detail="individually=True must resolve to exactly one output file over the API",
+            )
+        archive_path = archives[0]
+        logger.info("Remote API: compressed %d source(s) into '%s'", len(sources), archive_path.name)
+        return FileResponse(
+            path=str(archive_path),
+            filename=archive_path.name,
+            media_type="application/octet-stream",
+            background=BackgroundTask(shutil.rmtree, temp_dir, ignore_errors=True),
+        )
+
+    @app.post(
+        "/api/archive/extract",
+        response_model=ArchiveExtractResponse,
+        summary="Extract a .zip/.7z archive within download_dir",
+    )
+    async def extract_archive(
+        body: ArchiveExtractRequest, _: None = Depends(_require_auth)
+    ) -> ArchiveExtractResponse:
+        archive_path = _resolve_within_download_dir(body.archive_path, must_exist=True)
+        if body.dest_dir:
+            dest_dir = _resolve_within_download_dir(body.dest_dir, must_exist=False)
+        else:
+            dest_dir = config.download_dir.resolve() / "extracted" / archive_path.stem
+        password = body.password.get_secret_value().encode("utf-8") if body.password else None
+
+        try:
+            async with _archive_semaphore:
+                result = await asyncio.to_thread(
+                    archive_svc.extract, archive_path, dest_dir, password=password
+                )
+        except Exception as exc:
+            _raise_for_archive_error(exc)
+
+        logger.info("Remote API: extracted '%s' into '%s'", archive_path.name, dest_dir)
+        return ArchiveExtractResponse(
+            dest_dir=str(dest_dir),
+            extracted_paths=[str(p) for p in result.extracted_paths],
+            total_bytes=result.total_bytes,
+        )
+
+    @app.post(
+        "/api/archive/contents",
+        response_model=ArchiveContentsResponse,
+        summary="List members of a .zip/.7z archive within download_dir without extracting",
+    )
+    async def archive_contents(
+        body: ArchiveContentsRequest, _: None = Depends(_require_auth)
+    ) -> ArchiveContentsResponse:
+        archive_path = _resolve_within_download_dir(body.archive_path, must_exist=True)
+        password = body.password.get_secret_value().encode("utf-8") if body.password else None
+
+        try:
+            async with _archive_semaphore:
+                members = await asyncio.to_thread(archive_svc.list_contents, archive_path, password=password)
+        except Exception as exc:
+            _raise_for_archive_error(exc)
+
+        return ArchiveContentsResponse(
+            members=[
+                ArchiveMemberResponse(
+                    name=m.name, size=m.size, compressed_size=m.compressed_size, is_dir=m.is_dir
+                )
+                for m in members
+            ]
+        )
+
     @app.get("/api/nodes", summary="List configured Taildrop target nodes")
     async def list_nodes(_: None = Depends(_require_auth)) -> list[str]:
         return config.taildrop_target_nodes
 
     @app.get("/api/files/serve", summary="Stream a file by absolute path (within download_dir)")
-    async def serve_file(path: str = Query(...), _: None = Depends(_require_auth)):
+    async def serve_file(path: str = Query(...), _: None = Depends(_require_auth_stream)):
         root = config.download_dir.resolve()
         try:
             target = Path(path).resolve()
@@ -1477,6 +1756,12 @@ def create_app(
             raise HTTPException(status_code=503, detail="Taildrop service unavailable")
         if not body.nodes:
             raise HTTPException(status_code=400, detail="No nodes specified")
+        allowed_nodes = set(config.taildrop_target_nodes)
+        disallowed = [n for n in body.nodes if n not in allowed_nodes]
+        if disallowed:
+            raise HTTPException(
+                status_code=400, detail=f"Node(s) not in configured Taildrop targets: {', '.join(disallowed)}"
+            )
         root = config.download_dir.resolve()
         try:
             target = Path(body.path).resolve()
@@ -1563,7 +1848,7 @@ def create_app(
     # ── SSE ───────────────────────────────────────────────────────────────
 
     @app.get("/api/events")
-    async def sse_events(request: Request, _: None = Depends(_require_auth)):
+    async def sse_events(request: Request, _: None = Depends(_require_auth_stream)):
         """
         Server-Sent Events stream.
         Sends an initial 'snapshot' event with the full queue, then pushes
@@ -1573,35 +1858,42 @@ def create_app(
         """
         client_q: asyncio.Queue = asyncio.Queue(maxsize=200)
         loop = asyncio.get_running_loop()
-        with _sse_lock:
-            _sse_clients.append((client_q, loop))
 
         async def _stream():
-            # Initial full snapshot so the client doesn't need a separate
-            # GET /api/queue call on first connect.
-            snapshot = [_task_to_dict(t) for t in service.get_all_tasks()]
-            yield f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
-
-            # ── Convert-job snapshot ──────────────────────────────────────
-            # Sent immediately after the download snapshot so that if the
-            # client reconnects AFTER a convert_completed event was already
-            # broadcast (e.g. SSE drop mid-conversion), it can restore the
-            # correct COMPLETED / FAILED / CANCELLED state without polling.
-            # Only non-terminal or recently-finished jobs are included so the
-            # payload stays small (RemoteConvertService already caps at
-            # MAX_JOBS = 100 and purges oldest terminal jobs automatically).
-            if remote_convert is not None:
-                convert_snap = [_job_to_response(job).model_dump() for job in remote_convert.get_all_jobs()]
-                if convert_snap:
-                    yield f"event: convert_snapshot\ndata: {json.dumps(convert_snap)}\n\n"
-
-            # Live-monitor snapshot so a reconnecting client restores its watch
-            # list and recording state without a separate GET /api/monitor call.
-            if live_monitor is not None:
-                monitor_snap = live_monitor.list_items()
-                yield f"event: monitor_snapshot\ndata: {json.dumps(monitor_snap)}\n\n"
-
+            # Registered here, not in the handler body: Starlette may never
+            # iterate this generator when the client drops early, and the
+            # matching removal lives in the finally below.  Registering outside
+            # would leave a permanent entry holding up to 200 queued frames.
+            with _sse_lock:
+                _sse_clients.append((client_q, loop))
             try:
+                # Initial full snapshot so the client doesn't need a separate
+                # GET /api/queue call on first connect.
+                snapshot = [_task_to_dict(t) for t in service.get_all_tasks()]
+                yield f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
+
+                # ── Convert-job snapshot ──────────────────────────────────
+                # Sent immediately after the download snapshot so that if the
+                # client reconnects AFTER a convert_completed event was already
+                # broadcast (e.g. SSE drop mid-conversion), it can restore the
+                # correct COMPLETED / FAILED / CANCELLED state without polling.
+                # Only non-terminal or recently-finished jobs are included so
+                # the payload stays small (RemoteConvertService already caps at
+                # MAX_JOBS = 100 and purges oldest terminal jobs automatically).
+                if remote_convert is not None:
+                    convert_snap = [
+                        _job_to_response(job).model_dump() for job in remote_convert.get_all_jobs()
+                    ]
+                    if convert_snap:
+                        yield f"event: convert_snapshot\ndata: {json.dumps(convert_snap)}\n\n"
+
+                # Live-monitor snapshot so a reconnecting client restores its
+                # watch list and recording state without a separate
+                # GET /api/monitor call.
+                if live_monitor is not None:
+                    monitor_snap = live_monitor.list_items()
+                    yield f"event: monitor_snapshot\ndata: {json.dumps(monitor_snap)}\n\n"
+
                 while True:
                     try:
                         msg = await asyncio.wait_for(client_q.get(), timeout=_PING_INTERVAL)
@@ -1722,6 +2014,13 @@ def stop_api_server(timeout: float = 8.0) -> None:
     with _sse_lock:
         _sse_clients.clear()
 
+    # Drop cached MediaInfo objects (each holds a full yt-dlp format list) and
+    # release the bus subscriptions so nothing keeps serialising events for a
+    # server that is no longer running.
+    with _analyse_cache_lock:
+        _analyse_cache.clear()
+    _unwire_bus()
+
     logger.info("OmniDL API server stopped.")
 
 
@@ -1826,6 +2125,7 @@ def start_api_server(
             "uvicorn is not installed — cannot start the remote API server. "
             "Run: pip install 'fastapi[standard]'"
         )
+        live_monitor.stop()  # nothing can reach it after we return None
         return None
 
     # When the Tailscale HTTPS Profile is active, bind to 127.0.0.1 on the
@@ -1863,6 +2163,7 @@ def start_api_server(
                             continue
                 else:
                     logger.error("api_ts_https: no free port found after 30 attempts — API will not start")
+                    live_monitor.stop()  # nothing can reach it after we return None
                     return None
     else:
         _bind_host = config.api_host

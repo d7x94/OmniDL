@@ -1,4 +1,5 @@
 """Custom progress bar with gradient fill and indeterminate animation."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
@@ -11,9 +12,9 @@ from ui.themes.tokens import T
 class OmniProgressBar(QWidget):
     _HEIGHT = 6
     _RADIUS = 3
-    _ANIM_PILL  = 0.25
+    _ANIM_PILL = 0.25
     _ANIM_RANGE = 0.75
-    _ANIM_STEP  = 0.015
+    _ANIM_STEP = 0.015
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -41,7 +42,10 @@ class OmniProgressBar(QWidget):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick_anim)
 
-        T.register(self._on_theme)
+        # Stored so unregister() can find it again: T.unregister compares by
+        # identity and a bound method is a fresh object on every access.
+        self._theme_cb = self._on_theme
+        T.register(self._theme_cb)
 
     def set_progress(self, value: float) -> None:
         self._value = max(0.0, min(100.0, value))
@@ -77,6 +81,12 @@ class OmniProgressBar(QWidget):
         color = T.text if self._value >= 100 else T.text3
         self._pct_lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
         self._bar.update()
+
+    def deleteLater(self) -> None:
+        # T._callbacks holds a strong ref to the bound method, which pins this
+        # widget (and its parent card) for the process lifetime otherwise.
+        T.unregister(self._theme_cb)
+        super().deleteLater()
 
 
 class _BarCanvas(QWidget):
@@ -124,16 +134,14 @@ class _BarCanvas(QWidget):
         else:
             self._draw_gradient_pill(painter, 0, fill_w, h, r)
 
-    def _draw_pill(self, painter: QPainter, x0: int, x1: int,
-                   h: int, r: int, color: QColor) -> None:
+    def _draw_pill(self, painter: QPainter, x0: int, x1: int, h: int, r: int, color: QColor) -> None:
         if x1 - x0 <= 0:
             return
         path = QPainterPath()
         path.addRoundedRect(x0, 0, x1 - x0, h, r, r)
         painter.fillPath(path, color)
 
-    def _draw_gradient_pill(self, painter: QPainter, x0: int, x1: int,
-                             h: int, r: int) -> None:
+    def _draw_gradient_pill(self, painter: QPainter, x0: int, x1: int, h: int, r: int) -> None:
         if x1 - x0 <= 0:
             return
         grad = QLinearGradient(x0, 0, x1, 0)

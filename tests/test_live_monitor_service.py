@@ -34,6 +34,7 @@ class StubService:
         self.ig_live_url = None
         self.analyse_info: MediaInfo | None = None
         self.analyse_error: str | None = None
+        self.check_profile_live_calls: list[dict] = []
         self._n = 0
 
     def analyse_url(self, url, on_done, on_error):
@@ -45,7 +46,8 @@ class StubService:
     def check_tiktok_profile_live(self, url, on_done, on_error):
         on_done(self.tiktok_live_url)
 
-    def check_profile_live(self, url, on_done, on_error):
+    def check_profile_live(self, url, on_done, on_error, deep=False):
+        self.check_profile_live_calls.append({"url": url, "deep": deep})
         on_done(self.ig_live_url)
 
     def start_download(self, url, media_info, format_id, output_ext):
@@ -364,10 +366,10 @@ def test_recover_stuck_check_resets():
 
 def test_set_check_interval_clamps_to_minimum():
     svc, _ = _make(StubService())
-    assert svc.set_check_interval(5) == 15
-    assert svc.get_check_interval() == 15
-    assert svc.set_check_interval(60) == 60
+    assert svc.set_check_interval(5) == 60
     assert svc.get_check_interval() == 60
+    assert svc.set_check_interval(120) == 120
+    assert svc.get_check_interval() == 120
 
 
 def test_enqueue_uses_configured_interval(monkeypatch):
@@ -375,21 +377,22 @@ def test_enqueue_uses_configured_interval(monkeypatch):
     service = StubService()
     service.analyse_info = MediaInfo(url="https://x", is_live=False)
     svc, _ = _make(service)
-    svc.set_check_interval(60)
+    svc.set_check_interval(120)
     item = MonitorItem(url="https://www.youtube.com/watch?v=x", state="WAITING")
+    item.interval_jitter = 1.0  # neutralise jitter for a deterministic due-check boundary
     svc._items.append(item)
 
     now = _time.time()
     monkeypatch.setattr(lms.time, "time", lambda: now)
 
-    # 31s elapsed - below 60s interval, should NOT trigger
-    item.last_check = now - 31
-    svc._enqueue_next_check()
-    # _trigger_check resets last_check to time.time(); if not triggered it stays at now-31
-    assert item.last_check == now - 31
-
-    # 61s elapsed - above 60s interval, SHOULD trigger (_trigger_check sets last_check=now)
+    # 61s elapsed - below 120s interval, should NOT trigger
     item.last_check = now - 61
+    svc._enqueue_next_check()
+    # _trigger_check resets last_check to time.time(); if not triggered it stays at now-61
+    assert item.last_check == now - 61
+
+    # 121s elapsed - above 120s interval, SHOULD trigger (_trigger_check sets last_check=now)
+    item.last_check = now - 121
     svc._enqueue_next_check()
     assert item.last_check == now
 
@@ -573,3 +576,78 @@ def test_check_now_noop_when_recording():
     with svc._lock:
         item = next(i for i in svc._items if i.id == item_id)
         assert item.last_check == 999999.0
+
+
+def test_check_now_clears_rate_limited_until_from_waiting():
+    """Regression: 'Kiểm tra ngay' while rate-limited must actually retry."""
+    svc = _make_service()
+    d = svc.add_url("https://www.tiktok.com/@testuser")
+    item_id = d["id"]
+    with svc._lock:
+        item = next(i for i in svc._items if i.id == item_id)
+        item.state = "WAITING"
+        item.rate_limited_until = _time.time() + 1000
+    assert svc.check_now(item_id) is True
+    with svc._lock:
+        item = next(i for i in svc._items if i.id == item_id)
+        assert item.rate_limited_until == 0.0
+
+
+def test_check_now_clears_rate_limited_until_from_error():
+    svc = _make_service()
+    d = svc.add_url("https://www.tiktok.com/@testuser")
+    item_id = d["id"]
+    with svc._lock:
+        item = next(i for i in svc._items if i.id == item_id)
+        item.state = "ERROR"
+        item.rate_limited_until = _time.time() + 1000
+    assert svc.check_now(item_id) is True
+    with svc._lock:
+        item = next(i for i in svc._items if i.id == item_id)
+        assert item.rate_limited_until == 0.0
+
+
+def test_check_now_clears_rate_limited_until_from_checking():
+    svc = _make_service()
+    d = svc.add_url("https://www.tiktok.com/@testuser")
+    item_id = d["id"]
+    with svc._lock:
+        item = next(i for i in svc._items if i.id == item_id)
+        item.state = "CHECKING"
+        item.rate_limited_until = _time.time() + 1000
+    assert svc.check_now(item_id) is True
+    with svc._lock:
+        item = next(i for i in svc._items if i.id == item_id)
+        assert item.rate_limited_until == 0.0
+
+
+def _ig_profile_item(**kw) -> MonitorItem:
+    return MonitorItem(
+        url="https://www.instagram.com/testuser/",
+        is_profile_watch=True,
+        profile_platform="instagram",
+        username="testuser",
+        **kw,
+    )
+
+
+def test_trigger_check_deep_true_for_new_item():
+    service = StubService()
+    svc, _ = _make(service)
+    item = _ig_profile_item()  # last_check defaults to 0.0 — new item
+    svc._items.append(item)
+
+    svc._trigger_check(item)
+
+    assert service.check_profile_live_calls[-1]["deep"] is True
+
+
+def test_trigger_check_deep_false_on_periodic_poll():
+    service = StubService()
+    svc, _ = _make(service)
+    item = _ig_profile_item(last_check=_time.time())  # already checked before
+    svc._items.append(item)
+
+    svc._trigger_check(item)
+
+    assert service.check_profile_live_calls[-1]["deep"] is False

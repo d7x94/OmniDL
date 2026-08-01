@@ -41,27 +41,21 @@ logger = logging.getLogger(__name__)
 _WAAW_URL_RE = re.compile(r"waaw\.ac/f/[A-Za-z0-9_-]+", re.I)
 _STATIC_ASSET_RE = re.compile(r"\.(?:css|js|png|jpe?g|gif|svg|woff2?|ico|ttf)(?:\?|$)", re.I)
 
-# Ad/tracker domains seen interfering with the player unlock (see log
+# Ad/tracker domains that hijack the play click via an overlay (see log
 # analysis). Brave Shields blocks these in a normal session; the CDP-driven
-# launch does not, so the ad overlay can steal the play click.
+# launch does not.
 #
-# The second batch (twinrdsyte..yomeno) is waaw.ac's VAST preroll-ad
-# waterfall (triggered via player/waterfall.php?mode=a once playback starts):
-# five ad exchanges tried sequentially before the player falls through to the
-# real stream. Left unblocked, this waterfall alone can burn the full 60s
-# poll window before the real CDN request ever fires — see BUG-WAAW-01.
+# BUG-WAAW-02: the VAST preroll waterfall (twinrdsyte/megawebify/
+# videosprofitnetwork/magsrv/vstserv/yomeno) and the bigboxads/
+# videocdnmetrika/netu.php metric feeders are deliberately NOT blocked here —
+# those exchanges are what compute player/get_md5.php's `adscore` field.
+# Blocking them left `adscore` permanently empty and the player stuck on
+# `need_captcha`, so `obf_link` was never released. Only the overlay/
+# click-stealer domains below are blocked; do not re-add the waterfall/
+# metric hosts without re-verifying adscore still populates.
 _AD_BLOCK_URLS = [
-    "*bigboxads.com*",
-    "*videocdnmetrika.com*",
-    "*counter.yadro.ru*",
-    "*/netu.php*",
     "*/ad/banner/*",
-    "*twinrdsyte.com*",
-    "*megawebify.my*",
-    "*videosprofitnetwork.com*",
-    "*magsrv.com*",
-    "*vstserv.com*",
-    "*yomeno.xyz*",
+    "*counter.yadro.ru*",
 ]
 
 # JS-side mirror of _is_waaw_cdn_url()
@@ -96,6 +90,20 @@ def is_waaw_url(url: str) -> bool:
     return bool(_WAAW_URL_RE.search(url))
 
 
+# Host-specific on purpose — must not hijack arbitrary m3u8/mp4 URLs pasted
+# from other sites (unlike _is_waaw_cdn_url, used only to filter intercepted
+# network traffic already known to originate from a waaw.ac page).
+_WAAW_CDN_LINK_RE = re.compile(r"https?://[a-z0-9-]+\.cf[a-z0-9]*cdn\.com/", re.I)
+
+
+def is_waaw_cdn_link(url: str) -> bool:
+    """True for a waaw CDN link pasted directly (e.g. via File Centipede)."""
+    if not _WAAW_CDN_LINK_RE.match(url):
+        return False
+    path = url.split("?", 1)[0]
+    return ".m3u8" in path or path.endswith(".mp4")
+
+
 def _is_waaw_cdn_url(url: str) -> bool:
     # waaw.ac's player loads a decoy placeholder (https://127.0.0.1/no_video.mp4.m3u8)
     # before the real stream is unlocked — never a valid CDN URL.
@@ -120,21 +128,132 @@ def _un(obf: str) -> str:
     return "".join(chr(int("0" + body[i : i + 3], 16)) for i in range(0, len(body), 3))
 
 
+_MANIFEST_URL_RE = re.compile(r"https?://[^\s\"'\\]+\.m3u8[^\s\"'\\]*")
+_OBF_LINK_RE = re.compile(r'"obf_link"\s*:\s*"([^"]+)"')
+_DECOY_MARKERS = ("no_video", "//127.0.0.1", "//localhost")
+# Real host + path required — rejects junk decodes like "https:" (obf_link
+# sentinel "0" decodes to "") that pass the decoy-marker check with nothing
+# to check against.
+_MANIFEST_SHAPE_RE = re.compile(r"^https://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+/.+")
+
+
+def _valid_manifest(manifest: str) -> Optional[str]:
+    if any(bad in manifest for bad in _DECOY_MARKERS):
+        return None
+    if not _MANIFEST_SHAPE_RE.match(manifest):
+        logger.debug("waaw: rejected malformed manifest: %r", manifest[:200])
+        return None
+    return manifest
+
+
 def _parse_get_md5_manifest(body: str) -> Optional[str]:
     """Parse a player/get_md5.php response body into a CDN manifest URL.
 
-    Raises if `body` isn't valid JSON (caller decides how to handle that —
-    unready/partial bodies are expected during polling). Returns None if the
-    JSON has no usable `obf_link` (missing/empty) or it decodes to one of the
-    known decoy hosts — either case means "not a real manifest", not an error."""
-    data = json.loads(body)
+    Raises if `body` isn't valid JSON and no manifest URL/obf_link can be
+    regex-recovered either (caller decides how to handle that — unready/
+    partial bodies are expected during polling). Returns None if the body
+    has no usable `obf_link` (missing/empty), the response is blocked/pending
+    (player JS never builds a manifest from these — obf_link is a sentinel),
+    or the built/recovered URL decodes to a decoy host or fails URL-shape
+    validation — all of these mean "not a real manifest", not an error."""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        # Some get_md5.php responses come back HTML-wrapped or with escaped
+        # JSON that json.loads() can't parse — regex-scan the raw body for
+        # an obf_link value or a literal manifest URL before giving up.
+        m = _OBF_LINK_RE.search(body)
+        if m:
+            regex_manifest = "https:" + _un(m.group(1))
+            return _valid_manifest(regex_manifest)
+        m = _MANIFEST_URL_RE.search(body)
+        if m:
+            return _valid_manifest(m.group(0))
+        raise
+    blocked = data.get("blocked") == "1"
+    pending = data.get("pending") == "1"
     obf = data.get("obf_link", "")
-    if not obf:
-        return None
-    manifest = "https:" + _un(obf)
-    if any(bad in manifest for bad in ("no_video", "//127.0.0.1", "//localhost")):
-        return None
+    manifest = _valid_manifest("https:" + _un(obf)) if not blocked and not pending and obf else None
+    if manifest is None:
+        logger.debug(
+            "waaw: get_md5 no link — need_captcha=%s adscore=%r blocked=%s pending=%s",
+            data.get("need_captcha"),
+            data.get("adscore"),
+            blocked,
+            pending,
+        )
     return manifest
+
+
+_NEED_CAPTCHA_RE = re.compile(r'"need_captcha"\s*:\s*"1"')
+
+
+def _needs_captcha(body: str) -> bool:
+    return bool(_NEED_CAPTCHA_RE.search(body))
+
+
+def _handle_get_md5_paused(
+    cdp_session, request_id: str, captured: list[str], captcha_event: threading.Event
+) -> None:
+    """Fetch response-stage pause for player/get_md5.php — body is guaranteed
+    available here (unlike the Network.getResponseBody poll-loop fallback)."""
+    body = ""
+    manifest = None
+    try:
+        body_result = cdp_session.send("Fetch.getResponseBody", {"requestId": request_id})
+        body = body_result.get("body", "")
+        if body_result.get("base64Encoded"):
+            body = base64.b64decode(body).decode("utf-8", errors="replace")
+        manifest = _parse_get_md5_manifest(body)
+    except Exception as exc:
+        logger.debug("waaw: get_md5.php body unusable: %r", str(exc)[:200])
+    if manifest is not None:
+        if not captured:
+            captured.append(manifest)
+    elif body:
+        logger.debug("waaw: get_md5.php body unusable: %r", body[:200])
+        if _needs_captcha(body):
+            captcha_event.set()
+    # BaseException, not Exception: the browser can be killed by the
+    # watchdog (once `captured` is non-empty) between the getResponseBody
+    # call above and this continue — the pending CDP send then raises
+    # asyncio.CancelledError, which is a BaseException subclass and would
+    # otherwise dump a full traceback into the log for an expected race.
+    try:
+        cdp_session.send("Fetch.continueResponse", {"requestId": request_id})
+    except BaseException:
+        try:
+            cdp_session.send("Fetch.continueRequest", {"requestId": request_id})
+        except BaseException:
+            pass
+
+
+def _handle_request_paused(
+    cdp_session, params: dict, captured: list[str], captcha_event: threading.Event
+) -> None:
+    req_url = params.get("request", {}).get("url", "")
+    request_id = params["requestId"]
+    if "player/get_md5.php" in req_url and "responseStatusCode" in params:
+        _handle_get_md5_paused(cdp_session, request_id, captured, captcha_event)
+        return
+    # An empty text/plain 200 reads as "blocked" to VAST-aware ad-block
+    # detectors (see log: VIDEOJS MEDIA_ERR_CUSTOM "doesnot allow AdBlock"
+    # fired right after this stub). A standard empty-VAST document is what a
+    # real ad exchange returns on a "no fill" — same net effect (no ad
+    # plays) without tripping that check.
+    body = base64.b64encode(b'<VAST version="3.0"></VAST>').decode("ascii")
+    try:
+        cdp_session.send(
+            "Fetch.fulfillRequest",
+            {
+                "requestId": request_id,
+                "responseCode": 200,
+                "responseHeaders": [{"name": "Content-Type", "value": "application/xml"}],
+                "body": body,
+            },
+        )
+    except Exception:
+        pass
 
 
 def _trusted_click_waaw(page, logger_: logging.Logger) -> bool:
@@ -264,39 +383,31 @@ def _cdp_intercept_waaw(
 
             # Layer C: CDP Network events — catches WASM-initiated requests
             cdp_session = ctx.new_cdp_session(page)
-            cdp_session.send("Network.enable")
+            # Explicit buffer sizes resist eviction of the small get_md5.php
+            # bodies by the ~40 decoy .mp666/Frag-* responses that can fire
+            # in the same instant (see BUG-WAAW-01 log analysis).
+            cdp_session.send(
+                "Network.enable", {"maxTotalBufferSize": 100_000_000, "maxResourceBufferSize": 10_000_000}
+            )
+            captured: list[str] = []
+            captcha_event = threading.Event()
+            t0 = time.monotonic()
             try:
                 cdp_session.send(
                     "Fetch.enable",
-                    {"patterns": [{"urlPattern": p} for p in _AD_BLOCK_URLS]},
+                    {
+                        "patterns": [
+                            *[{"urlPattern": p} for p in _AD_BLOCK_URLS],
+                            {"urlPattern": "*/player/get_md5.php*", "requestStage": "Response"},
+                        ]
+                    },
                 )
-
-                def _on_ad_request_paused(params: dict) -> None:
-                    # An empty text/plain 200 reads as "blocked" to VAST-aware
-                    # ad-block detectors (see log: VIDEOJS MEDIA_ERR_CUSTOM
-                    # "doesnot allow AdBlock" fired right after this stub).
-                    # A standard empty-VAST document is what a real ad
-                    # exchange returns on a "no fill" — same net effect
-                    # (no ad plays) without tripping that check.
-                    body = base64.b64encode(b'<VAST version="3.0"></VAST>').decode("ascii")
-                    try:
-                        cdp_session.send(
-                            "Fetch.fulfillRequest",
-                            {
-                                "requestId": params["requestId"],
-                                "responseCode": 200,
-                                "responseHeaders": [{"name": "Content-Type", "value": "application/xml"}],
-                                "body": body,
-                            },
-                        )
-                    except Exception:
-                        pass
-
-                cdp_session.on("Fetch.requestPaused", _on_ad_request_paused)
+                cdp_session.on(
+                    "Fetch.requestPaused",
+                    lambda params: _handle_request_paused(cdp_session, params, captured, captcha_event),
+                )
             except Exception as exc:
                 logger.warning("waaw: Fetch.enable failed — ad requests will not be stealth-blocked: %s", exc)
-            captured: list[str] = []
-            t0 = time.monotonic()
 
             def _on_cdp_request(params: dict) -> None:
                 req_url = params.get("request", {}).get("url", "")
@@ -344,7 +455,7 @@ def _cdp_intercept_waaw(
 
             page.on("response", _on_resp)
 
-            console_errors: list[str] = []
+            console_errors: deque[str] = deque(maxlen=40)
 
             def _on_console(msg) -> None:
                 if msg.type == "error":
@@ -358,23 +469,25 @@ def _cdp_intercept_waaw(
             except Exception:
                 pass  # ERR_ABORTED is non-fatal
 
-            poll_deadline = time.monotonic() + timeout
+            deadline_box = [time.monotonic() + timeout]
             last_click = 0.0
             last_src = ""
             video_ever_found = False
+            clicking_enabled = True
+            captcha_notified = False
             _prog(15, "Đang chờ CDN URL...")
 
             # page.evaluate() has no timeout param — if waaw.ac's JS thread
             # stalls (ad dialog / anti-bot WASM), the call blocks forever and
-            # poll_deadline below is never rechecked. Force-kill the browser
+            # deadline_box below is never rechecked. Force-kill the browser
             # past a hard ceiling, on cancel, or once a URL is captured (the
             # CDP layer fires on a background thread) so the blocked call
             # raises and the loop can exit.
             watchdog_stop = threading.Event()
 
             def _hang_watchdog() -> None:
-                hard_deadline = poll_deadline + 20.0
                 while not watchdog_stop.wait(1.0):
+                    hard_deadline = deadline_box[0] + 20.0
                     if time.monotonic() >= hard_deadline or captured or (cancel_check and cancel_check()):
                         try:
                             proc.kill()
@@ -388,11 +501,21 @@ def _cdp_intercept_waaw(
             next_click_gap = random.uniform(4.0, 7.0)
 
             try:
-                while time.monotonic() < poll_deadline:
+                while time.monotonic() < deadline_box[0]:
                     if cancel_check and cancel_check():
                         raise RuntimeError("Đã hủy bởi người dùng.")
 
-                    if time.monotonic() - last_click >= next_click_gap:
+                    if captcha_event.is_set() and not captcha_notified:
+                        captcha_notified = True
+                        clicking_enabled = False
+                        logger.info("waaw: captcha wall detected — waiting for user to solve it in browser")
+                        _prog(
+                            18,
+                            "Trang yêu cầu captcha — hãy giải captcha trong cửa sổ trình duyệt vừa mở...",
+                        )
+                        deadline_box[0] = time.monotonic() + 180.0
+
+                    if clicking_enabled and time.monotonic() - last_click >= next_click_gap:
                         if _trusted_click_waaw(page, logger):
                             video_ever_found = True
                         last_click = time.monotonic()
@@ -412,12 +535,16 @@ def _cdp_intercept_waaw(
                         except Exception:
                             continue  # body not ready yet — retry next iteration
                         get_md5_done.add(req_id)
+                        body = body_result.get("body", "")
                         try:
-                            manifest = _parse_get_md5_manifest(body_result.get("body", ""))
-                        except Exception:
-                            continue  # not valid JSON — not this response's body yet
+                            manifest = _parse_get_md5_manifest(body)
+                        except Exception as exc:
+                            logger.debug("waaw: get_md5.php body unusable: %r (%s)", body[:200], exc)
+                            continue
                         if manifest is None:
                             logger.debug("waaw: get_md5.php body parsed but had no usable obf_link")
+                            if _needs_captcha(body):
+                                captcha_event.set()
                             continue
                         if not captured:
                             captured.append(manifest)
@@ -480,6 +607,12 @@ def _cdp_intercept_waaw(
                     trail,
                 )
                 sample = "; ".join(f"{t:.1f}s {u[:100]}" for t, u in list(seen_requests)[-5:]) or "none"
+                if captcha_notified:
+                    raise RuntimeError(
+                        "Không giải captcha kịp thời gian.\n"
+                        "Thử lại và giải captcha trong cửa sổ trình duyệt vừa mở, "
+                        "hoặc dán link CDN mới lấy từ công cụ khác (vd: cf*cdn.com .m3u8)."
+                    )
                 raise RuntimeError(
                     f"Không tìm thấy CDN URL sau {int(timeout)} giây.\n"
                     "waaw.ac có thể đã thay đổi cơ chế bảo vệ.\n"
@@ -504,6 +637,10 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+# CDN links are IP+time-signed; once expired or hit from a different IP the
+# host 404s. Not recoverable in code — only the error message can be honest.
+_CDN_EXPIRED_MSG = "Link CDN đã hết hạn hoặc bị khoá theo IP - hãy mở lại trang waaw.ac/f/... để lấy link mới"
 
 
 def _hls_download(
@@ -543,6 +680,10 @@ def _hls_download(
         _UA,
         "-referer",
         "https://waaw.ac/",
+        "-headers",
+        "Origin: https://waaw.ac\r\nAccept-Language: en-US,en;q=0.7\r\n",
+        "-protocol_whitelist",
+        "https,tls,tcp,http,crypto,data",
         "-i",
         cdn_url,
         "-c",
@@ -574,6 +715,9 @@ def _hls_download(
     finally:
         part.unlink(missing_ok=True)
 
+    if "404 Not Found" in tail:
+        raise RuntimeError(_CDN_EXPIRED_MSG)
+
     logger.info("waaw: ffmpeg failed — trying bare .mp4 URL")
     try:
         _mp4_fallback()
@@ -594,9 +738,13 @@ def _stream_download(
     headers = {
         "Referer": "https://waaw.ac/",
         "User-Agent": _UA,
+        "Origin": "https://waaw.ac",
+        "Accept-Language": "en-US,en;q=0.7",
     }
     part = dest.with_suffix(".part")
     resp = requests.get(cdn_url, headers=headers, stream=True, timeout=30)
+    if resp.status_code == 404:
+        raise RuntimeError(_CDN_EXPIRED_MSG)
     resp.raise_for_status()
     total = int(resp.headers.get("content-length", 0))
     downloaded = 0
@@ -641,26 +789,13 @@ class WaawEngine:
         on_postprocess: Optional[Callable] = None,
     ) -> None:
         """Download waaw.ac video. Mutates task in-place; raises RuntimeError on failure."""
-        if sys.platform not in ("win32", "darwin"):
-            raise RuntimeError("waaw.ac engine yêu cầu Windows hoặc macOS.\nLinux chưa được hỗ trợ.")
-
         from domain.enums.download_status import DownloadStatus
 
         with task._lock:
             task.status = DownloadStatus.DOWNLOADING
 
-        m = re.search(r"waaw\.ac/f/([A-Za-z0-9_-]+)", task.url, re.I)
-        vid_id = m.group(1) if m else ""
-
         output_dir = Path(task.output_dir) if task.output_dir else self._config.download_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        filename = output_dir / f"waaw_{vid_id}.mp4"
-        stem = filename.stem
-        counter = 1
-        while filename.exists():
-            filename = output_dir / f"{stem} ({counter}).mp4"
-            counter += 1
 
         def _prog(pct: int, speed: str, msg: str) -> None:
             with task._lock:
@@ -673,12 +808,32 @@ class WaawEngine:
                 except Exception:
                     pass
 
-        cdn_url = _cdp_intercept_waaw(
-            task.url,
-            timeout=60.0,
-            on_progress=_prog,
-            cancel_check=lambda: task.is_cancellation_requested,
-        )
+        if is_waaw_cdn_link(task.url):
+            # A pasted CDN link — no browser capture needed, only ffmpeg/requests.
+            cdn_url = task.url
+            vid_id = Path(cdn_url.split("?", 1)[0]).name
+            for suffix in (".m3u8", ".mp4"):
+                if vid_id.endswith(suffix):
+                    vid_id = vid_id[: -len(suffix)]
+        else:
+            if sys.platform not in ("win32", "darwin"):
+                raise RuntimeError("waaw.ac engine yêu cầu Windows hoặc macOS.\nLinux chưa được hỗ trợ.")
+            m = re.search(r"waaw\.ac/f/([A-Za-z0-9_-]+)", task.url, re.I)
+            vid_id = m.group(1) if m else ""
+            cdn_url = _cdp_intercept_waaw(
+                task.url,
+                timeout=120.0,
+                on_progress=_prog,
+                cancel_check=lambda: task.is_cancellation_requested,
+            )
+
+        filename = output_dir / f"waaw_{vid_id}.mp4"
+        stem = filename.stem
+        counter = 1
+        while filename.exists():
+            filename = output_dir / f"{stem} ({counter}).mp4"
+            counter += 1
+
         if cdn_url.split("?", 1)[0].endswith(".mp4"):
             _stream_download(cdn_url, filename, on_progress=_prog)
         else:

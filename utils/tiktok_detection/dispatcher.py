@@ -13,6 +13,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# One shared pool instead of a fresh ThreadPoolExecutor per check(): the old
+# per-call executor was torn down with shutdown(wait=False) while strategy
+# futures were still running, so the executor, its worker threads and their
+# response bodies outlived the caller on every timed-out check.
+_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tt-detect")
+
 
 class LiveDetectionDispatcher:
     def __init__(
@@ -37,23 +43,34 @@ class LiveDetectionDispatcher:
 
         last_error: Optional[RuntimeError] = None
 
-        executor = ThreadPoolExecutor(max_workers=len(runnable))
-        try:
-            futures = {executor.submit(s.check, ctx): s for s in runnable}
-            done, pending = wait(futures, return_when=FIRST_COMPLETED, timeout=20.0)
+        futures = {_executor.submit(s.check, ctx): s for s in runnable}
+        done, pending = wait(futures, return_when=FIRST_COMPLETED, timeout=20.0)
 
-            # Positive result wins over StreamConfirmedEndedError: profile page
-            # caching can return status=4/5 while the stream is still live, so
-            # we must not cancel pending strategies on the basis of that signal
-            # alone. Collect results from all completed futures first; only
-            # respect confirmed-ended if no strategy returned a live URL.
-            confirmed_ended = False
-            for f in done:
+        # Positive result wins over StreamConfirmedEndedError: profile page
+        # caching can return status=4/5 while the stream is still live, so
+        # we must not cancel pending strategies on the basis of that signal
+        # alone. Collect results from all completed futures first; only
+        # respect confirmed-ended if no strategy returned a live URL.
+        confirmed_ended = False
+        for f in done:
+            try:
+                r = f.result()
+                if r is not None:
+                    for p in pending:
+                        p.cancel()
+                    return r.live_url, r.room_id
+            except StreamConfirmedEndedError:
+                confirmed_ended = True
+            except RuntimeError as exc:
+                last_error = exc
+            except Exception as exc:
+                logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
+
+        try:
+            for f in as_completed(pending, timeout=10.0):
                 try:
                     r = f.result()
                     if r is not None:
-                        for p in pending:
-                            p.cancel()
                         return r.live_url, r.room_id
                 except StreamConfirmedEndedError:
                     confirmed_ended = True
@@ -61,30 +78,15 @@ class LiveDetectionDispatcher:
                     last_error = exc
                 except Exception as exc:
                     logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
+        except TimeoutError:
+            pass
 
-            try:
-                for f in as_completed(pending, timeout=10.0):
-                    try:
-                        r = f.result()
-                        if r is not None:
-                            return r.live_url, r.room_id
-                    except StreamConfirmedEndedError:
-                        confirmed_ended = True
-                    except RuntimeError as exc:
-                        last_error = exc
-                    except Exception as exc:
-                        logger.debug("tiktok_detection: %s raised: %s", futures[f].name, exc)
-            except TimeoutError:
-                pass
+        still_running = [futures[f].name for f in pending if not f.done()]
+        if still_running:
+            logger.debug("tiktok_detection: strategies timed out (abandoned): %s", still_running)
 
-            still_running = [futures[f].name for f in pending if not f.done()]
-            if still_running:
-                logger.debug("tiktok_detection: strategies timed out (abandoned): %s", still_running)
-
-            if confirmed_ended:
-                return None
-        finally:
-            executor.shutdown(wait=False)
+        if confirmed_ended:
+            return None
 
         if last_error is not None:
             raise last_error

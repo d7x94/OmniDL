@@ -229,17 +229,24 @@ class NotificationPanel(QFrame):
         self._animate(self.pos(), QPoint(end_x, self.y()), on_finish=self.hide)
 
     def _animate(self, start: QPoint, end: QPoint, on_finish=None) -> None:
-        if self._anim:
-            self._anim.stop()
-        anim = QPropertyAnimation(self, b"pos", self)
+        # One animation object reused for the panel's lifetime: creating a new
+        # one per toggle left a dead QPropertyAnimation child (plus its finished
+        # connection) on the panel every time.
+        if self._anim is None:
+            self._anim = QPropertyAnimation(self, b"pos", self)
+            self._anim.setDuration(_ANIM_MS)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim = self._anim
+        anim.stop()
+        try:
+            anim.finished.disconnect()
+        except RuntimeError:
+            pass
         anim.setStartValue(start)
         anim.setEndValue(end)
-        anim.setDuration(_ANIM_MS)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         if on_finish:
             anim.finished.connect(on_finish)
         anim.start()
-        self._anim = anim
 
     # ── Helpers ────────────────────────────────────────────────────────────
 

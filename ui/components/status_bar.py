@@ -66,7 +66,7 @@ class StatusBar(QStatusBar):
         super().__init__()
         self._app = app
         self._net_ok = True
-        self._net_checking = False
+        self._last_status: tuple | None = None
 
         self.setSizeGripEnabled(False)
         self.setFixedHeight(32)
@@ -77,11 +77,9 @@ class StatusBar(QStatusBar):
         self._poll_timer.timeout.connect(self._poll)
         self._poll_timer.start()
 
-        self._net_timer = QTimer(self)
-        self._net_timer.setInterval(15_000)
-        self._net_timer.timeout.connect(self._schedule_net_check)
-        self._net_timer.start()
-        self._schedule_net_check()
+        # One long-lived worker instead of a fresh thread every 15 s.
+        self._net_stop = threading.Event()
+        threading.Thread(target=self._net_loop, daemon=True, name="omnidl-net-check").start()
 
         T.register(self._on_theme)
 
@@ -134,6 +132,13 @@ class StatusBar(QStatusBar):
         self.addPermanentWidget(widget, 1)
 
     def update_status(self, active: int, speed_bps: float, progress: float, eta_s: int) -> None:
+        # _poll runs 1.25x/s forever; re-applying an identical stylesheet costs
+        # a full CSS re-parse and repolish per tick for no visible change.
+        state = (active, round(speed_bps), round(progress, 3), eta_s)
+        if state == self._last_status:
+            return
+        self._last_status = state
+
         if active == 0:
             self._dot.setStyleSheet(f"color: {T.text3};")
             self._active_chip.setText("◎  Không có tác vụ")
@@ -183,17 +188,12 @@ class StatusBar(QStatusBar):
         except Exception:
             pass
 
-    def _schedule_net_check(self) -> None:
-        if self._net_checking:
-            return
-        self._net_checking = True
-
-        def _run() -> None:
+    def _net_loop(self) -> None:
+        while True:
             ok = _check_network()
-            self._net_checking = False
             ui_bridge.post(lambda result=ok: self._update_net(result))
-
-        threading.Thread(target=_run, daemon=True, name="omnidl-net-check").start()
+            if self._net_stop.wait(15.0):
+                return
 
     def _update_net(self, ok: bool) -> None:
         self._net_ok = ok
@@ -205,6 +205,7 @@ class StatusBar(QStatusBar):
             self._net_chip.setStyleSheet(_chip_style(T.error_bg, T.error_text, T.error))
 
     def _on_theme(self) -> None:
+        self._last_status = None  # force a restyle with the new palette
         self._update_net(self._net_ok)
         # Reset active chip to idle style if no active downloads
         try:
@@ -217,7 +218,7 @@ class StatusBar(QStatusBar):
 
     def stop(self) -> None:
         self._poll_timer.stop()
-        self._net_timer.stop()
+        self._net_stop.set()
 
 
 def _parse_speed(speed_str: str) -> float:

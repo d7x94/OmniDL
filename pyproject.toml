@@ -18,6 +18,8 @@ dependencies = [
     "curl-cffi>=0.15.0",
     "loguru>=0.7.3",
     "ffmpeg-python>=0.2.0",
+    "py7zr>=0.21.0",
+    "pyzipper>=0.3.6",
 ]
 
 [project.optional-dependencies]
@@ -98,6 +100,7 @@ module = [
     "app.services.ffmpeg_trim_service",
     "ui.tabs.special_dl_tab",
     "ui.theme_qt",
+    "ui.tabs.archive_tab",
 ]
 ignore_errors = true
 

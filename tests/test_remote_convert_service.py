@@ -13,6 +13,7 @@ Coverage targets:
 
 All filesystem and FFmpeg calls are mocked — no real subprocess or disk I/O.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,6 +23,7 @@ import pytest
 
 from app.services.remote_convert_service import (
     _VALID_ENCODERS,
+    _VALID_EXTS,
     _VALID_QUALITIES,
     _VALID_SPEEDS,
     MAX_JOBS,
@@ -32,6 +34,7 @@ from domain.models.conversion_job import ConversionJob, ConversionStatus
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_service(tmp_path: Path) -> RemoteConvertService:
     """Build a RemoteConvertService with mocked dependencies."""
@@ -50,6 +53,7 @@ def _dummy_file(tmp_path: Path, name: str = "video.mp4") -> Path:
 # ---------------------------------------------------------------------------
 # start_convert — validation
 # ---------------------------------------------------------------------------
+
 
 class TestStartConvertValidation:
     """Invalid parameters must raise ValueError before any job is created."""
@@ -108,10 +112,28 @@ class TestStartConvertValidation:
                 job = svc.start_convert("tid", _dummy_file(tmp_path), speed_preset=sp)
             assert job.speed_preset == sp
 
+    def test_invalid_target_ext_raises(self, tmp_path):
+        svc = _make_service(tmp_path)
+        with pytest.raises(ValueError, match="target_ext"):
+            svc.start_convert("tid", _dummy_file(tmp_path), target_ext="exe")
+
+    def test_target_ext_path_traversal_raises(self, tmp_path):
+        """H2 regression: target_ext must not accept a path-traversal payload."""
+        svc = _make_service(tmp_path)
+        with pytest.raises(ValueError, match="target_ext"):
+            svc.start_convert("tid", _dummy_file(tmp_path), target_ext="mp4/../../../../evil.bat")
+
+    def test_all_valid_exts_accepted(self, tmp_path):
+        svc = _make_service(tmp_path)
+        for ext in _VALID_EXTS:
+            with patch.object(svc._queue, "submit", return_value=None):
+                svc.start_convert("tid", _dummy_file(tmp_path), target_ext=ext)
+
 
 # ---------------------------------------------------------------------------
 # start_convert — job creation
 # ---------------------------------------------------------------------------
+
 
 class TestStartConvertJobCreation:
     """Successful start_convert must create and register a ConversionJob."""
@@ -161,6 +183,7 @@ class TestStartConvertJobCreation:
 # get_job / get_all_jobs
 # ---------------------------------------------------------------------------
 
+
 class TestGetJob:
     def test_get_job_returns_none_for_unknown_id(self, tmp_path):
         svc = _make_service(tmp_path)
@@ -185,6 +208,7 @@ class TestGetJob:
 # ---------------------------------------------------------------------------
 # cancel_convert
 # ---------------------------------------------------------------------------
+
 
 class TestCancelConvert:
     def test_cancel_pending_job_succeeds(self, tmp_path):
@@ -222,6 +246,7 @@ class TestCancelConvert:
 # ---------------------------------------------------------------------------
 # delete_convert_file
 # ---------------------------------------------------------------------------
+
 
 class TestDeleteConvertFile:
     def test_delete_non_completed_job_fails(self, tmp_path):
@@ -285,6 +310,7 @@ class TestDeleteConvertFile:
 # MAX_JOBS purge
 # ---------------------------------------------------------------------------
 
+
 class TestMaxJobsPurge:
     def test_jobs_purged_when_limit_exceeded(self, tmp_path):
         """Oldest terminal jobs are evicted when MAX_JOBS is reached."""
@@ -314,6 +340,7 @@ class TestMaxJobsPurge:
 # ---------------------------------------------------------------------------
 # Internal callbacks (lines 165-215 coverage)
 # ---------------------------------------------------------------------------
+
 
 class TestStartConvertCallbacks:
     """Exercise the closures passed to ConvertQueue.submit()."""
@@ -379,6 +406,7 @@ class TestStartConvertCallbacks:
         event_bus = MagicMock()
         taildrop = MagicMock()
         from app.services.remote_convert_service import RemoteConvertService
+
         svc = RemoteConvertService(config=config, event_bus=event_bus, taildrop=taildrop)
 
         captured = {}
@@ -403,6 +431,7 @@ class TestStartConvertCallbacks:
         taildrop = MagicMock()
         taildrop.send_converted_file.side_effect = RuntimeError("boom")
         from app.services.remote_convert_service import RemoteConvertService
+
         svc = RemoteConvertService(config=config, event_bus=event_bus, taildrop=taildrop)
 
         captured = {}
@@ -450,6 +479,7 @@ class TestStartConvertCallbacks:
 # Additional branch coverage for delete_convert_file and cancel_convert
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteConvertFileBranches:
     def test_delete_no_output_filename_fails(self, tmp_path):
         """Job with empty output_filename must be rejected."""
@@ -483,6 +513,7 @@ class TestCancelConvertBranches:
         """cancel_convert() must invoke _cancel_fn when set."""
         svc = _make_service(tmp_path)
         cancel_called = []
+
         def fake_cancel():
             return cancel_called.append(True)
 
@@ -496,8 +527,10 @@ class TestCancelConvertBranches:
     def test_get_available_encoders_returns_list(self, tmp_path):
         """get_available_encoders() must return a list."""
         svc = _make_service(tmp_path)
-        with patch("app.services.remote_convert_service.get_available_encoder_options",
-                   return_value=[("libx264", "H.264 (CPU)")]):
+        with patch(
+            "app.services.remote_convert_service.get_available_encoder_options",
+            return_value=[("libx264", "H.264 (CPU)")],
+        ):
             result = svc.get_available_encoders()
         assert isinstance(result, list)
         assert result[0][0] == "libx264"

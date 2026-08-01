@@ -39,6 +39,7 @@ NAV_ITEMS = [
     ("live_monitor", "◉", "Trực tiếp", "TẢI XUỐNG"),
     ("convert", "⇄", "Chuyển đổi", "CÔNG CỤ"),
     ("editor", "✂", "Editor", "CÔNG CỤ"),
+    ("archive", "⧉", "Nén/Giải nén", "CÔNG CỤ"),
     ("history", "◷", "Lịch sử", "THƯ VIỆN"),
     ("settings", "⊙", "Cài đặt", "HỆ THỐNG"),
     ("special_dl", "◆", "Đặc biệt", "HỆ THỐNG"),
@@ -228,6 +229,7 @@ class MainWindow(QMainWindow):
         return pill_bar
 
     def _build_tabs(self) -> None:
+        from ui.tabs.archive_tab import ArchiveTab
         from ui.tabs.batch_tab import BatchTab
         from ui.tabs.convert_tab import ConvertTab
         from ui.tabs.editor_tab import EditorTab
@@ -245,6 +247,7 @@ class MainWindow(QMainWindow):
             "live_monitor": LiveMonitorTab,
             "convert": ConvertTab,
             "editor": EditorTab,
+            "archive": ArchiveTab,
             "history": HistoryTab,
             "settings": SettingsTab,
             "special_dl": SpecialDlTab,
@@ -463,11 +466,10 @@ class MainWindow(QMainWindow):
         self._toast_lbl.show()
         self._toast_lbl.raise_()
 
-        if self._toast_timer:
-            self._toast_timer.stop()
-        self._toast_timer = QTimer(self)
-        self._toast_timer.setSingleShot(True)
-        self._toast_timer.timeout.connect(self._toast_lbl.hide)
+        if self._toast_timer is None:
+            self._toast_timer = QTimer(self)
+            self._toast_timer.setSingleShot(True)
+            self._toast_timer.timeout.connect(self._toast_lbl.hide)
         self._toast_timer.start(3200)
 
     def _position_toast(self) -> None:
@@ -492,6 +494,8 @@ class MainWindow(QMainWindow):
         self.start_clipboard_monitor()
 
     def start_clipboard_monitor(self) -> None:
+        from ui.signals import ui_bridge
+
         if self._clipboard_monitor is not None:
             self._clipboard_monitor.stop()
 
@@ -506,13 +510,15 @@ class MainWindow(QMainWindow):
                     result.append("")
                 done.set()
 
-            QTimer.singleShot(0, _fetch)
+            # Called from the clipboard-monitor thread, which has no Qt event
+            # dispatcher — a QTimer created there never fires and leaks its
+            # QObject plus these closures every poll. ui_bridge marshals to the
+            # main thread via a queued signal instead.
+            ui_bridge.post(_fetch)
             done.wait(timeout=2.0)
             return result[0] if result else ""
 
         def _on_new_url(url: str) -> None:
-            from ui.signals import ui_bridge
-
             toolbar = self.get_toolbar()
             if toolbar is not None:
                 ui_bridge.post(lambda u=url: toolbar.trigger_from_clipboard(u))

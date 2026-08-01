@@ -150,6 +150,78 @@ class DownloadService:
                     self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
                     on_done(info)
                     return
+
+                # Facebook Story URLs are not handled by yt-dlp or gallery-dl;
+                # skip extract_info and return synthetic MediaInfo immediately.
+                from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+                    is_facebook_story_url,
+                )
+
+                if is_facebook_story_url(url):
+                    import re as _re  # noqa: PLC0415
+
+                    _sm = _re.search(r"/stories/(\d+)", url)
+                    _sid = _sm.group(1) if _sm else ""
+                    info = MediaInfo(
+                        url=url,
+                        title=f"Facebook Story {_sid}" if _sid else "Facebook Story",
+                        platform="facebook",
+                        source_engine="facebook_story",
+                    )
+                    self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                    on_done(info)
+                    return
+
+                # waaw.ac: skip extract_info entirely; CDN URL only obtainable during download
+                from infrastructure.downloader.waaw_engine import (  # noqa: PLC0415
+                    is_waaw_cdn_link,
+                    is_waaw_url,
+                )
+
+                if is_waaw_url(url) or is_waaw_cdn_link(url):
+                    import re as _re  # noqa: PLC0415
+
+                    _wm = _re.search(r"waaw\.ac/f/([A-Za-z0-9_-]+)", url, _re.I)
+                    if _wm:
+                        _wid = _wm.group(1)
+                    else:
+                        _wid = url.split("?", 1)[0].rsplit("/", 1)[-1]
+                        for _suf in (".m3u8", ".mp4"):
+                            if _wid.endswith(_suf):
+                                _wid = _wid[: -len(_suf)]
+                    info = MediaInfo(
+                        url=url,
+                        title=f"waaw_{_wid}" if _wid else "waaw video",
+                        platform="Waaw",
+                        source_engine="waaw",
+                        video_id=_wid,
+                    )
+                    self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                    on_done(info)
+                    return
+
+                # Anonymous pre-signed Instagram/Facebook CDN URL pasted directly
+                # by the user (IDM parity): the URL already carries its own oh=/oe=
+                # signature, so no Instagram API call and no session cookie are
+                # needed -- skip extract_info entirely.
+                from infrastructure.downloader.instagram_cdn_engine import (  # noqa: PLC0415
+                    is_ig_cdn_url,
+                )
+
+                if is_ig_cdn_url(url):
+                    _cdn_vid = Path(url.split("?", 1)[0]).stem or "instagram_cdn"
+                    info = MediaInfo(
+                        url=url,
+                        title=f"Instagram {_cdn_vid}",
+                        platform="Instagram",
+                        source_engine="ig_cdn",
+                        is_live=False,
+                        video_id=_cdn_vid,
+                    )
+                    self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                    on_done(info)
+                    return
+
                 # Pass cancel_event to Kuaishou engine so it can abort between
                 # strategies and inside the CDP poll loop. Other engines ignore it.
                 from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
@@ -348,7 +420,10 @@ class DownloadService:
                                 # uses pool cookies and can succeed when analysis cookies
                                 # are rate-limited. If stream is truly dead the download
                                 # task fails quickly; if live the download succeeds.
-                                _tt_bughxx_until[_username] = _time_tt19.monotonic() + 60.0
+                                _now_tt = _time_tt19.monotonic()
+                                for _u in [k for k, v in _tt_bughxx_until.items() if v <= _now_tt]:
+                                    del _tt_bughxx_until[_u]
+                                _tt_bughxx_until[_username] = _now_tt + 60.0
                                 logger.info(
                                     "BUG-TT-XX: detection fully blocked @%s"
                                     " -- optimistic download with pool cookies",
@@ -567,6 +642,7 @@ class DownloadService:
         url: str,
         on_done: "Callable[[Optional[str]], None]",
         on_error: "Callable[[str], None]",
+        deep: bool = False,
     ) -> None:
         """Check if an Instagram profile URL is currently live.
 
@@ -588,21 +664,36 @@ class DownloadService:
 
         # Use Instagram-specific cookie when available — instagram_live_checker
         # requires a valid sessionid from Instagram (not from another platform).
-        from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
-
-        cookie_file = _resolve_cookie("https://www.instagram.com/", self._config) or ""
+        cookie_raw = _resolve_cookie("https://www.instagram.com/", self._config) or ""
         proxy = self._config.proxy
 
         def _worker() -> None:
+            # FIX: _resolve_cookie returns the encrypted .enc path; decrypt it
+            # before check_instagram_live calls MozillaCookieJar.load, otherwise
+            # jar.load reads encrypted binary as text and crashes on Windows with
+            # "'charmap' codec can't decode byte 0x9d". Same as BUG-TT-07 below.
+            cookie_txt = ""
+            cookie_is_temp = False
             try:
+                if cookie_raw:
+                    cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
                 live_url = check_instagram_live(
                     username=username,
-                    cookie_file=cookie_file,
+                    cookie_file=cookie_txt,
                     proxy=proxy,
+                    deep=deep,
                 )
                 on_done(live_url)
             except Exception as exc:
                 on_error(str(exc))
+            finally:
+                if cookie_is_temp and cookie_txt:
+                    try:
+                        import os as _os  # noqa: PLC0415
+
+                        _os.unlink(cookie_txt)
+                    except OSError:
+                        pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -687,6 +778,10 @@ class DownloadService:
         daemon = _get_hd()
         if daemon is not None:
             daemon.stop()
+
+        from utils.instagram_http import close_shared_session as _close_ig  # noqa: PLC0415
+
+        _close_ig()
         self._history_executor.shutdown(wait=True)
 
     # ── Internal ──────────────────────────────────────────────────────────

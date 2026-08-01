@@ -373,6 +373,11 @@ def _fetch_tiktok_profile_page(username: str, proxy: str = "", cookie_file: str 
         if "timeout" in exc_s.lower():
             raise RuntimeError("TikTok API hết thời gian chờ. Thử lại sau.") from None
         raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
+    finally:
+        # Each unclosed curl_cffi Session pins a libcurl easy handle whose
+        # native memory CPython's GC thresholds cannot see. The response body
+        # is already buffered here (stream=False), so closing now is safe.
+        session.close()
 
     if resp.status_code == 404:
         raise RuntimeError(f"not found: Tai khoan @{username} khong tim thay tren TikTok.")
@@ -415,6 +420,8 @@ def _fetch_tiktok_live_page(username: str, proxy: str = "", cookie_file: str = "
     except Exception as exc:  # noqa: BLE001
         logger.debug("tiktok_live_checker: live page fetch failed for @%s: %s", username, exc)
         return None
+    finally:
+        session.close()
     if resp.status_code not in (200, 301, 302):
         logger.debug(
             "tiktok_live_checker: live page status %s for @%s",
@@ -681,6 +688,8 @@ def _verify_room_alive(
             exc,
         )
         return True
+    finally:
+        session.close()
 
 
 def _fetch_hls_from_webcast_room_info(
@@ -835,6 +844,8 @@ def _fetch_hls_from_webcast_room_info(
     except Exception as exc:  # noqa: BLE001
         logger.debug("tiktok_live_checker: room/info failed for room %s: %s", room_id, exc)
         return None
+    finally:
+        session.close()
 
 
 def _fetch_hls_from_live_page(
@@ -1027,6 +1038,10 @@ def _check_tiktok_live_with_room_id(
                 )
                 return (f"https://www.tiktok.com/@{username}/live", cached_room_id)
             # check_alive confirmed not live -- evict stale cache entry
+            del _ROOM_ID_CACHE[username]
+        else:
+            # TTL expired: previously this fell straight through to `return None`
+            # and left the entry pinned for the process lifetime.
             del _ROOM_ID_CACHE[username]
 
     return None
