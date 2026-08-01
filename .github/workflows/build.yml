@@ -703,22 +703,45 @@ jobs:
           set -euo pipefail
           mkdir -p resources/ffmpeg
 
-          ARCH="amd64"
-          BASE_URL="https://johnvansickle.com/ffmpeg/releases"
-          TARBALL="ffmpeg-release-${ARCH}-static.tar.xz"
+          # johnvansickle.com (previous source) has become unreliable for CI
+          # runners: it now returns HTTP 200 with a non-archive body (bot
+          # protection page) instead of the tarball, which curl -f does not
+          # catch. BtbN/FFmpeg-Builds publishes static builds as GitHub
+          # Release assets, served from GitHub's own CDN alongside the
+          # checkout itself -- far more reliable from an Actions runner.
+          BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          TARBALL="ffmpeg-master-latest-linux64-gpl.tar.xz"
 
           echo "Downloading $TARBALL ..."
           curl -fsSL --retry 3 --retry-delay 5 \
             "${BASE_URL}/${TARBALL}" -o /tmp/ffmpeg.tar.xz
 
-          tar -xJf /tmp/ffmpeg.tar.xz \
-            --wildcards \
-            --no-anchored \
-            --strip-components=1 \
-            -C resources/ffmpeg \
-            '*/ffmpeg' '*/ffprobe'
+          # Fail fast with a clear message instead of a cryptic tar/xz error
+          # if the response body is not actually an xz archive.
+          if ! xz -t /tmp/ffmpeg.tar.xz; then
+            echo "ERROR: downloaded file is not a valid xz archive" >&2
+            file /tmp/ffmpeg.tar.xz || true
+            exit 1
+          fi
 
+          extract_dir=$(mktemp -d)
+          tar -xJf /tmp/ffmpeg.tar.xz -C "$extract_dir"
           rm /tmp/ffmpeg.tar.xz
+
+          # Locate the binaries rather than assuming a fixed nesting depth --
+          # the release layout is an implementation detail of the upstream
+          # project and has changed before.
+          ffmpeg_bin=$(find "$extract_dir" -type f -name ffmpeg | head -1)
+          ffprobe_bin=$(find "$extract_dir" -type f -name ffprobe | head -1)
+          if [ -z "$ffmpeg_bin" ] || [ -z "$ffprobe_bin" ]; then
+            echo "ERROR: ffmpeg/ffprobe not found inside the downloaded archive" >&2
+            find "$extract_dir" -maxdepth 3 || true
+            exit 1
+          fi
+          cp "$ffmpeg_bin" resources/ffmpeg/ffmpeg
+          cp "$ffprobe_bin" resources/ffmpeg/ffprobe
+          rm -rf "$extract_dir"
+
           chmod +x resources/ffmpeg/ffmpeg resources/ffmpeg/ffprobe
 
           echo "FFmpeg staged:"
