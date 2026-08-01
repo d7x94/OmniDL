@@ -572,6 +572,36 @@ class TestIsSafeThumbnailUrl:
         )
         assert not self._safe("https://mixed.example.com/thumb.jpg")
 
+    def test_unrecognised_resolved_address_blocks_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.thumbnail_service.socket.getaddrinfo",
+            lambda *a, **kw: [(None, None, None, None, ("not-an-ip-address", 0))],
+        )
+        assert not self._safe("https://cdn.example.com/thumb.jpg")
+
+    def test_dns_resolution_timeout_blocks_url(self, monkeypatch):
+        import concurrent.futures as cf
+
+        class _FakeFuture:
+            def result(self, timeout=None):
+                raise cf.TimeoutError()
+
+        class _FakeExecutor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *a, **kw):
+                return _FakeFuture()
+
+        monkeypatch.setattr(
+            "concurrent.futures.ThreadPoolExecutor",
+            lambda *a, **kw: _FakeExecutor(),
+        )
+        assert not self._safe("https://slow-dns.example.com/thumb.jpg")
+
 
 class TestThumbnailServiceFetch:
     """Tests for ThumbnailService._fetch error paths and success."""
@@ -634,6 +664,74 @@ class TestThumbnailServiceFetch:
         svc._fetch("https://cdn.example.com/t.png", 50, 50, done.append, lambda e: None)
         assert done, "on_done was not called"
         assert hasattr(done[0], "size")  # PIL Image
+
+    def test_redirect_to_safe_target_is_followed(self, monkeypatch):
+        monkeypatch.setattr("app.services.thumbnail_service._is_safe_thumbnail_url", lambda u: True)
+        from PIL import Image as PILImage
+
+        buf = io.BytesIO()
+        PILImage.new("RGB", (1, 1), color=(0, 255, 0)).save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        redirect_resp = MagicMock()
+        redirect_resp.status_code = 301
+        redirect_resp.headers = {"location": "https://cdn2.example.com/t.png"}
+        redirect_resp.close = MagicMock()
+
+        final_resp = MagicMock()
+        final_resp.status_code = 200
+        final_resp.raise_for_status = lambda: None
+        final_resp.headers = {"content-type": "image/png"}
+        final_resp.iter_content = lambda chunk_size: iter([img_bytes])
+
+        responses = [redirect_resp, final_resp]
+
+        def fake_get(url, **kwargs):
+            return responses.pop(0)
+
+        monkeypatch.setattr("requests.get", fake_get)
+
+        svc = self._make_svc()
+        done = []
+        svc._fetch("https://cdn.example.com/t.png", 10, 10, done.append, lambda e: None)
+
+        assert done, "on_done was not called after following the redirect"
+        redirect_resp.close.assert_called_once()
+
+    def test_redirect_missing_location_calls_on_error(self, monkeypatch):
+        monkeypatch.setattr("app.services.thumbnail_service._is_safe_thumbnail_url", lambda u: True)
+
+        redirect_resp = MagicMock()
+        redirect_resp.status_code = 302
+        redirect_resp.headers = {}
+        redirect_resp.close = MagicMock()
+
+        monkeypatch.setattr("requests.get", lambda *a, **kw: redirect_resp)
+
+        svc = self._make_svc()
+        errors = []
+        svc._fetch("https://cdn.example.com/t.png", 10, 10, lambda img: None, errors.append)
+
+        assert errors and "Location" in errors[0]
+
+    def test_redirect_to_unsafe_target_calls_on_error(self, monkeypatch):
+        def fake_is_safe(u):
+            return u == "https://cdn.example.com/t.png"
+
+        monkeypatch.setattr("app.services.thumbnail_service._is_safe_thumbnail_url", fake_is_safe)
+
+        redirect_resp = MagicMock()
+        redirect_resp.status_code = 302
+        redirect_resp.headers = {"location": "http://169.254.169.254/latest/meta-data"}
+        redirect_resp.close = MagicMock()
+
+        monkeypatch.setattr("requests.get", lambda *a, **kw: redirect_resp)
+
+        svc = self._make_svc()
+        errors = []
+        svc._fetch("https://cdn.example.com/t.png", 10, 10, lambda img: None, errors.append)
+
+        assert errors and "SSRF" in errors[0]
 
     def test_fetch_async_starts_daemon_thread(self, monkeypatch):
         """fetch_async must start a background thread (non-blocking)."""

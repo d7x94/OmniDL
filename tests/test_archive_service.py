@@ -20,6 +20,7 @@ from __future__ import annotations
 import stat
 import zipfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import py7zr
 import pytest
@@ -109,6 +110,84 @@ class TestCompressValidation:
 
         with pytest.raises(ArchiveError):
             svc.compress([f], tmp_path / "out", "zip", individually=True)
+
+    def test_compress_calls_on_progress_with_100(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        src = _make_src_dir(tmp_path)
+        progress: list[float] = []
+        svc.compress([src], tmp_path / "out", "zip", on_progress=progress.append)
+        assert progress == [100.0]
+
+    def test_compress_individually_calls_on_progress_per_file(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        f1 = tmp_path / "one.txt"
+        f1.write_text("1")
+        f2 = tmp_path / "two.txt"
+        f2.write_text("2")
+        progress: list[float] = []
+        svc.compress([f1, f2], tmp_path / "out", "zip", individually=True, on_progress=progress.append)
+        assert progress == [50.0, 100.0]
+
+    def test_compress_cancelled_before_start_raises(self, tmp_path: Path) -> None:
+        import threading
+
+        svc = _make_service()
+        src = _make_src_dir(tmp_path)
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with pytest.raises(ArchiveError, match="cancelled"):
+            svc.compress([src], tmp_path / "out", "zip", cancel_event=cancel_event)
+
+    def test_compress_individually_cancelled_mid_loop_raises(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        f1 = tmp_path / "one.txt"
+        f1.write_text("1")
+        f2 = tmp_path / "two.txt"
+        f2.write_text("2")
+
+        cancel_event = MagicMock()
+        cancel_event.is_set.side_effect = [False, True]
+
+        with pytest.raises(ArchiveError, match="cancelled"):
+            svc.compress([f1, f2], tmp_path / "out", "zip", individually=True, cancel_event=cancel_event)
+
+
+# ---------------------------------------------------------------------------
+# extract() validation
+# ---------------------------------------------------------------------------
+
+
+class TestExtractValidation:
+    def test_missing_archive_raises_file_not_found(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        with pytest.raises(FileNotFoundError):
+            svc.extract(tmp_path / "nope.zip", tmp_path / "dest")
+
+    def test_unsupported_fmt_raises_value_error(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        archive = tmp_path / "bundle.rar"
+        archive.write_bytes(b"not a real archive")
+        with pytest.raises(ValueError):
+            svc.extract(archive, tmp_path / "dest", fmt="rar")
+
+    def test_cancelled_before_start_raises(self, tmp_path: Path) -> None:
+        import threading
+
+        svc = _make_service()
+        src = _make_src_dir(tmp_path)
+        [archive] = svc.compress([src], tmp_path / "out", "zip", archive_name="bundle")
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with pytest.raises(ArchiveError, match="cancelled"):
+            svc.extract(archive, tmp_path / "dest", cancel_event=cancel_event)
+
+    def test_unrecognisable_magic_bytes_raises_value_error(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        archive = tmp_path / "mystery.bin"
+        archive.write_bytes(b"NOT-AN-ARCHIVE-HEADER")
+        with pytest.raises(ValueError):
+            svc.extract(archive, tmp_path / "dest")
 
 
 # ---------------------------------------------------------------------------

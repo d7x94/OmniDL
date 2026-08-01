@@ -358,6 +358,16 @@ def test_pass0_with_sec_user_id_adds_combo():
     assert session.get.call_count >= 1
 
 
+def test_pass0_with_user_id_adds_combo():
+    ctx = _pass0_ctx(share_url="https://t.co/?user_id=123456")
+    body = json.dumps({"status_code": 0, "data": {"room_list": []}})
+    session = _mock_session(body=body)
+    result = _call_pass0(ctx, session)
+    # unique_id + user_id combos tried — both returned no rooms
+    assert result is None
+    assert session.get.call_count >= 1
+
+
 # ── Pass3UserApi ──────────────────────────────────────────────────────────
 
 
@@ -422,6 +432,14 @@ def test_pass3_status_code_nonzero_returns_none():
 def test_pass3_no_room_id_returns_none():
     ctx = _pass3_ctx()
     body = json.dumps({"statusCode": 0, "userInfo": {"user": {"roomId": "0"}}})
+    session = _mock_session(body=body)
+    result = _call_pass3(ctx, session)
+    assert result is None
+
+
+def test_pass3_room_id_missing_entirely_returns_none():
+    ctx = _pass3_ctx()
+    body = json.dumps({"statusCode": 0, "userInfo": {"user": {}}})
     session = _mock_session(body=body)
     result = _call_pass3(ctx, session)
     assert result is None
@@ -506,6 +524,12 @@ def test_pass4_status_4_ended_returns_none():
 
 def test_pass4_live_no_room_id_returns_none():
     body = json.dumps({"statusCode": 0, "data": {"user": {"roomId": "0", "status": 2}}})
+    session = _mock_session(body=body)
+    assert _call_pass4(_pass4_ctx(), session) is None
+
+
+def test_pass4_room_id_missing_entirely_returns_none():
+    body = json.dumps({"statusCode": 0, "data": {"user": {"status": 2}}})
     session = _mock_session(body=body)
     assert _call_pass4(_pass4_ctx(), session) is None
 

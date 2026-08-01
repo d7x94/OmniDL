@@ -184,6 +184,37 @@ class TestStartConvertJobCreation:
 # ---------------------------------------------------------------------------
 
 
+class TestStartConvertFromPath:
+    """start_convert_from_path() must delegate to start_convert() with
+    source_task_id=''."""
+
+    def test_delegates_to_start_convert_with_empty_source_task_id(self, tmp_path):
+        svc = _make_service(tmp_path)
+        sentinel = object()
+        file_path = _dummy_file(tmp_path)
+        with patch.object(svc, "start_convert", return_value=sentinel) as mock_start:
+            result = svc.start_convert_from_path(
+                file_path,
+                encoder_key="nvenc",
+                quality="high",
+                speed_preset="fast",
+                custom_crf=20,
+                target_ext="mkv",
+                output_codec="h265",
+            )
+        assert result is sentinel
+        mock_start.assert_called_once_with(
+            source_task_id="",
+            file_path=file_path,
+            encoder_key="nvenc",
+            quality="high",
+            speed_preset="fast",
+            custom_crf=20,
+            target_ext="mkv",
+            output_codec="h265",
+        )
+
+
 class TestGetJob:
     def test_get_job_returns_none_for_unknown_id(self, tmp_path):
         svc = _make_service(tmp_path)
@@ -506,6 +537,20 @@ class TestDeleteConvertFileBranches:
             ok, msg = svc.delete_convert_file(job.job_id, allowed_dir=tmp_path)
         assert not ok
         assert "permission denied" in msg
+
+    def test_delete_path_resolution_error_returns_false(self, tmp_path):
+        """An exception while resolving the output path must return (False, reason)."""
+        svc = _make_service(tmp_path)
+        output_file = _dummy_file(tmp_path, "resolve_fail.mp4")
+        with patch.object(svc._queue, "submit", return_value=None):
+            job = svc.start_convert("tid", output_file)
+        with job._lock:
+            job.status = ConversionStatus.COMPLETED
+            job.output_filename = str(output_file)
+        with patch("pathlib.Path.resolve", side_effect=RuntimeError("boom")):
+            ok, msg = svc.delete_convert_file(job.job_id, allowed_dir=tmp_path)
+        assert not ok
+        assert "Path resolution error" in msg
 
 
 class TestCancelConvertBranches:
