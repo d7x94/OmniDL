@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.services.archive_service import ArchiveMember, ArchiveService, ExtractResult
+from app.services.archive_service import ArchiveError, ArchiveMember, ArchiveService, ExtractResult
 from ui.components.progress_bar import OmniProgressBar
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
@@ -422,9 +422,9 @@ class ArchiveTab(QWidget):
         threading.Thread(target=_worker, daemon=True, name="omnidl-archive-compress").start()
 
     def _on_compress_done(self, results: list[Path], output_dir: Path) -> None:
-        self._set_busy(False)
         self._progress.set_progress(100)
         self._progress.set_state("complete")
+        self._set_busy(False)
         self._status_lbl.setText(f"Đã nén {len(results)} archive vào {output_dir}")
         reply = QMessageBox.question(
             self, "Hoàn tất", f"Đã tạo {len(results)} archive.\nMở thư mục chứa file?"
@@ -434,6 +434,10 @@ class ArchiveTab(QWidget):
 
     def _on_compress_error(self, exc: Exception) -> None:
         self._set_busy(False)
+        if isinstance(exc, ArchiveError) and str(exc) == "Compression cancelled":
+            self._progress.set_state("paused")
+            self._status_lbl.setText("Đã hủy nén")
+            return
         self._progress.set_state("failed")
         self._status_lbl.setText("Nén thất bại")
         QMessageBox.critical(self, "Lỗi nén", str(exc))
@@ -478,9 +482,9 @@ class ArchiveTab(QWidget):
         threading.Thread(target=_worker, daemon=True, name="omnidl-archive-extract").start()
 
     def _on_extract_done(self, result: ExtractResult, dest_dir: Path) -> None:
-        self._set_busy(False)
         self._progress.set_progress(100)
         self._progress.set_state("complete")
+        self._set_busy(False)
         self._status_lbl.setText(
             f"Đã giải nén {len(result.extracted_paths)} file ({fmt_bytes(result.total_bytes)}) vào {dest_dir}"
         )
@@ -490,6 +494,10 @@ class ArchiveTab(QWidget):
 
     def _on_extract_error(self, exc: Exception) -> None:
         self._set_busy(False)
+        if isinstance(exc, ArchiveError) and str(exc) == "Extraction cancelled":
+            self._progress.set_state("paused")
+            self._status_lbl.setText("Đã hủy giải nén")
+            return
         self._progress.set_state("failed")
         self._status_lbl.setText("Giải nén thất bại")
         QMessageBox.critical(self, "Lỗi giải nén", str(exc))
@@ -521,9 +529,9 @@ class ArchiveTab(QWidget):
         threading.Thread(target=_worker, daemon=True, name="omnidl-archive-list").start()
 
     def _on_list_done(self, members: list[ArchiveMember]) -> None:
-        self._set_busy(False)
         self._progress.set_progress(100)
         self._progress.set_state("complete")
+        self._set_busy(False)
         self._status_lbl.setText(f"{len(members)} mục trong archive")
         self._contents_list.clear()
         for m in members:
