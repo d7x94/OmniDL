@@ -1,0 +1,2867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="OmniDL" />
+  <meta name="theme-color" content="#0f0f0f" />
+  <title>OmniDL Remote</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & tokens ───────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0a;
+      --surface:   #161616;
+      --surface2:  #212121;
+      --surface3:  #2a2a2a;
+      --border:    #2e2e2e;
+      --border2:   #3a3a3a;
+      --accent:    #6366F1;
+      --accent-dk: #1d4ed8;
+      --accent-bg: rgba(59,130,246,.1);
+      --success:   #22c55e;
+      --warn:      #f59e0b;
+      --danger:    #ef4444;
+      --text:      #f0f0f0;
+      --text2:     #9ca3af;
+      --text3:     #6b7280;
+      --radius:    12px;
+      --radius-sm: 8px;
+      --shadow:    0 1px 3px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+      --safe-top:    env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      -webkit-text-size-adjust: 100%;
+      overscroll-behavior: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Layout ───────────────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      padding-top: var(--safe-top);
+      padding-bottom: var(--safe-bottom);
+    }
+
+    /* ── Header ───────────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 10px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .logo {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+    .logo span { color: var(--accent); }
+    #conn-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text2);
+      cursor: pointer;
+      padding: 5px 10px;
+      border-radius: 20px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      transition: background .15s, border-color .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #conn-badge:hover  { background: var(--surface3); border-color: var(--border2); }
+    #conn-badge:active { background: var(--surface3); }
+    #conn-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--text3);
+      transition: background .3s;
+      flex-shrink: 0;
+    }
+    #conn-dot.ok  { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    #conn-dot.err { background: var(--danger);  box-shadow: 0 0 6px var(--danger); }
+
+    /* ── Tab bar ──────────────────────────────────────────────────────── */
+    nav {
+      display: flex;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px 4px 8px;
+      border: none;
+      background: transparent;
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 500;
+      font-family: inherit;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      cursor: pointer;
+      transition: color .15s;
+      -webkit-tap-highlight-color: transparent;
+      position: relative;
+    }
+    .tab-btn svg { width: 20px; height: 20px; }
+    .tab-btn.active { color: var(--accent); }
+    .tab-btn.active::after {
+      content: "";
+      position: absolute;
+      bottom: 0; left: 18%; right: 18%;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 2px 2px 0 0;
+    }
+    #queue-badge {
+      position: absolute;
+      top: 6px; right: calc(50% - 18px);
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      min-width: 16px; height: 16px;
+      border-radius: 8px;
+      padding: 0 4px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Tab content ──────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+    .tab-panel {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 14px 14px calc(14px + var(--safe-bottom));
+      display: none;
+    }
+    .tab-panel.active { display: block; }
+
+    /* ── Cards ────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ── Form elements ────────────────────────────────────────────────── */
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      margin-bottom: 6px;
+    }
+    input[type="text"], input[type="url"], input[type="password"], select {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 15px;
+      font-family: inherit;
+      outline: none;
+      -webkit-appearance: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-bg);
+    }
+    select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239ca3af' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; }
+
+    /* ── Buttons ──────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 12px 20px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity .15s, background .15s, transform .1s, box-shadow .15s;
+      -webkit-tap-highlight-color: transparent;
+      white-space: nowrap;
+      letter-spacing: -.01em;
+    }
+    .btn:hover  { opacity: .92; }
+    .btn:active { opacity: .75; transform: scale(.98); }
+    .btn:disabled { opacity: .38; cursor: not-allowed; transform: none; }
+    .btn-primary   { background: var(--accent);   color: #fff; width: 100%;
+                     box-shadow: 0 2px 8px rgba(59,130,246,.35); }
+    .btn-primary:hover { box-shadow: 0 4px 14px rgba(59,130,246,.45); }
+    .btn-secondary { background: var(--surface2); color: var(--text);
+                     border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--surface3); border-color: var(--border2); }
+    .btn-danger    { background: var(--danger);   color: #fff; }
+    .btn-sm {
+      padding: 7px 12px;
+      font-size: 13px;
+      border-radius: 7px;
+    }
+
+    /* ── Download form specific ───────────────────────────────────────── */
+    #url-wrap { position: relative; }
+    #url-paste {
+      position: absolute;
+      right: 8px; top: 50%;
+      transform: translateY(-50%);
+      background: var(--surface3);
+      border: 1px solid var(--border);
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #url-paste:hover { background: var(--border2); color: var(--text); }
+    #url-input { padding-right: 116px; }
+
+    .format-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    #analyse-btn {
+      margin-top: 12px;
+    }
+    #analyse-status {
+      font-size: 13px;
+      color: var(--text2);
+      margin-top: 8px;
+      min-height: 18px;
+      text-align: center;
+    }
+    #meta-card {
+      display: none;
+      margin-top: 12px;
+    }
+    #meta-card .thumb {
+      width: 100%; aspect-ratio: 16/9;
+      border-radius: var(--radius-sm);
+      background: var(--surface2);
+      object-fit: cover;
+      margin-bottom: 10px;
+    }
+    #meta-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; word-break: break-word; }
+    #meta-sub   { font-size: 13px; color: var(--text2); }
+    #dl-btn     { margin-top: 14px; }
+
+    /* ── Queue items ──────────────────────────────────────────────────── */
+    .queue-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 10px;
+      box-shadow: var(--shadow-sm);
+      transition: border-color .2s;
+    }
+    .qi-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .qi-title {
+      font-size: 14px;
+      font-weight: 600;
+      word-break: break-word;
+      flex: 1;
+      line-height: 1.3;
+    }
+    .qi-platform {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text3);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .progress-track {
+      height: 5px;
+      background: var(--surface2);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--accent);
+      transition: width .35s ease-out;
+      box-shadow: 0 0 6px rgba(59,130,246,.4);
+    }
+    .progress-fill.done     { background: var(--success); box-shadow: 0 0 6px rgba(34,197,94,.4); }
+    .progress-fill.failed   { background: var(--danger);  box-shadow: none; }
+    .progress-fill.paused   { background: var(--warn);    box-shadow: none; }
+    .qi-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text2);
+    }
+    .qi-status { font-weight: 600; }
+    .qi-status.DOWNLOADING { color: var(--accent); }
+    .qi-status.PROCESSING  { color: var(--warn); }
+    .qi-status.COMPLETED   { color: var(--success); }
+    .qi-status.FAILED      { color: var(--danger); }
+    .qi-status.PAUSED      { color: var(--warn); }
+    .qi-status.CANCELLED   { color: var(--text3); }
+    .qi-status.QUEUED      { color: var(--text2); }
+    .qi-controls {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .qi-file-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .btn-transfer { background: #7c3aed; color: #fff;
+                    box-shadow: 0 2px 8px rgba(124,58,237,.3); }
+    .btn-transfer:hover { box-shadow: 0 4px 14px rgba(124,58,237,.45); }
+    .btn-preview  { background: var(--surface2); color: var(--text);
+                    border: 1px solid var(--border); }
+    .btn-preview:hover { background: var(--surface3); }
+    .btn-delete   { background: transparent; color: var(--danger);
+                    border: 1px solid rgba(239,68,68,.45); }
+    .btn-delete:hover { background: rgba(239,68,68,.08); }
+    .btn-convert  { background: #0891b2; color: #fff;
+                    box-shadow: 0 2px 8px rgba(8,145,178,.3); }
+    .btn-convert:hover { box-shadow: 0 4px 14px rgba(8,145,178,.45); }
+
+    /* ── Sheet drag handle ────────────────────────────────────────────── */
+    .sheet-handle {
+      width: 36px; height: 4px;
+      background: var(--border2);
+      border-radius: 2px;
+      margin: 0 auto 16px;
+    }
+
+    /* ── Convert bottom sheet ─────────────────────────────────────────── */
+    #convert-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #convert-overlay.open { display: flex; }
+    #convert-sheet {
+      background: var(--surface);
+      border-radius: 20px 20px 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 88vh;
+      overflow-y: auto;
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5);
+    }
+    #convert-sheet h2 { font-size:17px; font-weight:700; margin-bottom:4px; }
+    #convert-sheet .convert-sub {
+      font-size:12px; color:var(--text2); margin-bottom:16px;
+    }
+    .convert-section { margin-bottom:14px; }
+    .convert-section label {
+      display:block; font-size:13px; font-weight:600;
+      color:var(--text2); margin-bottom:8px;
+    }
+    .radio-grid {
+      display:grid; grid-template-columns:repeat(3,1fr); gap:6px;
+    }
+    .radio-grid.two-col { grid-template-columns:repeat(2,1fr); }
+    .radio-btn {
+      display:flex; align-items:center; justify-content:center;
+      padding:9px 4px; border-radius:9px; font-size:12px; font-weight:600;
+      background:var(--surface2); color:var(--text2); cursor:pointer;
+      border:2px solid transparent; transition:all .15s; text-align:center;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .radio-btn:hover { background: var(--surface3); }
+    .radio-btn.active { border-color:var(--accent); color:var(--accent); background:var(--accent-bg); }
+    .crf-row {
+      display:flex; align-items:center; gap:10px; margin-top:8px;
+    }
+    .crf-row input[type=range] { flex:1; accent-color:var(--accent); }
+    .crf-val { font-size:13px; font-weight:700; color:var(--accent);
+               min-width:28px; text-align:center; }
+    /* Convert progress in queue card */
+    .qi-convert-progress {
+      margin-top:10px;
+      padding:10px;
+      background:var(--surface2);
+      border-radius:8px;
+    }
+    .qi-convert-label {
+      font-size:12px; color:var(--text2); margin-bottom:6px;
+      display:flex; justify-content:space-between;
+    }
+    .qi-convert-track {
+      height:4px; background:var(--border); border-radius:2px; overflow:hidden;
+    }
+    .qi-convert-fill {
+      height:100%; background:#0891b2; border-radius:2px;
+      transition:width .4s linear;
+    }
+    @keyframes qi-indeterminate {
+      0%   { transform: translateX(-120%); }
+      100% { transform: translateX(520%); }
+    }
+    .qi-convert-fill.indeterminate {
+      width: 25% !important;
+      transition: none;
+      animation: qi-indeterminate 1.4s ease-in-out infinite;
+    }
+    /* Preview modal */
+    #preview-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.88);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 200;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #preview-overlay.open { display: flex; }
+    #preview-title {
+      color: var(--text2);
+      font-size: 13px;
+      text-align: center;
+      margin-bottom: 12px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #preview-content {
+      max-width: 100%;
+      max-height: 72vh;
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    #preview-content video,
+    #preview-content img {
+      max-width: 100%;
+      max-height: 72vh;
+      display: block;
+      border-radius: var(--radius);
+    }
+    #preview-close {
+      margin-top: 16px;
+      color: var(--text2);
+      background: var(--surface2);
+    }
+    .qi-err {
+      font-size: 12px;
+      color: var(--danger);
+      margin-top: 6px;
+      word-break: break-all;
+    }
+
+    /* ── History items ────────────────────────────────────────────────── */
+    .hist-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .hist-item:last-child { border-bottom: none; }
+    .hist-icon {
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      background: var(--surface2);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      font-size: 16px;
+    }
+    .hist-body { flex: 1; min-width: 0; }
+    .hist-title {
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hist-sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+    /* ── Monitor items ────────────────────────────────────────────────── */
+    .mon-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+    .mon-item:last-child { margin-bottom: 0; }
+    .mon-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .mon-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .mon-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .mon-tags { display: flex; gap: 6px; align-items: center; }
+    .mon-platform-tag, .mon-paused-tag {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .4px;
+      padding: 2px 7px;
+      border-radius: 20px;
+      text-transform: uppercase;
+    }
+    .mon-platform-tag {
+      background: var(--surface3);
+      color: var(--text2);
+      border: 1px solid var(--border2);
+    }
+    .mon-paused-tag {
+      background: rgba(245,158,11,.12);
+      color: var(--warn);
+      border: 1px solid rgba(245,158,11,.3);
+    }
+    .mon-title {
+      font-size: 15px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+    .mon-meta {
+      font-size: 12px;
+      color: var(--text2);
+      margin-bottom: 10px;
+    }
+    .mon-progress {
+      height: 3px;
+      background: var(--surface3);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .mon-progress-fill {
+      height: 100%;
+      background: var(--success);
+      border-radius: 2px;
+      transition: width .4s linear;
+    }
+    .mon-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+
+    /* ── Settings panel ───────────────────────────────────────────────── */
+    #settings-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #settings-overlay.open { display: flex; }
+    #settings-sheet {
+      background: var(--surface);
+      border-radius: 20px 20px 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5);
+    }
+    #settings-sheet h2 {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .setting-row { margin-bottom: 14px; }
+    .token-display {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    #token-val {
+      flex: 1;
+      font-size: 13px;
+      font-family: monospace;
+      letter-spacing: .5px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── Node picker ─────────────────────────────────────────────────── */
+    #nodes-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #nodes-overlay.open { display: flex; }
+    #nodes-sheet {
+      background: var(--surface);
+      border-radius: 20px 20px 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 70vh;
+      overflow-y: auto;
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5);
+    }
+    #nodes-sheet h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+    .node-sub { font-size: 12px; color: var(--text2); margin-bottom: 14px; word-break: break-all; }
+    .node-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 0; border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    .node-row:last-child { border-bottom: none; }
+    .node-row input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); flex-shrink: 0; }
+    .node-row span { font-size: 15px; }
+
+    /* ── Archive (compress/extract) bottom sheets ─────────────────────── */
+    #archive-compress-overlay, #archive-extract-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 100;
+      display: none;
+      align-items: flex-end;
+    }
+    #archive-compress-overlay.open, #archive-extract-overlay.open { display: flex; }
+    #archive-compress-sheet, #archive-extract-sheet {
+      background: var(--surface);
+      border-radius: 20px 20px 0 0;
+      padding: 20px 16px calc(20px + var(--safe-bottom));
+      width: 100%;
+      max-height: 88vh;
+      overflow-y: auto;
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5);
+    }
+    #archive-compress-sheet h2, #archive-extract-sheet h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+    .archive-sheet-sub {
+      font-size: 12px; color: var(--text2); margin-bottom: 16px; word-break: break-all;
+    }
+    .archive-check-row {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    }
+    .archive-check-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); flex-shrink: 0; }
+    .archive-check-row label { font-size: 13px; color: var(--text); }
+    #archive-contents-list { margin-top: 12px; margin-bottom: 14px; max-height: 30vh; overflow-y: auto; }
+
+    /* ── Empty states ─────────────────────────────────────────────────── */
+    .empty {
+      text-align: center;
+      padding: 56px 16px;
+      color: var(--text3);
+    }
+    .empty svg { width: 44px; height: 44px; margin-bottom: 14px; opacity: .3; display: block; margin-left: auto; margin-right: auto; }
+    .empty p { font-size: 14px; font-weight: 500; }
+
+    /* ── Toasts ───────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: calc(28px + var(--safe-bottom));
+      left: 50%;
+      transform: translateX(-50%) translateY(8px);
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 24px;
+      padding: 10px 22px;
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      z-index: 300;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .22s ease, transform .22s ease;
+      box-shadow: 0 4px 24px rgba(0,0,0,.5);
+      max-width: calc(100vw - 32px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ── Spinner ──────────────────────────────────────────────────────── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 15px; height: 15px;
+      border: 2px solid rgba(255,255,255,.25);
+      border-top-color: rgba(255,255,255,.9);
+      border-radius: 50%;
+      animation: spin .55s linear infinite;
+      flex-shrink: 0;
+    }
+
+    /* ── File browser ─────────────────────────────────────────────────── */
+    .fb-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      min-height: 36px;
+    }
+    .fb-path {
+      font-size: 12px;
+      color: var(--text2);
+      flex: 1;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+    .fb-toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 6px 0 10px;
+      align-items: center;
+    }
+    .fb-toolbar input[type="search"] {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .fb-toolbar select {
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+    }
+    .fb-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      box-shadow: var(--shadow-sm);
+      transition: border-color .15s;
+    }
+    .fb-item.fb-dir:hover { border-color: var(--border2); }
+    .fb-icon {
+      font-size: 20px;
+      flex-shrink: 0;
+      width: 28px;
+      text-align: center;
+      padding-top: 1px;
+    }
+    .fb-body { flex: 1; min-width: 0; }
+    .fb-name {
+      font-size: 14px;
+      font-weight: 500;
+      word-break: break-all;
+      line-height: 1.3;
+    }
+    .fb-meta {
+      font-size: 12px;
+      color: var(--text2);
+      margin-top: 2px;
+    }
+    .fb-item.fb-dir { cursor: pointer; }
+    .fb-item.fb-dir:active { opacity: .75; }
+    .fb-cvprog {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: var(--surface2);
+      border-radius: 6px;
+    }
+    .fb-cvprog-label {
+      font-size: 11px;
+      color: var(--text2);
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">Omni<span>DL</span> Remote</div>
+    <div id="conn-badge" onclick="openSettings()">
+      <div id="conn-dot"></div>
+      <span id="conn-label">Đang kết nối…</span>
+    </div>
+  </header>
+
+  <!-- Tab bar -->
+  <nav>
+    <button class="tab-btn active" onclick="switchTab('download',this)" id="tab-download">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Tải xuống
+    </button>
+    <button class="tab-btn" onclick="switchTab('queue',this)" id="tab-queue">
+      <span id="queue-badge"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      Hàng đợi
+    </button>
+    <button class="tab-btn" onclick="switchTab('monitor',this)" id="tab-monitor">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      Live Monitor
+    </button>
+    <button class="tab-btn" onclick="switchTab('files',this)" id="tab-files">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+      Tệp tin
+    </button>
+  </nav>
+
+  <!-- Main -->
+  <main>
+
+    <!-- ── Download tab ──────────────────────────────────────────────── -->
+    <div class="tab-panel active" id="panel-download">
+      <div class="card">
+        <label>Dán URL vào đây...</label>
+        <div id="url-wrap">
+          <input type="url" id="url-input" placeholder="https://…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+          <button id="url-paste" onclick="pasteUrl()">Dán & Phân tích</button>
+        </div>
+
+        <!-- Metadata preview (shown after analyse) -->
+        <div id="meta-card" class="card" style="margin-top:12px; border-color: var(--accent)33;">
+          <img id="meta-thumb" class="thumb" src="" alt="" onerror="this.style.display='none'" />
+          <div id="meta-title"></div>
+          <div id="meta-sub"></div>
+        </div>
+
+        <div class="format-row" id="format-row">
+          <div>
+            <label>Chất lượng</label>
+            <select id="format-sel">
+              <option value="bestvideo+bestaudio/best">Chất lượng cao nhất</option>
+              <option value="bestvideo[height<=1080]+bestaudio/best[height<=1080]">1080p</option>
+              <option value="bestvideo[height<=720]+bestaudio/best[height<=720]">720p</option>
+              <option value="bestvideo[height<=480]+bestaudio/best[height<=480]">480p</option>
+              <option value="bestaudio/best">Chỉ âm thanh</option>
+            </select>
+          </div>
+          <div>
+            <label>Định dạng</label>
+            <select id="ext-sel">
+              <option value="mp4">MP4</option>
+              <option value="mp3">MP3</option>
+              <option value="webm">WebM</option>
+              <option value="m4a">M4A</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Shown only when analyse detects a live stream -->
+        <div id="live-banner" style="display:none; margin-top:10px; padding:10px 12px;
+             background:var(--danger,#e53e3e)22; border:1px solid var(--danger,#e53e3e)66;
+             border-radius:8px; font-size:13px; color:var(--danger,#e53e3e); line-height:1.4;">
+          ⏺ <strong>Phát trực tiếp được phát hiện</strong> — bộ chọn định dạng &amp; chất lượng
+          bị vô hiệu hóa. Luồng sẽ được ghi lại dưới dạng <code>.ts</code> (MPEG-TS) từ
+          thời điểm này trở đi.
+        </div>
+
+        <button class="btn btn-secondary" id="analyse-btn" onclick="doAnalyse()" style="margin-top:12px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          Phân tích
+        </button>
+        <button class="btn btn-danger btn-sm" id="analyse-cancel-btn" onclick="cancelAnalyse()" style="margin-top:12px; display:none;">
+          ✕ Huỷ
+        </button>
+        <div id="analyse-status"></div>
+
+        <button class="btn btn-primary" id="dl-btn" onclick="doDownload()" style="margin-top:12px;" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Thêm vào hàng đợi
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Queue tab ─────────────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-queue">
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:10px;">
+        <button class="btn btn-secondary btn-sm" id="select-mode-btn" onclick="toggleSelectMode()">Chọn</button>
+        <button class="btn btn-secondary btn-sm" id="clear-finished-btn" onclick="clearFinished()">Xóa đã xong</button>
+      </div>
+      <div id="queue-list"></div>
+    </div>
+
+    <!-- ── Live Monitor tab ──────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-monitor">
+      <div class="card">
+        <label>Theo dõi profile / live URL (TikTok, Instagram)</label>
+        <div id="url-wrap">
+          <input type="url" id="monitor-input" placeholder="https://www.tiktok.com/@user" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </div>
+        <div id="monitor-status" style="font-size:12px; color:var(--text3); margin-top:8px;">
+          Tự động ghi lại dưới dạng <code>.ts</code> khi stream bắt đầu.
+        </div>
+        <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <label for="monitor-interval" style="font-size:12px; color:var(--text3);">Kiểm tra mỗi (giây):</label>
+          <select id="monitor-interval" onchange="setMonitorInterval(this.value)" style="font-size:12px;">
+            <option value="15">15</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+            <option value="120">120</option>
+            <option value="300">300</option>
+          </select>
+          <button id="monitor-add-btn" class="btn btn-secondary btn-sm" onclick="addMonitorUrl()" style="margin-left:8px;">Theo dõi</button>
+          <button id="monitor-pause-btn" class="btn btn-secondary btn-sm" onclick="toggleMonitorPause()" style="margin-left:4px;">Tạm ngưng</button>
+        </div>
+      </div>
+      <div id="monitor-list"></div>
+    </div>
+
+    <!-- ── Files tab ────────────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-files">
+      <div class="fb-nav" id="fb-nav">
+        <button class="btn btn-secondary btn-sm" id="fb-up-btn" onclick="browseUp()" style="display:none">⬆ Lên</button>
+        <div class="fb-path" id="fb-path"></div>
+      </div>
+      <div class="fb-toolbar">
+        <input type="search" id="fb-search" placeholder="Tìm tên file..." oninput="renderFileBrowser()" />
+        <select id="fb-sort" onchange="renderFileBrowser()">
+          <option value="name-asc">Tên A-Z</option>
+          <option value="name-desc">Tên Z-A</option>
+          <option value="date-desc">Mới nhất</option>
+          <option value="date-asc">Cũ nhất</option>
+        </select>
+      </div>
+      <div id="fb-list"></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Preview modal -->
+<div id="preview-overlay">
+  <div id="preview-title"></div>
+  <div id="preview-content"></div>
+  <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()">✕ Đóng</button>
+</div>
+
+<!-- Convert bottom sheet -->
+<div id="convert-overlay">
+  <div id="convert-sheet">
+    <div class="sheet-handle"></div>
+    <h2>🎬 Convert to MP4</h2>
+    <div class="convert-sub" id="convert-sheet-sub"></div>
+
+    <div class="convert-section">
+      <label>Chất lượng</label>
+      <div class="radio-grid" id="cvq-grid">
+        <div class="radio-btn active" data-cvq="standard" onclick="setCvq(this)">Chuẩn</div>
+        <div class="radio-btn"       data-cvq="high"     onclick="setCvq(this)">Cao</div>
+        <div class="radio-btn"       data-cvq="small"    onclick="setCvq(this)">Nhỏ (720p)</div>
+        <div class="radio-btn"       data-cvq="custom"   onclick="setCvq(this)"
+             style="grid-column:1/-1">Tuỳ chỉnh (CRF)</div>
+      </div>
+      <div class="crf-row" id="crf-row" style="display:none">
+        <input type="range" min="0" max="51" value="23" id="crf-slider"
+               oninput="document.getElementById('crf-val').textContent=this.value">
+        <span class="crf-val" id="crf-val">23</span>
+        <span style="font-size:11px;color:var(--text3)">0=lossless · 51=worst</span>
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label>Encoder</label>
+      <div class="radio-grid two-col" id="cvenc-grid">
+        <!-- populated dynamically from GET /api/convert/encoders -->
+        <div class="radio-btn active" data-cvenc="cpu" onclick="setCvenc(this)">CPU (libx264)</div>
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label>Tốc độ encode</label>
+      <div class="radio-grid" id="cvspd-grid">
+        <div class="radio-btn"       data-cvspd="quality"  onclick="setCvspd(this)">Chậm<br><span style="font-size:10px;font-weight:400">Nén tốt</span></div>
+        <div class="radio-btn active" data-cvspd="balanced" onclick="setCvspd(this)">Cân bằng</div>
+        <div class="radio-btn"       data-cvspd="fast"     onclick="setCvspd(this)">Nhanh<br><span style="font-size:10px;font-weight:400">File lớn hơn</span></div>
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label>Codec output</label>
+      <div class="radio-grid" id="cvcodec-grid">
+        <div class="radio-btn active" data-cvcodec="h264" onclick="setCvcodec(this)">H.264<br><span style="font-size:10px;font-weight:400">Tương thích cao nhất</span></div>
+        <div class="radio-btn"       data-cvcodec="hevc" onclick="setCvcodec(this)">H.265 / HEVC<br><span style="font-size:10px;font-weight:400">~30% nhỏ hơn</span></div>
+        <div class="radio-btn"       data-cvcodec="av1"  onclick="setCvcodec(this)">AV1<br><span style="font-size:10px;font-weight:400">~50% nhỏ hơn</span></div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="submitConvert()" style="margin-top:4px">
+      🎬 Bắt đầu Convert
+    </button>
+    <button class="btn btn-secondary" onclick="closeConvertSheet()" style="margin-top:8px">
+      Huỷ
+    </button>
+  </div>
+</div>
+
+<!-- Node picker bottom sheet -->
+<div id="nodes-overlay">
+  <div id="nodes-sheet">
+    <div class="sheet-handle"></div>
+    <h2>📲 Gửi đến</h2>
+    <div class="node-sub" id="nodes-sheet-sub"></div>
+    <div id="nodes-list"></div>
+    <button class="btn btn-primary" onclick="confirmSendToNodes()" style="margin-top:14px">Gửi</button>
+    <button class="btn btn-secondary" onclick="closeNodePicker()" style="margin-top:8px">Huỷ</button>
+  </div>
+</div>
+
+<!-- Archive compress bottom sheet -->
+<div id="archive-compress-overlay">
+  <div id="archive-compress-sheet">
+    <div class="sheet-handle"></div>
+    <h2>📦 Nén</h2>
+    <div class="archive-sheet-sub" id="archc-sheet-sub"></div>
+
+    <div class="setting-row">
+      <label>Định dạng</label>
+      <select id="archc-fmt" onchange="onArchiveFmtChanged()">
+        <option value="zip">zip</option>
+        <option value="7z">7z</option>
+      </select>
+    </div>
+    <div class="setting-row">
+      <label>Mật khẩu</label>
+      <input type="password" id="archc-pw" placeholder="Để trống nếu không đặt mật khẩu" />
+    </div>
+    <div class="archive-check-row">
+      <input type="checkbox" id="archc-headerenc" disabled onchange="void 0">
+      <label for="archc-headerenc">Mã hóa tên file (chỉ 7z)</label>
+    </div>
+    <div class="setting-row">
+      <label>Tên archive</label>
+      <input type="text" id="archc-name" disabled />
+    </div>
+    <div class="archive-check-row">
+      <input type="checkbox" id="archc-use-orig" checked onchange="onArchiveUseOrigChanged()">
+      <label for="archc-use-orig">Dùng tên gốc</label>
+    </div>
+
+    <button class="btn btn-primary" onclick="submitArchiveCompress()">📦 Bắt đầu nén</button>
+    <button class="btn btn-secondary" onclick="closeArchiveCompressSheet()" style="margin-top:8px">Huỷ</button>
+  </div>
+</div>
+
+<!-- Archive extract bottom sheet -->
+<div id="archive-extract-overlay">
+  <div id="archive-extract-sheet">
+    <div class="sheet-handle"></div>
+    <h2>📂 Giải nén</h2>
+    <div class="archive-sheet-sub" id="arche-sheet-sub"></div>
+
+    <div class="setting-row">
+      <label>Thư mục giải nén</label>
+      <input type="text" id="arche-dest" placeholder="Để trống dùng mặc định" />
+    </div>
+    <div class="setting-row">
+      <label>Mật khẩu</label>
+      <input type="password" id="arche-pw" placeholder="Để trống nếu không có mật khẩu" />
+    </div>
+    <button class="btn btn-secondary" onclick="previewArchiveContents()">👁 Xem nội dung</button>
+    <div id="archive-contents-list"></div>
+
+    <button class="btn btn-primary" onclick="submitArchiveExtract()">📂 Giải nén</button>
+    <button class="btn btn-secondary" onclick="closeArchiveExtractSheet()" style="margin-top:8px">Huỷ</button>
+  </div>
+</div>
+
+<!-- Settings bottom sheet -->
+<div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
+  <div id="settings-sheet">
+    <div class="sheet-handle"></div>
+    <h2>⚙ Kết nối</h2>
+    <div class="setting-row">
+      <label>Server Address</label>
+      <input type="text" id="cfg-host" placeholder="http://192.168.1.x:7799" />
+    </div>
+    <div class="setting-row">
+      <label>Access Token</label>
+      <div class="token-display">
+        <input type="password" id="cfg-token" placeholder="Paste token here" style="flex:1;" />
+      </div>
+      <div style="font-size:12px; color:var(--text3); margin-top:6px;">Find the token in OmniDL Settings → Remote API.</div>
+    </div>
+    <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:8px;">Lưu & Kết nối</button>
+    <button class="btn btn-secondary" onclick="closeSettings()" style="margin-top:8px;">Huỷ</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+/* ── State ──────────────────────────────────────────────────────────── */
+let cfg  = { host: '', token: '' };
+let tasks = {};          // task_id → task object
+let analysedInfo = null;       // last analyse result
+let evtSrc = null;             // EventSource instance
+let connected = false;
+let _analyseAbortCtrl = null;  // AbortController for the in-flight analyse fetch
+let convertJobs = {};          // job_id → ConversionJob snapshot
+let monitorItems = {};         // monitor item id → item object
+let monitorPaused = false;     // global pause state for live monitor
+let _pendingConvertTaskId = null; // task_id being configured in the convert sheet
+let _pendingFilePath = null;   // absolute file path being configured in convert sheet (Files tab)
+let _fileJobMap = {};          // absolute filePath → job_id (file-based convert jobs)
+let _browseData = null;        // last /api/files/browse response (for re-render without re-fetch)
+let _availableNodes = [];      // cached from GET /api/nodes
+let _transferFilePath = null;  // path being sent via node picker
+
+/* ── Persistence ────────────────────────────────────────────────────── */
+function loadCfg() {
+  try {
+    const s = localStorage.getItem('omnidl_cfg');
+    if (s) cfg = { ...cfg, ...JSON.parse(s) };
+  } catch {}
+}
+function saveCfg() {
+  localStorage.setItem('omnidl_cfg', JSON.stringify(cfg));
+}
+
+/* ── API ────────────────────────────────────────────────────────────── */
+async function api(method, path, body, signal) {
+  const base = cfg.host.replace(/\/+$/, '');
+  const resp = await fetch(base + path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cfg.token ? { 'Authorization': 'Bearer ' + cfg.token } : {}),
+    },
+    ...(body   ? { body: JSON.stringify(body) } : {}),
+    ...(signal ? { signal }                     : {}),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    let msg = err.detail;
+    if (Array.isArray(msg)) msg = msg.map(d => d.msg || JSON.stringify(d)).join('; ');
+    else if (msg && typeof msg === 'object') msg = JSON.stringify(msg);
+    throw new Error(msg || resp.statusText);
+  }
+  return resp.json();
+}
+
+async function apiDownload(path, body, filename) {
+  const base = cfg.host.replace(/\/+$/, '');
+  const resp = await fetch(base + path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cfg.token ? { 'Authorization': 'Bearer ' + cfg.token } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    let msg = err.detail;
+    if (Array.isArray(msg)) msg = msg.map(d => d.msg || JSON.stringify(d)).join('; ');
+    else if (msg && typeof msg === 'object') msg = JSON.stringify(msg);
+    throw new Error(msg || resp.statusText);
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ── SSE ────────────────────────────────────────────────────────────── */
+function connectSSE() {
+  if (evtSrc) { evtSrc.close(); evtSrc = null; }
+  if (!cfg.host) return;
+
+  const base = cfg.host.replace(/\/+$/, '');
+  const url  = base + '/api/events' + (cfg.token ? '?token=' + encodeURIComponent(cfg.token) : '');
+  evtSrc = new EventSource(url);
+
+  evtSrc.addEventListener('snapshot', e => {
+    const list = JSON.parse(e.data);
+    tasks = {};
+    list.forEach(t => tasks[t.id] = t);
+    renderQueue();
+    setConnected(true);
+  });
+
+  const liveEvents = ['started','progress','completed','failed','cancelled'];
+  liveEvents.forEach(evt => {
+    evtSrc.addEventListener(evt, e => {
+      const t = JSON.parse(e.data);
+      tasks[t.id] = t;
+      renderQueue();
+      updateQueueBadge();
+      renderMonitor();  // reflect recording progress in the monitor list
+    });
+  });
+
+  // ── Taildrop transfer results ────────────────────────────────────────
+  // Restore the transfer button and show a toast when the async transfer
+  // completes or fails on the server side.
+  evtSrc.addEventListener('taildrop_completed', e => {
+    const d = JSON.parse(e.data);
+    toast(`✅ Sent to ${d.dest_node} via Taildrop!`);
+    _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+  });
+
+  evtSrc.addEventListener('taildrop_failed', e => {
+    const d = JSON.parse(e.data);
+    toast(`❌ Taildrop failed: ${d.error || 'unknown error'}`, 'error');
+    _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+  });
+
+  // ── Convert events ────────────────────────────────────────────────────
+  // convert_snapshot: fired once on (re)connect to restore job state that
+  // may have been missed if the SSE connection dropped mid-conversion.
+  evtSrc.addEventListener('convert_snapshot', e => {
+    const jobs = JSON.parse(e.data);
+    jobs.forEach(j => {
+      // Merge into convertJobs: only overwrite if incoming status is
+      // "more advanced" than what we already have, so a stale snapshot
+      // never rolls back a live in-progress job's UI state.
+      const order = { PENDING: 0, CONVERTING: 1, COMPLETED: 2, FAILED: 2, CANCELLED: 2 };
+      const existing = convertJobs[j.job_id];
+      if (!existing || (order[j.status] ?? 0) >= (order[existing.status] ?? 0)) {
+        convertJobs[j.job_id] = j;
+      }
+    });
+    renderQueue();
+    _maybeRenderFileBrowser();
+  });
+
+  evtSrc.addEventListener('convert_started', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    renderQueue();
+    _maybeRenderFileBrowser();
+  });
+  evtSrc.addEventListener('convert_progress', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    // Update progress bar inline without full re-render (performance)
+    const fill = document.getElementById(`cvfill-${j.job_id}`);
+    const pct  = document.getElementById(`cvpct-${j.job_id}`);
+    if (fill) {
+      if (j.progress > 0) fill.classList.remove('indeterminate');
+      fill.style.width = j.progress + '%';
+    }
+    if (pct)  pct.textContent  = j.progress.toFixed(0) + '%';
+  });
+  evtSrc.addEventListener('convert_completed', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    toast(`✅ Convert xong: ${j.output_filename || 'file'}`);
+    renderQueue();
+    _maybeRenderFileBrowser();
+  });
+  evtSrc.addEventListener('convert_failed', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    toast(`❌ Convert thất bại: ${j.error_msg || 'lỗi không xác định'}`);
+    renderQueue();
+    _maybeRenderFileBrowser();
+  });
+  evtSrc.addEventListener('convert_cancelled', e => {
+    const j = JSON.parse(e.data);
+    convertJobs[j.job_id] = j;
+    toast('⊘ Đã huỷ convert');
+    renderQueue();
+    _maybeRenderFileBrowser();
+  });
+
+  // ── Live monitor events ──────────────────────────────────────────────
+  evtSrc.addEventListener('monitor_snapshot', e => {
+    monitorItems = {};
+    JSON.parse(e.data).forEach(m => monitorItems[m.id] = m);
+    renderMonitor();
+  });
+  evtSrc.addEventListener('monitor_update', e => {
+    const m = JSON.parse(e.data);
+    monitorItems[m.id] = m;
+    renderMonitor();
+  });
+  evtSrc.addEventListener('monitor_remove', e => {
+    delete monitorItems[JSON.parse(e.data).id];
+    renderMonitor();
+  });
+  evtSrc.addEventListener('monitor_state', e => {
+    const { paused } = JSON.parse(e.data);
+    monitorPaused = paused;
+    _updateMonitorPauseBtn();
+  });
+
+  evtSrc.addEventListener('file_transfer_done', e => {
+    const d = JSON.parse(e.data);
+    const fname = (d.path || '').split(/[\\/]/).pop();
+    toast(`✅ Đã gửi ${fname} → ${d.node}`);
+  });
+  evtSrc.addEventListener('file_transfer_failed', e => {
+    const d = JSON.parse(e.data);
+    const fname = (d.path || '').split(/[\\/]/).pop();
+    toast(`❌ Gửi thất bại → ${d.node}: ${d.error || 'lỗi không xác định'}`);
+  });
+
+  evtSrc.onerror = () => setConnected(false);
+}
+
+/* ── Connection ─────────────────────────────────────────────────────── */
+function setConnected(ok) {
+  connected = ok;
+  const dot   = document.getElementById('conn-dot');
+  const label = document.getElementById('conn-label');
+  dot.className = ok ? 'ok' : 'err';
+  label.textContent = ok ? 'Đã kết nối' : 'Ngắt kết nối';
+  if (ok) {
+    document.getElementById('dl-btn').disabled = false;
+    loadNodes();
+  }
+}
+
+async function ping() {
+  if (!cfg.host) { setConnected(false); return; }
+  try {
+    await api('GET', '/api/ping');
+    setConnected(true);
+    connectSSE();
+  } catch {
+    setConnected(false);
+  }
+}
+
+/* ── Tab switching ──────────────────────────────────────────────────── */
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'monitor') loadMonitor();
+  if (name === 'files')   browseFiles();
+}
+
+/* ── Download flow ──────────────────────────────────────────────────── */
+async function pasteUrl() {
+  try {
+    const text = await navigator.clipboard.readText();
+    const trimmed = text.trim();
+    if (!trimmed) { toast('Clipboard is empty'); return; }
+    document.getElementById('url-input').value = trimmed;
+    if (connected) {
+      // Auto-analyse immediately after paste — mirrors desktop clipboard monitor behaviour
+      doAnalyse();
+    }
+  } catch { toast('Clipboard access denied'); }
+}
+
+function cancelAnalyse() {
+  if (_analyseAbortCtrl) {
+    _analyseAbortCtrl.abort();
+    _analyseAbortCtrl = null;
+  }
+}
+
+async function doAnalyse() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { toast('Enter a URL first'); return; }
+  if (!connected) { toast('Not connected'); return; }
+
+  // Cancel any in-flight analyse
+  if (_analyseAbortCtrl) { _analyseAbortCtrl.abort(); }
+  _analyseAbortCtrl = new AbortController();
+
+  const btn      = document.getElementById('analyse-btn');
+  const cancelBt = document.getElementById('analyse-cancel-btn');
+  const stat     = document.getElementById('analyse-status');
+
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Analysing…';
+  cancelBt.style.display = 'inline-flex';
+  stat.textContent = '';
+  stat.style.color = '';
+  document.getElementById('meta-card').style.display = 'none';
+  analysedInfo = null;
+
+  // Use SSE streaming endpoint so iOS background suspend does not kill the
+  // request. The server sends ": keepalive" comments every 10 s while the
+  // Kuaishou CDP engine runs (~120 s max), then a single "result" or
+  // "error_result" event. If iOS drops the EventSource (background suspend),
+  // we reconnect transparently and wait for the same server job to finish —
+  // the server continues running regardless of client connectivity.
+  const _cancelled = _analyseAbortCtrl.signal;
+
+  function _buildStreamUrl() {
+    const base = cfg.host.replace(/\/+$/, '');
+    const tok  = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+    return base + '/api/analyse/stream?url=' + encodeURIComponent(url) + tok;
+  }
+
+  // Hard deadline: server times out at 180 s, add 15 s margin.
+  const _hardDeadline = Date.now() + 195_000;
+
+  try {
+    const info = await new Promise((resolve, reject) => {
+      if (_cancelled.aborted) { reject(new DOMException('', 'AbortError')); return; }
+
+      let _es = null;
+      let _reconnectTimer = null;
+      let _done = false;
+
+      function _cleanup() {
+        if (_es) { try { _es.close(); } catch(_) {} _es = null; }
+        if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      }
+
+      function _fail(msg) {
+        if (_done) return;
+        _done = true;
+        _cleanup();
+        reject(new Error(msg));
+      }
+
+      function _succeed(data) {
+        if (_done) return;
+        _done = true;
+        _cleanup();
+        resolve(data);
+      }
+
+      function _connect() {
+        if (_done || _cancelled.aborted) return;
+        if (Date.now() > _hardDeadline) { _fail('Analysis timed out'); return; }
+
+        _es = new EventSource(_buildStreamUrl());
+
+        _es.addEventListener('result', e => {
+          try { _succeed(JSON.parse(e.data)); }
+          catch(_) { _fail('Invalid response from server'); }
+        });
+
+        _es.addEventListener('error_result', e => {
+          try { _fail(JSON.parse(e.data).detail || 'Analysis failed'); }
+          catch(_) { _fail('Analysis failed'); }
+        });
+
+        // EventSource onerror fires on any connection drop (iOS background,
+        // network blip, etc.). Reconnect after 2 s while deadline not passed.
+        _es.onerror = () => {
+          if (_done) return;
+          _cleanup();
+          if (_cancelled.aborted) { reject(new DOMException('', 'AbortError')); return; }
+          if (Date.now() > _hardDeadline) { _fail('Analysis timed out'); return; }
+          stat.textContent = 'Reconnecting…';
+          stat.style.color = 'var(--text-sub, #888)';
+          _reconnectTimer = setTimeout(_connect, 2_000);
+        };
+      }
+
+      _cancelled.addEventListener('abort', () => {
+        _done = true;
+        _cleanup();
+        reject(new DOMException('', 'AbortError'));
+      });
+
+      _connect();
+    });
+
+    // Promise resolved — display result
+    analysedInfo = info;
+
+    document.getElementById('meta-title').textContent = info.title;
+    document.getElementById('meta-sub').textContent =
+      [info.uploader, info.platform, info.duration ? fmtDur(info.duration) : null]
+      .filter(Boolean).join(' · ');
+
+    const thumb = document.getElementById('meta-thumb');
+    if (info.thumbnail) {
+      thumb.src = info.thumbnail;
+      thumb.style.display = '';
+    } else {
+      thumb.style.display = 'none';
+    }
+    document.getElementById('meta-card').style.display = 'block';
+
+    const formatRow  = document.getElementById('format-row');
+    const liveBanner = document.getElementById('live-banner');
+    if (info.is_live) {
+      formatRow.style.display  = 'none';
+      liveBanner.style.display = 'block';
+    } else {
+      formatRow.style.display  = '';
+      liveBanner.style.display = 'none';
+    }
+
+    if (info.playlist_count > 0) {
+      stat.textContent = `Playlist detected (${info.playlist_count} items) — will queue as single job`;
+      stat.style.color = 'var(--warn)';
+    } else {
+      stat.textContent = info.is_live ? '' : '✓ Ready to download';
+      stat.style.color = 'var(--success)';
+    }
+    document.getElementById('dl-btn').disabled = false;
+
+  } catch(err) {
+    if (err.name === 'AbortError') {
+      stat.textContent = 'Analysis cancelled';
+      stat.style.color = 'var(--text-sub, #888)';
+    } else {
+      stat.textContent = '✗ ' + (err.message || 'Load failed');
+      stat.style.color = 'var(--danger)';
+    }
+  } finally {
+    _analyseAbortCtrl = null;
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Phân tích';
+    cancelBt.style.display = 'none';
+    if (!analysedInfo) {
+      document.getElementById('format-row').style.display  = '';
+      document.getElementById('live-banner').style.display = 'none';
+    }
+  }
+}
+
+
+
+async function doDownload() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { toast('Enter a URL first'); return; }
+  if (!connected) { toast('Not connected'); return; }
+
+  const isLive     = analysedInfo?.is_live ?? false;
+  const format_id  = isLive ? 'best' : document.getElementById('format-sel').value;
+  const output_ext = isLive ? 'ts'   : document.getElementById('ext-sel').value;
+  // For Kuaishou (and other engines that bypass yt-dlp), send the CDN URL
+  // from analysedInfo.url — not the page URL — so KuaishouEngine.download()
+  // skips re-extract and uses the already-captured CDN URL directly.
+  // For all other platforms analysedInfo.url equals the page URL anyway.
+  const dlUrl = (analysedInfo?.source_engine === 'kuaishou' && analysedInfo?.url)
+    ? analysedInfo.url
+    : url;
+  const body = {
+    url:            dlUrl,
+    format_id,
+    output_ext,
+    title:          analysedInfo?.title          || null,
+    platform:       analysedInfo?.platform       || null,
+    source_engine:  analysedInfo?.source_engine  || null,
+    is_live:        isLive,
+    tiktok_room_id: analysedInfo?.tiktok_room_id || null,
+  };
+
+  const btn = document.getElementById('dl-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Adding…';
+
+  try {
+    const task = await api('POST', '/api/download', body);
+    tasks[task.id] = task;
+    renderQueue();
+    updateQueueBadge();
+    toast('Added to queue');
+    // Switch to queue tab
+    switchTab('queue', document.getElementById('tab-queue'));
+    document.querySelector('[onclick="switchTab(\'queue\',this)"]')?.classList.add('active');
+    // Reset form
+    document.getElementById('url-input').value = '';
+    document.getElementById('meta-card').style.display = 'none';
+    document.getElementById('analyse-status').textContent = '';
+    document.getElementById('format-row').style.display  = '';
+    document.getElementById('live-banner').style.display = 'none';
+    analysedInfo = null;
+  } catch(err) {
+    toast('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Thêm vào hàng đợi';
+  }
+}
+
+/* ── Queue render ───────────────────────────────────────────────────── */
+function renderQueue() {
+  const list = document.getElementById('queue-list');
+  const arr  = Object.values(tasks).sort((a,b) => b.created_at - a.created_at);
+  if (!arr.length) {
+    list.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <p>Queue is empty</p></div>`;
+    return;
+  }
+  list.innerHTML = arr.map(t => queueItemHtml(t)).join('');
+}
+
+function queueItemHtml(t) {
+  const pct   = Math.min(100, t.progress || 0);
+  const fillCls = { COMPLETED:'done', FAILED:'failed', PAUSED:'paused', CANCELLED:'failed' }[t.status] || '';
+  const isPaused = t.status === 'PAUSED';
+  const isActive = ['QUEUED','DOWNLOADING','PROCESSING'].includes(t.status);
+  const isDone   = _TERMINAL.has(t.status);
+  const isChecked = selectedIds.has(t.id);
+  const checkboxHtml = (selectMode && isDone)
+    ? `<input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleSelectItem('${t.id}', this.checked)"
+         style="margin-right:8px; width:16px; height:16px; accent-color:var(--primary); flex-shrink:0;">`
+    : '';
+
+  const speed = t.speed ? `<span>${escHtml(t.speed)}</span>` : '';
+  const eta   = t.eta   ? `<span>ETA ${escHtml(t.eta)}</span>` : '';
+  const pctTxt = isActive || isPaused ? `<span>${pct.toFixed(0)}%</span>` : '';
+
+  const errHtml = t.error_msg
+    ? `<div class="qi-err">⚠ ${escHtml(t.error_msg)}</div>`
+    : '';
+
+  let controls = '';
+  if (isActive && t.status !== 'QUEUED') {
+    controls = `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">Tạm dừng</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
+  } else if (isPaused) {
+    controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">Tiếp tục</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
+  } else if (t.status === 'QUEUED') {
+    controls = `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
+  }
+
+  // ── File-action buttons (only when original file still exists on disk) ──
+  let fileActionBtns = '';
+  if ((t.status === 'COMPLETED' || t.status === 'PARTIAL_SAVED') && t.filename) {
+    fileActionBtns = `<div class="qi-file-actions">
+      <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
+        ☁ Send to iPhone
+      </button>
+      <button class="btn btn-sm btn-preview" data-tid="${t.id}" data-title="${escHtml(t.title)}"
+              onclick="previewFile(this.dataset.tid, this.dataset.title)">
+        ▶ Preview
+      </button>
+      <button class="btn btn-sm btn-delete" style="grid-column:1/-1"
+              onclick="deleteFile('${t.id}', this)">
+        🗑 Delete file
+      </button>
+    </div>`;
+  }
+
+  // ── Convert block — rendered INDEPENDENTLY of t.filename ──────────────
+  // Stays visible even after the original file is deleted, so the user can
+  // still delete / preview the converted output.
+  let convertBlock = '';
+  if (t.status === 'COMPLETED' || t.status === 'PARTIAL_SAVED') {
+    const activeJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           ['PENDING','CONVERTING'].includes(j.status)
+    );
+    const completedJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           j.status === 'COMPLETED' &&
+           !j.output_deleted
+    );
+
+    if (activeJob) {
+      // Case A: conversion in progress → progress bar + Cancel
+      convertBlock = `<div class="qi-convert-progress" id="cvprog-${activeJob.job_id}">
+        <div class="qi-convert-label">
+          <span>🎬 Converting…</span>
+          <span id="cvpct-${activeJob.job_id}">${activeJob.progress.toFixed(0)}%</span>
+        </div>
+        <div class="qi-convert-track">
+          <div class="qi-convert-fill${activeJob.progress === 0 ? ' indeterminate' : ''}" id="cvfill-${activeJob.job_id}"
+               style="width:${activeJob.progress}%"></div>
+        </div>
+        <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
+                onclick="cancelConvert('${activeJob.job_id}', this)">
+          ✕ Cancel convert
+        </button>
+      </div>`;
+    } else if (completedJob) {
+      // Case B: conversion done, converted file still on laptop
+      convertBlock = `<div style="margin-top:8px;padding:10px 12px;background:var(--surface2);
+                                  border-radius:8px;border:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--success);margin-bottom:8px;
+                    display:flex;align-items:flex-start;gap:6px;">
+          ✅ <span style="color:var(--text2);word-break:break-all;line-height:1.4;">
+            ${escHtml(completedJob.output_filename || 'Đã convert xong')}
+          </span>
+        </div>
+        <div class="qi-file-actions">
+          <button class="btn btn-sm btn-preview"
+                  data-jid="${completedJob.job_id}" data-title="${escHtml(completedJob.output_filename || t.title)}"
+                  onclick="previewConvertFile(this.dataset.jid, this.dataset.title)">
+            ▶ Xem trước
+          </button>
+          <button class="btn btn-sm btn-delete"
+                  onclick="deleteConvertFile('${completedJob.job_id}', this)">
+            🗑 Xoá file convert
+          </button>
+        </div>
+      </div>`;
+    } else if (t.filename) {
+      // Case C: no convert job yet (or all deleted) → show Convert button
+      // Only shown when original file still exists (nothing to convert otherwise)
+      convertBlock = `<div style="margin-top:8px;">
+        <button class="btn btn-sm btn-convert" style="width:100%"
+                data-tid="${t.id}" data-title="${escHtml(t.title)}"
+                onclick="openConvertSheet(this.dataset.tid, this.dataset.title)">
+          🎬 Convert
+        </button>
+      </div>`;
+    }
+  }
+
+  const fileActions = fileActionBtns + convertBlock;
+
+  return `<div class="queue-item" id="qi-${t.id}">
+    <div class="qi-header">
+      ${checkboxHtml}
+      ${t.is_live ? '<span style="background:#e53935;color:#fff;font-size:10px;font-weight:700;border-radius:4px;padding:1px 6px;letter-spacing:.5px;flex-shrink:0;margin-right:6px;">LIVE</span>' : ''}
+      <div class="qi-title">${escHtml(t.title)}</div>
+      <div class="qi-platform">${escHtml(t.platform)}</div>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill ${fillCls}" style="width:${pct}%"></div>
+    </div>
+    <div class="qi-meta">
+      <span class="qi-status ${t.status}">${t.status}</span>
+      <span>${[speed, eta, pctTxt].filter(x=>x).map(x=>x.replace(/<[^>]+>/g,'')).join(' · ')}</span>
+    </div>
+    ${errHtml}
+    ${controls ? `<div class="qi-controls">${controls}</div>` : ''}
+    ${fileActions}
+  </div>`;
+}
+
+function updateQueueBadge() {
+  const active = Object.values(tasks).filter(t =>
+    ['QUEUED','DOWNLOADING','PROCESSING'].includes(t.status)).length;
+  const badge = document.getElementById('queue-badge');
+  if (active > 0) {
+    badge.textContent = active;
+    badge.style.display = 'flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+/* ── Queue actions ──────────────────────────────────────────────────── */
+async function pauseTask(id) {
+  try { await api('POST', `/api/queue/${id}/pause`); } catch(e) { toast(e.message); }
+}
+async function resumeTask(id) {
+  try { await api('POST', `/api/queue/${id}/resume`); } catch(e) { toast(e.message); }
+}
+async function cancelTask(id) {
+  // Optimistic UI: disable the cancel button immediately to prevent double-tap
+  const btn = document.querySelector(`#qi-${id} .btn-danger`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
+
+  try {
+    // 8-second client timeout — if the server doesn't ack within this window
+    // (e.g. iOS killed the fetch in the background), we still update the
+    // local task state optimistically so the user can see something happened.
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 8_000);
+    try {
+      await api('POST', `/api/queue/${id}/cancel`, null, ctrl.signal);
+    } finally {
+      clearTimeout(tid);
+    }
+  } catch(e) {
+    if (e.name !== 'AbortError') {
+      toast(e.message);
+      // Re-enable button on real error so user can retry
+      if (btn) { btn.disabled = false; btn.textContent = 'Huỷ'; }
+    }
+    // On AbortError (timeout / iOS background kill): leave button disabled —
+    // the server-side cancel may still go through; SSE will update the UI.
+  }
+}
+let selectMode = false;
+const selectedIds = new Set();
+
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  selectedIds.clear();
+  const btn = document.getElementById('select-mode-btn');
+  if (btn) btn.classList.toggle('btn-primary', selectMode);
+  const clearBtn = document.getElementById('clear-finished-btn');
+  if (clearBtn) clearBtn.textContent = 'Xóa đã xong';
+  renderQueue();
+}
+
+function toggleSelectItem(id, checked) {
+  if (checked) selectedIds.add(id);
+  else selectedIds.delete(id);
+  const clearBtn = document.getElementById('clear-finished-btn');
+  if (clearBtn) {
+    clearBtn.textContent = (selectMode && selectedIds.size > 0)
+      ? `Xóa đã chọn (${selectedIds.size})`
+      : 'Xóa đã xong';
+  }
+}
+
+const _TERMINAL = new Set(['COMPLETED','FAILED','CANCELLED','PARTIAL_SAVED']);
+
+async function clearFinished() {
+  try {
+    if (selectMode && selectedIds.size > 0) {
+      const ids = [...selectedIds];
+      await api('DELETE', '/api/queue/items', {ids});
+      ids.forEach(id => delete tasks[id]);
+      selectedIds.clear();
+      const clearBtn = document.getElementById('clear-finished-btn');
+      if (clearBtn) clearBtn.textContent = 'Xóa đã xong';
+      renderQueue();
+      updateQueueBadge();
+      toast(`Đã xóa ${ids.length} tác vụ`);
+      return;
+    }
+    const r = await api('DELETE', '/api/queue/finished');
+    const excluded = new Set(r.excluded_ids || []);
+    // Remove terminal tasks from local state, but keep tasks the server excluded
+    // (i.e. tasks with an active convert job still running on them).
+    Object.keys(tasks).forEach(id => {
+      if (['COMPLETED','FAILED','CANCELLED','PARTIAL_SAVED'].includes(tasks[id].status) && !excluded.has(id))
+        delete tasks[id];
+    });
+    renderQueue();
+    updateQueueBadge();
+    const kept = r.excluded_count || 0;
+    toast(kept ? `Cleared finished tasks (${kept} kept — convert in progress)` : 'Cleared finished tasks');
+  } catch(e) { toast(e.message); }
+}
+
+/* ── File actions ───────────────────────────────────────────────────── */
+async function transferFile(id, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Sending…';
+  try {
+    const r = await api('POST', `/api/queue/${id}/transfer`);
+    toast(r.detail || 'Transfer queued');
+    // Transfer is async on the server — show "Queued" briefly while we wait
+    // for the taildrop_completed / taildrop_failed SSE event to arrive.
+    btn.textContent = '📡 Queued…';
+    // Store task id on the element so the SSE handler can find it.
+    btn.dataset.transferId = id;
+    // Safety fallback: restore after 3 min in case SSE is lost.
+    btn._transferTimer = setTimeout(() => {
+      if (btn.dataset.transferId) {
+        delete btn.dataset.transferId;
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }, 180_000);
+  } catch(e) {
+    toast('Transfer failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+/* Restore a pending transfer button when a taildrop SSE event arrives.
+   Finds the button by its data-transfer-id attribute, clears the safety
+   timer, then re-enables it with the original label. */
+function _restoreTransferBtn(taskId, label) {
+  const btn = document.querySelector(`[data-transfer-id="${taskId}"]`);
+  if (!btn) return;
+  if (btn._transferTimer) { clearTimeout(btn._transferTimer); delete btn._transferTimer; }
+  delete btn.dataset.transferId;
+  btn.disabled = false;
+  btn.textContent = label;
+}
+
+async function deleteFile(id, btn) {
+  if (!confirm('Delete the file from the laptop? This cannot be undone.')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('DELETE', `/api/queue/${id}/file`);
+    toast(r.detail || 'File deleted');
+    // Clear filename in local state so file-action buttons disappear
+    if (tasks[id]) { tasks[id].filename = ''; renderQueue(); }
+  } catch(e) {
+    toast('Delete failed: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+function previewFile(id, title) {
+  const base    = cfg.host.replace(/\/+$/, '');
+  const token   = cfg.token ? '?token=' + encodeURIComponent(cfg.token) : '';
+  const fileUrl = `${base}/api/queue/${id}/file${token}`;
+
+  // Detect media type from filename stored in task
+  const t = tasks[id];
+  const fname = (t && t.filename) ? t.filename.toLowerCase() : '';
+  const isVideo = /\.(mp4|mkv|webm|mov|m4v|avi|ts)$/.test(fname);
+  const isAudio = /\.(mp3|m4a|aac|ogg|flac|wav)$/.test(fname);
+  const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(fname);
+
+  const overlay = document.getElementById('preview-overlay');
+  const content = document.getElementById('preview-content');
+  const titleEl = document.getElementById('preview-title');
+
+  titleEl.textContent = title || fname || 'Preview';
+  content.innerHTML   = '';
+
+  if (isVideo) {
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;gap:10px">
+        <video controls autoplay playsinline preload="metadata"
+          style="max-width:100%;max-height:65vh;border-radius:12px">
+          <source src="${fileUrl}">
+          Your browser does not support video playback.
+        </video>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+          <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
+          <a class="btn btn-secondary btn-sm" href="infuse://x-callback-url/play?url=${encodeURIComponent(fileUrl)}">Infuse</a>
+        </div>
+      </div>`;
+  } else if (isAudio) {
+    content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
+      <source src="${fileUrl}">
+      Your browser does not support audio playback.
+    </audio>`;
+  } else if (isImage) {
+    content.innerHTML = `<img src="${fileUrl}"
+      style="max-width:100%;max-height:72vh;border-radius:12px;object-fit:contain"
+      alt="${escHtml(title)}">`;
+  } else {
+    // Fallback: open in new tab (PDF, etc.)
+    window.open(fileUrl, '_blank');
+    return;
+  }
+
+  overlay.classList.add('open');
+}
+
+function closePreview() {
+  const overlay = document.getElementById('preview-overlay');
+  overlay.classList.remove('open');
+  // Stop media playback when closing
+  overlay.querySelectorAll('video,audio').forEach(m => { m.pause(); m.src = ''; });
+  document.getElementById('preview-content').innerHTML = '';
+}
+
+/* ── Convert sheet ──────────────────────────────────────────────────── */
+async function openConvertSheet(taskId, title) {
+  _pendingConvertTaskId = taskId;
+  document.getElementById('convert-sheet-sub').textContent = title || taskId;
+
+  // Reset selections to defaults
+  _setActive('cvq-grid',      'data-cvq',      'standard');
+  _setActive('cvenc-grid',    'data-cvenc',    'cpu');
+  _setActive('cvspd-grid',    'data-cvspd',    'balanced');
+  _setActive('cvcodec-grid',  'data-cvcodec',  'h264');
+  document.getElementById('crf-row').style.display = 'none';
+  document.getElementById('crf-slider').value = '23';
+  document.getElementById('crf-val').textContent = '23';
+
+  // Fetch available encoders from server and populate grid
+  try {
+    const encs = await api('GET', '/api/convert/encoders');
+    const grid = document.getElementById('cvenc-grid');
+    grid.innerHTML = encs.map((e, i) =>
+      `<div class="radio-btn ${i===0?'active':''}"
+            data-cvenc="${escHtml(e.key)}"
+            onclick="setCvenc(this)">${escHtml(e.label)}</div>`
+    ).join('');
+  } catch(_) {
+    // Keep default CPU option on error
+  }
+
+  document.getElementById('convert-overlay').classList.add('open');
+}
+
+function closeConvertSheet() {
+  document.getElementById('convert-overlay').classList.remove('open');
+  _pendingConvertTaskId = null;
+  _pendingFilePath = null;
+}
+
+function setCvq(el) {
+  _setActive('cvq-grid', 'data-cvq', el.dataset.cvq);
+  document.getElementById('crf-row').style.display =
+    el.dataset.cvq === 'custom' ? 'flex' : 'none';
+}
+function setCvenc(el)   { _setActive('cvenc-grid',  'data-cvenc',   el.dataset.cvenc); }
+function setCvspd(el)   { _setActive('cvspd-grid',  'data-cvspd',   el.dataset.cvspd); }
+function setCvcodec(el) { _setActive('cvcodec-grid','data-cvcodec', el.dataset.cvcodec); }
+
+function _setActive(gridId, attr, value) {
+  document.querySelectorAll(`#${gridId} .radio-btn`).forEach(b => {
+    b.classList.toggle('active', b.dataset[attr.replace('data-','')] === value);
+  });
+}
+
+async function submitConvert() {
+  // Capture BEFORE closeConvertSheet() nullifies pending state
+  const taskId   = _pendingConvertTaskId;
+  const filePath = _pendingFilePath;
+  if (!taskId && !filePath) return;
+
+  const quality     = document.querySelector('#cvq-grid      .radio-btn.active')?.dataset.cvq      || 'standard';
+  const encoderKey  = document.querySelector('#cvenc-grid   .radio-btn.active')?.dataset.cvenc   || 'cpu';
+  const speedPreset = document.querySelector('#cvspd-grid   .radio-btn.active')?.dataset.cvspd   || 'balanced';
+  const outputCodec = document.querySelector('#cvcodec-grid .radio-btn.active')?.dataset.cvcodec || 'h264';
+  const customCrf   = parseInt(document.getElementById('crf-slider').value, 10) || 23;
+
+  closeConvertSheet();
+
+  if (filePath) {
+    // Convert a file selected from the Files tab
+    try {
+      const job = await api('POST', '/api/files/convert', {
+        file_path:    filePath,
+        target_ext:   'mp4',
+        encoder_key:  encoderKey,
+        quality,
+        speed_preset: speedPreset,
+        custom_crf:   customCrf,
+        output_codec: outputCodec,
+      });
+      convertJobs[job.job_id] = { ...job, status: 'PENDING', progress: 0, output_filename: '', error_msg: '' };
+      _fileJobMap[filePath]   = job.job_id;
+      toast('🎬 Đang convert…');
+      renderFileBrowser();
+    } catch(e) {
+      toast('❌ ' + e.message);
+    }
+  } else {
+    // Convert a file from the Queue tab
+    try {
+      const job = await api('POST', `/api/queue/${taskId}/convert`, {
+        encoder_key:  encoderKey,
+        quality,
+        speed_preset: speedPreset,
+        custom_crf:   customCrf,
+        output_codec: outputCodec,
+      });
+      convertJobs[job.job_id] = job;
+      toast('🎬 Đang convert…');
+      renderQueue();
+    } catch(e) {
+      toast('❌ ' + e.message);
+    }
+  }
+}
+
+async function cancelConvert(jobId, btn) {
+  btn.disabled = true;
+  try {
+    await api('POST', `/api/convert/${jobId}/cancel`);
+    toast('⊘ Đang huỷ convert…');
+  } catch(e) {
+    toast('❌ ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+async function deleteConvertFile(jobId, btn) {
+  if (!confirm('Xoá file đã convert trên laptop? Thao tác này không thể hoàn tác.')) return;
+  btn.disabled = true;
+  try {
+    const r = await api('DELETE', `/api/convert/${jobId}/file`);
+    toast(r.detail || '🗑 File convert đã xoá');
+    // Mark output_deleted locally so renderQueue() hides the delete/preview buttons
+    // and switches back to the "🎬 Convert" button immediately — no polling needed.
+    if (convertJobs[jobId]) {
+      convertJobs[jobId].output_deleted = true;
+      renderQueue();
+      _maybeRenderFileBrowser();
+    }
+  } catch(e) {
+    toast('❌ Xoá thất bại: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+function previewConvertFile(jobId, title) {
+  const base    = cfg.host.replace(/\/+$/, '');
+  const token   = cfg.token ? '?token=' + encodeURIComponent(cfg.token) : '';
+  const fileUrl = `${base}/api/convert/${jobId}/file${token}`;
+
+  const overlay = document.getElementById('preview-overlay');
+  const content = document.getElementById('preview-content');
+  const titleEl = document.getElementById('preview-title');
+
+  titleEl.textContent = title || 'Preview';
+  content.innerHTML   = '';
+
+  // Converted output is always MP4 — use video player directly.
+  content.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;width:100%;gap:10px">
+      <video controls autoplay playsinline preload="metadata"
+        style="max-width:100%;max-height:65vh;border-radius:12px">
+        <source src="${fileUrl}" type="video/mp4">
+        Trình duyệt không hỗ trợ phát video.
+      </video>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+        <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
+        <a class="btn btn-secondary btn-sm" href="infuse://x-callback-url/play?url=${encodeURIComponent(fileUrl)}">Infuse</a>
+      </div>
+    </div>`;
+
+  overlay.classList.add('open');
+}
+
+
+async function loadMonitor() {
+  try {
+    const { items = [], interval = 30, paused = false } = await api('GET', '/api/monitor');
+    monitorItems = {};
+    items.forEach(m => monitorItems[m.id] = m);
+    const sel = document.getElementById('monitor-interval');
+    if (sel) sel.value = String(interval);
+    monitorPaused = paused;
+    _updateMonitorPauseBtn();
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+  renderMonitor();
+}
+
+async function toggleMonitorPause() {
+  const endpoint = monitorPaused ? '/api/monitor/resume' : '/api/monitor/pause';
+  try {
+    const { paused } = await api('POST', endpoint);
+    monitorPaused = paused;
+    _updateMonitorPauseBtn();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function _updateMonitorPauseBtn() {
+  const btn = document.getElementById('monitor-pause-btn');
+  if (!btn) return;
+  btn.textContent = monitorPaused ? 'Tiếp tục' : 'Tạm ngưng';
+}
+
+async function setMonitorInterval(value) {
+  try {
+    await api('POST', '/api/monitor/interval', { interval: +value });
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function addMonitorUrl() {
+  const input = document.getElementById('monitor-input');
+  const url = input.value.trim();
+  if (!url) return;
+  const btn = document.getElementById('monitor-add-btn');
+  btn.disabled = true;
+  try {
+    const m = await api('POST', '/api/monitor', { url });
+    monitorItems[m.id] = m;
+    input.value = '';
+    renderMonitor();
+  } catch(e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeMonitorItem(id) {
+  try {
+    await api('DELETE', '/api/monitor/' + id);
+    delete monitorItems[id];
+    renderMonitor();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function cancelMonitorItem(id) {
+  try {
+    await api('POST', '/api/monitor/' + id + '/cancel');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function toggleItemPause(id) {
+  const m = monitorItems[id];
+  if (!m) return;
+  const ep = m.paused ? `/api/monitor/${id}/resume` : `/api/monitor/${id}/pause`;
+  try {
+    const { paused } = await api('POST', ep);
+    if (monitorItems[id]) monitorItems[id].paused = paused;
+    renderMonitor();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function checkMonitorNow(id) {
+  try {
+    await api('POST', `/api/monitor/${id}/check-now`);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+const _MON_STATE = {
+  WAITING:   { label:'Chờ live',        color:'var(--text3)'  },
+  CHECKING:  { label:'Đang kiểm tra…',  color:'var(--text2)'  },
+  LIVE:      { label:'Đang LIVE',       color:'var(--danger)' },
+  RECORDING: { label:'Đang ghi',        color:'var(--success)'},
+  ENDED:     { label:'Đã ghi xong',     color:'var(--text2)'  },
+  ERROR:     { label:'Lỗi',             color:'var(--danger)' },
+};
+
+function renderMonitor() {
+  const list = document.getElementById('monitor-list');
+  if (!list) return;
+  const items = Object.values(monitorItems).sort((a,b) => (a.added_at || 0) - (b.added_at || 0));
+  if (!items.length) {
+    list.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      <p>Chưa theo dõi stream nào</p></div>`;
+    return;
+  }
+  list.innerHTML = items.map(monitorItemHtml).join('');
+}
+
+function monitorItemHtml(m) {
+  const st = _MON_STATE[m.state] || _MON_STATE.WAITING;
+  const who = m.title || (m.username ? '@' + m.username : m.url);
+  let sub = '', pct = 0;
+  if (m.state === 'RECORDING' && m.task_id && tasks[m.task_id]) {
+    const t = tasks[m.task_id];
+    pct = t.progress != null ? (parseFloat(t.progress) || 0) : 0;
+    const pctStr = pct.toFixed(0) + '%';
+    sub = [t.eta, t.speed, pctStr].filter(Boolean).join('  ·  ') || 'Đang ghi…';
+  } else if (m.state === 'ENDED' && m.filename) {
+    sub = 'Đã lưu: ' + (m.filename.split(/[\\/]/).pop());
+  } else if (m.state === 'ERROR' && m.error_msg) {
+    sub = m.error_msg;
+  } else if (m.platform) {
+    sub = m.platform;
+  }
+
+  const paused = m.paused && ['WAITING','CHECKING','LIVE','RECORDING'].includes(m.state);
+
+  const progressBar = m.state === 'RECORDING'
+    ? `<div class="mon-progress"><div class="mon-progress-fill" style="width:${pct}%"></div></div>` : '';
+
+  const platform = m.platform
+    ? `<span class="mon-platform-tag">${escHtml(m.platform)}</span>` : '';
+  const pausedTag = paused
+    ? `<span class="mon-paused-tag">Tạm ngưng</span>` : '';
+
+  const cancelBtn = m.state === 'RECORDING'
+    ? `<button class="btn btn-danger btn-sm" onclick="cancelMonitorItem('${m.id}')">Dừng ghi</button>` : '';
+  const pauseBtn = ['WAITING','CHECKING','LIVE','RECORDING'].includes(m.state)
+    ? `<button class="btn btn-secondary btn-sm" onclick="toggleItemPause('${m.id}')">${paused ? 'Tiếp tục' : 'Tạm ngưng'}</button>` : '';
+  const checkNowBtn = ['WAITING','ERROR'].includes(m.state)
+    ? `<button class="btn btn-secondary btn-sm" onclick="checkMonitorNow('${m.id}')">Kiểm tra ngay</button>` : '';
+
+  return `<div class="mon-item">
+    <div class="mon-header">
+      <div class="mon-status" style="color:${st.color}">
+        <span class="mon-dot" style="background:${st.color}"></span>${st.label}
+      </div>
+      <div class="mon-tags">${platform}${pausedTag}</div>
+    </div>
+    <div class="mon-title">${escHtml(who)}</div>
+    ${sub ? `<div class="mon-meta">${escHtml(sub)}</div>` : ''}
+    ${progressBar}
+    <div class="mon-actions">
+      ${pauseBtn}${cancelBtn}${checkNowBtn}
+      <button class="btn btn-secondary btn-sm" onclick="removeMonitorItem('${m.id}')">Gỡ</button>
+    </div>
+  </div>`;
+}
+
+/* ── Settings ───────────────────────────────────────────────────────── */
+function openSettings() {
+  document.getElementById('cfg-host').value  = cfg.host;
+  document.getElementById('cfg-token').value = cfg.token;
+  document.getElementById('settings-overlay').classList.add('open');
+}
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('open');
+}
+function saveSettings() {
+  cfg.host  = document.getElementById('cfg-host').value.trim();
+  cfg.token = document.getElementById('cfg-token').value.trim();
+  saveCfg();
+  closeSettings();
+  tasks = {};
+  renderQueue();
+  ping();
+  toast('Connecting…');
+}
+
+/* ── Helpers ────────────────────────────────────────────────────────── */
+let _toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+function escHtml(s) {
+  return String(s || '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;').replace(/`/g,'&#96;');
+}
+
+function fmtDur(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  const h = Math.floor(m / 60);
+  return h ? `${h}:${String(m%60).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+           : `${m}:${String(s).padStart(2,'0')}`;
+}
+
+/* ── Node picker ───────────────────────────────────────────────────── */
+async function loadNodes() {
+  if (!cfg.host) return;
+  try { _availableNodes = await api('GET', '/api/nodes'); } catch(_) { _availableNodes = []; }
+}
+
+async function openNodePicker(path) {
+  if (!_availableNodes.length) await loadNodes();
+  if (!_availableNodes.length) { toast('Taildrop: chưa có node nào được cấu hình'); return; }
+  _transferFilePath = path;
+  document.getElementById('nodes-sheet-sub').textContent = path.split(/[\\/]/).pop();
+  document.getElementById('nodes-list').innerHTML = _availableNodes.map(node =>
+    `<label class="node-row">
+      <input type="checkbox" checked value="${escHtml(node)}">
+      <span>${escHtml(node)}</span>
+    </label>`
+  ).join('');
+  document.getElementById('nodes-overlay').classList.add('open');
+}
+
+function closeNodePicker() {
+  document.getElementById('nodes-overlay').classList.remove('open');
+  _transferFilePath = null;
+}
+
+async function confirmSendToNodes() {
+  const nodes = Array.from(
+    document.querySelectorAll('#nodes-list input[type=checkbox]:checked')
+  ).map(cb => cb.value);
+  if (!nodes.length) { toast('Chọn ít nhất 1 node'); return; }
+  const path = _transferFilePath;
+  closeNodePicker();
+  try {
+    await api('POST', '/api/files/transfer', { path, nodes });
+    toast('📡 Đang gửi…');
+  } catch(e) { toast('❌ ' + e.message); }
+}
+
+/* ── Preview by path (Files tab) ───────────────────────────────────── */
+function previewFileByPath(path, name) {
+  const base    = cfg.host.replace(/\/+$/, '');
+  const token   = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+  const fileUrl = `${base}/api/files/serve?path=${encodeURIComponent(path)}${token}`;
+
+  const fname   = name.toLowerCase();
+  const isVideo = /\.(mp4|mkv|webm|mov|m4v|avi|ts|flv)$/.test(fname);
+  const isAudio = /\.(mp3|m4a|aac|ogg|flac|wav)$/.test(fname);
+  const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(fname);
+
+  const overlay = document.getElementById('preview-overlay');
+  const content = document.getElementById('preview-content');
+  document.getElementById('preview-title').textContent = name;
+  content.innerHTML = '';
+
+  if (isVideo) {
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;width:100%;gap:10px">
+        <video controls autoplay playsinline preload="metadata"
+          style="max-width:100%;max-height:65vh;border-radius:12px">
+          <source src="${fileUrl}">
+        </video>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+          <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
+          <a class="btn btn-secondary btn-sm"
+            href="infuse://x-callback-url/play?url=${encodeURIComponent(fileUrl)}">Infuse</a>
+        </div>
+      </div>`;
+  } else if (isAudio) {
+    content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
+      <source src="${fileUrl}"></audio>`;
+  } else if (isImage) {
+    content.innerHTML = `<img src="${fileUrl}"
+      style="max-width:100%;max-height:72vh;border-radius:12px;object-fit:contain"
+      alt="${escHtml(name)}">`;
+  } else {
+    window.open(fileUrl, '_blank');
+    return;
+  }
+  overlay.classList.add('open');
+}
+
+/* ── File browser ───────────────────────────────────────────────────── */
+function joinPath(dir, name) {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  return dir.replace(/[/\\]+$/, '') + sep + name;
+}
+
+async function browseFiles(path) {
+  if (!connected) { toast('Not connected'); return; }
+  const list = document.getElementById('fb-list');
+  list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
+  try {
+    const params = (path != null) ? '?path=' + encodeURIComponent(path) : '';
+    const data   = await api('GET', '/api/files/browse' + params);
+    _browseData  = data;
+    const searchEl = document.getElementById('fb-search');
+    if (searchEl) searchEl.value = '';
+    renderFileBrowser();
+  } catch(e) {
+    list.innerHTML = `<div class="empty"><p style="color:var(--danger)">${escHtml(e.message)}</p></div>`;
+  }
+}
+
+function browseUp() {
+  if (_browseData && _browseData.parent_path != null) browseFiles(_browseData.parent_path);
+}
+
+function renderFileBrowser() {
+  if (!_browseData) return;
+  const data = _browseData;
+
+  document.getElementById('fb-path').textContent = data.current_path;
+  const upBtn = document.getElementById('fb-up-btn');
+  upBtn.style.display = data.parent_path != null ? 'inline-flex' : 'none';
+
+  const list = document.getElementById('fb-list');
+
+  const searchVal = (document.getElementById('fb-search')?.value || '').toLowerCase();
+  const sortVal   = document.getElementById('fb-sort')?.value || 'name-asc';
+
+  let dirs  = data.items.filter(i => i.type === 'dir');
+  let files = data.items.filter(i => i.type === 'file');
+
+  if (searchVal) {
+    dirs  = dirs.filter(i  => i.name.toLowerCase().includes(searchVal));
+    files = files.filter(i => i.name.toLowerCase().includes(searchVal));
+  }
+
+  const sortFn = {
+    'name-asc':  (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+    'name-desc': (a, b) => b.name.toLowerCase().localeCompare(a.name.toLowerCase()),
+    'date-desc': (a, b) => (b.modified_at || 0) - (a.modified_at || 0),
+    'date-asc':  (a, b) => (a.modified_at || 0) - (b.modified_at || 0),
+  }[sortVal];
+  dirs.sort(sortFn);
+  files.sort(sortFn);
+
+  const items = [...dirs, ...files];
+
+  if (!items.length) {
+    list.innerHTML = '<div class="empty"><p>' + (searchVal ? 'Không tìm thấy' : 'Thư mục trống') + '</p></div>';
+    return;
+  }
+
+  list.innerHTML = items.map(item => {
+    const fullPath = joinPath(data.current_path, item.name);
+
+    if (item.type === 'dir') {
+      return `<div class="fb-item">
+        <div class="fb-icon" style="cursor:pointer" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">📁</div>
+        <div class="fb-body">
+          <div class="fb-name" style="cursor:pointer" data-path="${escHtml(fullPath)}" onclick="browseFiles(this.dataset.path)">${escHtml(item.name)}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+            <button class="btn btn-sm btn-secondary"
+              data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+              onclick="openArchiveCompressSheet(this.dataset.path,this.dataset.name)">
+              📦 Nén
+            </button>
+            <button class="btn btn-sm btn-delete"
+              data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+              onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
+              🗑 Xoá
+            </button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    const meta = [fmtSize(item.size),
+      item.modified_at ? new Date(item.modified_at * 1000).toLocaleDateString() : '']
+      .filter(Boolean).join(' · ');
+
+    const jobId = _fileJobMap[fullPath];
+    const job   = jobId ? convertJobs[jobId] : null;
+
+    let cvBlock = '';
+    if (job && ['PENDING','CONVERTING'].includes(job.status)) {
+      cvBlock = `<div class="fb-cvprog">
+        <div class="fb-cvprog-label">
+          <span>🎬 Converting…</span>
+          <span id="cvpct-${job.job_id}">${job.progress.toFixed(0)}%</span>
+        </div>
+        <div class="qi-convert-track">
+          <div class="qi-convert-fill${job.progress === 0 ? ' indeterminate' : ''}" id="cvfill-${job.job_id}" style="width:${job.progress}%"></div>
+        </div>
+        <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
+                data-jid="${job.job_id}"
+                onclick="cancelConvert(this.dataset.jid, this)">
+          ✕ Dừng
+        </button>
+      </div>`;
+    } else if (job && job.status === 'COMPLETED' && !job.output_deleted) {
+      cvBlock = `<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--success);margin-bottom:6px;">
+          ✅ ${escHtml(job.output_filename || 'Đã convert xong')}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <button class="btn btn-sm btn-preview"
+            data-jid="${escHtml(job.job_id)}" data-fname="${escHtml(job.output_filename||'')}"
+            onclick="previewConvertFile(this.dataset.jid,this.dataset.fname)">
+            ▶ Xem trước
+          </button>
+          <button class="btn btn-sm btn-delete"
+            data-jid="${escHtml(job.job_id)}"
+            onclick="deleteConvertFile(this.dataset.jid,this)">
+            🗑 Xoá
+          </button>
+        </div>
+      </div>`;
+    } else if (job && job.status === 'FAILED') {
+      cvBlock = `<div style="margin-top:6px;font-size:12px;color:var(--danger)">
+        ❌ ${escHtml(job.error_msg || 'Convert thất bại')}
+      </div>`;
+    }
+
+    if (!cvBlock) {
+      cvBlock = `<div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:6px;align-items:stretch">
+        <button class="btn btn-sm btn-convert"
+          data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+          onclick="openFileConvertSheet(this.dataset.path,this.dataset.name)">
+          🎬 Convert
+        </button>
+        <button class="btn btn-sm btn-delete"
+          data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+          onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
+          🗑
+        </button>
+      </div>`;
+    }
+
+    const isArchiveFile = /\.(zip|7z)$/i.test(item.name);
+    const fileBtns = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+      <button class="btn btn-sm btn-preview"
+        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+        onclick="previewFileByPath(this.dataset.path,this.dataset.name)">
+        ▶ Preview
+      </button>
+      <button class="btn btn-sm btn-transfer"
+        data-path="${escHtml(fullPath)}"
+        onclick="openNodePicker(this.dataset.path)">
+        📲 Gửi
+      </button>
+      <button class="btn btn-sm btn-secondary"
+        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+        onclick="openArchiveCompressSheet(this.dataset.path,this.dataset.name)">
+        📦 Nén
+      </button>
+      ${isArchiveFile ? `<button class="btn btn-sm btn-secondary"
+        data-path="${escHtml(fullPath)}"
+        onclick="openArchiveExtractSheet(this.dataset.path)">
+        📂 Giải nén
+      </button>` : ''}
+    </div>`;
+
+    return `<div class="fb-item">
+      <div class="fb-icon">📄</div>
+      <div class="fb-body">
+        <div class="fb-name">${escHtml(item.name)}</div>
+        ${meta ? `<div class="fb-meta">${escHtml(meta)}</div>` : ''}
+        ${fileBtns}
+        ${cvBlock}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function deleteFileItem(path, name, btn) {
+  if (!confirm(`Xoá "${name}"?\n\nHành động này không thể hoàn tác.`)) return;
+  btn.disabled = true;
+  try {
+    await api('DELETE', '/api/files/delete', { path });
+    toast(`Đã xoá: ${name}`);
+    browseFiles(_browseData.current_path);
+  } catch(e) {
+    toast(`Lỗi: ${e.message}`);
+    btn.disabled = false;
+  }
+}
+
+/* ── Archive (compress/extract) ────────────────────────────────────── */
+let _archiveCompressSource = null; // { path, name }
+let _archiveExtractPath = null;
+
+function _stripExt(name) {
+  return name.replace(/\.[^/.]+$/, '');
+}
+
+function openArchiveCompressSheet(path, name) {
+  _archiveCompressSource = { path, name };
+  document.getElementById('archc-sheet-sub').textContent = path;
+  document.getElementById('archc-fmt').value = 'zip';
+  document.getElementById('archc-pw').value = '';
+  document.getElementById('archc-name').value = _stripExt(name);
+  document.getElementById('archc-name').disabled = true;
+  document.getElementById('archc-use-orig').checked = true;
+  document.getElementById('archc-headerenc').checked = false;
+  document.getElementById('archc-headerenc').disabled = true;
+  document.getElementById('archive-compress-overlay').classList.add('open');
+}
+
+function closeArchiveCompressSheet() {
+  document.getElementById('archive-compress-overlay').classList.remove('open');
+  _archiveCompressSource = null;
+}
+
+function onArchiveFmtChanged() {
+  const is7z = document.getElementById('archc-fmt').value === '7z';
+  const enc = document.getElementById('archc-headerenc');
+  enc.disabled = !is7z;
+  if (!is7z) enc.checked = false;
+}
+
+function onArchiveUseOrigChanged() {
+  document.getElementById('archc-name').disabled = document.getElementById('archc-use-orig').checked;
+}
+
+async function submitArchiveCompress() {
+  const src = _archiveCompressSource;
+  if (!src) return;
+  const fmt = document.getElementById('archc-fmt').value;
+  const password = document.getElementById('archc-pw').value;
+  const useOrig = document.getElementById('archc-use-orig').checked;
+  const encryptHeader = document.getElementById('archc-headerenc').checked;
+  const archiveName = useOrig ? _stripExt(src.name) : (document.getElementById('archc-name').value.trim() || 'archive');
+
+  closeArchiveCompressSheet();
+  toast('📦 Đang nén…');
+  try {
+    await apiDownload('/api/archive/compress', {
+      sources: [src.path],
+      fmt,
+      archive_name: archiveName,
+      password: password || undefined,
+      encrypt_header: encryptHeader,
+      individually: false,
+    }, `${archiveName}.${fmt}`);
+    toast('✅ Đã nén xong');
+  } catch(e) {
+    toast('❌ ' + e.message);
+  }
+}
+
+function openArchiveExtractSheet(path) {
+  _archiveExtractPath = path;
+  document.getElementById('arche-sheet-sub').textContent = path;
+  document.getElementById('arche-dest').value = '';
+  document.getElementById('arche-pw').value = '';
+  document.getElementById('archive-contents-list').innerHTML = '';
+  document.getElementById('archive-extract-overlay').classList.add('open');
+}
+
+function closeArchiveExtractSheet() {
+  document.getElementById('archive-extract-overlay').classList.remove('open');
+  _archiveExtractPath = null;
+}
+
+async function previewArchiveContents() {
+  const archive_path = _archiveExtractPath;
+  if (!archive_path) return;
+  const password = document.getElementById('arche-pw').value;
+  const box = document.getElementById('archive-contents-list');
+  box.innerHTML = '<div style="font-size:12px;color:var(--text3)">Đang đọc…</div>';
+  try {
+    const data = await api('POST', '/api/archive/contents', { archive_path, password: password || undefined });
+    box.innerHTML = data.members.map(m =>
+      `<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)">
+        ${m.is_dir ? '📁' : '📄'} ${escHtml(m.name)}${m.is_dir ? '' : ' · ' + fmtSize(m.size)}
+      </div>`
+    ).join('') || '<div style="font-size:12px;color:var(--text3)">Archive trống</div>';
+  } catch(e) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--danger)">❌ ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function submitArchiveExtract() {
+  const archive_path = _archiveExtractPath;
+  if (!archive_path) return;
+  const dest_dir = document.getElementById('arche-dest').value.trim() || undefined;
+  const password = document.getElementById('arche-pw').value || undefined;
+
+  closeArchiveExtractSheet();
+  toast('📂 Đang giải nén…');
+  try {
+    const result = await api('POST', '/api/archive/extract', { archive_path, dest_dir, password });
+    toast(`✅ Đã giải nén ${result.extracted_paths.length} file`);
+    browseFiles(_browseData.current_path);
+  } catch(e) {
+    toast('❌ ' + e.message);
+  }
+}
+
+function openFileConvertSheet(filePath, fileName) {
+  _pendingFilePath      = filePath;
+  _pendingConvertTaskId = null;
+  document.getElementById('convert-sheet-sub').textContent = fileName || filePath;
+
+  _setActive('cvq-grid',     'data-cvq',     'standard');
+  _setActive('cvenc-grid',  'data-cvenc',  'cpu');
+  _setActive('cvspd-grid',  'data-cvspd',  'balanced');
+  _setActive('cvcodec-grid','data-cvcodec','h264');
+  document.getElementById('crf-row').style.display = 'none';
+  document.getElementById('crf-slider').value      = '23';
+  document.getElementById('crf-val').textContent   = '23';
+
+  api('GET', '/api/convert/encoders').then(encs => {
+    const grid = document.getElementById('cvenc-grid');
+    grid.innerHTML = encs.map((e, i) =>
+      `<div class="radio-btn ${i===0?'active':''}" data-cvenc="${escHtml(e.key)}"
+            onclick="setCvenc(this)">${escHtml(e.label)}</div>`
+    ).join('');
+  }).catch(() => {});
+
+  document.getElementById('convert-overlay').classList.add('open');
+}
+
+function fmtSize(bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024)       return bytes + ' B';
+  if (bytes < 1048576)    return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+function _maybeRenderFileBrowser() {
+  if (_browseData && document.getElementById('panel-files').classList.contains('active')) {
+    renderFileBrowser();
+  }
+}
+
+/* ── Bootstrap ──────────────────────────────────────────────────────── */
+loadCfg();
+if (cfg.host) {
+  ping();
+} else {
+  // First launch — open settings immediately
+  setTimeout(openSettings, 400);
+}
+
+// Close settings overlay on background tap
+document.getElementById('convert-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeConvertSheet();
+});
+
+document.getElementById('settings-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeSettings();
+});
+
+document.getElementById('preview-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closePreview();
+});
+
+document.getElementById('nodes-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeNodePicker();
+});
+
+document.getElementById('archive-compress-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeArchiveCompressSheet();
+});
+
+document.getElementById('archive-extract-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeArchiveExtractSheet();
+});
+
+// Allow Enter key in URL input to trigger analyse
+document.getElementById('url-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doAnalyse();
+});
+</script>
+</body>
+</html>

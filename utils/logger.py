@@ -1,72 +1,75 @@
-"""
-utils/logger.py
-Centralised logging setup.
-Call setup_logging() once at process startup.
-"""
 from __future__ import annotations
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+from loguru import logger
+
+_FMT = "{time:YYYY-MM-DD HH:mm:ss} [{level:<8}] {name} - {message}"
+
+_debug_sink_id: int | None = None
+_log_dir_ref: Path | None = None
+
+
+class _InterceptHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = logging.currentframe(), 2
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
+            frame = frame.f_back  # type: ignore[assignment]  # f_back is FrameType|None but while-guard ensures non-None
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
-    """Configure root logger: console + rotating persistent file.
-
-    The file handler uses RotatingFileHandler (max 5 MB per file, 3 backups)
-    to prevent unbounded log growth in long-running sessions or repeated
-    restarts.  Total maximum disk usage for logs is therefore ~20 MB.
-
-    Level and noisy-logger settings are applied unconditionally so that
-    test fixtures calling setup_logging() multiple times get a predictable
-    root-logger state each time.
-    """
+    global _log_dir_ref
+    _log_dir_ref = log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "omnidl.log"
 
-    fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)-8s] %(name)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    logger.remove()
+    logger.add(sys.stderr, format=_FMT, level=logging.getLevelName(level))
+    try:
+        logger.add(
+            log_dir / "omnidl.log",
+            format=_FMT,
+            rotation="5 MB",
+            retention=3,
+            encoding="utf-8",
+            level="INFO",
+            colorize=False,
+        )
+    except OSError:
+        logger.warning("Could not open log file {} - file logging disabled.", log_dir / "omnidl.log")
 
-    root = logging.getLogger()
-    # Always update the root level.
-    root.setLevel(level)
-
-    # Always silence noisy third-party loggers.
     for noisy in ("PIL", "urllib3", "requests", "yt_dlp"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    # Prevent duplicate handlers on re-entry (DEF-012).
-    existing_files = {
-        getattr(h, "baseFilename", "") for h in root.handlers
-    }
-    log_file_abs = str(log_file.resolve())
+    logging.basicConfig(handlers=[_InterceptHandler()], level=level, force=True)
 
-    # Add console handler only if none exists yet.
-    has_console = any(
-        isinstance(h, logging.StreamHandler)
-        and not isinstance(h, logging.FileHandler)
-        for h in root.handlers
-    )
-    if not has_console:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setFormatter(fmt)
-        root.addHandler(ch)
 
-    # Add file handler only if this specific log file is not already open.
-    if log_file_abs not in existing_files:
-        try:
-            fh = RotatingFileHandler(
-                log_file,
-                maxBytes=5 * 1024 * 1024,  # 5 MB per file
-                backupCount=3,
-                encoding="utf-8",
-            )
-            fh.setFormatter(fmt)
-            root.addHandler(fh)
-        except OSError:
-            logging.getLogger(__name__).warning(
-                "Could not open log file %s - file logging disabled.", log_file
-            )
+def apply_debug_logging(enabled: bool) -> None:
+    global _debug_sink_id
+    root = logging.getLogger()
+    if enabled:
+        root.setLevel(logging.DEBUG)
+        if _debug_sink_id is None and _log_dir_ref is not None:
+            try:
+                _debug_sink_id = logger.add(
+                    _log_dir_ref / "omnidl_debug.log",
+                    format=_FMT,
+                    rotation="5 MB",
+                    retention=3,
+                    level="DEBUG",
+                    colorize=False,
+                )
+            except OSError as exc:
+                logger.warning("Could not open debug log file: {}", exc)
+    else:
+        root.setLevel(logging.INFO)
+        if _debug_sink_id is not None:
+            logger.remove(_debug_sink_id)
+            _debug_sink_id = None

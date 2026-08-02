@@ -1,12 +1,3 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# OmniDL v16 — CI Pipeline
-# Triggers: every push and every pull request (all branches)
-#
-# Jobs:
-#   test    → pytest (non-UI tests) + coverage report
-#   security → bandit (SAST) + pip-audit (CVE scan)
-# ──────────────────────────────────────────────────────────────────────────────
-
 name: CI
 
 on:
@@ -15,20 +6,18 @@ on:
   pull_request:
     branches: ["**"]
 
-# Cancel redundant runs on the same branch when a new commit is pushed
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1 — Tests
-  # ────────────────────────────────────────────────────────────────────────────
   test:
     name: "pytest (Python ${{ matrix.python-version }})"
     runs-on: ubuntu-latest
-    # FIX D-3: test across multiple Python versions to catch compatibility issues
     strategy:
       fail-fast: false
       matrix:
@@ -38,44 +27,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
 
-      # ── Install dependencies ───────────────────────────────────────────────
-      - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+      - name: Install system dependencies
+        run: sudo apt-get install -y libegl1
 
-      - name: Install dev/test dependencies
-        run: pip install pytest pytest-cov
+      - name: Install dependencies
+        run: uv sync --extra api --extra dev
 
-      # FIX D-1: add linting and type-checking so style/type regressions
-      # are caught before they reach the main branch.
-      - name: Install linters
-        run: pip install ruff mypy
-
-      # ── Lint ──────────────────────────────────────────────────────────────
-      # E = pycodestyle errors, F = pyflakes, B = flake8-bugbear, I = isort
       - name: Ruff lint
-        run: ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+        run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
 
-      # ── Type check ─────────────────────────────────────────────────────────
-      # Domain, application, infrastructure, and utility layers only.
-      # UI excluded — customtkinter stubs are not available.
       - name: Mypy type check
         run: |
-          mypy domain/ app/ infrastructure/ utils/ \
+          uv run mypy domain/ app/ infrastructure/ utils/ \
             --ignore-missing-imports \
             --no-strict-optional
 
-      # ── Run tests (exclude UI — requires a display) ────────────────────────
-      # UI tests live in ui/ and reference customtkinter widgets; they require
-      # a real or virtual display (Xvfb). All other tests run headlessly fine.
       - name: Run pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          pytest \
+          uv run pytest \
             --ignore=tests/test_e2e.py \
             --ignore=tests/test_logger_and_manager_extra.py \
             --tb=short \
@@ -84,7 +65,6 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml
 
-      # ── Upload coverage report as artifact ────────────────────────────────
       - name: Upload coverage XML
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,34 +73,31 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2 — Security scan
-  # ────────────────────────────────────────────────────────────────────────────
   security:
     name: "Security scan"
     runs-on: ubuntu-latest
-    # Run in parallel with tests — does not need test results
     needs: []
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
 
       - name: Install security tools
-        run: pip install bandit pip-audit
+        run: uv tool install bandit && uv tool install pip-audit
 
-      # ── bandit: static analysis for common security issues ────────────────
-      # Severity threshold: MEDIUM (-ll).  HIGH findings fail the build.
-      # Skips test files (B101 assert usage is expected in tests).
       - name: bandit SAST scan
         run: |
-          bandit \
+          uv tool run bandit \
             -r . \
             -x tests/,build/,venv_build/ \
             -ll \
@@ -136,14 +113,12 @@ jobs:
           path: bandit_report.txt
           retention-days: 7
 
-      # ── pip-audit: CVE scan of pinned dependencies ────────────────────────
-      # --require-hashes would be ideal but requires a locked requirements file.
-      # For now we scan for known CVEs and fail on any HIGH/CRITICAL finding.
       - name: pip-audit CVE scan
         run: |
-          pip install -r requirements.txt
-          pip-audit \
-            --requirement requirements.txt \
+          uv export --extra api --no-dev --frozen > /tmp/requirements-audit.txt
+          touch pip_audit_report.md
+          uv tool run pip-audit \
+            --requirement /tmp/requirements-audit.txt \
             --format markdown \
             --output pip_audit_report.md \
             || (cat pip_audit_report.md && exit 1)

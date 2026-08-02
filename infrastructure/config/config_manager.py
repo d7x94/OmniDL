@@ -2,10 +2,12 @@
 infrastructure/config/config_manager.py
 JSON-backed configuration with typed accessors and thread-safe writes.
 """
+
 from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -15,29 +17,45 @@ logger = logging.getLogger(__name__)
 # Allowlist of browser names accepted by yt-dlp's cookiesfrombrowser option
 # (CWE-20: Improper Input Validation).  Rejects arbitrary strings that could
 # cause yt-dlp to attempt reading an unexpected browser profile path.
-_VALID_BROWSERS: frozenset[str] = frozenset({
-    "chrome", "firefox", "safari", "edge", "opera",
-    "brave", "chromium", "vivaldi",
-})
+_VALID_BROWSERS: frozenset[str] = frozenset(
+    {
+        "chrome",
+        "firefox",
+        "safari",
+        "edge",
+        "opera",
+        "brave",
+        "chromium",
+        "vivaldi",
+    }
+)
 
 # Accepted URI schemes for the proxy setting.  Rejecting arbitrary schemes
 # prevents a tampered config.json from routing all traffic through an
 # attacker-controlled proxy (e.g. a file:// or data: URI).
 _VALID_PROXY_SCHEMES: tuple[str, ...] = (
-    "http://", "https://", "socks4://", "socks4a://",
-    "socks5://", "socks5h://",
+    "http://",
+    "https://",
+    "socks4://",
+    "socks4a://",
+    "socks5://",
+    "socks5h://",
 )
 
 _DEFAULTS: dict[str, Any] = {
     "download_dir": str(Path.home() / "Downloads" / "OmniDL"),
-    "theme": "dark",
+    "theme": "violet",
     "language": "en",
     "max_concurrent": 3,
     "max_retries": 3,
     "proxy": "",
     "use_cookies": False,
     "cookies_browser": "chrome",
-    "cookie_file": "",        # path to a Netscape-format .txt cookie file
+    "cookie_file": "",  # path to a Netscape-format .txt cookie file (global fallback)
+    # Per-platform cookie files — take priority over cookie_file for each platform.
+    # Keys: "tiktok", "instagram", "facebook", "twitter", "threads"
+    # Values: absolute path to a Netscape-format .txt file (empty = not set)
+    "platform_cookies": {},
     "embed_thumbnail": True,
     "embed_metadata": True,
     "default_quality": "bestvideo+bestaudio/best",
@@ -45,6 +63,47 @@ _DEFAULTS: dict[str, Any] = {
     "show_notifications": True,
     "history_limit": 500,
     "extra_args": "",
+    # ── Remote API (iOS / mobile remote control) ──────────────────────
+    # Enable via Settings → Remote API to start the FastAPI server.
+    # api_token is auto-generated on first enable; paste it into the PWA.
+    "api_enabled": False,
+    "api_host": "0.0.0.0",  # listens on all LAN interfaces  # nosec B104
+    "api_port": 7799,
+    "api_token": "",  # auto-populated by api/server.py
+    # ── Tailscale HTTPS Profile (optional HTTPS reverse proxy) ───────────
+    # When enabled, OmniDL runs `tailscale serve` to proxy HTTPS:443 to a
+    # random internal port, giving a clean https://<hostname>.ts.net URL.
+    "api_ts_https_enabled": False,  # True = HTTPS profile active
+    "api_ts_https_internal_port": 0,  # random port 50000-65000; 0 = not yet assigned
+    "api_ts_https_dns_name": "",  # cached MagicDNS FQDN, e.g. "my-laptop.tail1abc2.ts.net"
+    # ── Taildrop — send completed files to iPhone via Tailscale ──────────
+    # Requires: Tailscale installed on PC + Taildrop enabled on iPhone.
+    # target_node: Tailscale node name or IP of the iPhone (e.g. "iphone").
+    "taildrop_enabled": False,
+    "taildrop_target_node": "",
+    "taildrop_send_mode": "ask",  # "always" | "ask"  — "ask" shows action buttons in Remote UI
+    # List of node names / IPs selected in Settings → Taildrop → multi-device picker.
+    # When non-empty, takes priority over the legacy taildrop_target_node scalar.
+    # Each entry must match _NODE_RE in taildrop_service.py (letters, digits, hyphens, dots).
+    "taildrop_target_nodes": [],
+    # ── TikTok account pool ────────────────────────────────────────────────
+    # List of TikTok accounts used as a download pool.  Each entry:
+    #   {id, name, cookie_file, max_slots (1-5), enabled}
+    # When non-empty, replaces the single platform_cookies["tiktok"] entry
+    # and allows parallel downloads across multiple accounts.
+    "tiktok_account_pool": [],
+    # ── Debug logging ──────────────────────────────────────────────────────
+    # When True, the root logger level is lowered to DEBUG so that detailed
+    # trace output (CDP poll steps, ffmpeg args, cookie resolution paths, …)
+    # is written to omnidl_debug.log in the log directory.
+    # The main omnidl.log stays at INFO to keep it readable.
+    # Toggle via Settings → General → "Debug Logging".
+    "debug_logging": False,
+    # ── Clipboard monitor ──────────────────────────────────────────────────────
+    # When True, OmniDL polls the system clipboard every 1.5 s and auto-fills
+    # the toolbar URL entry whenever a new HTTP/HTTPS link is detected.
+    # Toggle via Settings → General → "Clipboard Monitor".
+    "clipboard_monitor_enabled": False,
 }
 
 
@@ -96,6 +155,7 @@ class ConfigManager:
 
     def _save(self) -> None:
         import io as _io
+
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp.json")
         try:
@@ -110,6 +170,10 @@ class ConfigManager:
             with tmp.open("w", encoding="utf-8") as f:
                 f.write(buf.getvalue())
             tmp.replace(self._path)
+            try:
+                os.chmod(self._path, 0o600)
+            except OSError as exc:
+                logger.debug("Config chmod 0o600 failed: %s", exc)
         except OSError as exc:
             logger.error("Config save failed: %s", exc)
             tmp.unlink(missing_ok=True)
@@ -165,7 +229,7 @@ class ConfigManager:
             return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
+        with self._lock:  # DEF-006: snapshot inside lock to prevent TOCTOU race
             self._data[key] = value
             _snapshot = dict(self._data)
         path_key = str(self._path.resolve())
@@ -174,7 +238,7 @@ class ConfigManager:
         self._schedule_save()
 
     def update(self, values: dict[str, Any]) -> None:
-        with self._lock:   # DEF-006: snapshot inside lock to prevent TOCTOU race
+        with self._lock:  # DEF-006: snapshot inside lock to prevent TOCTOU race
             self._data.update(values)
             _snapshot = dict(self._data)
         path_key = str(self._path.resolve())
@@ -205,15 +269,18 @@ class ConfigManager:
 
     @property
     def theme(self) -> str:
-        return str(self.get("theme", "dark"))
+        return str(self.get("theme", "violet"))
 
     @property
     def max_concurrent(self) -> int:
-        return int(self.get("max_concurrent", 3))
+        # Clamp to [1, 10]: 0 would block all downloads; >10 is unnecessary
+        # on a desktop machine and risks exhausting network/disk resources.
+        return max(1, min(10, int(self.get("max_concurrent", 3))))
 
     @property
     def max_retries(self) -> int:
-        return int(self.get("max_retries", 3))
+        # Clamp to [0, 10]: 0 = no retry (valid); >10 = pathological loop.
+        return max(0, min(10, int(self.get("max_retries", 3))))
 
     @property
     def proxy(self) -> str:
@@ -228,9 +295,9 @@ class ConfigManager:
         if any(val.lower().startswith(scheme) for scheme in _VALID_PROXY_SCHEMES):
             return val
         logger.warning(
-            "proxy value %r has an unrecognised scheme — ignored. "
-            "Valid schemes: %s",
-            val, ", ".join(_VALID_PROXY_SCHEMES),
+            "proxy value %r has an unrecognised scheme — ignored. Valid schemes: %s",
+            val,
+            ", ".join(_VALID_PROXY_SCHEMES),
         )
         return ""
 
@@ -248,7 +315,8 @@ class ConfigManager:
             logger.warning(
                 "cookies_browser %r is not in the allowed browser list — "
                 "defaulting to 'chrome'.  Valid values: %s",
-                val, ", ".join(sorted(_VALID_BROWSERS)),
+                val,
+                ", ".join(sorted(_VALID_BROWSERS)),
             )
             return "chrome"
         return val
@@ -271,7 +339,9 @@ class ConfigManager:
 
     @property
     def history_limit(self) -> int:
-        return int(self.get("history_limit", 500))
+        # Clamp to [10, 5000]: <10 makes history useless; >5000 risks
+        # noticeable memory and slow JSONL rewrites on app startup.
+        return max(10, min(5000, int(self.get("history_limit", 500))))
 
     @property
     def extra_args(self) -> str:
@@ -281,3 +351,233 @@ class ConfigManager:
     def cookie_file(self) -> str:
         """Path to a Netscape-format cookie file, or '' if not set."""
         return str(self.get("cookie_file", ""))
+
+    @property
+    def platform_cookies(self) -> "dict[str, str]":
+        """Per-platform cookie file paths.
+
+        Returns a dict mapping platform key → absolute path (or '').
+        Keys: "tiktok", "instagram", "facebook", "twitter", "threads".
+        Always returns a dict — never None.
+        """
+        val = self.get("platform_cookies", {})
+        if not isinstance(val, dict):
+            return {}
+        return {k: str(v) for k, v in val.items() if isinstance(v, str)}
+
+    def get_cookie_for_platform(self, platform_key: str) -> str:
+        """Return the cookie file path for *platform_key*, or '' if not set.
+
+        platform_key is one of: "tiktok", "instagram", "facebook",
+        "twitter", "threads".
+
+        Returns '' (not None) so callers can do .strip() safely.
+        """
+        return self.platform_cookies.get(platform_key, "")
+
+    def _is_safe_cookie_path(self, path: str) -> bool:
+        """Return True if *path* is inside the OmniDL data directory (CWE-22).
+
+        Mirrors the check in yt_dlp_engine._validate_cookie_path so paths are
+        validated at write time, not only at download time.
+        """
+        if not path:
+            return True  # empty = clearing the field, always allowed
+        try:
+            cp = Path(path).resolve()
+            safe_root = self._path.parent.resolve()
+            return cp == safe_root or safe_root in cp.parents
+        except Exception:
+            return False
+
+    def set_cookie_for_platform(self, platform_key: str, path: str) -> None:
+        """Set or clear the cookie path for *platform_key*.
+
+        Reads the current dict, modifies the key, writes back atomically.
+        Thread-safe: uses config.set() which holds self._lock.
+        """
+        if path and not self._is_safe_cookie_path(path):
+            logger.warning(
+                "set_cookie_for_platform: path rejected — not inside data directory: %s",
+                path,
+            )
+            return
+        d = dict(self.platform_cookies)  # copy
+        if path:
+            d[platform_key] = path
+        else:
+            d.pop(platform_key, None)
+        self.set("platform_cookies", d)
+
+    @property
+    def tiktok_account_pool(self) -> "list[dict]":
+        val = self.get("tiktok_account_pool", [])
+        if not isinstance(val, list):
+            return []
+        return val
+
+    def set_tiktok_account_pool(self, accounts: "list[dict]") -> None:
+        safe = []
+        for acc in accounts:
+            cookie_file = acc.get("cookie_file", "") if isinstance(acc, dict) else ""
+            if cookie_file and not self._is_safe_cookie_path(cookie_file):
+                logger.warning(
+                    "set_tiktok_account_pool: cookie_file rejected for account '%s': %s",
+                    acc.get("name", "?") if isinstance(acc, dict) else "?",
+                    cookie_file,
+                )
+                continue
+            safe.append(acc)
+        self.set("tiktok_account_pool", safe)
+
+    # ── Remote API properties ─────────────────────────────────────────────
+
+    @property
+    def api_enabled(self) -> bool:
+        """True when the FastAPI remote-control server should run."""
+        return bool(self.get("api_enabled", False))
+
+    @property
+    def api_host(self) -> str:
+        """Interface to bind the API server to.
+        Defaults to "0.0.0.0" (all LAN interfaces).
+        Set to "127.0.0.1" to restrict to localhost only.
+        """
+        val = str(self.get("api_host", "0.0.0.0")).strip()  # nosec B104
+        return val if val else "0.0.0.0"  # nosec B104
+
+    @property
+    def api_port(self) -> int:
+        """TCP port for the API server.  Clamped to [1024, 65535]."""
+        return max(1024, min(65535, int(self.get("api_port", 7799))))
+
+    @property
+    def api_token(self) -> str:
+        """Bearer token that protects all API endpoints.
+
+        Storage strategy (defence-in-depth):
+          1. Prefer the OS credential store (Windows Credential Manager /
+             macOS Keychain) via the `keyring` package — token never written
+             to disk in plaintext.
+          2. Fall back to config.json (plaintext) when keyring is unavailable
+             (headless CI, Linux without secret-service, keyring install error).
+          3. One-time migration: if a plaintext token exists in config.json and
+             keyring is now available, migrate it silently and scrub config.json.
+
+        Empty string means auth is disabled (open/LAN-only mode).
+        """
+        _KEYRING_SERVICE = "OmniDL"
+        _KEYRING_ACCOUNT = "api_token_v1"
+
+        # 1. Try keyring first
+        try:
+            import keyring as _kr
+
+            stored = _kr.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
+            if stored:
+                # One-time cleanup: scrub plaintext copy from config.json
+                if self.get("api_token", ""):
+                    self.set("api_token", "")
+                    self.save()
+                return stored.strip()
+        except Exception:
+            pass  # keyring unavailable — fall through to config.json
+
+        # 2. Fallback: plaintext in config.json
+        return str(self.get("api_token", "")).strip()
+
+    def set_api_token(self, token: str) -> None:
+        """Persist the bearer token to the OS credential store if available,
+        otherwise fall back to config.json.  Always scrubs the plaintext
+        value from config.json after a successful keyring write.
+
+        Call this instead of config.set("api_token", ...) everywhere.
+        """
+        _KEYRING_SERVICE = "OmniDL"
+        _KEYRING_ACCOUNT = "api_token_v1"
+
+        try:
+            import keyring as _kr
+
+            _kr.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, token)
+            # Scrub plaintext from config.json (set to empty sentinel)
+            if self.get("api_token", ""):
+                self.set("api_token", "")
+                self.save()
+            logger.info("OmniDL API token stored in OS credential store (keyring).")
+            return
+        except Exception as exc:
+            logger.warning(
+                "keyring unavailable — API token stored in config.json (plaintext fallback): %s", exc
+            )
+
+        # Fallback: store in config.json
+        self.set("api_token", token)
+        self.save()
+
+    # ── Tailscale HTTPS Profile typed accessors ───────────────────────────
+
+    @property
+    def api_ts_https_enabled(self) -> bool:
+        return bool(self.get("api_ts_https_enabled", False))
+
+    @property
+    def api_ts_https_internal_port(self) -> int:
+        raw = int(self.get("api_ts_https_internal_port", 0))
+        return max(50000, min(65000, raw)) if raw else 0
+
+    @property
+    def api_ts_https_dns_name(self) -> str:
+        return str(self.get("api_ts_https_dns_name", "")).strip()
+
+    # ── Taildrop typed accessors ──────────────────────────────────────────
+
+    @property
+    def taildrop_enabled(self) -> bool:
+        return bool(self.get("taildrop_enabled", False))
+
+    @property
+    def taildrop_target_node(self) -> str:
+        return str(self.get("taildrop_target_node", "")).strip()
+
+    @property
+    def taildrop_send_mode(self) -> str:
+        val = str(self.get("taildrop_send_mode", "always")).strip()
+        return val if val in ("always", "ask") else "always"
+
+    @property
+    def taildrop_target_nodes(self) -> list:
+        """Return the multi-device node list.
+
+        Falls back to [taildrop_target_node] when the list has not been
+        configured yet, so existing single-node setups continue to work
+        without any migration step.
+        """
+        raw = self.get("taildrop_target_nodes", [])
+        if isinstance(raw, list) and raw:
+            return [str(n).strip() for n in raw if str(n).strip()]
+        # Legacy fallback: promote the scalar to a one-element list.
+        single = self.taildrop_target_node
+        return [single] if single else []
+
+    def set_taildrop_target_nodes(self, nodes: list) -> None:
+        """Persist the multi-device node list and keep the legacy scalar in sync."""
+        clean = [str(n).strip() for n in nodes if str(n).strip()]
+        self.set("taildrop_target_nodes", clean)
+        # Keep the legacy key in sync so older code reading taildrop_target_node
+        # still gets a valid (first) node.
+        self.set("taildrop_target_node", clean[0] if clean else "")
+
+    # ── Debug logging accessor ────────────────────────────────────────────
+
+    @property
+    def debug_logging(self) -> bool:
+        """True when detailed DEBUG-level logging to omnidl_debug.log is active."""
+        return bool(self.get("debug_logging", False))
+
+    # ── Clipboard monitor accessor ────────────────────────────────────────
+
+    @property
+    def clipboard_monitor_enabled(self) -> bool:
+        """True when clipboard URL monitoring is active."""
+        return bool(self.get("clipboard_monitor_enabled", False))

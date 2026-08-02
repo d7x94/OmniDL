@@ -18,7 +18,6 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.storage.history_repository import HistoryRepository
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -111,6 +110,59 @@ class TestLoad:
         assert "a2" in ids
         # File should now be JSONL (not starting with '[')
         assert not path.read_text(encoding="utf-8").startswith("[")
+
+    def test_load_trims_and_rewrites_when_over_limit(self, tmp_path):
+        path = tmp_path / "h.jsonl"
+        entries = [
+            {"id": str(i), "title": f"t{i}", "url": "https://example.com"} for i in range(5)
+        ]
+        write_jsonl(path, entries)
+        repo = HistoryRepository(path, limit=2)
+        assert len(repo.all()) == 2
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) == 2
+
+
+class TestRewriteFailureRecovery:
+    def test_restores_from_backup_when_tmp_replace_fails(self, tmp_path, monkeypatch):
+        path = tmp_path / "h.jsonl"
+        path.write_text(json.dumps({"id": "1"}) + "\n", encoding="utf-8")
+        repo = HistoryRepository(path)
+
+        orig_replace = Path.replace
+
+        def failing_replace(self, target):
+            if self.name.endswith(".tmp.jsonl"):
+                raise OSError("simulated disk failure")
+            return orig_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", failing_replace)
+
+        repo._rewrite_unlocked([{"id": "1"}, {"id": "2"}])
+
+        # tmp.replace(self._path) failed, so the original was restored from
+        # the backup created just before the failed step.
+        assert path.exists()
+        assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["id"] == "1"
+
+    def test_logs_when_backup_restore_also_fails(self, tmp_path, monkeypatch):
+        path = tmp_path / "h.jsonl"
+        path.write_text(json.dumps({"id": "1"}) + "\n", encoding="utf-8")
+        repo = HistoryRepository(path)
+
+        orig_replace = Path.replace
+
+        def failing_replace(self, target):
+            if self.name == path.name:
+                # Allow the very first move (original -> backup) to succeed.
+                return orig_replace(self, target)
+            raise OSError("simulated disk failure")
+
+        monkeypatch.setattr(Path, "replace", failing_replace)
+
+        # Must not raise -- both the primary write and the backup restore
+        # fail, and the failure is only logged.
+        repo._rewrite_unlocked([{"id": "1"}, {"id": "2"}])
 
 
 # ---------------------------------------------------------------------------

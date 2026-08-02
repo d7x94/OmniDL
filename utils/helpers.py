@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import queue
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -87,6 +89,40 @@ def safe_path(base: Path, untrusted: str) -> Path:
 
 
 # ── OS helpers ────────────────────────────────────────────────────────────
+
+# ── Window handle registry (Windows focus management) ─────────────────────
+#
+# open_file() monitors the media player and reclaims OmniDL focus when it
+# closes, using the _focus_queue → _poll_focus() pattern so the UI thread
+# handles window activation (no Windows foreground-lock restrictions apply).
+#
+# Usage (ui/main_window.py __init__, win32 only, after _build_ui):
+#     from utils.helpers import register_app_hwnd
+#     register_app_hwnd(ctypes.windll.user32.GetParent(self.winfo_id()))
+
+_app_hwnd: int = 0
+
+_focus_queue: queue.Queue = queue.Queue()
+
+# Track active player-watch threads by process handle to avoid accumulation.
+# Multiple open_file() calls while a previous player is still open would
+# otherwise spawn unbounded threads each blocking up to 4 hours.
+_watch_set: set[int] = set()
+_watch_set_lock: threading.Lock = threading.Lock()
+
+
+def register_app_hwnd(hwnd: int) -> None:
+    """Register the main window Win32 HWND for Z-order reclaim after preview."""
+    global _app_hwnd
+    _app_hwnd = hwnd
+    logger.debug("register_app_hwnd: hwnd=%s", hwnd)
+
+
+def register_main_window(window) -> None:
+    """API-compatibility stub — current implementation uses _app_hwnd only."""
+    pass
+
+
 
 def reveal_in_explorer(path: Path) -> bool:
     """
@@ -183,3 +219,112 @@ def open_folder(path: Path) -> None:
             subprocess.Popen(["xdg-open", _p], close_fds=True)
     except Exception as exc:
         logger.debug("open_folder failed for %s: %s", path, exc)
+
+
+def open_file(path: Path) -> None:
+    """Open a file with the OS default application.
+
+    Windows: ShellExecuteExW with SEE_MASK_NOCLOSEPROCESS gets the player
+             process handle. A daemon thread blocks on WaitForSingleObject
+             until the player process exits (race-free, exact timing), then
+             signals _focus_queue with a simple sentinel.
+
+             _poll_focus() on the UI thread receives the sentinel and calls:
+               attributes("-topmost", True) — OmniDL above ALL non-topmost
+               lift()                       — Tkinter Z-order raise
+               BringWindowToTop(hwnd)       — Win32 Z-order raise
+               after(600ms): topmost=False  — restore normal Z-order
+
+             Why this works:
+               The previous topmost approach failed only because of TIMING:
+               topmost was set before startfile (player not yet open, no
+               effect). Now WaitForSingleObject gives us the exact moment
+               the player exits — we set topmost AFTER the player closes,
+               which is the correct and only useful moment.
+
+               BringWindowToTop + topmost require NO foreground permission.
+               They affect Z-order only (visual stacking), not focus.
+               The user complaint is visual ("bị che" = visually covered),
+               not about keyboard focus. This fixes the actual problem.
+
+    Fallback: ShellExecuteExW fails → os.startfile() (no reclaim, same
+              as original behaviour).
+    macOS: open <path>    Linux: xdg-open <path>
+    Silently logs on failure — never raises.
+    """
+    try:
+        if sys.platform == "win32":
+            import ctypes as _ctypes
+            import ctypes.wintypes as _wt
+
+            _p    = str(path.resolve())
+            _hwnd = _app_hwnd
+
+            class _SEI(_ctypes.Structure):
+                _fields_ = [
+                    ("cbSize",   _wt.DWORD),    ("fMask",    _wt.ULONG),
+                    ("hwnd",     _wt.HWND),     ("lpVerb",   _wt.LPCWSTR),
+                    ("lpFile",   _wt.LPCWSTR),  ("lpParams", _wt.LPCWSTR),
+                    ("lpDir",    _wt.LPCWSTR),  ("nShow",    _ctypes.c_int),
+                    ("hInst",    _wt.HINSTANCE),("lpIDList", _ctypes.c_void_p),
+                    ("lpClass",  _wt.LPCWSTR),  ("hkey",     _wt.HKEY),
+                    ("dwHotKey", _wt.DWORD),    ("hMon",     _wt.HANDLE),
+                    ("hProcess", _wt.HANDLE),
+                ]
+
+            sei        = _SEI()
+            sei.cbSize = _ctypes.sizeof(_SEI)
+            sei.fMask  = 0x00000040    # SEE_MASK_NOCLOSEPROCESS
+            sei.lpVerb = "open"
+            sei.lpFile = _p
+            sei.nShow  = 1             # SW_SHOWNORMAL
+
+            _sh = _ctypes.windll.shell32
+            _sh.ShellExecuteExW.argtypes = [_ctypes.POINTER(_SEI)]
+            _sh.ShellExecuteExW.restype  = _wt.BOOL
+            _ok    = _sh.ShellExecuteExW(_ctypes.byref(sei))
+            _hproc = sei.hProcess if (_ok and sei.hProcess) else None
+
+            if not _ok:
+                # ShellExecuteExW failed entirely (e.g. file type unregistered).
+                # Fall back to os.startfile — no focus reclaim in this path.
+                import os as _os
+                _os.startfile(_p)
+            elif _hproc:
+                # ShellExecuteExW succeeded and returned a process handle.
+                # Spawn a daemon watcher that signals _focus_queue the instant
+                # the player process exits — exact timing, no polling.
+                # Guard against accumulation: if we are already watching this
+                # exact process handle (e.g. two rapid open_file() calls for
+                # the same player instance), skip the duplicate thread.
+                with _watch_set_lock:
+                    if _hproc in _watch_set:
+                        pass  # already watching — no new thread needed
+                    else:
+                        _watch_set.add(_hproc)
+
+                        def _wait(hp=_hproc) -> None:
+                            k32 = _ctypes.windll.kernel32
+                            k32.WaitForSingleObject(hp, 4 * 3600 * 1000)
+                            k32.CloseHandle(hp)
+                            with _watch_set_lock:
+                                _watch_set.discard(hp)
+                            _focus_queue.put_nowait(True)
+
+                        threading.Thread(
+                            target=_wait, daemon=True,
+                            name="omnidl-player-watch",
+                        ).start()
+            # else: _ok=True but hProcess=NULL — player was already running
+            # and the shell reused the existing process.  The file has been
+            # sent to the running player; no focus reclaim needed.
+
+        elif sys.platform == "darwin":
+            _p = str(path.resolve())
+            subprocess.Popen(["open", _p], close_fds=True)
+        else:
+            _p = str(path.resolve())
+            subprocess.Popen(["xdg-open", _p], close_fds=True)
+    except Exception as exc:
+        logger.debug("open_file failed for %s: %s", path, exc)
+

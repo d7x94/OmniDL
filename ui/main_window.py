@@ -1,71 +1,265 @@
-"""
-ui/main_window.py
-Root application window.
+"""Main application window."""
 
-Layout (top to bottom):
-  ┌──────────────────────────────────────────────────────┐
-  │  Title Bar  (custom, no native chrome)               │
-  ├──────────────────────────────────────────────────────┤
-  │  Toolbar    (URL input — always visible)             │
-  ├─────────────┬────────────────────────────────────────┤
-  │             │                                        │
-  │   Sidebar   │   Content (tabs)                       │
-  │             │                                        │
-  ├──────────────────────────────────────────────────────┤
-  │  Status Bar (speed · active count · network)         │
-  └──────────────────────────────────────────────────────┘
-"""
 from __future__ import annotations
 
 import logging
-import sys
-import tkinter as tk
-import tkinter.messagebox as mb
+import threading as _threading
 from pathlib import Path
 from typing import Optional
 
-import customtkinter as ctk
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.services.download_service import DownloadService
+from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
-from ui.themes.tokens import T
+from ui.theme_qt import apply_theme
+from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T
+from utils.clipboard_monitor import ClipboardMonitor
 
 logger = logging.getLogger(__name__)
 
 NAV_ITEMS = [
-    ("home",     "⬇",  "Download",  "DOWNLOADS"),
-    ("queue",    "≡",  "Queue",     "DOWNLOADS"),
-    ("convert",  "🍎", "Convert",   "TOOLS"),
-    ("history",  "⏱",  "History",   "LIBRARY"),
-    ("settings", "⚙",  "Settings",  "SYSTEM"),
+    ("home", "↓", "Tải xuống", "TẢI XUỐNG"),
+    ("queue", "≡", "Hàng đợi", "TẢI XUỐNG"),
+    ("batch", "⊞", "Hàng loạt", "TẢI XUỐNG"),
+    ("live_monitor", "◉", "Trực tiếp", "TẢI XUỐNG"),
+    ("convert", "⇄", "Chuyển đổi", "CÔNG CỤ"),
+    ("editor", "✂", "Editor", "CÔNG CỤ"),
+    ("archive", "⧉", "Nén/Giải nén", "CÔNG CỤ"),
+    ("history", "◷", "Lịch sử", "THƯ VIỆN"),
+    ("settings", "⊙", "Cài đặt", "HỆ THỐNG"),
+    ("special_dl", "◆", "Đặc biệt", "HỆ THỐNG"),
 ]
 
-_TOAST_BG = {
+_TOAST_COLOR = {
     "success": "success",
-    "error":   "error",
-    "info":    "primary",
+    "error": "error",
+    "info": "primary",
     "warning": "warning",
 }
 
 
-class MainWindow(ctk.CTk):
-
+class MainWindow(QMainWindow):
     MIN_W = 1080
     MIN_H = 720
 
     def __init__(self, service: DownloadService, config: ConfigManager) -> None:
         super().__init__()
         self._service = service
-        self._config  = config
+        self._config = config
         self._current_tab: Optional[str] = None
-        self._toast_after: Optional[str] = None
-        self.attributes("-alpha", 0)   # invisible during construction — no flicker
-        self._setup_window()           # (withdraw() breaks overrideredirect on Windows)
-        self._build_ui()
-        self.attributes("-alpha", 1)   # reveal once all widgets are built and themed
+        self._clipboard_monitor = None
+        self._toast_timer: Optional[QTimer] = None
+        self._pill_btns: dict[str, QPushButton] = {}
+        self._pill_badges: dict[str, QLabel] = {}
+        self._build()
+        self._start_clipboard_monitor_if_enabled()
 
-    # ── Exposed API ───────────────────────────────────────────────────────
+    # ── Build ─────────────────────────────────────────────────────────────
+
+    def _build(self) -> None:
+        self._facade = ServiceFacade(self._service, self._config)
+        self.setWindowTitle("OmniDL — Ultimate Media Downloader")
+        self.setMinimumSize(self.MIN_W, self.MIN_H)
+        self.resize(self.MIN_W, self.MIN_H)
+        self._center_on_screen()
+        self.setAcceptDrops(True)
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Toolbar
+        from ui.components.toolbar import Toolbar
+
+        self._toolbar_strip = self._make_collapse_strip("Thanh phân tích", self._expand_toolbar)
+        root.addWidget(self._toolbar_strip)
+        self._toolbar_strip.setVisible(False)
+
+        self._toolbar = Toolbar(app=self, on_collapse=self._collapse_toolbar)
+        root.addWidget(self._toolbar)
+
+        # Top bar: pill tabs + right controls
+        self._top_bar = QWidget()
+        self._top_bar.setObjectName("top_bar")
+        top_bar_layout = QHBoxLayout(self._top_bar)
+        top_bar_layout.setContentsMargins(12, 6, 12, 6)
+        top_bar_layout.setSpacing(8)
+
+        self._pill_bar = self._build_pill_tabs()
+        top_bar_layout.addWidget(self._pill_bar, 1)
+
+        # Theme toggle button
+        self._theme_btn = QPushButton("☀ Sáng")
+        self._theme_btn.setFixedSize(80, 28)
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        top_bar_layout.addWidget(self._theme_btn)
+
+        # Notification bell
+        self._notif_btn = QPushButton("🔔")
+        self._notif_btn.setFixedSize(32, 28)
+        self._notif_btn.setToolTip("Thông báo")
+        self._notif_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text2};
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+                color: {T.text};
+            }}
+        """)
+        self._notif_btn.clicked.connect(self._open_notification_panel)
+        top_bar_layout.addWidget(self._notif_btn)
+
+        self._collapse_nav_btn = QPushButton("∧")
+        self._collapse_nav_btn.setFixedSize(24, 28)
+        self._collapse_nav_btn.setFlat(True)
+        self._collapse_nav_btn.setToolTip("Ẩn thanh điều hướng")
+        self._collapse_nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_nav_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
+            QPushButton:hover {{ color: {T.text}; background-color: {T.surface3}; border-radius: 4px; }}
+        """)
+        self._collapse_nav_btn.clicked.connect(self._collapse_nav)
+        top_bar_layout.addWidget(self._collapse_nav_btn)
+
+        self._nav_strip = self._make_collapse_strip("Thanh điều hướng", self._expand_nav)
+        root.addWidget(self._nav_strip)
+        self._nav_strip.setVisible(False)
+        root.addWidget(self._top_bar)
+
+        # Thin separator below top bar
+        self._top_sep = QFrame()
+        self._top_sep.setFixedHeight(1)
+        self._top_sep.setStyleSheet(f"background-color: {T.border};")
+        root.addWidget(self._top_sep)
+
+        # 3px accent bar — color updates per active tab in navigate_to()
+        self._accent_bar = QFrame()
+        self._accent_bar.setFixedHeight(3)
+        self._accent_bar.setStyleSheet(f"background: {TAB_ACCENTS['home']['accent']}; border: none;")
+        root.addWidget(self._accent_bar)
+
+        # Content area
+        self._stack = QStackedWidget()
+        self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        root.addWidget(self._stack, 1)
+
+        # Build tabs
+        self._tabs: dict[str, QWidget] = {}
+        self._build_tabs()
+
+        # Status bar
+        from ui.components.status_bar import StatusBar
+
+        self._status_bar = StatusBar(app=self)
+        self.setStatusBar(self._status_bar)
+
+        # Toast label (overlay)
+        self._toast_lbl = QLabel("", self)
+        self._toast_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._toast_lbl.setStyleSheet(f"""
+            QLabel {{
+                background-color: {T.primary};
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+        """)
+        self._toast_lbl.hide()
+
+        # Ctrl+K shortcut
+        shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        shortcut.activated.connect(self._open_command_palette)
+
+        # Notification panel (floating overlay)
+        from ui.components.notification_panel import NotificationPanel
+
+        self._notification_panel = NotificationPanel(self)
+
+        # Register theme callback
+        T.register(self._on_theme)
+        is_dark = T.mode not in ("light", "solarized", "lavender")
+        self._theme_btn.setText("🌙 Tối" if not is_dark else "☀ Sáng")
+
+        self.navigate_to("home")
+
+    def _build_pill_tabs(self) -> QWidget:
+        pill_bar = QWidget()
+        pill_bar.setObjectName("pill_bar")
+
+        layout = QHBoxLayout(pill_bar)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        for key, icon, label, _section in NAV_ITEMS:
+            btn = QPushButton(f"{icon}  {label}")
+            btn.setObjectName("pill_tab")
+            btn.setProperty("active", "false")
+            btn.setProperty("tab_key", key)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, k=key: self.navigate_to(k))
+            layout.addWidget(btn)
+            self._pill_btns[key] = btn
+
+        layout.addStretch()
+        return pill_bar
+
+    def _build_tabs(self) -> None:
+        from ui.tabs.archive_tab import ArchiveTab
+        from ui.tabs.batch_tab import BatchTab
+        from ui.tabs.convert_tab import ConvertTab
+        from ui.tabs.editor_tab import EditorTab
+        from ui.tabs.history_tab import HistoryTab
+        from ui.tabs.home_tab import HomeTab
+        from ui.tabs.live_monitor_tab import LiveMonitorTab
+        from ui.tabs.queue_tab import QueueTab
+        from ui.tabs.settings_tab import SettingsTab
+        from ui.tabs.special_dl_tab import SpecialDlTab
+
+        tab_classes = {
+            "home": HomeTab,
+            "queue": QueueTab,
+            "batch": BatchTab,
+            "live_monitor": LiveMonitorTab,
+            "convert": ConvertTab,
+            "editor": EditorTab,
+            "archive": ArchiveTab,
+            "history": HistoryTab,
+            "settings": SettingsTab,
+            "special_dl": SpecialDlTab,
+        }
+        for key, cls in tab_classes.items():
+            widget = cls(self)
+            widget.setObjectName("tab_content")
+            widget.setProperty("tab_key", key)
+            self._tabs[key] = widget
+            self._stack.addWidget(widget)
+
+    # ── Public API ────────────────────────────────────────────────────────
 
     @property
     def service(self) -> "ServiceFacade":
@@ -75,369 +269,315 @@ class MainWindow(ctk.CTk):
     def config(self) -> ConfigManager:
         return self._config
 
-    def get_tab(self, key: str):
+    @property
+    def taildrop(self) -> "TaildropService":
+        return self._service.taildrop
+
+    def get_tab(self, key: str) -> Optional[QWidget]:
         return self._tabs.get(key)
+
+    def rebuild_tiktok_pool(self) -> None:
+        self._service.rebuild_tiktok_pool()
 
     def get_toolbar(self):
         return getattr(self, "_toolbar", None)
 
-    # ── Window setup ──────────────────────────────────────────────────────
-
-    def _setup_window(self) -> None:
-        self.title("OmniDL — Ultimate Media Downloader")
-        self.minsize(self.MIN_W, self.MIN_H)
-        self.geometry(f"{self.MIN_W}x{self.MIN_H}")
-        self.configure(fg_color=T.bg)
-        self.overrideredirect(True)
-        self.update_idletasks()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"+{(sw - self.MIN_W)//2}+{(sh - self.MIN_H)//2}")
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        if sys.platform == "win32":
-            self._restore_taskbar()
-
-    def _restore_taskbar(self) -> None:
-        try:
-            import ctypes
-            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-            ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x00040000)
-            self.wm_withdraw()
-            self.wm_deiconify()
-        except Exception as exc:  # non-fatal: taskbar style is cosmetic
-            logger.debug("_restore_taskbar failed: %s", exc)
-
-    def _minimize(self) -> None:
-        """Minimize window — works correctly even with overrideredirect=True."""
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-                ctypes.windll.user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
-                return
-            except Exception as exc:  # non-fatal: falls back to iconify()
-                logger.debug("Win32 minimize failed, falling back to iconify: %s", exc)
-        self.iconify()
-
-    # ── UI construction ───────────────────────────────────────────────────
-
-    def _build_ui(self) -> None:
-        self._facade = ServiceFacade(self._service, self._config)
-
-        # 1. Custom title bar
-        self._build_title_bar()
-
-        # 2. Persistent toolbar (URL input)
-        from ui.components.toolbar import Toolbar
-        self._toolbar = Toolbar(self, app=self)
-        self._toolbar.pack(fill="x")
-
-        # 3. Body: sidebar | content
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True)
-
-        self._sidebar = ctk.CTkFrame(
-            body, width=220, fg_color=T.sidebar, corner_radius=0)
-        self._sidebar.pack(side="left", fill="y")
-        self._sidebar.pack_propagate(False)
-        self._build_sidebar()
-
-        self._divider = ctk.CTkFrame(body, width=1, fg_color=T.border, corner_radius=0)
-        self._divider.pack(side="left", fill="y")
-
-        self._content = ctk.CTkFrame(body, fg_color=T.bg, corner_radius=0)
-        self._content.pack(side="left", fill="both", expand=True)
-
-        self._build_tabs()
-        self.navigate_to("home")
-
-        # 4. Status bar
-        from ui.components.status_bar import StatusBar
-        self._status_bar = StatusBar(self, app=self)
-        self._status_bar.pack(fill="x", side="bottom")
-
-        # 5. Toast overlay
-        self._toast_lbl = ctk.CTkLabel(
-            self, text="",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=T.primary, corner_radius=8,
-            text_color="white", padx=16, pady=8,
-        )
-
-        # Register for theme changes so structural frames refresh on toggle
-        T.register(self._on_theme)
-        # Sync theme-button label with the token system's current mode
-        # (needed when the saved theme differs from the hardcoded default "dark")
-        self._theme_btn.configure(
-            text="🌙 Dark" if T.mode == "light" else "☀ Light"
-        )
-
-    def _build_title_bar(self) -> None:
-        tb = ctk.CTkFrame(self, fg_color=T.sidebar, height=44, corner_radius=0)
-        self._title_bar = tb          # ← ref for theme refresh
-        tb.pack(fill="x")
-        tb.pack_propagate(False)
-
-        # Logo
-        logo = ctk.CTkFrame(tb, fg_color="transparent")
-        logo.pack(side="left", padx=18)
-
-        self._logo_icon = ctk.CTkLabel(
-            logo, text="⬇",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=T.primary,
-        )
-        self._logo_icon.pack(side="left", padx=(0, 6))
-        self._logo_name = ctk.CTkLabel(
-            logo, text="OmniDL",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=T.text,
-        )
-        self._logo_name.pack(side="left")
-
-        # yt-dlp version badge
-        try:
-            import yt_dlp
-            ver = yt_dlp.version.__version__
-        except ImportError:
-            ver = "not installed"
-            logger.warning("yt-dlp not found — version badge will show 'not installed'")
-        except Exception as exc:
-            ver = "?"
-            logger.debug("Could not read yt-dlp version: %s", exc)
-        self._ytdlp_badge = ctk.CTkLabel(
-            tb, text=f"yt-dlp {ver}",
-            font=ctk.CTkFont(size=10),
-            text_color=T.text3,
-            fg_color=T.surface2,
-            corner_radius=4, padx=8, pady=2,
-        )
-        self._ytdlp_badge.pack(side="left", padx=6)
-
-        # Window controls
-        bx = ctk.CTkFrame(tb, fg_color="transparent")
-        bx.pack(side="right", padx=10)
-
-        self._wctrl_btns: list[ctk.CTkButton] = []
-        for text, cmd, hover in [
-            ("—",  self._minimize,   T.surface3),
-            ("⬜", self._toggle_max, T.surface3),
-            ("✕",  self._on_close,  T.close_hover),
-        ]:
-            btn = ctk.CTkButton(
-                bx, text=text, width=36, height=28,
-                fg_color="transparent", hover_color=hover,
-                font=ctk.CTkFont(size=12), text_color=T.text3,
-                command=cmd,
-            )
-            btn.pack(side="left", padx=1)
-            self._wctrl_btns.append(btn)
-
-        for w in (tb, logo, *tb.winfo_children(), *logo.winfo_children()):
-            w.bind("<ButtonPress-1>", self._drag_start, add="+")
-            w.bind("<B1-Motion>",     self._drag_move,  add="+")
-        self._dx = self._dy = 0
-
-    def _build_sidebar(self) -> None:
-        sections_seen: set[str] = set()
-        self._nav_btns: dict[str, ctk.CTkButton] = {}
-        self._nav_indicators: dict[str, ctk.CTkFrame] = {}
-        self._section_labels: list[ctk.CTkLabel] = []  # ← for theme refresh
-
-        for key, icon, label, section in NAV_ITEMS:
-            if section not in sections_seen:
-                sections_seen.add(section)
-                lbl = ctk.CTkLabel(
-                    self._sidebar, text=section,
-                    font=ctk.CTkFont(size=9, weight="bold"),
-                    text_color=T.text3,
-                )
-                lbl.pack(anchor="w", padx=20, pady=(18, 4))
-                self._section_labels.append(lbl)
-
-            row = ctk.CTkFrame(self._sidebar, fg_color="transparent", height=40)
-            row.pack(fill="x", padx=8, pady=1)
-            row.pack_propagate(False)
-
-            indicator = ctk.CTkFrame(
-                row, width=3, fg_color="transparent", corner_radius=2)
-            indicator.pack(side="left", fill="y", padx=(0, 1))
-
-            btn = ctk.CTkButton(
-                row,
-                text=f"  {icon}   {label}",
-                anchor="w",
-                font=ctk.CTkFont(size=13, weight="bold"),
-                height=38, corner_radius=8,
-                fg_color="transparent",
-                hover_color=T.surface2,
-                text_color=T.text3,
-                command=lambda k=key: self.navigate_to(k),
-            )
-            btn.pack(side="left", fill="both", expand=True)
-
-            self._nav_btns[key] = btn
-            self._nav_indicators[key] = indicator
-
-        # Bottom strip
-        bottom = ctk.CTkFrame(self._sidebar, fg_color="transparent")
-        bottom.pack(side="bottom", fill="x", padx=12, pady=12)
-
-        ctk.CTkLabel(
-            bottom, text="v16.0.0",
-            font=ctk.CTkFont(size=10), text_color=T.text3,
-        ).pack(side="left")
-
-        self._theme_btn = ctk.CTkButton(
-            bottom, text="☀ Light",
-            font=ctk.CTkFont(size=10),
-            height=28, width=76, corner_radius=6,
-            fg_color=T.surface2, hover_color=T.surface3,
-            text_color=T.text2,
-            command=self._toggle_theme,
-        )
-        self._theme_btn.pack(side="right")
-
-        self._powered_lbl = ctk.CTkLabel(
-            self._sidebar, text="Powered by yt-dlp",
-            font=ctk.CTkFont(size=9), text_color=T.text3,
-        )
-        self._powered_lbl.pack(side="bottom", pady=(0, 4))
-
-    def _build_tabs(self) -> None:
-        from ui.tabs.convert_tab import ConvertTab
-        from ui.tabs.history_tab import HistoryTab
-        from ui.tabs.home_tab import HomeTab
-        from ui.tabs.queue_tab import QueueTab
-        from ui.tabs.settings_tab import SettingsTab
-        self._tabs: dict[str, ctk.CTkFrame] = {
-            "home":     HomeTab(self._content, self),
-            "queue":    QueueTab(self._content, self),
-            "convert":  ConvertTab(self._content, self),
-            "history":  HistoryTab(self._content, self),
-            "settings": SettingsTab(self._content, self),
-        }
-
     # ── Navigation ────────────────────────────────────────────────────────
 
-    def navigate_to(self, key: str) -> None:
+    def navigate_to(self, key: str, file_path: Optional[str] = None) -> None:
         if key not in self._tabs:
             return
-        if self._current_tab:
-            self._tabs[self._current_tab].pack_forget()
-        self._tabs[key].pack(fill="both", expand=True)
+        self._stack.setCurrentWidget(self._tabs[key])
+        if file_path and hasattr(self._tabs[key], "load_file"):
+            self._tabs[key].load_file(file_path)
+
+        # Update pill button active state
+        prev = self._current_tab
         self._current_tab = key
 
-        for k, btn in self._nav_btns.items():
-            ind = self._nav_indicators[k]
-            if k == key:
-                btn.configure(fg_color=T.primary_dim, text_color=T.text)
-                ind.configure(fg_color=T.primary)
-            else:
-                btn.configure(fg_color="transparent", text_color=T.text3)
-                ind.configure(fg_color="transparent")
+        if prev and prev in self._pill_btns:
+            btn = self._pill_btns[prev]
+            btn.setProperty("active", "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+        if key in self._pill_btns:
+            btn = self._pill_btns[key]
+            btn.setProperty("active", "true")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+        self._accent_bar.setStyleSheet(
+            f"background: {TAB_ACCENTS.get(key, {}).get('accent', T.primary)}; border: none;"
+        )
 
         if key == "history":
-            self._tabs["history"].refresh()   # type: ignore
+            tab = self._tabs.get("history")
+            if tab and hasattr(tab, "refresh"):
+                tab.refresh()
         if key == "home":
-            self._tabs["home"].refresh()      # type: ignore
+            tab = self._tabs.get("home")
+            if tab and hasattr(tab, "refresh"):
+                tab.refresh()
 
-    # ── Theme toggle ──────────────────────────────────────────────────────
+    def update_tab_badge(self, tab_key: str, count: int) -> None:
+        """Update badge count on pill tab. count=0 removes badge."""
+        btn = self._pill_btns.get(tab_key)
+        if not btn:
+            return
+        badge = self._pill_badges.get(tab_key)
+        if count == 0:
+            if badge:
+                badge.hide()
+            return
+        if badge is None:
+            badge = QLabel(btn)
+            badge.setObjectName("badge")
+            badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self._pill_badges[tab_key] = badge
+        badge.setText(str(count))
+        badge.adjustSize()
+        # Position badge at top-right of button (guard: width is 0 before window is shown)
+        if btn.width() > 0:
+            badge.move(btn.width() - badge.width() - 2, 2)
+        badge.show()
+        badge.raise_()
+
+    # ── Placeholder actions ───────────────────────────────────────────────
+
+    def _open_command_palette(self) -> None:
+        from ui.components.command_palette import CommandPalette
+
+        palette = CommandPalette(self, on_navigate=self.navigate_to)
+        palette.exec()
+
+    def _open_notification_panel(self) -> None:
+        self._notification_panel.toggle()
+
+    # ── Theme ─────────────────────────────────────────────────────────────
 
     def _toggle_theme(self) -> None:
-        new_mode = "light" if T.mode == "dark" else "dark"
-        T.set_mode(new_mode)  # fires _on_theme + all registered callbacks
-        ctk.set_appearance_mode(new_mode)
+        themes = list(THEME_NAMES)
+        current_idx = themes.index(T.mode) if T.mode in themes else 0
+        new_mode = themes[(current_idx + 1) % len(themes)]
+        T.set_mode(new_mode)
         self._config.set("theme", new_mode)
-        self._theme_btn.configure(
-            text="🌙 Dark" if new_mode == "light" else "☀ Light")
+        is_dark = T.mode not in ("light", "solarized", "lavender")
+        self._theme_btn.setText("🌙 Tối" if not is_dark else "☀ Sáng")
 
     def _on_theme(self) -> None:
-        """Refresh every structural widget in MainWindow after a theme change."""
-        if not self.winfo_exists():
+        apply_theme()
+        if self._current_tab and self._current_tab in self._pill_btns:
+            btn = self._pill_btns[self._current_tab]
+            btn.setProperty("active", "true")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        self._apply_strip_styles()
+
+    def _make_collapse_strip(self, label: str, on_expand) -> QFrame:
+        strip = QFrame()
+        strip.setFixedHeight(18)
+        strip.setObjectName("collapse_strip")
+        strip.setStyleSheet(f"background: {T.surface2}; border: none;")
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(0)
+        btn = QPushButton(f"∨  {label}")
+        btn.setFlat(True)
+        btn.setFixedHeight(16)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(f"color: {T.text3}; font-size: 10px; padding: 0; background: transparent;")
+        btn.clicked.connect(on_expand)
+        layout.addWidget(btn)
+        layout.addStretch()
+        return strip
+
+    def _apply_strip_styles(self) -> None:
+        strip_ss = f"background: {T.surface2}; border: none;"
+        btn_ss = f"color: {T.text3}; font-size: 10px; padding: 0; background: transparent;"
+        collapse_btn_ss = f"""
+            QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
+            QPushButton:hover {{ color: {T.text}; background-color: {T.surface3}; border-radius: 4px; }}
+        """
+        for strip in (self._toolbar_strip, self._nav_strip):
+            strip.setStyleSheet(strip_ss)
+            inner_btn = strip.findChild(QPushButton)
+            if inner_btn:
+                inner_btn.setStyleSheet(btn_ss)
+        self._collapse_nav_btn.setStyleSheet(collapse_btn_ss)
+
+    def _collapse_toolbar(self) -> None:
+        self._toolbar.setVisible(False)
+        self._toolbar_strip.setVisible(True)
+
+    def _expand_toolbar(self) -> None:
+        self._toolbar_strip.setVisible(False)
+        self._toolbar.setVisible(True)
+
+    def _collapse_nav(self) -> None:
+        self._top_bar.setVisible(False)
+        self._top_sep.setVisible(False)
+        self._accent_bar.setVisible(False)
+        self._nav_strip.setVisible(True)
+
+    def _expand_nav(self) -> None:
+        self._nav_strip.setVisible(False)
+        self._top_bar.setVisible(True)
+        self._top_sep.setVisible(True)
+        self._accent_bar.setVisible(True)
+
+    # ── Drag & drop ───────────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            url = event.mimeData().urls()[0].toString()
+        elif event.mimeData().hasText():
+            url = event.mimeData().text()
+        else:
             return
-        # Root + body frames
-        self.configure(fg_color=T.bg)
-        self._title_bar.configure(fg_color=T.sidebar)
-        self._logo_icon.configure(text_color=T.primary)
-        self._logo_name.configure(text_color=T.text)
-        self._ytdlp_badge.configure(text_color=T.text3, fg_color=T.surface2)
-        # Window-control buttons: — and ⬜ use surface3; ✕ uses close_hover
-        for btn in self._wctrl_btns[:-1]:
-            btn.configure(text_color=T.text3, hover_color=T.surface3)
-        if self._wctrl_btns:
-            self._wctrl_btns[-1].configure(
-                text_color=T.text3, hover_color=T.close_hover)
-        self._sidebar.configure(fg_color=T.sidebar)
-        self._divider.configure(fg_color=T.border)
-        self._content.configure(fg_color=T.bg)
-        # Sidebar labels
-        for lbl in self._section_labels:
-            lbl.configure(text_color=T.text3)
-        # Nav buttons — update colours and re-apply active state
-        for k, btn in self._nav_btns.items():
-            ind = self._nav_indicators[k]
-            if k == self._current_tab:
-                btn.configure(fg_color=T.primary_dim, text_color=T.text,
-                               hover_color=T.surface2)
-                ind.configure(fg_color=T.primary)
-            else:
-                btn.configure(fg_color="transparent", text_color=T.text3,
-                               hover_color=T.surface2)
-                ind.configure(fg_color="transparent")
-        self._theme_btn.configure(
-            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2)
-        self._powered_lbl.configure(text_color=T.text3)
+        self.navigate_to("home")
+        home = self._tabs.get("home")
+        if home and hasattr(home, "url_input"):
+            home.url_input.setText(url)
 
     # ── Toast ─────────────────────────────────────────────────────────────
 
     def toast(self, message: str, kind: str = "info") -> None:
-        color = getattr(T, _TOAST_BG.get(kind, "primary"))
-        self._toast_lbl.configure(
-            text=f"  {message}  ",
-            fg_color=color,
-            text_color="white",
+        self._notification_panel.add_notification(kind, message)
+        color_key = _TOAST_COLOR.get(kind, "primary")
+        color = getattr(T, color_key)
+        self._toast_lbl.setText(f"  {message}  ")
+        self._toast_lbl.setStyleSheet(f"""
+            QLabel {{
+                background-color: {color};
+                color: white;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+        """)
+        self._toast_lbl.adjustSize()
+        self._position_toast()
+        self._toast_lbl.show()
+        self._toast_lbl.raise_()
+
+        if self._toast_timer is None:
+            self._toast_timer = QTimer(self)
+            self._toast_timer.setSingleShot(True)
+            self._toast_timer.timeout.connect(self._toast_lbl.hide)
+        self._toast_timer.start(3200)
+
+    def _position_toast(self) -> None:
+        w = self._toast_lbl.width()
+        h = self._toast_lbl.height()
+        x = self.width() - w - 20
+        y = self.height() - h - 48
+        self._toast_lbl.move(x, y)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._toast_lbl.isVisible():
+            self._position_toast()
+        if self._notification_panel.isVisible():
+            self._notification_panel._reposition()
+
+    # ── Clipboard monitor ─────────────────────────────────────────────────
+
+    def _start_clipboard_monitor_if_enabled(self) -> None:
+        if not self._config.clipboard_monitor_enabled:
+            return
+        self.start_clipboard_monitor()
+
+    def start_clipboard_monitor(self) -> None:
+        from ui.signals import ui_bridge
+
+        if self._clipboard_monitor is not None:
+            self._clipboard_monitor.stop()
+
+        def _safe_get_clipboard() -> str:
+            result: list = []
+            done = _threading.Event()
+
+            def _fetch() -> None:
+                try:
+                    result.append(QGuiApplication.clipboard().text())
+                except Exception:
+                    result.append("")
+                done.set()
+
+            # Called from the clipboard-monitor thread, which has no Qt event
+            # dispatcher — a QTimer created there never fires and leaks its
+            # QObject plus these closures every poll. ui_bridge marshals to the
+            # main thread via a queued signal instead.
+            ui_bridge.post(_fetch)
+            done.wait(timeout=2.0)
+            return result[0] if result else ""
+
+        def _on_new_url(url: str) -> None:
+            toolbar = self.get_toolbar()
+            if toolbar is not None:
+                ui_bridge.post(lambda u=url: toolbar.trigger_from_clipboard(u))
+
+        monitor = ClipboardMonitor(
+            get_clipboard=_safe_get_clipboard,
+            on_new_url=_on_new_url,
         )
-        self._toast_lbl.place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-48)
-        if self._toast_after:
-            self.after_cancel(self._toast_after)
-        self._toast_after = self.after(3200, self._toast_lbl.place_forget)
+        self._clipboard_monitor = monitor
+        monitor.start()
 
-    # ── Window management ─────────────────────────────────────────────────
+    def stop_clipboard_monitor(self) -> None:
+        if self._clipboard_monitor is not None:
+            self._clipboard_monitor.stop()
+            self._clipboard_monitor = None
 
-    def _drag_start(self, e: tk.Event) -> None:
-        self._dx = e.x_root - self.winfo_x()
-        self._dy = e.y_root - self.winfo_y()
+    # ── Close ────────────────────────────────────────────────────────────
 
-    def _drag_move(self, e: tk.Event) -> None:
-        self.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
+    def closeEvent(self, event) -> None:
+        active_dl = [t for t in self._service.get_all_tasks() if t.status in DownloadStatus.active_states()]
+        convert_tab = self._tabs.get("convert")
+        active_cv = getattr(convert_tab, "_active_count", 0)
+        total_active = len(active_dl) + active_cv
 
-    def _toggle_max(self) -> None:
-        if sys.platform == "win32":
-            self.state("normal" if self.state() == "zoomed" else "zoomed")
-        elif sys.platform == "darwin":
-            self.wm_attributes("-fullscreen",
-                               not bool(self.wm_attributes("-fullscreen")))
-        else:
-            self.attributes("-zoomed", not self.attributes("-zoomed"))
-
-    def _on_close(self) -> None:
-        active = [t for t in self._service.get_all_tasks()
-                  if t.status in DownloadStatus.active_states()]
-        if active:
-            if not mb.askyesno(
+        if total_active:
+            parts = []
+            if active_dl:
+                parts.append(f"{len(active_dl)} download(s)")
+            if active_cv:
+                parts.append(f"{active_cv} conversion(s)")
+            summary = " và ".join(parts)
+            reply = QMessageBox.question(
+                self,
                 "OmniDL",
-                f"{len(active)} download(s) in progress.\nClose and cancel all?",
-                icon="warning",
-            ):
+                f"{summary} đang chạy.\nĐóng và huỷ tất cả?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
                 return
-        for t in active:
+
+        for t in active_dl:
             self._service.cancel_download(t.id)
+
         self._config.save()
-        self.after(200, self.destroy)
+        self.stop_clipboard_monitor()
+        if hasattr(self, "_status_bar"):
+            self._status_bar.stop()
+        event.accept()
+
+    def _center_on_screen(self) -> None:
+        screen = QGuiApplication.primaryScreen().geometry()
+        x = (screen.width() - self.MIN_W) // 2
+        y = (screen.height() - self.MIN_H) // 2
+        self.move(x, y)
 
 
 # ── Service facade ────────────────────────────────────────────────────────────
+
 
 class ServiceFacade:
     def __init__(self, svc: DownloadService, cfg: ConfigManager) -> None:
@@ -445,30 +585,83 @@ class ServiceFacade:
         self._cfg = cfg
 
     def analyse_url(self, url, on_done, on_error):
-        self._svc.analyse_url(url, on_done, on_error)
+        return self._svc.analyse_url(url, on_done, on_error)
 
     def start_download(self, url, media_info, format_id, output_ext, output_dir=None):
-        return self._svc.start_download(  # DEF-030: propagate DownloadTask to caller
-            url, media_info, format_id, output_ext, output_dir
-        )
+        return self._svc.start_download(url, media_info, format_id, output_ext, output_dir)
 
-    def pause_download(self, task_id):   self._svc.pause_download(task_id)
-    def resume_download(self, task_id):  self._svc.resume_download(task_id)
-    def cancel_download(self, task_id):  self._svc.cancel_download(task_id)
-    def clear_finished(self):            self._svc.clear_finished()
-    def get_all_tasks(self):             return self._svc.get_all_tasks()
-    def get_task(self, tid):             return self._svc.get_task(tid)
-    def get_history(self):               return self._svc.get_history()
-    def search_history(self, q):         return self._svc.search_history(q)
-    def clear_history(self):             self._svc.clear_history()
-    def get_download_dir(self) -> Path:  return self._cfg.download_dir
-    def set_download_dir(self, p: Path): self._cfg.set("download_dir", str(p))
+    def pause_download(self, task_id):
+        self._svc.pause_download(task_id)
 
-    def convert_to_mp4(self, source: Path, on_progress=None,
-                       on_done=None, on_error=None) -> None:
+    def resume_download(self, task_id):
+        self._svc.resume_download(task_id)
+
+    def cancel_download(self, task_id):
+        self._svc.cancel_download(task_id)
+
+    def clear_finished(self, exclude_ids=None):
+        self._svc.clear_finished(exclude_ids=exclude_ids)
+
+    def clear_specific(self, ids: list) -> None:
+        self._svc.clear_specific(ids)
+
+    def rebuild_tiktok_pool(self) -> None:
+        self._svc.rebuild_tiktok_pool()
+
+    def get_all_tasks(self):
+        return self._svc.get_all_tasks()
+
+    def get_task(self, tid):
+        return self._svc.get_task(tid)
+
+    def get_history(self):
+        return self._svc.get_history()
+
+    def search_history(self, q):
+        return self._svc.search_history(q)
+
+    def clear_history(self):
+        self._svc.clear_history()
+
+    def delete_history_entry(self, tid):
+        self._svc.delete_history_entry(tid)
+
+    def get_history_stats(self):
+        return self._svc.get_history_stats()
+
+    def get_download_dir(self) -> Path:
+        return self._cfg.download_dir
+
+    def set_download_dir(self, p: Path):
+        self._cfg.set("download_dir", str(p))
+
+    def convert_to_mp4(
+        self,
+        source: Path,
+        on_progress=None,
+        on_done=None,
+        on_error=None,
+        target_ext: str = "mp4",
+        encode_settings=None,
+    ) -> None:
         self._svc.convert_to_mp4(
             source=source,
             on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,
+            target_ext=target_ext,
+            encode_settings=encode_settings,
         )
+
+    def fetch_thumbnail(self, url: str, width: int, height: int, on_done, on_error) -> None:
+        self._svc.fetch_thumbnail(url=url, width=width, height=height, on_done=on_done, on_error=on_error)
+
+    def check_profile_live(self, url: str, on_done, on_error) -> None:
+        self._svc.check_profile_live(url=url, on_done=on_done, on_error=on_error)
+
+    def check_tiktok_profile_live(self, url: str, on_done, on_error) -> None:
+        self._svc.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
+
+    @property
+    def taildrop(self) -> "TaildropService":
+        return self._svc.taildrop

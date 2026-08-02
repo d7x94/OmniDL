@@ -1,16 +1,25 @@
-"""
-ui/tabs/queue_tab.py
-Live download queue — polls service every 500ms.
-"""
+"""Active download queue tab."""
+
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
-import customtkinter as ctk
+from PySide6.QtCore import QPropertyAnimation, Qt, QTimer
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from domain.enums.download_status import DownloadStatus
 from ui.components.download_item_widget import DownloadItemWidget
+from ui.signals import ui_bridge
 from ui.themes.tokens import T
 
 if TYPE_CHECKING:
@@ -19,100 +28,160 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class QueueTab(ctk.CTkFrame):
-
-    def __init__(self, master, app: "MainWindow") -> None:
-        super().__init__(master, fg_color=T.bg, corner_radius=0)
+class QueueTab(QWidget):
+    def __init__(self, app: "MainWindow") -> None:
+        super().__init__()
         self._app = app
         self._widgets: dict[str, DownloadItemWidget] = {}
+        self._select_mode = False
+        self._selected_ids: set[str] = set()
         self._build()
-        self._poll()
         T.register(self._on_theme)
 
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(500)
+        self._poll_timer.timeout.connect(self._poll)
+
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+
     def _build(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
         # Header
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=28, pady=(24, 14))
+        hdr = QWidget()
+        hdr.setStyleSheet("background: transparent;")
+        hdr_layout = QHBoxLayout(hdr)
+        hdr_layout.setContentsMargins(28, 24, 28, 14)
 
-        self._title_lbl = ctk.CTkLabel(
-            hdr, text="Download Queue",
-            font=ctk.CTkFont(size=22, weight="bold"), text_color=T.text)
-        self._title_lbl.pack(side="left")
+        self._title_lbl = QLabel("Hàng đợi tải xuống")
+        self._title_lbl.setObjectName("page_title")
+        hdr_layout.addWidget(self._title_lbl)
 
-        right = ctk.CTkFrame(hdr, fg_color="transparent")
-        right.pack(side="right")
+        hdr_layout.addStretch()
 
-        self._count_lbl = ctk.CTkLabel(
-            right, text="",
-            font=ctk.CTkFont(size=11),
-            text_color=T.text2,
-            fg_color=T.surface2, corner_radius=6, padx=12, pady=4)
-        self._count_lbl.pack(side="left", padx=(0, 10))
+        self._count_lbl = QLabel("")
+        self._style_count_lbl()
+        hdr_layout.addWidget(self._count_lbl)
 
-        self._clear_btn = ctk.CTkButton(
-            right, text="Clear Finished",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            height=32, width=130, corner_radius=8,
-            fg_color=T.surface2, hover_color=T.surface3,
-            text_color=T.text2,
-            command=self._clear_finished)
-        self._clear_btn.pack(side="left")
+        self._select_btn = QPushButton("Chọn")
+        self._select_btn.setFixedHeight(32)
+        self._select_btn.setCheckable(True)
+        self._select_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text2};
+                border: none;
+                border-radius: 8px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+            }}
+            QPushButton:checked {{
+                background-color: {T.primary_dim};
+                color: {T.primary_text};
+            }}
+        """)
+        self._select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_btn.setToolTip("Chọn nhiều tác vụ")
+        self._select_btn.clicked.connect(self._toggle_select_mode)
+        hdr_layout.addWidget(self._select_btn)
 
-        # Scrollable list
-        self._scroll = ctk.CTkScrollableFrame(
-            self, fg_color="transparent",
-            scrollbar_button_color=T.scrollbar,
-            scrollbar_button_hover_color=T.scrollbar_hover)
-        self._scroll.pack(fill="both", expand=True, padx=28, pady=(0, 20))
+        self._clear_btn = QPushButton("Xóa đã xong")
+        self._clear_btn.setFixedHeight(32)
+        self._clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {T.surface2};
+                color: {T.text2};
+                border: none;
+                border-radius: 8px;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 0 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {T.surface3};
+            }}
+        """)
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.clicked.connect(self._clear_finished)
+        hdr_layout.addWidget(self._clear_btn)
 
-        self._empty_lbl = ctk.CTkLabel(
-            self._scroll,
-            text="No active downloads\nPaste a URL on the Download tab to get started",
-            font=ctk.CTkFont(size=14), text_color=T.text3, justify="center")
-        self._empty_lbl.pack(expand=True, pady=80)
+        layout.addWidget(hdr)
+
+        # Scroll area for items
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._scroll_content = QWidget()
+        self._scroll_content.setStyleSheet("background: transparent;")
+        self._items_layout = QVBoxLayout(self._scroll_content)
+        self._items_layout.setContentsMargins(28, 0, 28, 20)
+        self._items_layout.setSpacing(8)
+        self._items_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._empty_lbl = QLabel("Không có tác vụ nào\nDán URL vào tab Tải xuống để bắt đầu")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setStyleSheet(f"color: {T.text3}; font-size: 14px;")
+        self._items_layout.addWidget(self._empty_lbl)
+
+        scroll.setWidget(self._scroll_content)
+        layout.addWidget(scroll, 1)
 
     def _poll(self) -> None:
-        if not self.winfo_exists():
-            return
-        if not self.winfo_ismapped():
-            self.after(500, self._poll)
+        try:
+            tasks = self._app.service.get_all_tasks()
+        except Exception as exc:
+            logger.warning("_poll: %s", exc)
             return
 
-        tasks = self._app.service.get_all_tasks()
         current_ids = {t.id for t in tasks}
 
         for tid in list(self._widgets):
             if tid not in current_ids:
                 w = self._widgets.pop(tid)
-                if w.winfo_exists():
-                    w.destroy()
+                self._selected_ids.discard(tid)
+                self._items_layout.removeWidget(w)
+                w.deleteLater()
 
         for task in tasks:
             if task.id not in self._widgets:
                 w = DownloadItemWidget(
-                    self._scroll, task,
+                    self._scroll_content,
+                    task,
                     on_pause=self._on_pause,
-                    on_cancel=self._on_cancel)
-                w.pack(fill="x", pady=(0, 8))
+                    on_cancel=self._on_cancel,
+                    on_convert=lambda p, **kw: self._app.navigate_to("convert", file_path=str(p)),
+                    on_send=self._on_send,
+                    on_edit=lambda p: self._app.navigate_to("editor", file_path=str(p)),
+                )
+                self._items_layout.insertWidget(self._items_layout.count() - 1, w)
                 self._widgets[task.id] = w
+                w.refresh(task)
+                if self._select_mode:
+                    w.set_select_mode(True, self._on_item_select)
             else:
-                w = self._widgets[task.id]
-                if w.winfo_exists():
-                    w.refresh(task)
+                self._widgets[task.id].refresh(task)
 
-        if tasks:
-            self._empty_lbl.pack_forget()
-        elif not self._empty_lbl.winfo_ismapped():
-            self._empty_lbl.pack(expand=True, pady=80)
+        has_tasks = bool(tasks)
+        self._empty_lbl.setVisible(not has_tasks)
 
         active = sum(1 for t in tasks if t.status in DownloadStatus.active_states())
-        self._count_lbl.configure(
-            text=f"  {active} active  ·  {len(tasks)} total  ")
-        # Use a shorter interval while downloads are active so progress updates
-        # feel responsive.  Slow down when nothing is happening to reduce CPU
-        # overhead — 2 000 ms is imperceptible for a static list.
-        interval = 500 if active else 2000
-        self.after(interval, self._poll)
+        self._count_lbl.setText(f"  {active} đang tải  ·  {len(tasks)} tổng  ")
+
+        # Slow down poll when idle
+        self._poll_timer.setInterval(500 if active else 2000)
 
     def _on_pause(self, task_id: str) -> None:
         task = self._app.service.get_task(task_id)
@@ -124,17 +193,90 @@ class QueueTab(ctk.CTkFrame):
     def _on_cancel(self, task_id: str) -> None:
         self._app.service.cancel_download(task_id)
 
+    def _toggle_select_mode(self) -> None:
+        self._select_mode = self._select_btn.isChecked()
+        self._selected_ids.clear()
+        for w in self._widgets.values():
+            if self._select_mode:
+                w.set_select_mode(True, self._on_item_select)
+            else:
+                w.set_select_mode(False, None)
+        self._update_clear_btn_label()
+
+    def _on_item_select(self, task_id: str, checked: bool) -> None:
+        if checked:
+            self._selected_ids.add(task_id)
+        else:
+            self._selected_ids.discard(task_id)
+        self._update_clear_btn_label()
+
+    def _update_clear_btn_label(self) -> None:
+        if self._select_mode and self._selected_ids:
+            self._clear_btn.setText(f"Xóa đã chọn ({len(self._selected_ids)})")
+        else:
+            self._clear_btn.setText("Xóa đã xong")
+
     def _clear_finished(self) -> None:
-        self._app.service.clear_finished()
+        if self._select_mode and self._selected_ids:
+            self._app.service.clear_specific(list(self._selected_ids))
+            self._selected_ids.clear()
+            self._update_clear_btn_label()
+        else:
+            self._app.service.clear_finished()
+
+    def _on_send(self, file_path, restore_btn, task=None, specific_files=None) -> None:
+        nodes = self._app.config.taildrop_target_nodes
+        if not nodes:
+            self._app.toast("Chưa cấu hình thiết bị đích trong Settings → Taildrop", "warning")
+            restore_btn()
+            return
+        if not self._app.config.taildrop_enabled:
+            self._app.toast("Taildrop chưa được bật trong Settings", "warning")
+            restore_btn()
+            return
+
+        node_list_str = ", ".join(nodes)
+
+        def _on_node_done(node: str) -> None:
+            ui_bridge.post(lambda: self._app.toast(f"📲  Đã gửi → {node}", "success"))
+
+        def _on_node_error(node: str, err: str) -> None:
+            ui_bridge.post(lambda: self._app.toast(f"❌  Gửi thất bại → {node}: {err[:60]}", "error"))
+
+        try:
+            self._app.taildrop.send_file_to_nodes(
+                file_path,
+                nodes,
+                on_node_done=_on_node_done,
+                on_node_error=_on_node_error,
+                task=task,
+                specific_files_override=specific_files,
+            )
+            self._app.toast(f"📲  Đang gửi đến {len(nodes)} thiết bị: {node_list_str}", "info")
+        except Exception as exc:
+            logger.warning("QueueTab _on_send error: %s", exc)
+            self._app.toast(f"❌  Lỗi gửi file: {str(exc)[:80]}", "error")
+        finally:
+            QTimer.singleShot(800, restore_btn)
+
+    def _style_count_lbl(self) -> None:
+        self._count_lbl.setStyleSheet(f"""
+            color: {T.text2};
+            background-color: {T.surface2};
+            border-radius: 8px;
+            font-size: 11px;
+            padding: 4px 12px;
+        """)
 
     def _on_theme(self) -> None:
-        if not self.winfo_exists():
-            return
-        self.configure(fg_color=T.bg)
-        self._title_lbl.configure(text_color=T.text)
-        self._count_lbl.configure(text_color=T.text2, fg_color=T.surface2)
-        self._clear_btn.configure(fg_color=T.surface2, hover_color=T.surface3,
-                                  text_color=T.text2)
-        self._empty_lbl.configure(text_color=T.text3)
-        self._scroll.configure(scrollbar_button_color=T.scrollbar,
-                               scrollbar_button_hover_color=T.scrollbar_hover)
+        self._style_count_lbl()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._poll_timer.stop()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._poll_timer.start()
+        self._fade_anim.stop()
+        self._fade_anim.start()

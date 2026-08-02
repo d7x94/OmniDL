@@ -16,11 +16,14 @@ Coverage matrix
  7.  System PATH — ffmpeg and ffprobe in different directories → WARNING + result
  8.  System PATH — ffmpeg only, ffprobe nowhere                → WARNING + degraded
  9.  Nothing found anywhere                                    → None + ERROR
-10.  Caching — lru_cache; filesystem probed at most once [L3]
+10.  Caching — lru_cache
+filesystem probed at most once [L3]
 11.  get_ffmpeg_path() — public wrapper
 12.  get_ffmpeg_diagnostics() — correct label strings
-13.  _find_binary() — .exe preferred; directories ignored
-14.  _probe_directory() — symlink resolution [L5]; partial match [L1]
+13.  _find_binary() — .exe preferred
+directories ignored
+14.  _probe_directory() — symlink resolution [L5]
+partial match [L1]
 """
 from __future__ import annotations
 
@@ -34,14 +37,13 @@ _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from utils.ffmpeg_locator import (
+from utils.ffmpeg_locator import (  # noqa: E402
     _find_binary,
     _probe_directory,
     get_ffmpeg_diagnostics,
     get_ffmpeg_path,
     locate_ffmpeg,
 )
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -114,8 +116,10 @@ class TestBundle(LocatorTC):
 class TestBundleFfprobeMissing(LocatorTC):
 
     def _setup(self):
-        m = self.tmp / "m"; m.mkdir()
-        d = m / "ffmpeg"; d.mkdir()
+        m = self.tmp / "m"
+        m.mkdir()
+        d = m / "ffmpeg"
+        d.mkdir()
         (d / "ffmpeg").touch()
         return m
 
@@ -142,9 +146,12 @@ class TestBundleAbsent(LocatorTC):
 
     def test_falls_through_to_system(self):
         """FIX [L6]: absent bundle must NOT return None immediately."""
-        m = self.tmp / "empty_m"; m.mkdir()
-        d = self.tmp / "sys"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        m = self.tmp / "empty_m"
+        m.mkdir()
+        d = self.tmp / "sys"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
 
         with self._meipass(str(m)):
             with self.assertLogs("utils.ffmpeg_locator", "ERROR"):
@@ -154,7 +161,8 @@ class TestBundleAbsent(LocatorTC):
         self.assertEqual(r.source, "system")
 
     def test_error_logged(self):
-        m = self.tmp / "empty_m2"; m.mkdir()
+        m = self.tmp / "empty_m2"
+        m.mkdir()
         with self._meipass(str(m)):
             with patch("shutil.which", return_value=None):
                 with self.assertLogs("utils.ffmpeg_locator", "ERROR") as cm:
@@ -168,10 +176,12 @@ class TestSourceResources(LocatorTC):
 
     def _setup(self):
         f = self.tmp / "utils" / "ffmpeg_locator.py"
-        f.parent.mkdir(parents=True, exist_ok=True); f.touch()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.touch()
         res = self.tmp / "resources" / "ffmpeg"
         res.mkdir(parents=True)
-        (res / "ffmpeg").touch(); (res / "ffprobe").touch()
+        (res / "ffmpeg").touch()
+        (res / "ffprobe").touch()
         return f, res
 
     def test_source_is_resources(self):
@@ -198,9 +208,12 @@ class TestSourceNoResources(LocatorTC):
     def test_falls_to_system(self):
         import utils.ffmpeg_locator as mod
         f = self.tmp / "utils" / "ffmpeg_locator.py"
-        f.parent.mkdir(parents=True, exist_ok=True); f.touch()
-        d = self.tmp / "sys"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.touch()
+        d = self.tmp / "sys"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         with patch.object(mod, "__file__", str(f)):
             with patch("shutil.which", side_effect=lambda n: str(d / n)):
                 r = locate_ffmpeg()
@@ -212,8 +225,10 @@ class TestSourceNoResources(LocatorTC):
 class TestSystemBoth(LocatorTC):
 
     def _setup(self):
-        d = self.tmp / "bin"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        d = self.tmp / "bin"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         return d
 
     def test_source_is_system(self):
@@ -242,10 +257,14 @@ class TestSystemBoth(LocatorTC):
 class TestSystemSplit(LocatorTC):
 
     def _run(self):
-        a = self.tmp / "a"; a.mkdir()
-        b = self.tmp / "b"; b.mkdir()
-        (a / "ffmpeg").touch(); (b / "ffprobe").touch()
-        w = lambda n: str(a / "ffmpeg") if n == "ffmpeg" else str(b / "ffprobe")
+        a = self.tmp / "a"
+        a.mkdir()
+        b = self.tmp / "b"
+        b.mkdir()
+        (a / "ffmpeg").touch()
+        (b / "ffprobe").touch()
+        def w(n):
+            return str(a / "ffmpeg") if n == "ffmpeg" else str(b / "ffprobe")
         with self.assertLogs("utils.ffmpeg_locator", "WARNING") as cm:
             with patch("shutil.which", side_effect=w):
                 r = locate_ffmpeg()
@@ -269,9 +288,11 @@ class TestSystemSplit(LocatorTC):
 class TestSystemFfmpegOnly(LocatorTC):
 
     def test_degraded_and_warning(self):
-        d = self.tmp / "bin"; d.mkdir()
+        d = self.tmp / "bin"
+        d.mkdir()
         (d / "ffmpeg").touch()
-        w = lambda n: str(d / "ffmpeg") if n == "ffmpeg" else None
+        def w(n):
+            return str(d / "ffmpeg") if n == "ffmpeg" else None
         with self.assertLogs("utils.ffmpeg_locator", "WARNING") as cm:
             with patch("shutil.which", side_effect=w):
                 r = locate_ffmpeg()
@@ -286,7 +307,8 @@ class TestNothingFound(LocatorTC):
     def _isolate(self):
         import utils.ffmpeg_locator as mod
         f = self.tmp / "utils" / "ffmpeg_locator.py"
-        f.parent.mkdir(parents=True, exist_ok=True); f.touch()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.touch()
         return patch.object(mod, "__file__", str(f))
 
     def test_returns_none(self):
@@ -311,8 +333,10 @@ class TestNothingFound(LocatorTC):
 class TestCaching(LocatorTC):
 
     def test_probed_once(self):
-        d = self.tmp / "bin"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        d = self.tmp / "bin"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         calls: list = []
 
         def _w(n):
@@ -330,8 +354,10 @@ class TestCaching(LocatorTC):
         self.assertIs(r2, r3)
 
     def test_get_ffmpeg_path_shares_cache(self):
-        d = self.tmp / "bin"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        d = self.tmp / "bin"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         calls: list = []
 
         def _w(n):
@@ -350,8 +376,10 @@ class TestCaching(LocatorTC):
 class TestGetFfmpegPath(LocatorTC):
 
     def test_returns_dir_string(self):
-        d = self.tmp / "bin"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        d = self.tmp / "bin"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         with patch("shutil.which", side_effect=lambda n: str(d / n)):
             p = get_ffmpeg_path()
         self.assertIsInstance(p, str)
@@ -360,7 +388,8 @@ class TestGetFfmpegPath(LocatorTC):
     def test_returns_none(self):
         import utils.ffmpeg_locator as mod
         f = self.tmp / "utils" / "ffmpeg_locator.py"
-        f.parent.mkdir(parents=True, exist_ok=True); f.touch()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.touch()
         with patch.object(mod, "__file__", str(f)):
             with patch("shutil.which", return_value=None):
                 with self.assertLogs("utils.ffmpeg_locator", "ERROR"):
@@ -379,8 +408,10 @@ class TestDiagnostics(LocatorTC):
         self.assertTrue("bundled" in d.lower() or "pyinstaller" in d.lower())
 
     def test_system_label(self):
-        bd = self.tmp / "bin"; bd.mkdir()
-        (bd / "ffmpeg").touch(); (bd / "ffprobe").touch()
+        bd = self.tmp / "bin"
+        bd.mkdir()
+        (bd / "ffmpeg").touch()
+        (bd / "ffprobe").touch()
         with patch("shutil.which", side_effect=lambda n: str(bd / n)):
             d = get_ffmpeg_diagnostics()
         self.assertIn("system PATH", d)
@@ -388,10 +419,12 @@ class TestDiagnostics(LocatorTC):
     def test_resources_label(self):
         import utils.ffmpeg_locator as mod
         f = self.tmp / "utils" / "ffmpeg_locator.py"
-        f.parent.mkdir(parents=True, exist_ok=True); f.touch()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.touch()
         res = self.tmp / "resources" / "ffmpeg"
         res.mkdir(parents=True)
-        (res / "ffmpeg").touch(); (res / "ffprobe").touch()
+        (res / "ffmpeg").touch()
+        (res / "ffprobe").touch()
         with patch.object(mod, "__file__", str(f)):
             d = get_ffmpeg_diagnostics()
         self.assertIn("resources", d.lower())
@@ -399,7 +432,8 @@ class TestDiagnostics(LocatorTC):
     def test_not_found_label(self):
         import utils.ffmpeg_locator as mod
         f = self.tmp / "utils" / "ffmpeg_locator.py"
-        f.parent.mkdir(parents=True, exist_ok=True); f.touch()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.touch()
         with patch.object(mod, "__file__", str(f)):
             with patch("shutil.which", return_value=None):
                 with self.assertLogs("utils.ffmpeg_locator", "ERROR"):
@@ -407,8 +441,10 @@ class TestDiagnostics(LocatorTC):
         self.assertIn("not found", d.lower())
 
     def test_includes_binary_paths(self):
-        bd = self.tmp / "bin"; bd.mkdir()
-        (bd / "ffmpeg").touch(); (bd / "ffprobe").touch()
+        bd = self.tmp / "bin"
+        bd.mkdir()
+        (bd / "ffmpeg").touch()
+        (bd / "ffprobe").touch()
         with patch("shutil.which", side_effect=lambda n: str(bd / n)):
             d = get_ffmpeg_diagnostics()
         self.assertIn("ffmpeg=", d)
@@ -446,21 +482,25 @@ class TestProbeDir(LocatorTC):
         self.assertIsNone(_probe_directory(self.tmp / "ghost", "bundle"))
 
     def test_full_result(self):
-        d = self.tmp / "d"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        d = self.tmp / "d"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         r = _probe_directory(d, "bundle")
         self.assertIsNotNone(r)
         self.assertNotEqual(r.ffprobe_bin, "<not found>")
 
     def test_degraded_when_ffprobe_absent(self):
-        d = self.tmp / "d"; d.mkdir()
+        d = self.tmp / "d"
+        d.mkdir()
         (d / "ffmpeg").touch()
         with self.assertLogs("utils.ffmpeg_locator", "WARNING"):
             r = _probe_directory(d, "bundle")
         self.assertEqual(r.ffprobe_bin, "<not found>")
 
     def test_none_when_empty(self):
-        d = self.tmp / "d"; d.mkdir()
+        d = self.tmp / "d"
+        d.mkdir()
         self.assertIsNone(_probe_directory(d, "bundle"))
 
     @unittest.skipIf(
@@ -469,15 +509,20 @@ class TestProbeDir(LocatorTC):
         'Creating symlinks on Windows requires elevated privileges (Developer Mode or Admin)'
     )
     def test_resolves_symlinks(self):
-        real = self.tmp / "real"; real.mkdir()
-        (real / "ffmpeg").touch(); (real / "ffprobe").touch()
-        link = self.tmp / "link"; link.symlink_to(real)
+        real = self.tmp / "real"
+        real.mkdir()
+        (real / "ffmpeg").touch()
+        (real / "ffprobe").touch()
+        link = self.tmp / "link"
+        link.symlink_to(real)
         r = _probe_directory(link, "bundle")
         self.assertEqual(Path(r.directory), real.resolve())
 
     def test_source_preserved(self):
-        d = self.tmp / "d"; d.mkdir()
-        (d / "ffmpeg").touch(); (d / "ffprobe").touch()
+        d = self.tmp / "d"
+        d.mkdir()
+        (d / "ffmpeg").touch()
+        (d / "ffprobe").touch()
         for src in ("bundle", "resources", "system"):
             r = _probe_directory(d, src)
             self.assertEqual(r.source, src)

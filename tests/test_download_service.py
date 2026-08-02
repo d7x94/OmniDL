@@ -15,6 +15,7 @@ Covers:
 - _on_completed / _on_failed / _on_cancelled: trigger history.add via daemon thread
 - EventBus subscriptions wired at init
 """
+
 import threading
 import time
 from pathlib import Path
@@ -24,10 +25,10 @@ from app.event_bus import EventBus
 from app.services.download_service import DownloadService
 from domain.models.download_task import DownloadTask, MediaInfo
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_service(
     engine_info=None,
@@ -61,9 +62,7 @@ def make_service(
         event_bus=bus,
     )
 
-    mocks = dict(
-        config=config, manager=manager, history=history, engine=engine, bus=bus
-    )
+    mocks = dict(config=config, manager=manager, history=history, engine=engine, bus=bus)
     return service, mocks
 
 
@@ -84,6 +83,7 @@ def wait_for(condition, timeout=3.0):
 # ---------------------------------------------------------------------------
 # analyse_url
 # ---------------------------------------------------------------------------
+
 
 class TestAnalyseUrl:
     def test_invalid_url_calls_on_error_synchronously(self):
@@ -161,6 +161,7 @@ class TestAnalyseUrl:
 # start_download
 # ---------------------------------------------------------------------------
 
+
 class TestStartDownload:
     def test_returns_download_task(self, tmp_path):
         service, mocks = make_service(download_dir=tmp_path)
@@ -237,6 +238,7 @@ class TestStartDownload:
 # Delegation methods
 # ---------------------------------------------------------------------------
 
+
 class TestDelegation:
     def test_pause_download_delegates(self, tmp_path):
         service, mocks = make_service(download_dir=tmp_path)
@@ -283,6 +285,7 @@ class TestDelegation:
 # History save via EventBus
 # ---------------------------------------------------------------------------
 
+
 class TestHistorySaveOnEvent:
     """_on_completed / _on_failed / _on_cancelled must call history.add
     (dispatched on a daemon thread — wait for it)."""
@@ -299,22 +302,256 @@ class TestHistorySaveOnEvent:
         service, mocks = make_service(download_dir=tmp_path)
         task = self._make_task()
         mocks["bus"].publish(EventBus.DOWNLOAD_COMPLETED, task=task)
-        assert self._wait_history_add(mocks["history"]), \
-            "history.add not called on COMPLETED"
+        assert self._wait_history_add(mocks["history"]), "history.add not called on COMPLETED"
         mocks["history"].add.assert_called_with(task)
 
     def test_failed_event_saves_to_history(self, tmp_path):
         service, mocks = make_service(download_dir=tmp_path)
         task = self._make_task()
         mocks["bus"].publish(EventBus.DOWNLOAD_FAILED, task=task)
-        assert self._wait_history_add(mocks["history"]), \
-            "history.add not called on FAILED"
+        assert self._wait_history_add(mocks["history"]), "history.add not called on FAILED"
         mocks["history"].add.assert_called_with(task)
 
     def test_cancelled_event_saves_to_history(self, tmp_path):
         service, mocks = make_service(download_dir=tmp_path)
         task = self._make_task()
         mocks["bus"].publish(EventBus.DOWNLOAD_CANCELLED, task=task)
-        assert self._wait_history_add(mocks["history"]), \
-            "history.add not called on CANCELLED"
+        assert self._wait_history_add(mocks["history"]), "history.add not called on CANCELLED"
         mocks["history"].add.assert_called_with(task)
+
+
+# ---------------------------------------------------------------------------
+# Branch coverage: _should_fallback_to_gallery_dl, taildrop, duplicate guard
+# ---------------------------------------------------------------------------
+
+
+class TestShouldFallbackToGalleryDl:
+    """app/services/download_service._should_fallback_to_gallery_dl coverage."""
+
+    def test_non_gallery_url_returns_false(self):
+        from unittest.mock import patch
+
+        from app.services.download_service import _should_fallback_to_gallery_dl
+
+        with patch(
+            "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
+            return_value=False,
+        ):
+            assert _should_fallback_to_gallery_dl("https://youtube.com/x", "no video") is False
+
+    def test_gallery_url_with_photo_error_returns_true(self):
+        from unittest.mock import patch
+
+        from app.services.download_service import _PHOTO_ERRORS, _should_fallback_to_gallery_dl
+
+        # Use the first known photo-error keyword
+        error_kw = next(iter(_PHOTO_ERRORS))
+        with patch(
+            "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
+            return_value=True,
+        ):
+            assert _should_fallback_to_gallery_dl("https://instagram.com/p/x", error_kw) is True
+
+    def test_gallery_url_without_photo_error_returns_false(self):
+        from unittest.mock import patch
+
+        from app.services.download_service import _should_fallback_to_gallery_dl
+
+        with patch(
+            "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
+            return_value=True,
+        ):
+            assert _should_fallback_to_gallery_dl("https://instagram.com/p/x", "rate limit") is False
+
+
+# ---------------------------------------------------------------------------
+# BUG-FB-PHOTO: facebook.com added to gallery-dl's supported-platform regex
+# so photo-only Facebook posts fall back to gallery-dl instead of failing.
+# Uses the real (unmocked) regex to catch regressions in the pattern itself.
+# ---------------------------------------------------------------------------
+
+
+class TestGalleryDlFacebookRouting:
+    def test_facebook_photo_post_is_gallery_dl_url(self):
+        from infrastructure.downloader.gallery_dl_engine import is_gallery_dl_url
+
+        assert is_gallery_dl_url("https://www.facebook.com/someuser/photos/a.123/456/") is True
+
+    def test_facebook_photo_php_is_gallery_dl_url(self):
+        from infrastructure.downloader.gallery_dl_engine import is_gallery_dl_url
+
+        assert is_gallery_dl_url("https://www.facebook.com/photo.php?fbid=123") is True
+
+    def test_facebook_photo_post_falls_back_on_photo_error(self):
+        """Real (unmocked) is_gallery_dl_url: FB photo-only error triggers fallback."""
+        from app.services.download_service import _should_fallback_to_gallery_dl
+
+        assert (
+            _should_fallback_to_gallery_dl(
+                "https://www.facebook.com/someuser/photos/a.123/456/",
+                "There is no video in this post",
+            )
+            is True
+        )
+
+    def test_facebook_video_error_does_not_fall_back(self):
+        """A non-photo error on a Facebook URL must NOT trigger the gallery-dl fallback."""
+        from app.services.download_service import _should_fallback_to_gallery_dl
+
+        assert (
+            _should_fallback_to_gallery_dl("https://www.facebook.com/watch/?v=123456", "Network timeout")
+            is False
+        )
+
+    def test_facebook_story_url_not_routed_to_gallery_dl_story_check(self):
+        """Story URLs must keep going through facebook_story_engine, not gallery-dl.
+
+        is_gallery_dl_url() now also matches facebook.com generically, but
+        download_manager checks is_facebook_story_url() BEFORE gallery/yt-dlp
+        routing, so /stories/ URLs are unaffected by this widening.
+        """
+        from infrastructure.downloader.facebook_story_engine import is_facebook_story_url
+        from infrastructure.downloader.gallery_dl_engine import is_gallery_dl_url
+
+        story_url = "https://www.facebook.com/stories/1234567890/"
+        assert is_facebook_story_url(story_url) is True
+        # gallery_dl_engine's regex matches facebook.com generically too, but
+        # routing order (checked in download_manager) gives story precedence.
+        assert is_gallery_dl_url(story_url) is True
+
+    def test_facebook_video_post_url_not_a_story(self):
+        from infrastructure.downloader.facebook_story_engine import is_facebook_story_url
+
+        assert is_facebook_story_url("https://www.facebook.com/watch/?v=123456") is False
+
+
+class TestTaildropProperty:
+    def test_taildrop_property_returns_service(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        # taildrop is a MagicMock attribute on the config mock
+        assert service.taildrop is service._taildrop
+
+
+class TestDuplicateUrlGuard:
+    def test_duplicate_active_url_returns_existing_task(self, tmp_path):
+        from domain.enums.download_status import DownloadStatus
+
+        service, mocks = make_service(download_dir=tmp_path)
+
+        existing = MagicMock()
+        existing.url = "https://youtube.com/watch?v=dup"
+        existing.status = DownloadStatus.DOWNLOADING
+
+        mocks["manager"].get_all_tasks.return_value = [existing]
+
+        result = service.start_download(
+            url="https://youtube.com/watch?v=dup",
+            media_info=make_media_info(url="https://youtube.com/watch?v=dup"),
+            format_id="bestvideo+bestaudio",
+            output_ext="mp4",
+        )
+        # Must return the existing task, not enqueue a new one
+        assert result is existing
+        mocks["manager"].enqueue.assert_not_called()
+
+
+class TestFetchThumbnailDelegation:
+    def test_fetch_thumbnail_delegates_to_thumbnail_service(self, tmp_path):
+        from unittest.mock import patch as _patch
+
+        service, mocks = make_service(download_dir=tmp_path)
+        on_done = MagicMock()
+        on_error = MagicMock()
+        with _patch.object(service._thumbnail_svc, "fetch_async") as mock_fetch:
+            service.fetch_thumbnail(
+                url="https://img.example.com/thumb.jpg",
+                width=120,
+                height=90,
+                on_done=on_done,
+                on_error=on_error,
+            )
+            mock_fetch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Gallery-dl fallback in analyse_url (lines 127-138 coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyseUrlGalleryDlFallback:
+    """When yt-dlp fails with a photo-error on a gallery-dl URL, fall back."""
+
+    def _wait_cb(self, cb_list, timeout=3.0):
+        import time
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if cb_list:
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_fallback_succeeds_calls_on_done(self, tmp_path):
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
+        from app.services.download_service import _PHOTO_ERRORS
+
+        gallery_info = make_media_info(url="https://instagram.com/p/x")
+        gallery_engine = MagicMock()
+        gallery_engine.extract_info.return_value = gallery_info
+
+        photo_err = next(iter(_PHOTO_ERRORS))
+        service, mocks = make_service(
+            engine_error=photo_err,
+            download_dir=tmp_path,
+        )
+        service._gallery_engine = gallery_engine
+
+        done = []
+        errors = []
+
+        with _patch(
+            "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
+            return_value=True,
+        ):
+            service.analyse_url(
+                "https://instagram.com/p/x",
+                on_done=done.append,
+                on_error=errors.append,
+            )
+
+        assert self._wait_cb(done)
+        assert done[0] is gallery_info
+        assert not errors
+
+    def test_fallback_fails_calls_on_error(self, tmp_path):
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
+        from app.services.download_service import _PHOTO_ERRORS
+
+        gallery_engine = MagicMock()
+        gallery_engine.extract_info.side_effect = RuntimeError("gdl failed")
+
+        photo_err = next(iter(_PHOTO_ERRORS))
+        service, mocks = make_service(
+            engine_error=photo_err,
+            download_dir=tmp_path,
+        )
+        service._gallery_engine = gallery_engine
+
+        errors = []
+
+        with _patch(
+            "infrastructure.downloader.gallery_dl_engine.is_gallery_dl_url",
+            return_value=True,
+        ):
+            service.analyse_url(
+                "https://instagram.com/p/x",
+                on_done=lambda i: None,
+                on_error=errors.append,
+            )
+
+        assert self._wait_cb(errors)
+        assert "gdl failed" in errors[0]

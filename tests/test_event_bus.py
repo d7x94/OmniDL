@@ -12,7 +12,6 @@ import threading
 
 from app.event_bus import EventBus
 
-
 # ---------------------------------------------------------------------------
 # Basic pub/sub
 # ---------------------------------------------------------------------------
@@ -116,3 +115,114 @@ class TestThreadSafety:
         bus.publish("ev")
         bus.publish("ev")  # second publish should not call it again
         assert calls == ["fired"]
+
+
+# ---------------------------------------------------------------------------
+# publish_* convenience helpers (lines 73-130 coverage)
+# ---------------------------------------------------------------------------
+
+class TestPublishHelpers:
+    """All publish_* shortcuts must fire the matching event with correct kwargs."""
+
+    def _bus_with_capture(self, event_name):
+        bus = EventBus()
+        received = []
+        bus.subscribe(event_name, lambda **kw: received.append(kw))
+        return bus, received
+
+    def test_publish_download_started(self):
+        bus, recv = self._bus_with_capture(EventBus.DOWNLOAD_STARTED)
+        task = object()
+        bus.publish_download_started(task)
+        assert recv and recv[0]["task"] is task
+
+    def test_publish_download_progress(self):
+        bus, recv = self._bus_with_capture(EventBus.DOWNLOAD_PROGRESS)
+        task = object()
+        bus.publish_download_progress(task)
+        assert recv and recv[0]["task"] is task
+
+    def test_publish_download_completed(self):
+        bus, recv = self._bus_with_capture(EventBus.DOWNLOAD_COMPLETED)
+        task = object()
+        bus.publish_download_completed(task)
+        assert recv and recv[0]["task"] is task
+
+    def test_publish_download_failed(self):
+        bus, recv = self._bus_with_capture(EventBus.DOWNLOAD_FAILED)
+        task = object()
+        bus.publish_download_failed(task)
+        assert recv and recv[0]["task"] is task
+
+    def test_publish_download_cancelled(self):
+        bus, recv = self._bus_with_capture(EventBus.DOWNLOAD_CANCELLED)
+        task = object()
+        bus.publish_download_cancelled(task)
+        assert recv and recv[0]["task"] is task
+
+    def test_publish_analysis_done(self):
+        bus, recv = self._bus_with_capture(EventBus.ANALYSIS_DONE)
+        info = object()
+        bus.publish_analysis_done(info)
+        assert recv and recv[0]["info"] is info
+
+    def test_publish_analysis_failed(self):
+        bus, recv = self._bus_with_capture(EventBus.ANALYSIS_FAILED)
+        bus.publish_analysis_failed("oops")
+        assert recv and recv[0]["error"] == "oops"
+
+    def test_publish_taildrop_completed(self):
+        bus, recv = self._bus_with_capture(EventBus.TAILDROP_COMPLETED)
+        task = object()
+        bus.publish_taildrop_completed(task, dest_node="phone")
+        assert recv and recv[0]["dest_node"] == "phone"
+
+    def test_publish_taildrop_failed(self):
+        bus, recv = self._bus_with_capture(EventBus.TAILDROP_FAILED)
+        task = object()
+        bus.publish_taildrop_failed(task, dest_node="phone", error="timeout")
+        assert recv and recv[0]["error"] == "timeout"
+
+    def test_publish_convert_taildrop_completed(self):
+        from pathlib import Path
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_TAILDROP_COMPLETED)
+        p = Path("/tmp/out.mp4")  # nosec B108
+        bus.publish_convert_taildrop_completed(p, dest_node="phone")
+        assert recv and recv[0]["out_path"] == p
+
+    def test_publish_convert_taildrop_failed(self):
+        from pathlib import Path
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_TAILDROP_FAILED)
+        p = Path("/tmp/out.mp4")  # nosec B108
+        bus.publish_convert_taildrop_failed(p, dest_node="phone", error="err")
+        assert recv and recv[0]["error"] == "err"
+
+    def test_publish_convert_started(self):
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_STARTED)
+        job = object()
+        bus.publish_convert_started(job)
+        assert recv and recv[0]["job"] is job
+
+    def test_publish_convert_progress(self):
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_PROGRESS)
+        job = object()
+        bus.publish_convert_progress(job)
+        assert recv and recv[0]["job"] is job
+
+    def test_publish_convert_completed(self):
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_COMPLETED)
+        job = object()
+        bus.publish_convert_completed(job)
+        assert recv and recv[0]["job"] is job
+
+    def test_publish_convert_failed(self):
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_FAILED)
+        job = object()
+        bus.publish_convert_failed(job)
+        assert recv and recv[0]["job"] is job
+
+    def test_publish_convert_cancelled(self):
+        bus, recv = self._bus_with_capture(EventBus.CONVERT_CANCELLED)
+        job = object()
+        bus.publish_convert_cancelled(job)
+        assert recv and recv[0]["job"] is job

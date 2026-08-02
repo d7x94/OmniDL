@@ -1,75 +1,86 @@
-"""
-ui/tabs/convert_tab.py
-Tab chuyển đổi video sang MP4 tương thích iPhone.
+"""Convert tab — convert local video files to iPhone-compatible MP4."""
 
-Luồng:
-  1. User thêm file qua Browse hoặc drag-and-drop
-  2. Chọn preset chất lượng (Cao / Chuẩn / Nhỏ) và thư mục output
-  3. Nhấn "Convert All" → từng file chạy trong background thread
-  4. Mỗi file có card riêng với progress bar + trạng thái
-  5. Sau khi xong có nút "📂 Mở thư mục"
-"""
 from __future__ import annotations
 
 import logging
-import tkinter as tk
-import tkinter.filedialog as fd
+import threading
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
-import customtkinter as ctk
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.services.ffmpeg_convert_service import FfmpegConvertService
+from app.event_bus import EventBus
+from app.services.ffmpeg_convert_service import (
+    CODEC_OPTIONS,
+    ENCODER_OPTIONS,
+    SPEED_OPTIONS,
+    SUPPORTED_EXTS,
+    ConvertQueue,
+    EncodeSettings,
+    FfmpegMediaInfo,
+    get_available_encoder_options,
+    probe_media_info,
+    scan_folder_for_media,
+)
 from ui.components.progress_bar import OmniProgressBar
+from ui.signals import ui_bridge
 from ui.themes.tokens import T
-from utils.helpers import fmt_bytes, open_folder, reveal_in_explorer
+from utils.helpers import fmt_bytes, fmt_duration, open_file, open_folder, reveal_in_explorer
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
-# ── Supported input formats ───────────────────────────────────────────────────
-_INPUT_EXTS = (
-    "*.mp4", "*.mkv", "*.webm", "*.avi", "*.mov", "*.flv",
-    "*.wmv", "*.m4v", "*.ts", "*.mpeg", "*.mpg", "*.3gp",
-)
-_FILETYPES = [
-    ("Video files", " ".join(_INPUT_EXTS)),
-    ("All files",   "*.*"),
+_QUALITY_OPTIONS = [
+    ("high", "Chất lượng cao", "H.264 CRF 18 · AAC 192k · Giữ độ phân giải"),
+    ("standard", "Chuẩn", "H.264 CRF 23 · AAC 128k · Phù hợp mọi iPhone"),
+    ("small", "File nhỏ", "H.264 CRF 28 · AAC 96k · Tối đa 720p"),
+    ("custom", "Tùy chỉnh", "Giá trị CRF/CQ tùy chọn (16-35)"),
 ]
 
-# ── Preset definitions (mirrors ffmpeg_convert_service) ──────────────────────
-_QUALITY_OPTIONS = [
-    ("high",     "🏆  Chất lượng cao",  "H.264 CRF 18 · AAC 192k · Giữ độ phân giải"),
-    ("standard", "📱  Chuẩn",           "H.264 CRF 23 · AAC 128k · Phù hợp mọi iPhone"),
-    ("small",    "💾  File nhỏ",        "H.264 CRF 28 · AAC 96k · Tối đa 720p"),
-]
+_MAX_CONCURRENT = 2
 
 
 class FileState(Enum):
-    PENDING    = auto()
+    PENDING = auto()
+    QUEUED = auto()
     CONVERTING = auto()
-    DONE       = auto()
-    FAILED     = auto()
+    DONE = auto()
+    FAILED = auto()
 
 
 _STATE_BADGE: dict[FileState, tuple[str, str, str]] = {
-    #                         label          text_token   bg_token
-    FileState.PENDING:    ("Chờ",          "text3",      "surface3"),
-    FileState.CONVERTING: ("Đang chuyển…", "warning",    "warning_bg"),
-    FileState.DONE:       ("✓ Xong",       "success",    "success_bg"),
-    FileState.FAILED:     ("✕ Lỗi",        "error",      "error_bg"),
+    FileState.PENDING: ("Chờ", "text3", "surface3"),
+    FileState.QUEUED: ("Hàng chờ", "text2", "surface2"),
+    FileState.CONVERTING: ("Đang chuyển…", "warning", "warning_bg"),
+    FileState.DONE: ("✓ Xong", "success", "success_bg"),
+    FileState.FAILED: ("✕ Lỗi", "error", "error_bg"),
 }
 
 _STATE_PROG: dict[FileState, str] = {
-    FileState.PENDING:    "active",
+    FileState.PENDING: "active",
+    FileState.QUEUED: "paused",
     FileState.CONVERTING: "active",
-    FileState.DONE:       "complete",
-    FileState.FAILED:     "failed",
+    FileState.DONE: "complete",
+    FileState.FAILED: "failed",
 }
 
 
@@ -81,177 +92,341 @@ class FileJob:
     progress: float = 0.0
     output: Optional[Path] = None
     error_msg: str = ""
+    media_info: Optional[FfmpegMediaInfo] = field(default=None)
+    output_media_info: Optional[FfmpegMediaInfo] = field(default=None)
+    cancel_fn: Optional[Callable[[], None]] = field(default=None, repr=False)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# File card widget
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Clickable card frame ──────────────────────────────────────────────────────
 
-class FileCard(ctk.CTkFrame):
-    """One card per FileJob in the scroll list."""
 
-    def __init__(self, master, job: FileJob,
-                 on_remove,          # callable(job_id)
-                 on_open_folder,     # callable(job_id)
-                 **kwargs) -> None:
-        super().__init__(
-            master,
-            fg_color=T.surface, corner_radius=10,
-            border_width=1, border_color=T.border,
-            **kwargs,
-        )
+class _ClickableFrame(QFrame):
+    def __init__(self, parent=None, on_click=None):
+        super().__init__(parent)
+        self._on_click = on_click
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if self._on_click and event.button() == Qt.MouseButton.LeftButton:
+            self._on_click()
+        super().mousePressEvent(event)
+
+
+# ── File card ─────────────────────────────────────────────────────────────────
+
+
+class FileCard(QFrame):
+    def __init__(
+        self,
+        parent,
+        job: FileJob,
+        on_remove,
+        on_open_folder,
+        on_cancel,
+        on_delete_output,
+    ) -> None:
+        super().__init__(parent)
         self.job = job
         self._on_remove = on_remove
         self._on_open_folder = on_open_folder
+        self._on_cancel = on_cancel
+        self._on_delete_output = on_delete_output
+        self.setStyleSheet(f"""
+            FileCard {{
+                background-color: {T.surface};
+                border: 1px solid {T.border};
+                border-radius: 10px;
+            }}
+        """)
         self._build()
-        T.register(self._on_theme)
-
-    # ── Build ─────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        # ── Row 1: icon + filename + badge + buttons ──────────────────────
-        top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill="x", padx=16, pady=(12, 6))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 6)
+        layout.setSpacing(4)
 
-        # File type dot
+        # Row 1: filename + badges + buttons
+        top = QWidget()
+        top.setStyleSheet("background: transparent;")
+        top_layout = QHBoxLayout(top)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(6)
+
         ext = self.job.source.suffix.lower().lstrip(".")
-        self._dot = ctk.CTkLabel(
-            top, text="●",
-            font=ctk.CTkFont(size=9), text_color=T.primary, width=12,
-        )
-        self._dot.pack(side="left", padx=(0, 8))
+        self._dot = QLabel("●")
+        self._dot.setStyleSheet(f"color: {T.primary}; font-size: 9px; background: transparent;")
+        top_layout.addWidget(self._dot)
 
-        # Filename
-        self._name_lbl = ctk.CTkLabel(
-            top,
-            text=self._trunc(self.job.source.name, 55),
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=T.text, anchor="w",
+        self._name_lbl = QLabel(self._trunc(self.job.source.name, 55))
+        self._name_lbl.setStyleSheet(
+            f"color: {T.text}; font-size: 13px; font-weight: bold; background: transparent;"
         )
-        self._name_lbl.pack(side="left", fill="x", expand=True)
+        self._name_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        top_layout.addWidget(self._name_lbl)
 
-        # Format badge (ext)
-        self._ext_badge = ctk.CTkLabel(
-            top, text=f"  {ext.upper()}  ",
-            font=ctk.CTkFont(size=9, weight="bold"),
-            text_color=T.text3, fg_color=T.surface3, corner_radius=4,
+        self._ext_badge = QLabel(f"  {ext.upper()}  ")
+        self._ext_badge.setStyleSheet(
+            f"color: {T.text3}; background-color: {T.surface3}; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 2px 4px;"
         )
-        self._ext_badge.pack(side="left", padx=(0, 8))
+        top_layout.addWidget(self._ext_badge)
 
-        # State badge
         s_lbl, s_txt, s_bg = _STATE_BADGE[self.job.state]
-        self._state_badge = ctk.CTkLabel(
-            top, text=f"  {s_lbl}  ",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            text_color=getattr(T, s_txt),
-            fg_color=getattr(T, s_bg), corner_radius=5,
+        self._state_badge = QLabel(f"  {s_lbl}  ")
+        self._state_badge.setStyleSheet(
+            f"color: {getattr(T, s_txt)}; background-color: {getattr(T, s_bg)}; border-radius: 5px; font-size: 10px; font-weight: bold; padding: 2px 4px;"
         )
-        self._state_badge.pack(side="left", padx=(0, 8))
+        top_layout.addWidget(self._state_badge)
 
-        # Button box
-        self._btn_box = ctk.CTkFrame(top, fg_color="transparent")
-        self._btn_box.pack(side="left")
-
-        self._remove_btn = ctk.CTkButton(
-            self._btn_box, text="✕", width=28, height=26, corner_radius=6,
-            fg_color=T.surface2, hover_color=T.error_bg, text_color=T.text3,
-            font=ctk.CTkFont(size=11),
-            command=lambda: self._on_remove(self.job.id),
+        # Buttons in order
+        self._cancel_btn = QPushButton("Hủy")
+        self._cancel_btn.setFixedSize(60, 26)
+        self._cancel_btn.setStyleSheet(
+            f"background: {T.warning_bg}; color: {T.warning}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
-        self._remove_btn.pack(side="left")
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.clicked.connect(lambda: self._on_cancel(self.job.id))
+        self._cancel_btn.hide()
+        top_layout.addWidget(self._cancel_btn)
 
-        self._open_btn = ctk.CTkButton(
-            self._btn_box, text="📂  Mở", width=72, height=26, corner_radius=6,
-            fg_color=T.success_bg, hover_color=T.success_bg,
-            text_color=T.success_text,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            command=lambda: self._on_open_folder(self.job.id),
+        self._open_btn = QPushButton("Mở")
+        self._open_btn.setFixedSize(52, 26)
+        self._open_btn.setStyleSheet(
+            f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
         )
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_btn.clicked.connect(lambda: self._on_open_folder(self.job.id))
+        self._open_btn.hide()
+        top_layout.addWidget(self._open_btn)
 
-        # ── Row 2: progress bar ───────────────────────────────────────────
+        self._preview_btn = QPushButton("Xem")
+        self._preview_btn.setFixedSize(52, 26)
+        self._preview_btn.setStyleSheet(
+            f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
+        )
+        self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._preview_btn.clicked.connect(self._toggle_preview)
+        self._preview_btn.hide()
+        top_layout.addWidget(self._preview_btn)
+
+        self._delete_output_btn = QPushButton("Xóa file")
+        self._delete_output_btn.setFixedSize(70, 26)
+        self._delete_output_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
+        )
+        self._delete_output_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._delete_output_btn.clicked.connect(lambda: self._on_delete_output(self.job.id))
+        self._delete_output_btn.hide()
+        top_layout.addWidget(self._delete_output_btn)
+
+        self._remove_btn = QPushButton("x")
+        self._remove_btn.setFixedSize(28, 26)
+        self._remove_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px;"
+            f" padding: 0; font-size: 13px; font-weight: bold;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self._remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._remove_btn.clicked.connect(lambda: self._on_remove(self.job.id))
+        top_layout.addWidget(self._remove_btn)
+
+        layout.addWidget(top)
+
+        # Row 2: media info
+        self._info_lbl = QLabel(self._initial_info_text())
+        self._info_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px; background: transparent;")
+        layout.addWidget(self._info_lbl)
+
+        # Row 3: progress bar
         self._prog = OmniProgressBar(self)
-        self._prog.pack(fill="x", padx=16, pady=(0, 6))
+        layout.addWidget(self._prog)
 
-        # ── Row 3: stats row ──────────────────────────────────────────────
-        stats = ctk.CTkFrame(self, fg_color="transparent")
-        stats.pack(fill="x", padx=16, pady=(0, 12))
+        # Row 4: stats
+        stats = QWidget()
+        stats.setStyleSheet("background: transparent;")
+        stats_layout = QHBoxLayout(stats)
+        stats_layout.setContentsMargins(0, 0, 0, 6)
+        stats_layout.setSpacing(12)
 
-        self._size_lbl = ctk.CTkLabel(
-            stats, text=self._file_size_str(),
-            font=ctk.CTkFont(size=10), text_color=T.text3,
+        self._size_lbl = QLabel(self._file_size_str())
+        self._size_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px; background: transparent;")
+        stats_layout.addWidget(self._size_lbl)
+
+        self._pct_lbl = QLabel("")
+        self._pct_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 10px; background: transparent;")
+        stats_layout.addWidget(self._pct_lbl)
+
+        stats_layout.addStretch()
+
+        self._out_lbl = QLabel("")
+        self._out_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 10px; background: transparent;")
+        self._out_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        stats_layout.addWidget(self._out_lbl)
+
+        layout.addWidget(stats)
+
+        self._err_lbl = QLabel("")
+        self._err_lbl.setStyleSheet(f"color: {T.error_text}; font-size: 11px; background: transparent;")
+        self._err_lbl.setWordWrap(True)
+        self._err_lbl.hide()
+        layout.addWidget(self._err_lbl)
+
+        # Preview panel (before/after comparison)
+        self._preview_panel = QFrame()
+        self._preview_panel.setObjectName("preview_panel")
+        self._preview_panel.setStyleSheet(
+            f"#preview_panel {{ background: {T.surface3}; border-radius: 8px;"
+            f" border: 1px solid {T.border}; }}"
+            f" QLabel {{ border: none; background: transparent; }}"
         )
-        self._size_lbl.pack(side="left")
+        prev_layout = QVBoxLayout(self._preview_panel)
+        prev_layout.setContentsMargins(0, 2, 0, 2)
+        prev_layout.setSpacing(0)
 
-        self._pct_lbl = ctk.CTkLabel(
-            stats, text="",
-            font=ctk.CTkFont(size=10), text_color=T.primary_text,
+        self._prev_before_row = _ClickableFrame(
+            self._preview_panel,
+            on_click=lambda: open_file(self.job.source),
         )
-        self._pct_lbl.pack(side="left", padx=(12, 0))
-
-        self._err_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=11),
-            text_color=T.error_text, wraplength=580, justify="left",
+        self._prev_before_row.setObjectName("prev_before_row")
+        self._prev_before_row.setStyleSheet(
+            f"#prev_before_row {{ background: transparent; border-radius: 6px; }}"
+            f" #prev_before_row:hover {{ background: {T.surface2}; }}"
         )
+        before_row_l = QHBoxLayout(self._prev_before_row)
+        before_row_l.setContentsMargins(12, 6, 12, 6)
+        before_row_l.setSpacing(8)
+        before_pfx = QLabel("Trước")
+        before_pfx.setFixedWidth(42)
+        before_pfx.setStyleSheet(f"color: {T.text3}; font-size: 10px; font-weight: bold;")
+        self._prev_before_lbl = QLabel("…")
+        self._prev_before_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px;")
+        before_row_l.addWidget(before_pfx)
+        before_row_l.addWidget(self._prev_before_lbl)
 
-        self._out_lbl = ctk.CTkLabel(
-            stats, text="",
-            font=ctk.CTkFont(size=10), text_color=T.success_text,
-            anchor="e",
+        self._prev_after_row = _ClickableFrame(
+            self._preview_panel,
+            on_click=lambda: open_file(self.job.output) if self.job.output else None,
         )
-        self._out_lbl.pack(side="right")
+        self._prev_after_row.setObjectName("prev_after_row")
+        self._prev_after_row.setStyleSheet(
+            f"#prev_after_row {{ background: transparent; border-radius: 6px; }}"
+            f" #prev_after_row:hover {{ background: {T.surface2}; }}"
+        )
+        after_row_l = QHBoxLayout(self._prev_after_row)
+        after_row_l.setContentsMargins(12, 6, 12, 6)
+        after_row_l.setSpacing(8)
+        after_pfx = QLabel("Sau")
+        after_pfx.setFixedWidth(42)
+        after_pfx.setStyleSheet(f"color: {T.success_text}; font-size: 10px; font-weight: bold;")
+        self._prev_after_lbl = QLabel("Đang đọc…")
+        self._prev_after_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px;")
+        after_row_l.addWidget(after_pfx)
+        after_row_l.addWidget(self._prev_after_lbl)
 
-    # ── Refresh ───────────────────────────────────────────────────────────
+        prev_layout.addWidget(self._prev_before_row)
+        prev_layout.addWidget(self._prev_after_row)
+        self._preview_panel.hide()
+        layout.addWidget(self._preview_panel)
+
+        if self.job.media_info is not None:
+            self.update_info(self.job.media_info)
 
     def refresh(self) -> None:
         job = self.job
         s_lbl, s_txt, s_bg = _STATE_BADGE[job.state]
-        self._state_badge.configure(
-            text=f"  {s_lbl}  ",
-            text_color=getattr(T, s_txt),
-            fg_color=getattr(T, s_bg),
+        self._state_badge.setText(f"  {s_lbl}  ")
+        self._state_badge.setStyleSheet(
+            f"color: {getattr(T, s_txt)}; background-color: {getattr(T, s_bg)}; border-radius: 5px; font-size: 10px; font-weight: bold; padding: 2px 4px;"
         )
-        self._dot.configure(text_color=getattr(T, s_txt))
+        self._dot.setStyleSheet(f"color: {getattr(T, s_txt)}; font-size: 9px; background: transparent;")
+
         self._prog.set_progress(job.progress)
         self._prog.set_state(_STATE_PROG[job.state])
 
         if job.state == FileState.CONVERTING:
-            self._pct_lbl.configure(text=f"{job.progress:.0f}%")
+            self._pct_lbl.setText(f"{job.progress:.0f}%")
         else:
-            self._pct_lbl.configure(text="")
+            self._pct_lbl.setText("")
+
+        is_active = job.state in (FileState.QUEUED, FileState.CONVERTING)
+        self._cancel_btn.setVisible(is_active)
+        self._remove_btn.setEnabled(not is_active)
 
         if job.state == FileState.DONE and job.output:
             sz = fmt_bytes(job.output.stat().st_size) if job.output.is_file() else ""
-            self._out_lbl.configure(text=f"→ {job.output.name}  {sz}")
-            if not self._open_btn.winfo_ismapped():
-                self._remove_btn.pack_forget()
-                self._open_btn.pack(side="left")
-                self._remove_btn.pack(side="left", padx=(4, 0))
+            self._out_lbl.setText(f"→ {job.output.name}  {sz}")
+            self._open_btn.show()
+            self._preview_btn.show()
+            self._delete_output_btn.setVisible(job.output.is_file())
+            self._err_lbl.hide()
         elif job.state == FileState.FAILED and job.error_msg:
-            self._err_lbl.configure(text=f"  {job.error_msg[:160]}")
-            self._err_lbl.pack(fill="x", padx=16, pady=(0, 8), anchor="w")
+            self._err_lbl.setText(f"  {job.error_msg[:160]}")
+            self._err_lbl.show()
+            self._open_btn.hide()
+            self._preview_btn.hide()
+            self._delete_output_btn.hide()
         else:
-            if self._open_btn.winfo_ismapped():
-                self._open_btn.pack_forget()
+            self._open_btn.hide()
+            self._preview_btn.hide()
+            self._delete_output_btn.hide()
+            self._err_lbl.hide()
 
-        # Disable remove during conversion
-        self._remove_btn.configure(
-            state="disabled" if job.state == FileState.CONVERTING else "normal"
-        )
-
-    # ── Theme ──────────────────────────────────────────────────────────────
-
-    def _on_theme(self) -> None:
-        if not self.winfo_exists():
+    def update_info(self, info: Optional[FfmpegMediaInfo]) -> None:
+        if info is None:
+            self._info_lbl.setText("")
             return
-        self.configure(fg_color=T.surface, border_color=T.border)
-        self._name_lbl.configure(text_color=T.text)
-        self._ext_badge.configure(text_color=T.text3, fg_color=T.surface3)
-        self._size_lbl.configure(text_color=T.text3)
-        self._out_lbl.configure(text_color=T.success_text)
-        self._remove_btn.configure(fg_color=T.surface2)
-        self._open_btn.configure(fg_color=T.success_bg)
+        parts: list[str] = []
+        if info.video_codec:
+            parts.append(info.video_codec.upper())
+        if info.audio_codec:
+            parts.append(info.audio_codec.upper())
+        if info.width and info.height:
+            parts.append(f"{info.width}×{info.height}")
+        if info.duration_s > 0:
+            parts.append(fmt_duration(info.duration_s))
+        if info.bitrate_bps > 0:
+            mbps = info.bitrate_bps / 1_000_000
+            parts.append(f"{mbps:.1f} Mbps")
+        self._info_lbl.setText("  ·  ".join(parts) if parts else "")
 
-    # ── Helpers ───────────────────────────────────────────────────────────
+    def _toggle_preview(self) -> None:
+        if self._preview_panel.isVisible():
+            self._preview_panel.hide()
+        else:
+            self._refresh_preview_content()
+            self._preview_panel.show()
+
+    def _refresh_preview_content(self) -> None:
+        self._prev_before_lbl.setText(self._media_info_str(self.job.media_info, self.job.source))
+        if self.job.output_media_info is not None:
+            self._prev_after_lbl.setText(self._media_info_str(self.job.output_media_info, self.job.output))
+        else:
+            self._prev_after_lbl.setText("Đang đọc…")
+
+    def update_output_info(self) -> None:
+        if self._preview_panel.isVisible():
+            self._refresh_preview_content()
+
+    @staticmethod
+    def _media_info_str(info: Optional[FfmpegMediaInfo], path: Optional[Path] = None) -> str:
+        if info is None:
+            return "—"
+        parts: list[str] = []
+        if info.video_codec:
+            parts.append(info.video_codec.upper())
+        if info.audio_codec:
+            parts.append(info.audio_codec.upper())
+        if info.width and info.height:
+            parts.append(f"{info.width}×{info.height}")
+        if info.duration_s > 0:
+            parts.append(fmt_duration(info.duration_s))
+        if info.bitrate_bps > 0:
+            parts.append(f"{info.bitrate_bps / 1_000_000:.1f} Mbps")
+        if path and path.is_file():
+            parts.append(fmt_bytes(path.stat().st_size))
+        return "  ·  ".join(parts) if parts else "—"
+
+    def _initial_info_text(self) -> str:
+        return "" if self.job.media_info is not None else "Đang đọc thông tin…"
 
     def _file_size_str(self) -> str:
         try:
@@ -264,426 +439,752 @@ class FileCard(ctk.CTkFrame):
         return s[:n] + "…" if s and len(s) > n else (s or "")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Convert Tab
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Convert Tab ───────────────────────────────────────────────────────────────
 
-class ConvertTab(ctk.CTkFrame):
-    """Dedicated tab for converting local video files to iPhone-compatible MP4."""
 
-    def __init__(self, master, app: "MainWindow") -> None:
-        super().__init__(master, fg_color=T.bg, corner_radius=0)
+class ConvertTab(QWidget):
+    def __init__(self, app: "MainWindow") -> None:
+        super().__init__()
         self._app = app
-        self._jobs: dict[str, FileJob] = {}          # id → FileJob
-        self._cards: dict[str, FileCard] = {}        # id → FileCard
-        self._quality = tk.StringVar(value="standard")
-        self._output_dir: Optional[Path] = None
-        self._svc = FfmpegConvertService()
-        self._converting_count = 0
-        self._build()
-        T.register(self._on_theme)
+        self._jobs: dict[str, FileJob] = {}
+        self._cards: dict[str, FileCard] = {}
+        self._quality = "standard"
+        self._cfg_collapsed = False
+        self._queue = ConvertQueue(max_concurrent=_MAX_CONCURRENT)
+        self._active_count = 0
+        self._encoder_key = "cpu"
+        self._encoder_auto_selected = False
+        self._speed_preset = "balanced"
+        self._output_codec = "h264"
+        self._custom_quality_val = 23
+        self._available_encoders: set[str] = {"cpu"}
+        self._available_encoder_options: list[tuple[str, str]] = [
+            opt for opt in ENCODER_OPTIONS if opt[0] == "cpu"
+        ]
+        # Quality / speed / codec card refs
+        self._quality_cards: dict[str, _ClickableFrame] = {}
+        self._quality_main_labels: dict[str, QLabel] = {}
+        self._speed_cards: dict[str, _ClickableFrame] = {}
+        self._speed_main_labels: dict[str, QLabel] = {}
+        self._codec_cards: dict[str, _ClickableFrame] = {}
+        self._codec_main_labels: dict[str, QLabel] = {}
 
-    # ── Build ─────────────────────────────────────────────────────────────
+        threading.Thread(
+            target=self._detect_encoders_async,
+            daemon=True,
+            name="omnidl-detect-encoders",
+        ).start()
+        self._build()
+
+        from PySide6.QtCore import QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+
+        _bus = self._app.taildrop._bus
+        _bus.subscribe(EventBus.CONVERT_TAILDROP_COMPLETED, self._on_convert_taildrop_completed)
+        _bus.subscribe(EventBus.CONVERT_TAILDROP_FAILED, self._on_convert_taildrop_failed)
 
     def _build(self) -> None:
-        # ── Header ────────────────────────────────────────────────────────
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=28, pady=(24, 0))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        left_hdr = ctk.CTkFrame(hdr, fg_color="transparent")
-        left_hdr.pack(side="left", fill="y")
+        # Header
+        hdr = QWidget()
+        hdr.setStyleSheet("background: transparent;")
+        hdr_layout = QHBoxLayout(hdr)
+        hdr_layout.setContentsMargins(28, 16, 28, 0)
+        hdr_layout.setSpacing(6)
 
-        ctk.CTkLabel(
-            left_hdr, text="🍎  Chuyển sang iPhone MP4",
-            font=ctk.CTkFont(size=22, weight="bold"), text_color=T.text,
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            left_hdr,
-            text="H.264 · AAC · yuv420p · profile High — chạy mượt trên mọi iPhone",
-            font=ctk.CTkFont(size=11), text_color=T.text3,
-        ).pack(anchor="w", pady=(2, 0))
-
-        # Header buttons
-        right_hdr = ctk.CTkFrame(hdr, fg_color="transparent")
-        right_hdr.pack(side="right", fill="y")
-
-        self._add_btn = ctk.CTkButton(
-            right_hdr, text="＋  Thêm file",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            height=36, width=130, corner_radius=8,
-            fg_color=T.primary, hover_color=T.primary_hover,
-            text_color="white",
-            command=self._browse_files,
+        self._add_btn = QPushButton("Thêm file")
+        self._add_btn.setFixedSize(100, 30)
+        self._add_btn.setStyleSheet(
+            f"background: {T.primary}; color: white; border: none; border-radius: 7px; font-size: 11px; font-weight: bold;"
         )
-        self._add_btn.pack(side="left", padx=(0, 8))
+        self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_btn.clicked.connect(self._browse_files)
+        hdr_layout.addWidget(self._add_btn)
 
-        self._clear_btn = ctk.CTkButton(
-            right_hdr, text="Xóa xong",
-            font=ctk.CTkFont(size=11),
-            height=36, width=100, corner_radius=8,
-            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2,
-            command=self._clear_done,
+        self._folder_btn = QPushButton("Thêm thư mục")
+        self._folder_btn.setFixedSize(120, 30)
+        self._folder_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px; font-weight: bold;"
         )
-        self._clear_btn.pack(side="left")
+        self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._folder_btn.clicked.connect(self._browse_folder)
+        hdr_layout.addWidget(self._folder_btn)
 
-        # ── Config panel ──────────────────────────────────────────────────
-        cfg = ctk.CTkFrame(self, fg_color=T.surface, corner_radius=12,
-                           border_width=1, border_color=T.border)
-        cfg.pack(fill="x", padx=28, pady=(16, 0))
-        self._cfg_frame = cfg
+        self._clear_btn = QPushButton("Xóa xong/lỗi")
+        self._clear_btn.setFixedSize(110, 30)
+        self._clear_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
+        )
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.clicked.connect(self._clear_done)
+        hdr_layout.addWidget(self._clear_btn)
 
-        # Quality preset row
-        q_row = ctk.CTkFrame(cfg, fg_color="transparent")
-        q_row.pack(fill="x", padx=20, pady=(16, 8))
+        hdr_layout.addStretch()
 
-        ctk.CTkLabel(
-            q_row, text="Chất lượng",
-            font=ctk.CTkFont(size=12, weight="bold"), text_color=T.text2,
-            width=90, anchor="w",
-        ).pack(side="left")
+        self._cfg_toggle_btn = QPushButton("⚙ Thông số  ▲")
+        self._cfg_toggle_btn.setFixedSize(130, 30)
+        self._cfg_toggle_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
+        )
+        self._cfg_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cfg_toggle_btn.clicked.connect(self._toggle_cfg_panel)
+        hdr_layout.addWidget(self._cfg_toggle_btn)
 
-        self._quality_cards: dict[str, ctk.CTkFrame] = {}
+        layout.addWidget(hdr)
+
+        # Config panel
+        cfg_wrap = QWidget()
+        cfg_wrap.setStyleSheet("background: transparent;")
+        cfg_wrap_layout = QVBoxLayout(cfg_wrap)
+        cfg_wrap_layout.setContentsMargins(28, 16, 28, 0)
+
+        self._cfg_panel = QFrame()
+        cfg = self._cfg_panel
+        cfg.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T.surface};
+                border: 1px solid {T.border};
+                border-radius: 12px;
+            }}
+            QLabel {{ border: none; }}
+        """)
+        cfg_layout = QVBoxLayout(cfg)
+        cfg_layout.setContentsMargins(20, 16, 20, 16)
+        cfg_layout.setSpacing(8)
+
+        # Quality row
+        q_row = QWidget()
+        q_row.setStyleSheet("background: transparent;")
+        q_layout = QHBoxLayout(q_row)
+        q_layout.setContentsMargins(0, 0, 0, 0)
+        q_layout.setSpacing(6)
+
+        q_lbl = QLabel("Chất lượng")
+        q_lbl.setFixedWidth(90)
+        q_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        q_layout.addWidget(q_lbl)
+
         for key, label, desc in _QUALITY_OPTIONS:
-            card = self._make_quality_card(q_row, key, label, desc)
-            card.pack(side="left", padx=(0, 8))
+            card = self._make_option_card(
+                label,
+                desc,
+                selected=(key == self._quality),
+                on_click=lambda k=key: self._on_quality_change(k),
+            )
+            q_layout.addWidget(card, 1)
             self._quality_cards[key] = card
+            self._quality_main_labels[key] = card.findChild(QLabel, "main_lbl")
 
-        # Output folder row
-        out_row = ctk.CTkFrame(cfg, fg_color="transparent")
-        out_row.pack(fill="x", padx=20, pady=(4, 16))
+        cfg_layout.addWidget(q_row)
 
-        ctk.CTkLabel(
-            out_row, text="Lưu vào",
-            font=ctk.CTkFont(size=12, weight="bold"), text_color=T.text2,
-            width=90, anchor="w",
-        ).pack(side="left")
+        # Custom quality row
+        self._custom_row = QWidget()
+        self._custom_row.setStyleSheet("background: transparent;")
+        cr_layout = QHBoxLayout(self._custom_row)
+        cr_layout.setContentsMargins(0, 0, 0, 0)
+        cr_layout.setSpacing(6)
 
-        self._out_entry = ctk.CTkEntry(
-            out_row,
-            placeholder_text="Cùng thư mục với video gốc",
-            font=ctk.CTkFont(size=12),
-            height=36, corner_radius=8,
-            fg_color=T.input, border_color=T.border2, border_width=1,
-            text_color=T.text,
+        spacer_lbl = QLabel("")
+        spacer_lbl.setFixedWidth(90)
+        cr_layout.addWidget(spacer_lbl)
+
+        cq_lbl = QLabel("Gia tri (16-35):")
+        cq_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        cr_layout.addWidget(cq_lbl)
+
+        self._custom_entry = QLineEdit("23")
+        self._custom_entry.setFixedSize(60, 28)
+        self._custom_entry.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {T.input};
+                border: 1px solid {T.border2};
+                border-radius: 6px;
+                color: {T.text};
+                font-size: 12px;
+                padding: 0 6px;
+            }}
+        """)
+        self._custom_entry.editingFinished.connect(self._validate_custom_quality)
+        cr_layout.addWidget(self._custom_entry)
+        cr_layout.addStretch()
+
+        self._custom_row.hide()
+        cfg_layout.addWidget(self._custom_row)
+
+        # Encoder row
+        enc_row = QWidget()
+        enc_row.setStyleSheet("background: transparent;")
+        er_layout = QHBoxLayout(enc_row)
+        er_layout.setContentsMargins(0, 0, 0, 0)
+        er_layout.setSpacing(8)
+
+        enc_lbl = QLabel("Encoder")
+        enc_lbl.setFixedWidth(90)
+        enc_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        er_layout.addWidget(enc_lbl)
+
+        self._encoder_combo = QComboBox()
+        self._encoder_combo.addItems([lbl for _, lbl in self._available_encoder_options])
+        self._encoder_combo.setFixedSize(200, 32)
+        self._encoder_combo.currentTextChanged.connect(self._on_encoder_change)
+        er_layout.addWidget(self._encoder_combo)
+
+        self._encoder_status_lbl = QLabel("Đang kiểm tra…")
+        self._encoder_status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
+        er_layout.addWidget(self._encoder_status_lbl)
+        er_layout.addStretch()
+
+        cfg_layout.addWidget(enc_row)
+
+        # Speed row
+        spd_row = QWidget()
+        spd_row.setStyleSheet("background: transparent;")
+        sr_layout = QHBoxLayout(spd_row)
+        sr_layout.setContentsMargins(0, 0, 0, 0)
+        sr_layout.setSpacing(6)
+
+        spd_lbl = QLabel("Tốc độ")
+        spd_lbl.setFixedWidth(90)
+        spd_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        sr_layout.addWidget(spd_lbl)
+
+        for s_key, s_label in SPEED_OPTIONS:
+            s_card = self._make_option_card(
+                s_label,
+                "",
+                selected=(s_key == self._speed_preset),
+                on_click=lambda k=s_key: self._on_speed_change(k),
+            )
+            sr_layout.addWidget(s_card)
+            self._speed_cards[s_key] = s_card
+            self._speed_main_labels[s_key] = s_card.findChild(QLabel, "main_lbl")
+
+        sr_layout.addStretch()
+        cfg_layout.addWidget(spd_row)
+
+        # Codec row
+        cod_row = QWidget()
+        cod_row.setStyleSheet("background: transparent;")
+        co_layout = QHBoxLayout(cod_row)
+        co_layout.setContentsMargins(0, 0, 0, 0)
+        co_layout.setSpacing(6)
+
+        cod_lbl = QLabel("Codec")
+        cod_lbl.setFixedWidth(90)
+        cod_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        co_layout.addWidget(cod_lbl)
+
+        for c_key, c_label in CODEC_OPTIONS:
+            c_card = self._make_option_card(
+                c_label,
+                "",
+                selected=(c_key == self._output_codec),
+                on_click=lambda k=c_key: self._on_codec_change(k),
+            )
+            co_layout.addWidget(c_card)
+            self._codec_cards[c_key] = c_card
+            self._codec_main_labels[c_key] = c_card.findChild(QLabel, "main_lbl")
+
+        co_layout.addStretch()
+        cfg_layout.addWidget(cod_row)
+
+        cfg_wrap_layout.addWidget(cfg)
+        layout.addWidget(cfg_wrap)
+
+        # Scroll area for file list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._scroll_content = QWidget()
+        self._scroll_content.setStyleSheet("background: transparent;")
+        self._items_layout = QVBoxLayout(self._scroll_content)
+        self._items_layout.setContentsMargins(28, 12, 28, 80)
+        self._items_layout.setSpacing(8)
+        self._items_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Empty state
+        self._empty = QWidget()
+        self._empty.setStyleSheet("background: transparent;")
+        empty_layout = QVBoxLayout(self._empty)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.setSpacing(8)
+
+        el1 = QLabel("Chưa có file nào")
+        el1.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el1.setStyleSheet(f"color: {T.text3}; font-size: 16px; font-weight: bold;")
+        empty_layout.addWidget(el1)
+        el2 = QLabel('Nhấn "Thêm file" hoặc "Thêm thư mục" để chọn video')
+        el2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el2.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
+        empty_layout.addWidget(el2)
+        el3 = QLabel("Hỗ trợ: MP4, MKV, WebM, AVI, MOV, FLV, WMV, TS, 3GP…")
+        el3.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el3.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
+        empty_layout.addWidget(el3)
+        self._empty.setMinimumHeight(200)
+
+        self._items_layout.addWidget(self._empty)
+        scroll.setWidget(self._scroll_content)
+        layout.addWidget(scroll, 1)
+
+        # Bottom action bar
+        bar = QFrame()
+        bar.setStyleSheet(f"""
+            QFrame {{
+                background-color: {T.surface};
+                border-top: 1px solid {T.border};
+            }}
+            QLabel {{ border: none; }}
+        """)
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(20, 10, 20, 10)
+
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        bar_layout.addWidget(self._status_lbl, 1)
+
+        self._convert_btn = QPushButton("Chuyển đổi tất cả")
+        self._convert_btn.setFixedSize(160, 40)
+        self._convert_btn.setStyleSheet(
+            f"background: {T.primary}; color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: bold;"
         )
-        self._out_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._convert_btn.clicked.connect(self._start_all)
+        bar_layout.addWidget(self._convert_btn)
 
-        ctk.CTkButton(
-            out_row, text="Browse",
-            font=ctk.CTkFont(size=11),
-            height=36, width=80, corner_radius=8,
-            fg_color=T.surface2, hover_color=T.surface3, text_color=T.text2,
-            command=self._browse_output,
-        ).pack(side="left")
+        layout.addWidget(bar)
 
-        # ── Drop zone / file list ─────────────────────────────────────────
-        self._scroll = ctk.CTkScrollableFrame(
-            self, fg_color="transparent",
-            scrollbar_button_color=T.scrollbar,
-            scrollbar_button_hover_color=T.scrollbar_hover,
+    def _make_option_card(self, label: str, desc: str, selected: bool, on_click) -> _ClickableFrame:
+        card = _ClickableFrame(on_click=on_click)
+        card.setStyleSheet(f"""
+            _ClickableFrame {{
+                background-color: {T.primary_dim if selected else T.surface2};
+                border: 1px solid {T.primary if selected else T.border};
+                border-radius: 8px;
+            }}
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(10, 8, 10, 8)
+        card_layout.setSpacing(2)
+
+        main_lbl = QLabel(label)
+        main_lbl.setObjectName("main_lbl")
+        main_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_lbl.setStyleSheet(
+            f"color: {T.text if selected else T.text2}; font-size: 11px; font-weight: bold; background: transparent;"
         )
-        self._scroll.pack(fill="both", expand=True, padx=28, pady=(12, 0))
+        main_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        card_layout.addWidget(main_lbl)
 
-        # Empty state placeholder
-        self._empty = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        self._empty.pack(fill="both", expand=True)
-
-        ctk.CTkLabel(
-            self._empty, text="📂",
-            font=ctk.CTkFont(size=40), text_color=T.text3,
-        ).pack(pady=(50, 8))
-
-        ctk.CTkLabel(
-            self._empty, text="Chưa có file nào",
-            font=ctk.CTkFont(size=16, weight="bold"), text_color=T.text3,
-        ).pack()
-
-        ctk.CTkLabel(
-            self._empty,
-            text='Nhấn "＋ Thêm file" để chọn video từ máy',
-            font=ctk.CTkFont(size=12), text_color=T.text3,
-        ).pack(pady=(4, 0))
-
-        ctk.CTkLabel(
-            self._empty,
-            text="Hỗ trợ: MP4, MKV, WebM, AVI, MOV, FLV, WMV, TS, 3GP…",
-            font=ctk.CTkFont(size=10), text_color=T.text3,
-        ).pack(pady=(2, 50))
-
-        # ── Bottom action bar ─────────────────────────────────────────────
-        bar = ctk.CTkFrame(self, fg_color=T.surface, corner_radius=0,
-                           border_width=1, border_color=T.border)
-        bar.pack(fill="x", side="bottom")
-        self._bar = bar
-
-        ctk.CTkFrame(bar, height=1, fg_color=T.border, corner_radius=0).pack(
-            fill="x", side="top")
-
-        inner_bar = ctk.CTkFrame(bar, fg_color="transparent")
-        inner_bar.pack(fill="both", expand=True, padx=20, pady=10)
-
-        self._status_lbl = ctk.CTkLabel(
-            inner_bar, text="",
-            font=ctk.CTkFont(size=11), text_color=T.text3,
-        )
-        self._status_lbl.pack(side="left")
-
-        self._convert_btn = ctk.CTkButton(
-            inner_bar,
-            text="▶  Convert All",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=40, width=160, corner_radius=8,
-            fg_color=T.primary, hover_color=T.primary_hover, text_color="white",
-            command=self._start_all,
-        )
-        self._convert_btn.pack(side="right")
-
-        # Init quality selection highlight
-        self._on_quality_change("standard")
-
-    def _make_quality_card(
-        self, parent, key: str, label: str, desc: str
-    ) -> ctk.CTkFrame:
-        """Create a clickable quality preset card."""
-        is_selected = (key == self._quality.get())
-        card = ctk.CTkFrame(
-            parent,
-            corner_radius=8,
-            fg_color=T.primary_dim if is_selected else T.surface2,
-            border_width=1,
-            border_color=T.primary if is_selected else T.border,
-            cursor="hand2",
-        )
-
-        ctk.CTkLabel(
-            card, text=label,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=T.text if is_selected else T.text2,
-        ).pack(padx=14, pady=(10, 2))
-
-        ctk.CTkLabel(
-            card, text=desc,
-            font=ctk.CTkFont(size=9), text_color=T.text3,
-            wraplength=160,
-        ).pack(padx=14, pady=(0, 10))
-
-        # Bind clicks on the card and all children
-        for w in (card, *card.winfo_children()):
-            w.bind("<Button-1>", lambda _e, k=key: self._on_quality_change(k))
+        if desc:
+            desc_lbl = QLabel(desc)
+            desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            desc_lbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; background: transparent;")
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            card_layout.addWidget(desc_lbl)
 
         return card
 
-    # ── Event handlers ────────────────────────────────────────────────────
-
-    def _on_quality_change(self, key: str) -> None:
-        self._quality.set(key)
-        for k, card in self._quality_cards.items():
-            selected = (k == key)
-            card.configure(
-                fg_color=T.primary_dim if selected else T.surface2,
-                border_color=T.primary if selected else T.border,
-            )
-            # Update label colour (first child)
-            children = card.winfo_children()
-            if children:
-                children[0].configure(
-                    text_color=T.text if selected else T.text2
+    def _update_card_selection(self, cards: dict, labels: dict, selected_key: str) -> None:
+        for k, card in cards.items():
+            sel = k == selected_key
+            card.setStyleSheet(f"""
+                _ClickableFrame {{
+                    background-color: {T.primary_dim if sel else T.surface2};
+                    border: 1px solid {T.primary if sel else T.border};
+                    border-radius: 8px;
+                }}
+            """)
+            lbl = labels.get(k)
+            if lbl:
+                lbl.setStyleSheet(
+                    f"color: {T.text if sel else T.text2}; font-size: 11px; font-weight: bold; background: transparent;"
                 )
 
+    # ── Event handlers ────────────────────────────────────────────────────────
+
+    def _on_quality_change(self, key: str) -> None:
+        self._quality = key
+        self._update_card_selection(self._quality_cards, self._quality_main_labels, key)
+        if key == "custom":
+            self._custom_row.show()
+        else:
+            self._custom_row.hide()
+
+    def _on_speed_change(self, key: str) -> None:
+        self._speed_preset = key
+        self._update_card_selection(self._speed_cards, self._speed_main_labels, key)
+
+    def _on_codec_change(self, key: str) -> None:
+        self._output_codec = key
+        self._update_card_selection(self._codec_cards, self._codec_main_labels, key)
+
+    def _on_encoder_change(self, label: str) -> None:
+        for key, opt_label in self._available_encoder_options:
+            if opt_label == label:
+                self._encoder_key = key
+                return
+        self._encoder_key = "cpu"
+
+    def _validate_custom_quality(self) -> None:
+        try:
+            val = int(self._custom_entry.text())
+        except ValueError:
+            val = 23
+        clamped = max(16, min(35, val))
+        self._custom_quality_val = clamped
+        self._custom_entry.setText(str(clamped))
+        if val != clamped:
+            self._custom_entry.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {T.input};
+                    border: 1px solid {T.error};
+                    border-radius: 6px;
+                    color: {T.text};
+                    font-size: 12px;
+                    padding: 0 6px;
+                }}
+            """)
+            QTimer.singleShot(
+                1200,
+                lambda: self._custom_entry.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {T.input};
+                    border: 1px solid {T.border2};
+                    border-radius: 6px;
+                    color: {T.text};
+                    font-size: 12px;
+                    padding: 0 6px;
+                }}
+            """),
+            )
+
+    # ── Encoder detection ─────────────────────────────────────────────────────
+
+    def _detect_encoders_async(self) -> None:
+        available_opts = get_available_encoder_options()
+        ui_bridge.post(lambda opts=available_opts: self._apply_available_encoders(opts))
+
+    def _apply_available_encoders(self, available_opts: list[tuple[str, str]]) -> None:
+        if not any(key == "cpu" for key, _ in available_opts):
+            cpu_opt = next((o for o in ENCODER_OPTIONS if o[0] == "cpu"), ("cpu", "CPU (libx264)"))
+            available_opts = [cpu_opt] + list(available_opts)
+
+        self._available_encoder_options = available_opts
+        self._available_encoders = {key for key, _ in available_opts}
+
+        labels = [label for _, label in available_opts]
+        self._encoder_combo.blockSignals(True)
+        self._encoder_combo.clear()
+        self._encoder_combo.addItems(labels)
+        self._encoder_combo.blockSignals(False)
+
+        if self._encoder_key not in self._available_encoders:
+            self._encoder_key = "cpu"
+            cpu_label = next((lbl for k, lbl in available_opts if k == "cpu"), labels[0])
+            self._encoder_combo.setCurrentText(cpu_label)
+
+        if not self._encoder_auto_selected:
+            self._encoder_auto_selected = True
+            gpu_opts = [(k, lbl) for k, lbl in available_opts if k != "cpu"]
+            if gpu_opts and self._encoder_key == "cpu":
+                best_key, best_label = gpu_opts[0]
+                self._encoder_key = best_key
+                self._encoder_combo.setCurrentText(best_label)
+
+        gpu_labels = [lbl for k, lbl in available_opts if k != "cpu"]
+        status = f"GPU: {', '.join(gpu_labels)}" if gpu_labels else "Chỉ CPU"
+        self._encoder_status_lbl.setText(status)
+
+    # ── File operations ───────────────────────────────────────────────────────
+
     def _browse_files(self) -> None:
-        paths = fd.askopenfilenames(
-            title="Chọn video để chuyển đổi",
-            filetypes=_FILETYPES,
+        ext_filter = " ".join(f"*.{ext}" for ext in sorted(SUPPORTED_EXTS))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Chọn video để chuyển đổi",
+            "",
+            f"Video files ({ext_filter});;All files (*.*)",
         )
-        for p in paths:
-            self._add_file(Path(p))
+        self._add_files([Path(p) for p in paths])
         self._refresh_ui()
 
-    def _browse_output(self) -> None:
-        d = fd.askdirectory(title="Chọn thư mục lưu file đã chuyển")
-        if d:
-            self._output_dir = Path(d)
-            self._out_entry.delete(0, "end")
-            self._out_entry.insert(0, str(self._output_dir))
+    def _browse_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục chứa video")
+        if not d:
+            return
+        self._status_lbl.setText("Đang quét thư mục…")
+        threading.Thread(
+            target=self._scan_folder_async,
+            args=(Path(d),),
+            daemon=True,
+            name="omnidl-folder-scan",
+        ).start()
+
+    def _scan_folder_async(self, folder: Path) -> None:
+        found = scan_folder_for_media(folder)
+        ui_bridge.post(lambda f=found, d=folder: self._add_files_from_scan(f, d))
+
+    def _add_files_from_scan(self, files: list[Path], folder: Path) -> None:
+        self._add_files(files)
+        self._refresh_ui()
+        if not files:
+            self._status_lbl.setText(f"Không tìm thấy video trong {folder.name}")
+        else:
+            self._status_lbl.setText(f"Đã thêm {len(files)} file từ {folder.name}")
+            self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;")
+
+    def _toggle_cfg_panel(self) -> None:
+        self._cfg_collapsed = not self._cfg_collapsed
+        self._cfg_panel.setVisible(not self._cfg_collapsed)
+        self._cfg_toggle_btn.setText("⚙ Thông số  ▼" if self._cfg_collapsed else "⚙ Thông số  ▲")
+
+    def load_file(self, path: str) -> None:
+        self._add_file(Path(path))
+        self._refresh_ui()
 
     def _add_file(self, path: Path) -> None:
-        # Skip duplicates (same absolute path)
+        self._add_files([path])
+
+    def _add_files(self, paths: list[Path]) -> None:
         existing = {j.source.resolve() for j in self._jobs.values()}
-        if path.resolve() in existing:
-            return
-        if path.suffix.lower() not in {
-            ext.lstrip("*") for ext in _INPUT_EXTS
-        }:
-            return
-        job = FileJob(source=path)
-        self._jobs[job.id] = job
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in existing:
+                continue
+            if path.suffix.lower().lstrip(".") not in SUPPORTED_EXTS:
+                continue
+            existing.add(resolved)
+            job = FileJob(source=path)
+            self._jobs[job.id] = job
+            threading.Thread(
+                target=self._probe_info_async,
+                args=(job,),
+                daemon=True,
+                name=f"omnidl-probe-{path.stem[:16]}",
+            ).start()
+
+    def _probe_info_async(self, job: FileJob) -> None:
+        info = probe_media_info(job.source)
+        job.media_info = info
+        ui_bridge.post(lambda j=job: self._update_card_info(j))
+
+    def _update_card_info(self, job: FileJob) -> None:
+        card = self._cards.get(job.id)
+        if card:
+            card.update_info(job.media_info)
+
+    # ── Convert ───────────────────────────────────────────────────────────────
 
     def _start_all(self) -> None:
-        pending = [j for j in self._jobs.values()
-                   if j.state == FileState.PENDING]
+        pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
         if not pending:
             return
 
-        quality = self._quality.get()
-        out_entry_val = self._out_entry.get().strip()
-        output_dir: Optional[Path] = None
-        if out_entry_val:
-            output_dir = Path(out_entry_val)
-        elif self._output_dir:
-            output_dir = self._output_dir
+        encoder_key = self._encoder_key
+        if encoder_key not in self._available_encoders:
+            encoder_key = "cpu"
 
-        self._convert_btn.configure(state="disabled")
+        self._validate_custom_quality()
+        encode_settings = EncodeSettings(
+            encoder_key=encoder_key,
+            quality=self._quality,
+            speed_preset=self._speed_preset,
+            custom_quality=self._custom_quality_val,
+            output_codec=self._output_codec,
+        )
+
+        self._convert_btn.setEnabled(False)
 
         for job in pending:
-            self._start_job(job, quality, output_dir)
+            job.state = FileState.QUEUED
+            job.progress = 0.0
+            self._active_count += 1
+            self._rebuild_card(job)
+
+        for job in pending:
+            self._submit_job(job, self._quality, encode_settings)
 
         self._refresh_ui()
 
-    def _start_job(
+    def _submit_job(
         self,
         job: FileJob,
         quality: str,
-        output_dir: Optional[Path],
+        encode_settings: Optional[EncodeSettings] = None,
     ) -> None:
-        job.state = FileState.CONVERTING
-        job.progress = 0.0
-        self._converting_count += 1
-        self._rebuild_card(job)
+        def on_start() -> None:
+            job.state = FileState.CONVERTING
+            job.progress = 0.0
+            ui_bridge.post(lambda j=job: self._tick_card(j))
 
         def on_progress(pct: float) -> None:
-            if not self.winfo_exists():
-                return
             job.progress = pct
-            self.after(0, lambda j=job: self._tick_card(j))
+            ui_bridge.post(lambda j=job: self._tick_card(j))
 
         def on_done(out_path: Path) -> None:
             job.state = FileState.DONE
             job.progress = 100.0
             job.output = out_path
-            self._converting_count -= 1
-            if self.winfo_exists():
-                self.after(0, lambda j=job: self._finish_card(j))
+            ui_bridge.post(lambda j=job: self._finish_job(j))
+            try:
+                self._app.taildrop.send_converted_file(out_path)
+            except Exception:
+                logger.debug("Taildrop convert hook raised unexpectedly", exc_info=True)
 
         def on_error(msg: str) -> None:
             job.state = FileState.FAILED
             job.error_msg = msg
-            self._converting_count -= 1
-            if self.winfo_exists():
-                self.after(0, lambda j=job: self._finish_card(j))
+            ui_bridge.post(lambda j=job: self._finish_job(j))
 
-        self._svc.convert(
+        job.cancel_fn = self._queue.submit(
             source=job.source,
-            quality=quality,       # type: ignore[arg-type]
-            output_dir=output_dir,
+            quality=quality,
             on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,
+            on_start=on_start,
+            encode_settings=encode_settings,
         )
 
-    # ── Card management ───────────────────────────────────────────────────
+    # ── Card management ───────────────────────────────────────────────────────
 
     def _rebuild_card(self, job: FileJob) -> None:
-        """Create or recreate the FileCard for job."""
         old = self._cards.pop(job.id, None)
-        if old and old.winfo_exists():
-            old.destroy()
+        idx = self._items_layout.count()
+        if old:
+            old_idx = self._items_layout.indexOf(old)
+            if old_idx != -1:
+                idx = old_idx
+            self._items_layout.removeWidget(old)
+            old.deleteLater()
         card = FileCard(
-            self._scroll, job,
+            self._scroll_content,
+            job,
             on_remove=self._remove_job,
             on_open_folder=self._open_output,
+            on_cancel=self._cancel_job,
+            on_delete_output=self._delete_output,
         )
-        card.pack(fill="x", pady=(0, 8))
+        self._items_layout.insertWidget(idx, card)
         self._cards[job.id] = card
+        card.refresh()
 
     def _tick_card(self, job: FileJob) -> None:
         card = self._cards.get(job.id)
-        if card and card.winfo_exists():
+        if card:
             card.refresh()
         self._refresh_status()
 
-    def _finish_card(self, job: FileJob) -> None:
+    def _finish_job(self, job: FileJob) -> None:
+        self._active_count -= 1
         card = self._cards.get(job.id)
-        if card and card.winfo_exists():
+        if card:
             card.refresh()
         self._refresh_status()
-        # Re-enable convert button when all jobs settle
-        if self._converting_count == 0:
-            if self.winfo_exists():
-                self._convert_btn.configure(state="normal")
+        if self._active_count == 0:
+            self._convert_btn.setEnabled(True)
+        if job.output and job.output.is_file():
+            threading.Thread(
+                target=self._probe_output_async,
+                args=(job,),
+                daemon=True,
+                name=f"omnidl-probe-out-{job.id}",
+            ).start()
+
+    def _probe_output_async(self, job: FileJob) -> None:
+        job.output_media_info = probe_media_info(job.output)
+        ui_bridge.post(lambda j=job: self._update_card_output_info(j))
+
+    def _update_card_output_info(self, job: FileJob) -> None:
+        card = self._cards.get(job.id)
+        if card:
+            card.update_output_info()
 
     def _refresh_ui(self) -> None:
-        """Sync full card list with self._jobs."""
-        # Remove cards for deleted jobs
         for jid in list(self._cards):
             if jid not in self._jobs:
                 c = self._cards.pop(jid)
-                if c.winfo_exists():
-                    c.destroy()
+                self._items_layout.removeWidget(c)
+                c.deleteLater()
 
-        # Add cards for new jobs
         for job in self._jobs.values():
             if job.id not in self._cards:
                 card = FileCard(
-                    self._scroll, job,
+                    self._scroll_content,
+                    job,
                     on_remove=self._remove_job,
                     on_open_folder=self._open_output,
+                    on_cancel=self._cancel_job,
+                    on_delete_output=self._delete_output,
                 )
-                card.pack(fill="x", pady=(0, 8))
+                self._items_layout.insertWidget(self._items_layout.count(), card)
                 self._cards[job.id] = card
 
-        # Show/hide empty state
-        if self._jobs:
-            self._empty.pack_forget()
-        elif not self._empty.winfo_ismapped():
-            self._empty.pack(fill="both", expand=True)
-
+        self._empty.setVisible(not bool(self._jobs))
         self._refresh_status()
 
     def _refresh_status(self) -> None:
-        total      = len(self._jobs)
-        done       = sum(1 for j in self._jobs.values()
-                         if j.state == FileState.DONE)
-        converting = sum(1 for j in self._jobs.values()
-                         if j.state == FileState.CONVERTING)
-        failed     = sum(1 for j in self._jobs.values()
-                         if j.state == FileState.FAILED)
+        total = len(self._jobs)
+        done = sum(1 for j in self._jobs.values() if j.state == FileState.DONE)
+        converting = sum(1 for j in self._jobs.values() if j.state == FileState.CONVERTING)
+        queued = sum(1 for j in self._jobs.values() if j.state == FileState.QUEUED)
+        failed = sum(1 for j in self._jobs.values() if j.state == FileState.FAILED)
 
         if total == 0:
-            self._status_lbl.configure(text="")
-        elif converting > 0:
-            self._status_lbl.configure(
-                text=f"Đang xử lý {converting} file…",
-                text_color=T.warning,
-            )
-        elif done == total:
-            self._status_lbl.configure(
-                text=f"Hoàn tất {done}/{total} file ✓",
-                text_color=T.success,
-            )
-        else:
+            self._status_lbl.setText("")
+            self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        elif converting > 0 or queued > 0:
             parts = []
+            if converting:
+                parts.append(f"Đang xử lý {converting}")
+            if queued:
+                parts.append(f"{queued} chờ")
+            self._status_lbl.setText("  ·  ".join(parts) + f" / {total} file")
+            self._status_lbl.setStyleSheet(f"color: {T.warning}; font-size: 11px;")
+        elif done == total:
+            self._status_lbl.setText(f"Hoàn tất {done}/{total} file ✓")
+            self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;")
+        else:
+            parts2 = []
             if done:
-                parts.append(f"{done} xong")
+                parts2.append(f"{done} xong")
             if failed:
-                parts.append(f"{failed} lỗi")
+                parts2.append(f"{failed} lỗi")
             pending = total - done - failed
             if pending:
-                parts.append(f"{pending} chờ")
-            self._status_lbl.configure(
-                text="  ·  ".join(parts),
-                text_color=T.text3,
-            )
+                parts2.append(f"{pending} chờ")
+            self._status_lbl.setText("  ·  ".join(parts2))
+            self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
 
     def _remove_job(self, job_id: str) -> None:
+        job = self._jobs.pop(job_id, None)
+        if job and job.state in (FileState.QUEUED, FileState.CONVERTING) and job.cancel_fn is not None:
+            job.cancel_fn()
+        self._refresh_ui()
+
+    def _cancel_job(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job and job.cancel_fn is not None:
+            job.cancel_fn()
         self._jobs.pop(job_id, None)
         self._refresh_ui()
 
     def _clear_done(self) -> None:
-        done_ids = [
-            jid for jid, j in self._jobs.items()
-            if j.state in (FileState.DONE, FileState.FAILED)
-        ]
+        done_ids = [jid for jid, j in self._jobs.items() if j.state in (FileState.DONE, FileState.FAILED)]
         for jid in done_ids:
             self._jobs.pop(jid, None)
         self._refresh_ui()
@@ -698,21 +1199,59 @@ class ConvertTab(ctk.CTkFrame):
         elif job.output.parent.is_dir():
             open_folder(job.output.parent)
 
-    # ── Theme ──────────────────────────────────────────────────────────────
-
-    def _on_theme(self) -> None:
-        if not self.winfo_exists():
+    def _delete_output(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if not job or not job.output:
             return
-        self.configure(fg_color=T.bg)
-        self._cfg_frame.configure(fg_color=T.surface, border_color=T.border)
-        self._bar.configure(fg_color=T.surface, border_color=T.border)
-        self._out_entry.configure(fg_color=T.input, border_color=T.border2,
-                                  text_color=T.text)
-        self._add_btn.configure(fg_color=T.primary, hover_color=T.primary_hover)
-        self._clear_btn.configure(fg_color=T.surface2, hover_color=T.surface3,
-                                  text_color=T.text2)
-        self._convert_btn.configure(fg_color=T.primary, hover_color=T.primary_hover)
-        self._scroll.configure(scrollbar_button_color=T.scrollbar,
-                                scrollbar_button_hover_color=T.scrollbar_hover)
-        # Re-highlight quality cards
-        self._on_quality_change(self._quality.get())
+        if not job.output.is_file():
+            card = self._cards.get(job_id)
+            if card:
+                card.refresh()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Xóa file đã convert",
+            f"Bạn có chắc muốn xóa file đã convert trên laptop không?\n\n"
+            f"{job.output.name}\n\n"
+            f"Hãy chắc chắn file đã được lưu trên iPhone trước khi xóa.\n"
+            f"Thao tác này không thể hoàn tác.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            job.output.unlink()
+        except OSError as exc:
+            QMessageBox.critical(self, "Lỗi xóa file", f"Không thể xóa file:\n{exc}")
+            return
+
+        card = self._cards.get(job_id)
+        if card:
+            card.refresh()
+
+    # ── Taildrop event handlers ───────────────────────────────────────────────
+
+    def _on_convert_taildrop_completed(self, *, out_path: Path, dest_node: str, **_kw) -> None:
+        msg = f"Đã gửi '{out_path.name}' đến {dest_node}"
+        ui_bridge.post(
+            lambda m=msg: (
+                self._status_lbl.setText(m),
+                self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;"),
+            )
+        )
+
+    def _on_convert_taildrop_failed(self, *, out_path: Path, dest_node: str, error: str = "", **_kw) -> None:
+        msg = f"Taildrop thất bại '{out_path.name}': {error}"
+        ui_bridge.post(
+            lambda m=msg: (
+                self._status_lbl.setText(m),
+                self._status_lbl.setStyleSheet(f"color: {T.error}; font-size: 11px;"),
+            )
+        )
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._fade_anim.stop()
+        self._fade_anim.start()

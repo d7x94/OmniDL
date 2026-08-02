@@ -1,37 +1,8 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# OmniDL — Build & Release Pipeline
-#
-# TWO DISTINCT TRIGGER PATHS:
-#
-#   push → main branch
-#     1. test     Run the full test suite (fast Ubuntu gate)
-#     2. build-*  Build Windows EXE + macOS .app with PyInstaller
-#     3. Binaries uploaded as Actions artifacts (7-day retention)
-#
-#   push → tag matching v*.*.*  (e.g. v16.0.0)
-#     1. test     Same test gate
-#     2. build-*  Same builds, but artifacts are also zipped as release assets
-#     3. release  Creates a GitHub Release with both platform zips
-#
-#   workflow_dispatch
-#     Allows manually re-triggering any branch or tag build.
-#
-# FFMPEG BUNDLING (users need NOT install FFmpeg):
-#   Binaries are downloaded from official sources during CI, placed in
-#   resources/ffmpeg/, and bundled via --add-data into PyInstaller output.
-#   At runtime, utils/ffmpeg_locator.get_ffmpeg_path() resolves sys._MEIPASS.
-#   The repository NEVER stores FFmpeg — resources/ffmpeg/ is in .gitignore.
-#
-#   Sources:
-#     Windows : https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-#     macOS   : https://evermeet.cx/ffmpeg/  (individual static binaries)
-# ──────────────────────────────────────────────────────────────────────────────
-
 name: Build & Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, improve]
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
@@ -45,9 +16,10 @@ permissions:
   contents: read
 
 env:
-  PYTHON_VERSION:      "3.13"
-  PYINSTALLER_VERSION: "6.19.0"
-  APP_NAME:            "OmniDL"
+  PYTHON_VERSION:                  "3.13"
+  PYINSTALLER_VERSION:             "6.19.0"
+  APP_NAME:                        "OmniDL"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
 
@@ -60,29 +32,145 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libegl1
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-cov
+        run: uv sync --extra api --extra dev
+
+      - name: Lint with ruff
+        run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+
+      - name: Type check with mypy
+        run: |
+          uv run mypy domain/ app/ infrastructure/ utils/ \
+            --ignore-missing-imports \
+            --no-strict-optional
 
       - name: Run test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          pytest \
+          uv run pytest \
             --ignore=tests/test_e2e.py \
             --ignore=tests/test_logger_and_manager_extra.py \
             --tb=short -q \
             --cov=. \
-            --cov-report=term-missing
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml
 
-  # ── JOB 2: Windows EXE ───────────────────────────────────────────────────
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-build
+          path: coverage.xml
+          retention-days: 7
+
+  # ── JOB 2: Security scan ─────────────────────────────────────────────────
+  security:
+    name: "Security scan"
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install security tools
+        run: uv tool install bandit && uv tool install pip-audit
+
+      - name: bandit SAST scan
+        run: |
+          uv tool run bandit \
+            -r . \
+            -x tests/,build/,venv_build/ \
+            -ll \
+            --format txt \
+            --output bandit_report.txt \
+            || (cat bandit_report.txt && exit 1)
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report-build
+          path: bandit_report.txt
+          retention-days: 7
+
+      - name: pip-audit CVE scan
+        run: |
+          uv export --extra api --no-dev --frozen > /tmp/requirements-audit.txt
+          touch pip_audit_report.md
+          uv tool run pip-audit \
+            --requirement /tmp/requirements-audit.txt \
+            --format markdown \
+            --output pip_audit_report.md \
+            || (cat pip_audit_report.md && exit 1)
+
+      - name: Upload pip-audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report-build
+          path: pip_audit_report.md
+          retention-days: 7
+
+  # ── JOB 3: Resolve latest tool packages ─────────────────────────────────
+  prepare:
+    name: "Resolve latest tool packages"
+    runs-on: ubuntu-latest
+    needs: [test, security]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Upgrade tool packages to latest
+        run: uv lock --upgrade-package yt-dlp --upgrade-package gallery-dl --upgrade-package playwright
+
+      - name: Upload updated lock file
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-lock
+          path: uv.lock
+          retention-days: 1
+
+  # ── JOB 4: Windows EXE ───────────────────────────────────────────────────
   build-windows:
     name: "Build — Windows EXE"
     runs-on: windows-latest
-    needs: test
+    needs: [prepare]
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -91,22 +179,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download updated lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-lock
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies + PyInstaller
+        run: uv sync --extra api --extra build
 
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (Windows) ──────────────────────────────
-      # Source: gyan.dev canonical Windows FFmpeg builds.
-      # We download the "essentials" zip and extract ONLY ffmpeg.exe and
-      # ffprobe.exe into resources/ffmpeg/.  The directory is gitignored.
       - name: Download FFmpeg (Windows)
         shell: pwsh
         run: |
@@ -121,8 +211,6 @@ jobs:
           Write-Output "Extracting archive ..."
           Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
-          # Locate bin\ folder regardless of the versioned subfolder name
-          # e.g. ffmpeg-7.1-essentials_build\bin\ffmpeg.exe
           $binDir = Get-ChildItem -Path $tmp -Recurse -Filter "ffmpeg.exe" |
                       Select-Object -First 1 -ExpandProperty DirectoryName
           if (-not $binDir) {
@@ -152,6 +240,54 @@ jobs:
           & "resources\ffmpeg\ffprobe.exe" -version 2>&1 | Select-Object -First 1
           Write-Output "OK  FFmpeg binaries verified"
 
+      - name: Download Deno (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+          $zip = "$env:RUNNER_TEMP\deno.zip"
+          Write-Output "Downloading Deno from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          New-Item -ItemType Directory -Path "resources\deno" -Force | Out-Null
+          Expand-Archive -Path $zip -DestinationPath "resources\deno" -Force
+          Remove-Item -Force $zip
+          Write-Output "Deno staged:"
+          Get-Item "resources\deno\deno.exe" | Format-Table Name, @{N="Size";E={"{0:N0} bytes" -f $_.Length}}
+
+      - name: Verify Deno (Windows)
+        shell: pwsh
+        run: |
+          $deno = "resources\deno\deno.exe"
+          if (-not (Test-Path $deno)) { Write-Error "deno.exe missing"; exit 1 }
+          & $deno --version 2>&1 | Select-Object -First 1
+          Write-Output "OK  Deno binary verified"
+
+      - name: Download gallery-dl (Windows)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "resources\gallery-dl" | Out-Null
+          # gallery-dl moved to Codeberg — query Codeberg releases API
+          $releases = Invoke-RestMethod -Uri "https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases?limit=10" -UseBasicParsing
+          $url = $null
+          foreach ($rel in $releases) {
+            $asset = $rel.assets | Where-Object { $_.name -eq "gallery-dl.exe" } | Select-Object -First 1
+            if ($asset) { $url = $asset.browser_download_url; break }
+          }
+          if (-not $url) { Write-Error "gallery-dl.exe not found in last 10 releases"; exit 1 }
+          Write-Output "Downloading gallery-dl from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile "resources\gallery-dl\gallery-dl.exe" -UseBasicParsing
+          $size = (Get-Item "resources\gallery-dl\gallery-dl.exe").Length
+          Write-Output "OK  gallery-dl.exe  ($size bytes)"
+
+      - name: Verify gallery-dl (Windows)
+        shell: pwsh
+        run: |
+          $exe = "resources\gallery-dl\gallery-dl.exe"
+          if (-not (Test-Path $exe)) { Write-Error "gallery-dl.exe missing"; exit 1 }
+          & $exe --version 2>&1 | Select-Object -First 1
+          Write-Output "OK  gallery-dl binary verified"
+
       - name: Resolve icon flag
         id: icon
         shell: pwsh
@@ -162,14 +298,10 @@ jobs:
             "flag=" | Out-File -Append $env:GITHUB_OUTPUT
           }
 
-      # ── PyInstaller build (Windows) ────────────────────────────────────
-      # --add-data "resources/ffmpeg;ffmpeg"
-      #   Semicolon separator is required on Windows by PyInstaller.
-      #   The dest name "ffmpeg" becomes sys._MEIPASS/ffmpeg/ at runtime.
       - name: PyInstaller build
         shell: pwsh
         run: |
-          pyinstaller `
+          uv run pyinstaller `
             --noconfirm `
             --onedir `
             --windowed `
@@ -177,6 +309,9 @@ jobs:
             ${{ steps.icon.outputs.flag }} `
             --add-data "config.json;." `
             --add-data "resources/ffmpeg;ffmpeg" `
+            --add-data "resources/deno;deno" `
+            --add-data "resources/gallery-dl;gallery-dl" `
+            --add-data "api/static;api/static" `
             --hidden-import multiprocessing `
             --hidden-import multiprocessing.freeze_support `
             --hidden-import customtkinter `
@@ -189,6 +324,29 @@ jobs:
             --collect-all customtkinter `
             --collect-all tkinter `
             --collect-all yt_dlp `
+            --collect-all fastapi `
+            --collect-all uvicorn `
+            --collect-all keyring `
+            --hidden-import fastapi `
+            --hidden-import uvicorn `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols `
+            --hidden-import uvicorn.protocols.http `
+            --hidden-import uvicorn.protocols.http.auto `
+            --hidden-import uvicorn.protocols.websockets `
+            --hidden-import uvicorn.protocols.websockets.auto `
+            --hidden-import uvicorn.lifespan `
+            --hidden-import uvicorn.lifespan.on `
+            --hidden-import keyring.backends `
+            --hidden-import keyring.backends.Windows `
+            --hidden-import keyring.backends.fail `
+            --hidden-import win32ctypes `
+            --hidden-import win32ctypes.core `
+            --hidden-import curl_cffi `
+            --hidden-import curl_cffi.requests `
+            --collect-all curl_cffi `
             --noupx `
             --distpath dist `
             main.py
@@ -249,11 +407,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 3: macOS .app ────────────────────────────────────────────────────
+  # ── JOB 5: macOS .app ────────────────────────────────────────────────────
   build-macos:
     name: "Build — macOS .app"
     runs-on: macos-latest
-    needs: test
+    needs: [prepare]
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_P12 != '' }}
 
@@ -264,22 +422,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download updated lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-lock
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies + PyInstaller
+        run: uv sync --extra api --extra build
 
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (macOS) ────────────────────────────────
-      # Source: evermeet.cx static builds — each binary is its own zip.
-      # We download ffmpeg and ffprobe separately, extract flat (-j flag),
-      # and make both files executable.  The directory is gitignored.
       - name: Download FFmpeg (macOS)
         run: |
           set -euo pipefail
@@ -312,6 +472,46 @@ jobs:
           done
           echo "OK  FFmpeg binaries verified"
 
+      - name: Download Deno (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/deno
+          curl -fsSL --retry 3 \
+            "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip" \
+            -o /tmp/deno.zip 2>/dev/null || \
+          curl -fsSL --retry 3 \
+            "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip" \
+            -o /tmp/deno.zip
+          unzip -jo /tmp/deno.zip -d resources/deno
+          rm /tmp/deno.zip
+          chmod +x resources/deno/deno
+          echo "Deno staged: $(resources/deno/deno --version | head -1)"
+
+      - name: Verify Deno (macOS)
+        run: |
+          [ -f resources/deno/deno ] || { echo "ERROR: deno missing"; exit 1; }
+          resources/deno/deno --version 2>&1 | head -1
+          echo "OK  Deno binary verified"
+
+      - name: Download gallery-dl (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/gallery-dl
+          echo "Downloading gallery-dl ..."
+          # gallery-dl moved to Codeberg — query Codeberg releases API
+          url=$(curl -fsSL "https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases?limit=10" \
+            | jq -r '[.[].assets[] | select(.name == "gallery-dl.bin")] | first | .browser_download_url')
+          if [ -z "$url" ] || [ "$url" = "null" ]; then echo "ERROR: gallery-dl.bin not found"; exit 1; fi
+          curl -fsSL --retry 3 --retry-delay 5 "$url" -o resources/gallery-dl/gallery-dl
+          chmod +x resources/gallery-dl/gallery-dl
+          echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
+
+      - name: Verify gallery-dl (macOS)
+        run: |
+          [ -f resources/gallery-dl/gallery-dl ] || { echo "ERROR: gallery-dl missing"; exit 1; }
+          resources/gallery-dl/gallery-dl --version 2>&1 | head -1
+          echo "OK  gallery-dl binary verified"
+
       - name: Resolve icon flag
         id: icon
         run: |
@@ -321,13 +521,9 @@ jobs:
             echo "flag=" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── PyInstaller build (macOS) ──────────────────────────────────────
-      # --add-data "resources/ffmpeg:ffmpeg"
-      #   Colon separator is required on POSIX by PyInstaller.
-      #   The dest name "ffmpeg" becomes sys._MEIPASS/ffmpeg/ at runtime.
       - name: PyInstaller build
         run: |
-          pyinstaller \
+          uv run pyinstaller \
             --noconfirm \
             --onedir \
             --windowed \
@@ -335,6 +531,9 @@ jobs:
             ${{ steps.icon.outputs.flag }} \
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
+            --add-data "resources/deno:deno" \
+            --add-data "resources/gallery-dl:gallery-dl" \
+            --add-data "api/static:api/static" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \
@@ -347,6 +546,27 @@ jobs:
             --collect-all customtkinter \
             --collect-all tkinter \
             --collect-all yt_dlp \
+            --collect-all fastapi \
+            --collect-all uvicorn \
+            --collect-all keyring \
+            --hidden-import fastapi \
+            --hidden-import uvicorn \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols \
+            --hidden-import uvicorn.protocols.http \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import keyring.backends \
+            --hidden-import keyring.backends.macOS \
+            --hidden-import keyring.backends.fail \
+            --hidden-import curl_cffi \
+            --hidden-import curl_cffi.requests \
+            --collect-all curl_cffi \
             --noupx \
             --distpath dist \
             main.py
@@ -358,8 +578,6 @@ jobs:
           }
           echo "OK  ${{ env.APP_NAME }}.app  ($(du -sh "dist/${{ env.APP_NAME }}.app" | cut -f1))"
 
-          # Use find to locate ffmpeg regardless of PyInstaller version layout
-          # (pre-6: Contents/MacOS/ffmpeg, 6+: Contents/MacOS/_internal/ffmpeg)
           APP_BUNDLE="dist/${{ env.APP_NAME }}.app"
           for bin in ffmpeg ffprobe; do
             full=$(find "$APP_BUNDLE" -name "$bin" -type f | head -1)
@@ -390,7 +608,6 @@ jobs:
           FFmpeg  : ${FF_VER}
           EOF
 
-      # ── Code signing (tag builds only; skipped when cert secrets absent) ──
       - name: Sign .app bundle
         if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_CERT == 'true' }}
         env:
@@ -414,7 +631,6 @@ jobs:
             "dist/${{ env.APP_NAME }}.app"
           echo "OK  Code signing complete"
 
-      # ── Notarization (tag builds only; skipped when cert secrets absent) ──
       - name: Notarize .app bundle
         if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_CERT == 'true' }}
         env:
@@ -451,11 +667,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 4: Linux tarball ──────────────────────────────────────────────────
+  # ── JOB 6: Linux tarball ──────────────────────────────────────────────────
   build-linux:
     name: "Build — Linux tarball"
     runs-on: ubuntu-latest
-    needs: test
+    needs: [prepare]
 
     outputs:
       asset-name: ${{ steps.package.outputs.asset-name }}
@@ -464,44 +680,68 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download updated lock file
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-lock
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install runtime dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies + PyInstaller
+        run: uv sync --extra api --extra build
 
-      - name: Install PyInstaller ${{ env.PYINSTALLER_VERSION }}
-        run: pip install pyinstaller==${{ env.PYINSTALLER_VERSION }}
-
-      # ── Download & stage FFmpeg (Linux) ────────────────────────────────
-      # Source: johnvansickle.com static FFmpeg builds (x86_64).
-      # We download the "release" build, extract ffmpeg and ffprobe, and
-      # stage them under resources/ffmpeg/ for PyInstaller bundling.
       - name: Download FFmpeg (Linux)
         run: |
           set -euo pipefail
           mkdir -p resources/ffmpeg
 
-          ARCH="amd64"
-          BASE_URL="https://johnvansickle.com/ffmpeg/releases"
-          TARBALL="ffmpeg-release-${ARCH}-static.tar.xz"
+          # johnvansickle.com (previous source) has become unreliable for CI
+          # runners: it now returns HTTP 200 with a non-archive body (bot
+          # protection page) instead of the tarball, which curl -f does not
+          # catch. BtbN/FFmpeg-Builds publishes static builds as GitHub
+          # Release assets, served from GitHub's own CDN alongside the
+          # checkout itself -- far more reliable from an Actions runner.
+          BASE_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          TARBALL="ffmpeg-master-latest-linux64-gpl.tar.xz"
 
           echo "Downloading $TARBALL ..."
           curl -fsSL --retry 3 --retry-delay 5 \
             "${BASE_URL}/${TARBALL}" -o /tmp/ffmpeg.tar.xz
 
-          # Extract only ffmpeg and ffprobe (they sit inside a versioned dir)
-          tar -xJf /tmp/ffmpeg.tar.xz \
-            --wildcards \
-            --no-anchored \
-            --strip-components=1 \
-            -C resources/ffmpeg \
-            '*/ffmpeg' '*/ffprobe'
+          # Fail fast with a clear message instead of a cryptic tar/xz error
+          # if the response body is not actually an xz archive.
+          if ! xz -t /tmp/ffmpeg.tar.xz; then
+            echo "ERROR: downloaded file is not a valid xz archive" >&2
+            file /tmp/ffmpeg.tar.xz || true
+            exit 1
+          fi
 
+          extract_dir=$(mktemp -d)
+          tar -xJf /tmp/ffmpeg.tar.xz -C "$extract_dir"
           rm /tmp/ffmpeg.tar.xz
+
+          # Locate the binaries rather than assuming a fixed nesting depth --
+          # the release layout is an implementation detail of the upstream
+          # project and has changed before.
+          ffmpeg_bin=$(find "$extract_dir" -type f -name ffmpeg | head -1)
+          ffprobe_bin=$(find "$extract_dir" -type f -name ffprobe | head -1)
+          if [ -z "$ffmpeg_bin" ] || [ -z "$ffprobe_bin" ]; then
+            echo "ERROR: ffmpeg/ffprobe not found inside the downloaded archive" >&2
+            find "$extract_dir" -maxdepth 3 || true
+            exit 1
+          fi
+          cp "$ffmpeg_bin" resources/ffmpeg/ffmpeg
+          cp "$ffprobe_bin" resources/ffmpeg/ffprobe
+          rm -rf "$extract_dir"
+
           chmod +x resources/ffmpeg/ffmpeg resources/ffmpeg/ffprobe
 
           echo "FFmpeg staged:"
@@ -515,16 +755,54 @@ jobs:
           done
           echo "OK  FFmpeg binaries verified"
 
-      # ── PyInstaller build (Linux) ─────────────────────────────────────
-      # Colon separator for --add-data on POSIX.
+      - name: Download Deno (Linux)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/deno
+          curl -fsSL --retry 3 \
+            "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip" \
+            -o /tmp/deno.zip
+          unzip -jo /tmp/deno.zip -d resources/deno
+          rm /tmp/deno.zip
+          chmod +x resources/deno/deno
+          echo "Deno staged: $(resources/deno/deno --version | head -1)"
+
+      - name: Verify Deno (Linux)
+        run: |
+          [ -f resources/deno/deno ] || { echo "ERROR: deno missing"; exit 1; }
+          resources/deno/deno --version 2>&1 | head -1
+          echo "OK  Deno binary verified"
+
+      - name: Download gallery-dl (Linux)
+        run: |
+          set -euo pipefail
+          mkdir -p resources/gallery-dl
+          echo "Downloading gallery-dl ..."
+          # gallery-dl moved to Codeberg — query Codeberg releases API
+          url=$(curl -fsSL "https://codeberg.org/api/v1/repos/mikf/gallery-dl/releases?limit=10" \
+            | jq -r '[.[].assets[] | select(.name == "gallery-dl.bin")] | first | .browser_download_url')
+          if [ -z "$url" ] || [ "$url" = "null" ]; then echo "ERROR: gallery-dl.bin not found"; exit 1; fi
+          curl -fsSL --retry 3 --retry-delay 5 "$url" -o resources/gallery-dl/gallery-dl
+          chmod +x resources/gallery-dl/gallery-dl
+          echo "OK  gallery-dl  ($(du -sh resources/gallery-dl/gallery-dl | cut -f1))"
+
+      - name: Verify gallery-dl (Linux)
+        run: |
+          [ -f resources/gallery-dl/gallery-dl ] || { echo "ERROR: gallery-dl missing"; exit 1; }
+          resources/gallery-dl/gallery-dl --version 2>&1 | head -1
+          echo "OK  gallery-dl binary verified"
+
       - name: PyInstaller build
         run: |
-          pyinstaller \
+          uv run pyinstaller \
             --noconfirm \
             --onedir \
             --name "${{ env.APP_NAME }}" \
             --add-data "config.json:." \
             --add-data "resources/ffmpeg:ffmpeg" \
+            --add-data "resources/deno:deno" \
+            --add-data "resources/gallery-dl:gallery-dl" \
+            --add-data "api/static:api/static" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \
@@ -537,6 +815,27 @@ jobs:
             --collect-all customtkinter \
             --collect-all tkinter \
             --collect-all yt_dlp \
+            --collect-all fastapi \
+            --collect-all uvicorn \
+            --collect-all keyring \
+            --hidden-import fastapi \
+            --hidden-import uvicorn \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols \
+            --hidden-import uvicorn.protocols.http \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import keyring.backends \
+            --hidden-import keyring.backends.SecretService \
+            --hidden-import keyring.backends.fail \
+            --hidden-import curl_cffi \
+            --hidden-import curl_cffi.requests \
+            --collect-all curl_cffi \
             --noupx \
             --distpath dist \
             main.py
@@ -586,7 +885,8 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── JOB 5: GitHub Release (tag builds only) ──────────────────────────────
+  # ── JOB 6: GitHub Release (tag builds only) ──────────────────────────────
+  # ── JOB 7: GitHub Release (tag builds only) ──────────────────────────────
   release:
     name: "GitHub Release — ${{ github.ref_name }}"
     runs-on: ubuntu-latest

@@ -3,20 +3,31 @@ infrastructure/downloader/download_manager.py
 ThreadPoolExecutor-based concurrent download manager.
 Emits events via EventBus; never touches the UI directly.
 """
+
 from __future__ import annotations
 
 import logging
+import random
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
 from app.event_bus import EventBus
 from app.event_bus import bus as global_bus
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager
-from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
+from infrastructure.downloader.account_pool import TikTokAccount, TikTokAccountPool
+from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _prepare_cookie_for_use, platform_for_url
+
+if TYPE_CHECKING:
+    from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
+    from infrastructure.downloader.instagram_live_engine import InstagramLiveEngine
+    from infrastructure.downloader.kuaishou_engine import KuaishouEngine
+    from infrastructure.downloader.waaw_engine import WaawEngine
 
 logger = logging.getLogger(__name__)
 
@@ -28,26 +39,68 @@ class DownloadManager:
     1. Receives DownloadTask objects via enqueue()
     2. Submits them to a ThreadPoolExecutor (max_workers = config.max_concurrent)
     3. Publishes EventBus events on progress / completion / failure
+    4. Routes to GalleryDlEngine when task.media_info.source_engine == "gallery_dl"
     """
+
+    # Max simultaneous downloads per platform. Caps concurrent authenticated
+    # requests to a single account, reducing HTTP 429 and account flag risk.
+    _PLATFORM_CONCURRENCY: dict[str, int] = {
+        "instagram": 1,
+        "tiktok": 2,
+        "facebook": 3,
+        "twitter": 2,
+        "youtube": 2,
+    }
 
     def __init__(
         self,
         config: ConfigManager,
         engine: YtDlpEngine,
         event_bus: Optional[EventBus] = None,
+        gallery_engine: Optional[GalleryDlEngine] = None,
+        story_engine_enabled: bool = False,
+        instagram_live_engine: Optional[InstagramLiveEngine] = None,
+        kuaishou_engine: Optional[KuaishouEngine] = None,
+        waaw_engine: Optional[WaawEngine] = None,
     ) -> None:
         self._config = config
         self._bus = event_bus or global_bus
-        # A single shared engine instance is injected from main.py so that
-        # extract_info() (DownloadService) and download() (DownloadManager)
-        # use the same object.  Config changes and any engine-level state are
-        # therefore consistent across both call sites.
         self._engine = engine
+        # Optional gallery-dl engine — injected from main.py when available.
+        # Typed as object to avoid circular imports; duck-typed at call site.
+        self._gallery_engine = gallery_engine
+        # Facebook Story engine flag — when True, facebook_story_engine is
+        # imported lazily on first use (avoids loading Playwright at startup).
+        # Injected from main.py; defaults to False so tests and non-CDP builds
+        # are unaffected.
+        self._story_engine_enabled: bool = story_engine_enabled
+        # Optional Instagram Live engine — direct HLS recording via FFmpeg.
+        # When present, Instagram live URLs are routed here instead of yt-dlp.
+        self._instagram_live_engine = instagram_live_engine
+        # Optional Kuaishou engine — direct API download, bypasses yt-dlp.
+        # Injected from main.py; None in tests (yt-dlp fallback).
+        self._kuaishou_engine = kuaishou_engine
+        self._waaw_engine = waaw_engine
         self._lock = threading.Lock()
         self._tasks: dict[str, DownloadTask] = {}
         self._futures: dict[str, Future] = {}
         self._executor: Optional[ThreadPoolExecutor] = None
         self._running = False
+        self._platform_sems: dict[str, threading.Semaphore] = {
+            p: threading.Semaphore(n) for p, n in self._PLATFORM_CONCURRENCY.items()
+        }
+        self._tiktok_pool: Optional[TikTokAccountPool] = self._build_tiktok_pool()
+
+    def _build_tiktok_pool(self) -> "Optional[TikTokAccountPool]":
+        entries = self._config.tiktok_account_pool
+        if not entries:
+            return None
+        accounts = [TikTokAccount.from_dict(d) for d in entries]
+        return TikTokAccountPool(accounts) if accounts else None
+
+    def rebuild_tiktok_pool(self) -> None:
+        """Rebuild the pool from current config — call after UI adds/removes accounts."""
+        self._tiktok_pool = self._build_tiktok_pool()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -87,7 +140,12 @@ class DownloadManager:
             if not self._running or not self._executor:
                 raise RuntimeError("DownloadManager is not running.")
             self._tasks[task.id] = task
-            future = self._executor.submit(self._run_task, task)
+            _platform = platform_for_url(task.url)
+            if _platform == "tiktok" and self._tiktok_pool and len(self._tiktok_pool) > 0:
+                future = self._executor.submit(self._gated_run_tiktok, task)
+            else:
+                _sem = self._platform_sems.get(_platform or "")
+                future = self._executor.submit(self._gated_run, task, _sem)
             self._futures[task.id] = future
         future.add_done_callback(lambda f: self._on_future_done(task.id, f))
         logger.info("Enqueued task %s — %s", task.id, task.title)
@@ -116,17 +174,31 @@ class DownloadManager:
         with self._lock:
             return list(self._tasks.values())
 
-    def clear_terminal(self) -> None:
-        """Remove completed / failed / cancelled tasks from tracking."""
+    def clear_terminal(self, exclude_ids: "frozenset[str] | None" = None) -> None:
+        """Remove completed / failed / cancelled tasks from tracking.
+
+        *exclude_ids* — task IDs that must not be removed even if terminal
+        (e.g. tasks that still have an active convert job running on them).
+        """
         with self._lock:
             terminal = DownloadStatus.terminal_states()
             to_del = [
-                tid for tid, t in self._tasks.items()
-                if t.status in terminal
+                tid
+                for tid, t in self._tasks.items()
+                if t.status in terminal and (exclude_ids is None or tid not in exclude_ids)
             ]
             for tid in to_del:
                 del self._tasks[tid]
                 self._futures.pop(tid, None)
+
+    def clear_specific(self, ids: list[str]) -> None:
+        with self._lock:
+            terminal = DownloadStatus.terminal_states()
+            for tid in ids:
+                t = self._tasks.get(tid)
+                if t and t.status in terminal:
+                    del self._tasks[tid]
+                    self._futures.pop(tid, None)
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -134,7 +206,133 @@ class DownloadManager:
         with self._lock:
             return self._tasks.get(task_id)
 
+    def _gated_run(self, task: DownloadTask, sem: Optional[threading.Semaphore]) -> None:
+        if sem is not None:
+            sem.acquire()
+        try:
+            self._run_task(task)
+        finally:
+            if sem is not None:
+                sem.release()
+
+    def _gated_run_tiktok(self, task: DownloadTask) -> None:
+        assert self._tiktok_pool is not None  # caller checked
+        with self._tiktok_pool.acquire() as account:
+            task._cookie_override = account.cookie_file
+            self._run_task(task)
+
+    def _tt29_live_recheck(self, task: DownloadTask, room_id: str) -> bool:
+        m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task.url, re.I)
+        if not m:
+            return False
+        username = m.group(1)
+        logger.info(
+            "Task %s: 3x 'not live' but room_id=%s — sleeping 15s then re-checking via live page",
+            task.id,
+            room_id,
+        )
+        for _ in range(15):
+            if task.is_cancellation_requested:
+                return False
+            time.sleep(1)
+        if task.is_cancellation_requested:
+            return False
+        from utils.tiktok_live_checker import check_tiktok_live  # noqa: PLC0415
+
+        _raw_cookie = task._cookie_override or self._config.get_cookie_for_platform("tiktok") or ""
+        _cookie_txt, _cookie_is_temp = "", False
+        if _raw_cookie:
+            _cookie_txt, _cookie_is_temp = _prepare_cookie_for_use(_raw_cookie)
+        try:
+            still_live = bool(
+                check_tiktok_live(username, proxy=self._config.proxy or "", cookie_file=_cookie_txt)
+            )
+        except Exception:
+            still_live = False
+        finally:
+            if _cookie_is_temp and _cookie_txt:
+                try:
+                    from pathlib import Path as _Path  # noqa: PLC0415
+
+                    _Path(_cookie_txt).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if still_live:
+            logger.info(
+                "BUG-TT-29: live page confirms @%s still live — resetting retry counter",
+                username,
+            )
+        return still_live
+
+    # Keywords that identify unrecoverable errors — retrying these wastes time
+    # and may trigger platform rate-limiting or account flags.
+    _HARD_ERROR_KEYWORDS: tuple[str, ...] = (
+        # Generic unrecoverable states
+        "private",
+        "removed",
+        "not found",
+        "404",
+        "login",
+        "unsupported url",
+        "cancelled by user",
+        # BUG-TT-11 FIX: bare "age" matched "webpage" in every network error
+        # "Unable to download webpage: ..." causing timeouts/transport errors to
+        # be classified as hard errors (no retry). Use specific yt-dlp patterns.
+        "age-restrict",  # "age-restricted content" / "age-restricted video"
+        "age gate",  # "age gate" check required
+        "confirm your age",  # "Sign in to confirm your age"
+        "age verification",  # "age verification required"
+        # BUG-TT-11 FIX: bare "unavailable" matched HTTP 503 "Service Temporarily
+        # Unavailable" (transient server error that SHOULD be retried).
+        # Use precise yt-dlp patterns instead.
+        "video unavailable",  # "This video is unavailable"
+        "this video is unavailable",
+        # TikTok / platform-specific deleted/unavailable video errors
+        "currently not available",  # TikTok deleted video
+        "video does not exist",  # TikTok removed video
+        "this video is not available",  # TikTok region/deleted
+        # Instagram-specific — account/auth issues that retrying cannot fix
+        "checkpoint",  # account checkpoint verification required
+        "challenge_required",  # two-factor / bot challenge
+        "cookie instagram hết hạn",  # yt-dlp flagged the IG session cookie invalid (_IGCookieLogger)
+        "no video in this post",  # photo-only post — retry cannot add video
+        "no video formats found",  # photo-only post (with cookies, yt-dlp >= 2024)
+        # Vietnamese translations of the two photo-only yt-dlp messages above.
+        # _friendly_error() in yt_dlp_engine translates them before raising, so
+        # the raw English strings above never appear in the exception message.
+        # Without these entries the task retries 4× unnecessarily.
+        "bài đăng này chỉ có ảnh",  # "This post only has photos, no video"
+        # Facebook-specific
+        "content not available",  # post removed or region-blocked
+        "this content isn",  # "This content isn't available"
+        # Geographic / copyright blocks — retrying changes nothing
+        "geo-restricted",
+        "not available in your country",
+        "copyright",  # copyright claim block
+        "blocked",  # region/copyright blocked (from yt-dlp error text)
+        # Account-level blocks
+        "suspended",  # account suspended
+        "members only",  # paywalled content
+        "subscribers only",
+        # yt-dlp internal bugs — retrying the same broken extractor path
+        # never helps; user must update yt-dlp to fix these.
+        "extractor error",  # yt-dlp extractor crash (e.g. KeyError on shortcode)
+        # Live stream offline — retrying cannot start a stream that is offline.
+        "not currently live",  # TikTok: The channel is not currently live
+        "channel is not currently live",  # normalised by _friendly_error
+    )
+
     def _run_task(self, task: DownloadTask) -> None:
+        """Execute a download with automatic retry on transient network errors.
+
+        Retries up to ``config.max_retries`` times (default 3) with
+        exponential back-off (1 s, 2 s, 4 s, …).  Hard errors — private
+        videos, 404s, login-required, cancellation — are never retried.
+
+        All terminal-state writes are wrapped in ``task._lock`` so that a
+        concurrent ``snapshot()`` on the UI poll thread never observes a
+        half-updated task (e.g. COMPLETED with progress still at 0.0).
+        """
         # Guard the initial state transition inside the task lock so that a
         # concurrent snapshot() call on the UI poll thread never observes an
         # uninitialised started_at alongside DOWNLOADING status.
@@ -144,43 +342,443 @@ class DownloadManager:
         self._bus.publish(EventBus.DOWNLOAD_STARTED, task=task)
         logger.info("Download started: %s", task.id)
 
-        try:
-            self._engine.download(
-                task,
-                on_progress=self._on_progress,
-                on_postprocess=self._on_progress,
-            )
+        max_attempts = max(1, self._config.max_retries + 1)
+        last_exc: Optional[Exception] = None
+        # BUG-BU: set True when yt-dlp hits a photo-only error and gallery-dl
+        # hasn't been tried yet (Remote API client omitted source_engine).
+        _gallery_fallback_needed: bool = False
+        # BUG-BU orphan cleanup: timestamp before any yt-dlp attempt so we can
+        # identify files yt-dlp wrote to disk before the photo-only error.
+        # Subtract 1 s to absorb filesystem timestamp rounding.
+        _attempt_start_ts: float = time.time() - 1.0
+        # Base output directory where yt-dlp saves files (before gallery-dl
+        # creates its per-post slug subfolder).  Set when BUG-BU triggers.
+        _orphan_cleanup_root: Optional[Path] = None
+        # Count consecutive "not currently live" errors. After 3 in a row the
+        # stream has ended — stop retrying rather than burning all max_retries.
+        _consecutive_not_live: int = 0
+        _not_live_recheck_done: bool = False  # BUG-TT-29: one live re-verify allowed
 
-            # Wrap every terminal-state write in the task lock so the UI poll
-            # thread's snapshot() call never reads a half-updated task (e.g.
-            # status=COMPLETED with progress still at 0.0).
+        for attempt in range(max_attempts):
+            # Check for cancellation before each attempt (including before
+            # the very first one, in case cancel() was called while queued).
             if task.is_cancellation_requested:
+                break
+
+            if attempt > 0:
+                # Respect Retry-After header from 429 responses; otherwise use
+                # jittered exponential back-off to avoid predictable bot patterns.
+                _retry_after = 0
+                if last_exc is not None:
+                    _m = re.search(r"retry.after[:\s]+(\d+)", str(last_exc), re.I)
+                    if _m:
+                        _retry_after = int(_m.group(1))
+                wait_s = (
+                    float(_retry_after)
+                    if _retry_after
+                    else min(2 ** (attempt - 1), 30) * random.uniform(0.8, 1.5)
+                )
+                logger.info(
+                    "Retrying task %s (attempt %d/%d) in %.1f s — previous error: %s",
+                    task.id,
+                    attempt + 1,
+                    max_attempts,
+                    wait_s,
+                    last_exc,
+                )
+                # Reset visible progress so the UI shows the retry clearly.
+                with task._lock:
+                    task.progress = 0.0
+                    task.speed = ""
+                    task.eta = ""
+                    task.status = DownloadStatus.DOWNLOADING
+                self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+                time.sleep(wait_s)
+
+                # Re-check cancellation after sleep (user may have cancelled
+                # during the back-off wait).
+                if task.is_cancellation_requested:
+                    break
+
+            try:
+                # ── Route: Kuaishou → KuaishouEngine (bypasses yt-dlp) ───
+                # Must be checked FIRST — v.kuaishou.com short-links are not
+                # supported by yt-dlp and would be rejected immediately.
+                # Also route when source_engine=="kuaishou" so Remote API calls
+                # that pass the CDN URL directly (not the original short URL)
+                # are still handled by KuaishouEngine, not yt-dlp.
+                if self._kuaishou_engine is not None:
+                    from infrastructure.downloader.kuaishou_engine import (  # noqa: PLC0415
+                        is_kuaishou_url,
+                    )
+
+                    _is_ks = is_kuaishou_url(task.url) or (
+                        task.media_info is not None and task.media_info.source_engine == "kuaishou"
+                    )
+                    if _is_ks:
+                        self._kuaishou_engine.download(
+                            task,
+                            on_progress=self._on_progress,
+                            on_postprocess=self._on_progress,
+                        )
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
+                # ── Route: Facebook Story → CDP engine (Playwright) ───────
+                # Must be checked BEFORE gallery/yt-dlp routing because Story
+                # URLs also match the generic facebook.com domain used below.
+                # The import is deferred so Playwright is never loaded on
+                # desktop-only startups where story_engine_enabled=False.
+                if self._story_engine_enabled:
+                    from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+                        download_story,
+                        is_facebook_story_url,
+                    )
+
+                    if is_facebook_story_url(task.url):
+
+                        def _story_progress(pct: int, speed: str, msg: str) -> None:
+                            with task._lock:
+                                task.progress = float(pct)
+                                task.speed = speed
+                                task.eta = msg
+                            self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+
+                        result_path = download_story(
+                            url=task.url,
+                            config=self._config,
+                            browser=getattr(self._config, "cookies_browser", "brave"),
+                            on_progress=_story_progress,
+                            timeout=90.0,
+                        )
+                        with task._lock:
+                            task.filename = str(result_path)
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
+                # Route to InstagramLiveEngine for Instagram live URLs.
+                # Direct HLS recording via FFmpeg is more reliable than yt-dlp
+                # for Instagram Live because yt-dlp's Instagram extractor
+                # frequently fails to resolve the live HLS stream URL.
+                # This check runs before gallery-dl routing since live URLs
+                # are never routed to gallery-dl.
+                if self._instagram_live_engine is not None:
+                    from infrastructure.downloader.instagram_live_engine import (  # noqa: PLC0415
+                        is_instagram_live_url,
+                    )
+
+                    _is_ig_live = is_instagram_live_url(task.url) or (
+                        task.media_info is not None
+                        and getattr(task.media_info, "source_engine", "") == "instagram_live"
+                    )
+                    if _is_ig_live:
+                        self._instagram_live_engine.download(
+                            task,
+                            on_progress=self._on_progress,
+                            on_postprocess=self._on_progress,
+                        )
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
+                # ── Route: waaw.ac → WaawEngine (CDP, Playwright) ────────────
+                if self._waaw_engine is not None:
+                    from infrastructure.downloader.waaw_engine import (  # noqa: PLC0415
+                        is_waaw_cdn_link,
+                        is_waaw_url,
+                    )
+
+                    _is_waaw = (
+                        is_waaw_url(task.url)
+                        or is_waaw_cdn_link(task.url)
+                        or (
+                            task.media_info is not None
+                            and getattr(task.media_info, "source_engine", "") == "waaw"
+                        )
+                    )
+                    if _is_waaw:
+                        self._waaw_engine.download(
+                            task,
+                            on_progress=self._on_progress,
+                            on_postprocess=self._on_progress,
+                        )
+                        last_exc = None
+                        break  # success — skip yt-dlp / gallery routing
+
+                # ── Route: pasted Instagram CDN URL → anonymous streaming ────
+                # IDM parity: a pre-signed fbcdn.net/cdninstagram.com URL needs
+                # no Instagram API call and no session cookie at all.
+                from infrastructure.downloader.instagram_cdn_engine import (  # noqa: PLC0415
+                    download_ig_cdn_url,
+                    is_ig_cdn_url,
+                )
+
+                _is_ig_cdn = is_ig_cdn_url(task.url) or (
+                    task.media_info is not None and getattr(task.media_info, "source_engine", "") == "ig_cdn"
+                )
+                if _is_ig_cdn:
+
+                    def _ig_cdn_progress(pct: int, speed: str) -> None:
+                        with task._lock:
+                            task.progress = float(pct)
+                            task.speed = speed
+                        self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+
+                    _ig_cdn_output_dir = (
+                        Path(task.output_dir) if task.output_dir else self._config.download_dir
+                    )
+                    _ig_cdn_hint = (
+                        task.media_info.video_id
+                        if task.media_info and task.media_info.video_id
+                        else "instagram_cdn"
+                    )
+                    result_path = download_ig_cdn_url(
+                        url=task.url,
+                        output_dir=_ig_cdn_output_dir,
+                        filename_hint=_ig_cdn_hint,
+                        on_progress=_ig_cdn_progress,
+                    )
+                    with task._lock:
+                        task.filename = str(result_path)
+                    last_exc = None
+                    break  # success — skip yt-dlp / gallery routing
+
+                # Route to gallery-dl engine when MediaInfo carries the hint.
+                # Falls back to yt-dlp if gallery engine is not wired (e.g. tests).
+                use_gallery = (
+                    self._gallery_engine is not None
+                    and task.media_info is not None
+                    and getattr(task.media_info, "source_engine", "yt_dlp") == "gallery_dl"
+                )
+                active_engine = self._gallery_engine if use_gallery else self._engine
+
+                active_engine.download(  # type: ignore[union-attr]
+                    task,
+                    on_progress=self._on_progress,
+                    on_postprocess=self._on_progress,
+                )
+                last_exc = None
+                break  # success — exit retry loop
+
+            except Exception as exc:
+                msg = str(exc).lower()
+
+                # BUG-BU: yt-dlp photo-only error on a task submitted via the
+                # Remote API without source_engine="gallery_dl" forwarded from
+                # /api/analyse.  Detect both the raw English yt-dlp keywords AND
+                # the Vietnamese _friendly_error translation (the actual string
+                # raised by yt_dlp_engine.download).  Stop yt-dlp retries
+                # immediately and flag a single gallery-dl attempt after the loop
+                # — avoids 3 pointless yt-dlp retries before the final FAILED.
+                _is_photo_error = (
+                    "no video in this post" in msg
+                    or "no video formats found" in msg
+                    or "bài đăng này chỉ có ảnh" in msg
+                )
+                if (
+                    _is_photo_error
+                    and self._gallery_engine is not None
+                    and task.media_info is not None
+                    and getattr(task.media_info, "source_engine", "yt_dlp") == "yt_dlp"
+                ):
+                    logger.info(
+                        "Task %s: yt-dlp photo-only error — switching to gallery-dl "
+                        "(BUG-BU: Remote API client did not forward source_engine)",
+                        task.id,
+                    )
+                    task.media_info.source_engine = "gallery_dl"
+                    _gallery_fallback_needed = True
+                    last_exc = exc
+                    # Capture the base output dir NOW — gallery-dl will create a
+                    # slug subfolder inside it, so we need the parent to scan for
+                    # yt-dlp orphaned files after the fallback succeeds.
+                    _raw_od = getattr(task, "output_dir", None) or ""
+                    _orphan_cleanup_root = Path(_raw_od).resolve() if _raw_od else self._config.download_dir
+                    break  # stop yt-dlp retries; gallery-dl attempt follows below
+
+                # BUG-CI FIX: ffmpeg exit error on a livestream task is a hard
+                # error — HLS URLs from TikTok expire ~1-2 minutes after
+                # extract_info().  Retrying the same expired URL always fails.
+                # Only treat as hard error for live tasks; VOD ffmpeg failures
+                # (e.g. merge codec mismatch) remain retryable.
+                _is_live_task = bool(task.media_info is not None and task.media_info.is_live)
+                if _is_live_task and "ffmpeg exited with code" in msg:
+                    logger.warning(
+                        "Hard error for live task %s (no retry — HLS URL expired or stream unavailable): %s",
+                        task.id,
+                        exc,
+                    )
+                    last_exc = exc
+                    break
+
+                # Hard errors: stop immediately, no retry.
+                # Exception: "not currently live" on a confirmed-live task is a
+                # transient TikTok API check failure — the stream IS live but
+                # yt-dlp re-checks at download time and gets a stale response.
+                # Allow retries, but cap at 3 consecutive hits: after that the
+                # stream has genuinely ended and further retries only cause 429s.
+                _is_not_live_err = "not currently live" in msg or "channel is not currently live" in msg
+                if _is_not_live_err and _is_live_task:
+                    if getattr(task.media_info, "source_engine", "") == "instagram_live":
+                        # InstagramLiveEngine already spent the full CDP window
+                        # confirming nothing streams — not a stale-API race like
+                        # TikTok. Retrying relaunches a 120s browser for nothing.
+                        logger.info(
+                            "Task %s: Instagram live not streaming — stopping retries",
+                            task.id,
+                        )
+                        last_exc = exc
+                        break
+                    _consecutive_not_live += 1
+                    last_exc = exc
+                    if _consecutive_not_live >= 3:
+                        # BUG-TT-29: one scrape re-verify before giving up.
+                        _room_id_tt29 = (
+                            task.media_info.tiktok_room_id
+                            if task.media_info and not _not_live_recheck_done
+                            else ""
+                        )
+                        if _room_id_tt29:
+                            _not_live_recheck_done = True
+                            if self._tt29_live_recheck(task, _room_id_tt29):
+                                _consecutive_not_live = 0
+                                continue
+                        logger.info(
+                            "Task %s: 3 consecutive 'not currently live' — stream ended, stopping retries",
+                            task.id,
+                        )
+                        break
+                    continue  # transient TikTok API race — retry
+                _consecutive_not_live = 0
+                if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
+                    logger.warning("Hard error for task %s (no retry): %s", task.id, exc)
+                    last_exc = exc
+                    break
+
+                last_exc = exc
+                # Loop continues to next attempt (if any remain).
+
+        # ── BUG-BU: gallery-dl fallback for photo-only posts ─────────────
+        # When yt-dlp exhausted retries (or stopped early) with a photo-only
+        # error and gallery-dl hasn't been tried, attempt gallery-dl once.
+        # This covers the Remote API path where the iOS client sends
+        # source_engine="yt_dlp" (default) instead of forwarding "gallery_dl"
+        # from /api/analyse.  One attempt is enough — gallery-dl is fast and
+        # a second failure is not recoverable without user action (e.g. cookies).
+        if _gallery_fallback_needed and last_exc is not None and not task.is_cancellation_requested:
+            logger.info(
+                "Task %s: attempting gallery-dl fallback for photo-only post",
+                task.id,
+            )
+            with task._lock:
+                task.progress = 0.0
+                task.speed = ""
+                task.eta = ""
+                task.status = DownloadStatus.DOWNLOADING
+            self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+            try:
+                assert self._gallery_engine is not None  # guarded by _gallery_fallback_needed
+                self._gallery_engine.download(
+                    task,
+                    on_progress=self._on_progress,
+                    on_postprocess=self._on_progress,
+                )
+                last_exc = None
+            except Exception as gdl_exc:
+                last_exc = gdl_exc
+                logger.warning(
+                    "gallery-dl fallback failed for task %s: %s",
+                    task.id,
+                    gdl_exc,
+                )
+
+        # ── BUG-BU orphan cleanup ─────────────────────────────────────────
+        # When gallery-dl fallback succeeded, yt-dlp may have written partial
+        # carousel files to disk before the photo-only error triggered the
+        # fallback.  These files are NOT in task.gallery_dl_files (which only
+        # contains gallery-dl + BUG-BW rescue files) and sit in the base
+        # output dir rather than the gallery-dl slug subfolder.
+        # Delete them so the user does not see duplicate video files alongside
+        # the correctly organised slug folder.  Applies to both the app path
+        # (yt-dlp ran first because extract_info saw a video item) and the
+        # Remote API path (source_engine not forwarded by the iOS client).
+        if (
+            _gallery_fallback_needed
+            and last_exc is None
+            and _orphan_cleanup_root is not None
+            and _orphan_cleanup_root.is_dir()
+        ):
+            _gdl_files_set: set[Path] = {
+                Path(f).resolve() for f in (getattr(task, "gallery_dl_files", None) or [])
+            }
+            _deleted_parents: set[Path] = set()
+            try:
+                for _f in list(_orphan_cleanup_root.rglob("*")):
+                    if (
+                        _f.is_file()
+                        and _f.resolve() not in _gdl_files_set
+                        and _f.stat().st_mtime >= _attempt_start_ts
+                    ):
+                        _f.unlink(missing_ok=True)
+                        logger.info(
+                            "BUG-BU orphan cleanup: deleted yt-dlp partial file %s",
+                            _f.name,
+                        )
+                        _deleted_parents.add(_f.parent)
+                # Remove empty directories left behind (deepest first).
+                for _d in sorted(_deleted_parents, key=lambda p: len(p.parts), reverse=True):
+                    try:
+                        if _d.is_dir() and not any(_d.iterdir()):
+                            _d.rmdir()
+                            logger.debug("BUG-BU orphan cleanup: removed empty dir %s", _d.name)
+                    except Exception:
+                        pass
+            except Exception as _ce:
+                logger.warning("BUG-BU orphan cleanup scan failed: %s", _ce)
+
+        # ── Resolve final state ───────────────────────────────────────────
+        if task.is_cancellation_requested:
+            if task.keep_partial and task.filename:
+                with task._lock:
+                    task.status = DownloadStatus.PARTIAL_SAVED
+                    task.progress = 100.0
+                    task.speed = ""
+                    task.eta = ""
+                    task.finished_at = time.time()
+                logger.info("Task saved partial: %s → %s", task.id, task.filename)
+                self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
+            else:
                 with task._lock:
                     task.status = DownloadStatus.CANCELLED
+                    task.speed = ""
+                    task.eta = ""
                     task.finished_at = time.time()
                 logger.info("Task cancelled: %s", task.id)
                 self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
-            else:
-                with task._lock:
-                    task.status = DownloadStatus.COMPLETED
-                    task.progress = 100.0
-                    task.finished_at = time.time()
-                logger.info("Task completed: %s → %s", task.id, task.filename)
-                self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
 
-        except Exception as exc:
-            if task.is_cancellation_requested:
-                with task._lock:
-                    task.status = DownloadStatus.CANCELLED
-                    task.finished_at = time.time()
-                self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
-            else:
-                with task._lock:
-                    task.status = DownloadStatus.FAILED
-                    task.error_msg = str(exc)
-                    task.finished_at = time.time()
-                logger.error("Task failed %s: %s", task.id, exc)
-                self._bus.publish(EventBus.DOWNLOAD_FAILED, task=task)
+        elif last_exc is None:
+            with task._lock:
+                task.status = DownloadStatus.COMPLETED
+                task.progress = 100.0
+                task.speed = ""
+                task.eta = ""
+                task.finished_at = time.time()
+            logger.info("Task completed: %s → %s", task.id, task.filename)
+            self._bus.publish(EventBus.DOWNLOAD_COMPLETED, task=task)
+
+        else:
+            with task._lock:
+                task.status = DownloadStatus.FAILED
+                task.speed = ""
+                task.eta = ""
+                task.error_msg = str(last_exc)
+                task.finished_at = time.time()
+            logger.error(
+                "Task failed after %d attempt(s) %s: %s",
+                max_attempts,
+                task.id,
+                last_exc,
+            )
+            self._bus.publish(EventBus.DOWNLOAD_FAILED, task=task)
 
     def _on_progress(self, task: DownloadTask) -> None:
         self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
@@ -192,6 +790,4 @@ class DownloadManager:
         # DEF-009: _run_task already logs errors — only surface true escapes here
         exc = future.exception()
         if exc:
-            logger.debug(
-                "Unhandled exception escaped _run_task for task %s: %s", task_id, exc
-            )
+            logger.debug("Unhandled exception escaped _run_task for task %s: %s", task_id, exc)

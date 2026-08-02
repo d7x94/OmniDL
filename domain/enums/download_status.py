@@ -2,19 +2,21 @@
 domain/enums/download_status.py
 All possible states a DownloadTask can be in.
 """
+
 from __future__ import annotations
 
 from enum import Enum, auto
 
 
 class DownloadStatus(Enum):
-    QUEUED      = auto()   # waiting for a free worker slot
-    DOWNLOADING = auto()   # active transfer
-    PROCESSING  = auto()   # post-processing (FFmpeg merge / thumbnail)
-    PAUSED      = auto()   # user-paused
-    COMPLETED   = auto()   # finished successfully
-    FAILED      = auto()   # unrecoverable error
-    CANCELLED   = auto()   # user cancelled
+    QUEUED = auto()  # waiting for a free worker slot
+    DOWNLOADING = auto()  # active transfer
+    PROCESSING = auto()  # post-processing (FFmpeg merge / thumbnail)
+    PAUSED = auto()  # user-paused
+    COMPLETED = auto()  # finished successfully
+    FAILED = auto()  # unrecoverable error
+    CANCELLED = auto()  # user cancelled
+    PARTIAL_SAVED = auto()  # livestream cancelled but partial file kept
 
     # Convenience groups (not real states)
     @classmethod
@@ -23,4 +25,4 @@ class DownloadStatus(Enum):
 
     @classmethod
     def terminal_states(cls) -> frozenset[DownloadStatus]:
-        return frozenset({cls.COMPLETED, cls.FAILED, cls.CANCELLED})
+        return frozenset({cls.COMPLETED, cls.FAILED, cls.CANCELLED, cls.PARTIAL_SAVED})

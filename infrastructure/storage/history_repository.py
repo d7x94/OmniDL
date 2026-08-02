@@ -14,6 +14,7 @@ Current approach:
 - On startup   : reads the JSONL file line-by-line; migrates old JSON array
   is detected it migrates automatically (one-time).
 """
+
 from __future__ import annotations
 
 import json
@@ -37,6 +38,9 @@ class HistoryRepository:
         self._path = history_path
         self._limit = limit
         self._lock = threading.Lock()
+        # Serializes disk writers (append vs rewrite) without blocking
+        # all()/search() readers, which only need self._lock.
+        self._io_lock = threading.Lock()
         self._entries: list[dict] = []
         self._load()
 
@@ -56,7 +60,7 @@ class HistoryRepository:
                 data = json.loads(raw)
                 if isinstance(data, list):
                     self._entries = data
-                self._rewrite()   # convert on disk immediately
+                self._rewrite()  # convert on disk immediately
                 return
             # Normal JSONL: one JSON object per line
             for line in raw.splitlines():
@@ -69,9 +73,22 @@ class HistoryRepository:
             logger.debug("History loaded: %d entries", len(self._entries))
         except Exception as exc:
             logger.warning("History load failed (%s)", exc)
+        finally:
+            # add() trims to the limit, but nothing else does — a file that
+            # already exceeds the limit (older build, lowered history_limit,
+            # crash between append and rewrite) would otherwise stay fully
+            # resident for the whole session.
+            if len(self._entries) > self._limit:
+                logger.info(
+                    "History file has %d entries, trimming to limit %d",
+                    len(self._entries),
+                    self._limit,
+                )
+                self._entries = self._entries[: self._limit]
+                self._rewrite()
 
     def _append_line(self, entry: dict) -> None:
-        """O(1) disk append — the hot path for add()."""
+        """O(1) disk append — the hot path for add(). Caller holds _io_lock."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with self._path.open("a", encoding="utf-8") as f:
@@ -98,6 +115,7 @@ class HistoryRepository:
         Accepts a consistent snapshot so the caller can release the lock
         before performing the slow disk write, keeping ``all()`` and
         ``search()`` responsive for the UI's 500 ms polling loop.
+        Caller holds ``_io_lock`` (except the single-threaded ``_load`` path).
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         backup = self._path.with_suffix(".backup.jsonl")
@@ -127,32 +145,32 @@ class HistoryRepository:
     # ── Public API ────────────────────────────────────────────────────────
 
     def add(self, task: DownloadTask) -> None:
-        with self._lock:
-            entry = task.to_dict()
-                            
-            # Remove duplicate by id if re-queued
-            self._entries = [e for e in self._entries if e.get("id") != task.id]
-            self._entries.insert(0, entry)
+        entry = task.to_dict()
+        # _io_lock spans the whole operation so concurrent writers (add vs
+        # remove/clear) cannot interleave a stale snapshot rewrite over a
+        # fresh append. The disk write happens BEFORE self._entries is
+        # updated: readers (all/search) only need self._lock, so an entry
+        # must never become visible in memory before it is durable on disk —
+        # otherwise a reader could observe it, then a fresh HistoryRepository
+        # opened on the same file (e.g. after a restart) would not find it.
+        with self._io_lock:
+            with self._lock:
+                new_entries = [e for e in self._entries if e.get("id") != task.id]
+            new_entries.insert(0, entry)
             # Check overflow BEFORE pruning so we know whether the disk file
             # also needs to be truncated (CWE-400: uncontrolled resource growth).
             # Calling _append_line() unconditionally would let the JSONL file
             # grow without bound; on restart _load() would read every line back
             # into memory, silently bypassing the configured limit.
-            overflow = len(self._entries) > self._limit
+            overflow = len(new_entries) > self._limit
             if overflow:
-                self._entries = self._entries[: self._limit]
-                # Take a snapshot for the disk rewrite — the lock is released
-                # immediately after so that concurrent all()/search() calls are
-                # not blocked during the (slow) full-file write.
-                entries_snapshot: list[dict] = list(self._entries)
+                new_entries = new_entries[: self._limit]
+                self._rewrite_unlocked(new_entries)
             else:
-                entries_snapshot = []
-        # ── Lock released — perform disk I/O outside the critical section ──
-        if overflow:
-            self._rewrite_unlocked(entries_snapshot)
-        else:
-            # Fast O(1) path: no pruning needed, just append one line.
-            self._append_line(entry)
+                # Fast O(1) path: no pruning needed, just append one line.
+                self._append_line(entry)
+            with self._lock:
+                self._entries = new_entries
 
     def all(self) -> list[dict]:
         with self._lock:
@@ -166,22 +184,25 @@ class HistoryRepository:
             # Return copies — returning references into self._entries would
             # allow callers to silently mutate the internal store.
             return [
-                dict(e) for e in self._entries
-                if q in e.get("url", "").lower()
-                or q in e.get("title", "").lower()
-                or q in e.get("filename", "").lower()
+                dict(e)
+                for e in self._entries
+                if q in (e.get("url") or "").lower()
+                or q in (e.get("title") or "").lower()
+                or q in (e.get("filename") or "").lower()
             ]
 
     def remove(self, task_id: str) -> None:
-        with self._lock:
-            self._entries = [e for e in self._entries if e.get("id") != task_id]
-            snapshot = list(self._entries)
-        self._rewrite_unlocked(snapshot)
+        with self._io_lock:
+            with self._lock:
+                self._entries = [e for e in self._entries if e.get("id") != task_id]
+                snapshot = list(self._entries)
+            self._rewrite_unlocked(snapshot)
 
     def clear(self) -> None:
-        with self._lock:
-            self._entries = []
-        self._rewrite_unlocked([])
+        with self._io_lock:
+            with self._lock:
+                self._entries = []
+            self._rewrite_unlocked([])
 
     def get_by_id(self, task_id: str) -> Optional[dict]:
         with self._lock:

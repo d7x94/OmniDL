@@ -2,20 +2,21 @@
 tests/test_config_manager_extra.py
 Additional tests for infrastructure/config/config_manager.py
 
-Fills coverage gaps — typed property accessors (lines 116–157) and
+Fills coverage gaps -- typed property accessors (lines 116-157) and
 download_dir fallback when value is empty string.
 """
+
 import json
 from pathlib import Path
 
 from infrastructure.config.config_manager import ConfigManager
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_config(tmp_path: Path, data: dict = None) -> ConfigManager:
+
+def make_config(tmp_path: Path, data: dict = None) -> ConfigManager:  # type: ignore[assignment]
     path = tmp_path / "config.json"
     if data is not None:
         path.write_text(json.dumps(data), encoding="utf-8")
@@ -25,6 +26,7 @@ def make_config(tmp_path: Path, data: dict = None) -> ConfigManager:
 # ---------------------------------------------------------------------------
 # download_dir fallback
 # ---------------------------------------------------------------------------
+
 
 class TestDownloadDirFallback:
     def test_empty_string_returns_default(self, tmp_path):
@@ -45,6 +47,7 @@ class TestDownloadDirFallback:
 # ---------------------------------------------------------------------------
 # Typed accessors
 # ---------------------------------------------------------------------------
+
 
 class TestTypedAccessors:
     def test_theme_default(self, tmp_path):

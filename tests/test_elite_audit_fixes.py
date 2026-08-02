@@ -157,17 +157,14 @@ class TestConfigManagerAtomicSave:
         cfg_path = tmp_path / "config.json"
         cfg = ConfigManager(cfg_path)
 
-        lock_held_during_data_access: list[bool] = []
         original_save = cfg._save
 
-        orig_lock = cfg._lock
         class _TrackingRLock(threading.RLock().__class__):
             pass
 
         # Monitor: check if lock is acquired when json.dump runs
         data_accessed_while_locked = []
 
-        orig_json_dump = json.dumps
 
         def tracking_save():
             # Patch json.dump inside _save to detect lock status
@@ -236,6 +233,7 @@ class TestWindowsPopenCloseFds:
         yt-dlp file handles and broke on # in filenames.  ctypes has no such risk.
         """
         import ctypes as _r
+
         from utils.helpers import reveal_in_explorer
         fake = tmp_path / "video.mp4"
         with patch("utils.helpers.sys") as ms, \
@@ -303,8 +301,8 @@ class TestDownloadTaskToDictLocked:
         Without the lock, a history entry can record status=COMPLETED with
         filename="" if the progress hook sets them in separate GIL windows.
         """
-        from domain.models.download_task import DownloadTask
         from domain.enums.download_status import DownloadStatus
+        from domain.models.download_task import DownloadTask
 
         task = DownloadTask(url="https://example.com/v")
         task.status = DownloadStatus.COMPLETED
@@ -337,8 +335,8 @@ class TestDownloadTaskToDictLocked:
         Under concurrent updates to filename + status, to_dict() must never
         return a dict with status=COMPLETED and an empty filename.
         """
-        from domain.models.download_task import DownloadTask
         from domain.enums.download_status import DownloadStatus
+        from domain.models.download_task import DownloadTask
 
         task = DownloadTask(url="https://example.com/v")
         task.status = DownloadStatus.DOWNLOADING
@@ -366,8 +364,10 @@ class TestDownloadTaskToDictLocked:
 
         t1 = threading.Thread(target=_updater)
         t2 = threading.Thread(target=_reader)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
         assert not inconsistent, (
             f"to_dict() produced {len(inconsistent)} inconsistent snapshot(s): "
