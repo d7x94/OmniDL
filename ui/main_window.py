@@ -54,7 +54,7 @@ _TOAST_COLOR = {
 
 
 class MainWindow(QMainWindow):
-    MIN_W = 1080
+    MIN_W = 1220
     MIN_H = 720
 
     def __init__(self, service: DownloadService, config: ConfigManager) -> None:
@@ -222,6 +222,7 @@ class MainWindow(QMainWindow):
             btn.setProperty("tab_key", key)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda checked=False, k=key: self.navigate_to(k))
+            btn.setMinimumWidth(btn.sizeHint().width())
             layout.addWidget(btn)
             self._pill_btns[key] = btn
 
