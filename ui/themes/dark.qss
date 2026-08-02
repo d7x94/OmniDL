@@ -265,7 +265,7 @@ QCheckBox::indicator {
 QCheckBox::indicator:checked {
     background-color: $primary;
     border-color: $primary;
-    image: url(ui/assets/check.svg);
+    image: url($assets_dir/check.svg);
 }
 QCheckBox::indicator:hover {
     border-color: $primary;

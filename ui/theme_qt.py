@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from string import Template
 
@@ -11,6 +12,18 @@ from PySide6.QtWidgets import QApplication
 from ui.themes.tokens import T
 
 _THEMES_DIR = Path(__file__).parent / "themes"
+
+
+def _assets_dir() -> str:
+    """Absolute, forward-slash path to ui/assets — works frozen or from source.
+
+    Qt resolves a relative url() in a stylesheet against the process's cwd, not
+    against the .qss file's location, so the path must be absolute. PyInstaller
+    unpacks --add-data "ui/assets;ui/assets" under sys._MEIPASS/ui/assets.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    base = Path(meipass) / "ui" / "assets" if meipass else Path(__file__).parent / "assets"
+    return base.as_posix()
 
 
 def get_stylesheet() -> str:
@@ -45,4 +58,4 @@ def _build_palette() -> QPalette:
 def _build_qss() -> str:
     fname = "dark.qss" if T.is_dark else "light.qss"
     template = Template((_THEMES_DIR / fname).read_text(encoding="utf-8"))
-    return template.safe_substitute(T._palette)
+    return template.safe_substitute({**T._palette, "assets_dir": _assets_dir()})
