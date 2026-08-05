@@ -8,10 +8,12 @@ Covers:
     status instead of QMessageBox.critical
   - _set_busy: cancel button visibility for cancellable vs non-cancellable ops
   - _refresh_name_controls: _use_orig_name_chk enable logic
+  - _resolve_archive_name: original-name vs custom-name selection
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -238,3 +240,42 @@ class TestRefreshNameControls:
         tab = _name_controls_stub(sources=[], individually_checked=False)
         self._call(tab)
         assert not tab._use_orig_name_chk.isEnabled()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _resolve_archive_name
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_name_stub(orig_checked: bool, orig_enabled: bool, entry_text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        _use_orig_name_chk=_W(checked=orig_checked, enabled=orig_enabled),
+        _archive_name_entry=_W(text=entry_text),
+    )
+
+
+class TestResolveArchiveName:
+    def _call(self, tab, sources):
+        from ui.tabs.archive_tab import ArchiveTab
+
+        return ArchiveTab._resolve_archive_name(tab, sources)
+
+    def test_unchecked_uses_custom_text(self):
+        tab = _resolve_name_stub(orig_checked=False, orig_enabled=True, entry_text="my-custom")
+        assert self._call(tab, [Path("/tmp/video.mp4")]) == "my-custom"  # nosec B108
+
+    def test_checked_uses_source_stem_not_custom_text(self):
+        tab = _resolve_name_stub(orig_checked=True, orig_enabled=True, entry_text="my-custom")
+        assert self._call(tab, [Path("/tmp/video.mp4")]) == "video"  # nosec B108
+
+    def test_checked_but_disabled_falls_back_to_custom_text(self):
+        tab = _resolve_name_stub(orig_checked=True, orig_enabled=False, entry_text="my-custom")
+        assert self._call(tab, [Path("/tmp/video.mp4")]) == "my-custom"  # nosec B108
+
+    def test_unchecked_blank_entry_falls_back_to_archive(self):
+        tab = _resolve_name_stub(orig_checked=False, orig_enabled=True, entry_text="  ")
+        assert self._call(tab, [Path("/tmp/video.mp4")]) == "archive"  # nosec B108
+
+    def test_checked_strips_custom_text_whitespace_not_applicable_to_stem(self):
+        tab = _resolve_name_stub(orig_checked=True, orig_enabled=True, entry_text="fallback")
+        assert self._call(tab, [Path("/tmp/My Video.mkv")]) == "My Video"

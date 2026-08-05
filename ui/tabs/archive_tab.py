@@ -354,6 +354,12 @@ class ArchiveTab(QWidget):
             self._use_orig_name_chk.setChecked(False)
         self._use_orig_name_chk.setEnabled(can_use_orig)
 
+    def _resolve_archive_name(self, sources: list[Path]) -> str:
+        use_orig_name = self._use_orig_name_chk.isEnabled() and self._use_orig_name_chk.isChecked()
+        if use_orig_name:
+            return sources[0].stem or self._archive_name_entry.text().strip() or "archive"
+        return self._archive_name_entry.text().strip() or "archive"
+
     # ── File pickers ─────────────────────────────────────────────────────
 
     def _browse_compress_files(self) -> None:
@@ -416,11 +422,7 @@ class ArchiveTab(QWidget):
         individually = self._individually_chk.isChecked()
         sources = list(self._compress_sources)
 
-        use_orig_name = self._use_orig_name_chk.isEnabled() and self._use_orig_name_chk.isChecked()
-        if use_orig_name:
-            archive_name = sources[0].stem or self._archive_name_entry.text().strip() or "archive"
-        else:
-            archive_name = self._archive_name_entry.text().strip() or "archive"
+        archive_name = self._resolve_archive_name(sources)
 
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
