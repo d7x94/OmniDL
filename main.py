@@ -306,11 +306,11 @@ def main() -> None:
     from PySide6.QtWidgets import QApplication
 
     _qt_app = QApplication.instance() or QApplication(sys.argv)
-    if sys.platform != "darwin":
-        _qt_app.setStyle("Fusion")
 
-    from ui.theme_qt import apply_theme
+    from ui.theme_qt import CheckBoxStyle, apply_theme
     from ui.themes.tokens import T
+
+    _qt_app.setStyle(CheckBoxStyle("Fusion"))
 
     T.set_mode(config.theme)
     apply_theme()

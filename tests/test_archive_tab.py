@@ -8,10 +8,12 @@ Covers:
     status instead of QMessageBox.critical
   - _set_busy: cancel button visibility for cancellable vs non-cancellable ops
   - _refresh_name_controls: _use_orig_name_chk enable logic
+  - _start_compress: archive_name resolution vs. _use_orig_name_chk state
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -57,6 +59,9 @@ class _W:
     def isEnabled(self) -> bool:
         return self._enabled
 
+    def update(self) -> None:
+        pass
+
 
 class _ProgressStub:
     def __init__(self) -> None:
@@ -83,11 +88,24 @@ def _error_stub() -> SimpleNamespace:
 
 
 def _busy_stub() -> SimpleNamespace:
+    fmt_combo = _W(text="zip")
+    fmt_combo.currentText = fmt_combo.text
     return SimpleNamespace(
         _busy=False,
         _compress_btn=_W(),
         _extract_btn=_W(),
         _list_contents_btn=_W(),
+        _compress_mode_btn=_W(),
+        _extract_mode_btn=_W(),
+        _add_file_btn=_W(),
+        _add_folder_btn=_W(),
+        _remove_btn=_W(),
+        _individually_chk=_W(),
+        _header_enc_chk=_W(),
+        _use_orig_name_chk=_W(),
+        _fmt_combo=fmt_combo,
+        _on_fmt_changed=MagicMock(),
+        _refresh_name_controls=MagicMock(),
         _progress=_ProgressStub(),
         _cancel_btn=_W(),
         _cancel_event=object(),
@@ -202,6 +220,27 @@ class TestSetBusy:
         assert not tab._extract_btn.isEnabled()
         assert not tab._list_contents_btn.isEnabled()
 
+    def test_busy_disables_source_and_mode_controls(self):
+        tab = _busy_stub()
+        self._call(tab, True)
+        assert not tab._compress_mode_btn.isEnabled()
+        assert not tab._extract_mode_btn.isEnabled()
+        assert not tab._add_file_btn.isEnabled()
+        assert not tab._add_folder_btn.isEnabled()
+        assert not tab._remove_btn.isEnabled()
+        assert not tab._individually_chk.isEnabled()
+        assert not tab._header_enc_chk.isEnabled()
+        assert not tab._use_orig_name_chk.isEnabled()
+
+    def test_not_busy_reenables_mode_controls_and_recomputes_name_controls(self):
+        tab = _busy_stub()
+        self._call(tab, True)
+        self._call(tab, False)
+        assert tab._compress_mode_btn.isEnabled()
+        assert tab._add_file_btn.isEnabled()
+        tab._on_fmt_changed.assert_called_once_with("zip")
+        tab._refresh_name_controls.assert_called_once()
+
     def test_not_busy_clears_cancel_event(self):
         tab = _busy_stub()
         self._call(tab, False)
@@ -238,3 +277,63 @@ class TestRefreshNameControls:
         tab = _name_controls_stub(sources=[], individually_checked=False)
         self._call(tab)
         assert not tab._use_orig_name_chk.isEnabled()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _start_compress — archive_name resolution
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ThreadStub:
+    """Runs the target synchronously instead of spawning a real thread."""
+
+    def __init__(self, target=None, daemon=None, name=None) -> None:
+        self._target = target
+
+    def start(self) -> None:
+        self._target()
+
+
+def _start_compress_stub(*, use_orig_checked: bool, use_orig_enabled: bool) -> SimpleNamespace:
+    fmt_combo = _W(text="zip")
+    fmt_combo.currentText = fmt_combo.text
+    service = MagicMock()
+    service.compress.return_value = []
+    return SimpleNamespace(
+        _busy=False,
+        _compress_sources=[Path("/tmp/photo.txt")],  # nosec B108
+        _output_dir_entry=_W(text="/tmp/out"),  # nosec B108
+        _fmt_combo=fmt_combo,
+        _compress_pw_entry=_W(text=""),
+        _header_enc_chk=_W(checked=False),
+        _individually_chk=_W(checked=False),
+        _use_orig_name_chk=_W(checked=use_orig_checked, enabled=use_orig_enabled),
+        _archive_name_entry=_W(text="myarchive"),
+        _service=service,
+        _set_busy=MagicMock(),
+        _status_lbl=_W(),
+        _cancel_event=None,
+    )
+
+
+class TestStartCompressArchiveName:
+    def _call(self, tab):
+        from ui.tabs.archive_tab import ArchiveTab
+
+        with patch("ui.tabs.archive_tab.threading.Thread", _ThreadStub):
+            ArchiveTab._start_compress(tab)
+
+    def test_checked_and_enabled_uses_source_stem(self):
+        tab = _start_compress_stub(use_orig_checked=True, use_orig_enabled=True)
+        self._call(tab)
+        assert tab._service.compress.call_args.kwargs["archive_name"] == "photo"
+
+    def test_unchecked_uses_typed_name(self):
+        tab = _start_compress_stub(use_orig_checked=False, use_orig_enabled=True)
+        self._call(tab)
+        assert tab._service.compress.call_args.kwargs["archive_name"] == "myarchive"
+
+    def test_checked_but_disabled_uses_typed_name(self):
+        tab = _start_compress_stub(use_orig_checked=True, use_orig_enabled=False)
+        self._call(tab)
+        assert tab._service.compress.call_args.kwargs["archive_name"] == "myarchive"

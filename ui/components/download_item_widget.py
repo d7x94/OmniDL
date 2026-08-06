@@ -60,6 +60,7 @@ class DownloadItemWidget(QFrame):
         on_convert: Optional[Callable] = None,
         on_send: Optional[Callable] = None,
         on_edit: Optional[Callable] = None,
+        on_rename: Optional[Callable] = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -68,6 +69,7 @@ class DownloadItemWidget(QFrame):
         self._on_convert = on_convert
         self._on_send = on_send
         self._on_edit = on_edit
+        self._on_rename = on_rename
         self._completed_path: str = ""
         self._converting = False
         self._checkbox = None  # QCheckBox, created by set_select_mode
@@ -203,6 +205,19 @@ class DownloadItemWidget(QFrame):
         self._edit_btn.hide()
         btn_row.addWidget(self._edit_btn)
 
+        self._rename_btn = QPushButton("✎  Đổi tên")
+        self._rename_btn.setFixedHeight(30)
+        self._rename_btn.setStyleSheet(
+            f"background: {T.surface3}; color: {T.text2}; border-radius: 10px; border: none;"
+            f" font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self._rename_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._rename_btn.setToolTip("Đổi tên file")
+        self._rename_btn.clicked.connect(self._on_rename_click)
+        self._rename_btn.hide()
+        btn_row.addWidget(self._rename_btn)
+
         top.addWidget(self._btn_box)
         outer.addLayout(top)
 
@@ -326,6 +341,8 @@ class DownloadItemWidget(QFrame):
                 self._convert_btn.show()
             if self._on_edit and Path(self._completed_path).suffix.lower() in _VIDEO_EXTS:
                 self._edit_btn.show()
+            if self._on_rename and not Path(self._completed_path).is_dir():
+                self._rename_btn.show()
             self._pause_btn.hide()
             self._cancel_btn.hide()
         elif not terminal:
@@ -334,6 +351,7 @@ class DownloadItemWidget(QFrame):
             self._preview_btn.hide()
             self._convert_btn.hide()
             self._edit_btn.hide()
+            self._rename_btn.hide()
 
         is_active = st in (DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)
         self._set_active_accent(is_active)
@@ -384,6 +402,14 @@ class DownloadItemWidget(QFrame):
             self._on_edit(Path(self._completed_path))
         except Exception as exc:
             logger.warning("on_edit raised: %s", exc)
+
+    def _on_rename_click(self) -> None:
+        if not self._completed_path or not self._on_rename:
+            return
+        try:
+            self._on_rename(self.task.id, self._completed_path)
+        except Exception as exc:
+            logger.warning("on_rename raised: %s", exc)
 
     def _on_convert_click(self) -> None:
         if not self._completed_path or not self._on_convert:

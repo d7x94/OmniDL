@@ -258,6 +258,12 @@ class FileConvertJobResponse(BaseModel):
     job_id: str
 
 
+class FileRenameRequest(BaseModel):
+    """Rename the output file of a completed task."""
+
+    new_name: str  # new basename (with extension); sanitised server-side
+
+
 class FileDeleteRequest(BaseModel):
     """Delete a file or directory within download_dir."""
 

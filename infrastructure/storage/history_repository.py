@@ -204,6 +204,22 @@ class HistoryRepository:
                 self._entries = []
             self._rewrite_unlocked([])
 
+    def update_filename(self, task_id: str, new_filename: str) -> bool:
+        """Patch the ``filename`` field of one entry. Returns False if not found."""
+        with self._io_lock:
+            with self._lock:
+                found = False
+                for e in self._entries:
+                    if e.get("id") == task_id:
+                        e["filename"] = new_filename
+                        found = True
+                        break
+                if not found:
+                    return False
+                snapshot = list(self._entries)
+            self._rewrite_unlocked(snapshot)
+            return True
+
     def get_by_id(self, task_id: str) -> Optional[dict]:
         with self._lock:
             for e in self._entries:

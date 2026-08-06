@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -248,10 +249,12 @@ class HistoryTab(QWidget):
         card_layout.addLayout(top)
 
         # Filename
+        fname_lbl = None
         if fname:
             fname_lbl = QLabel(fname[-64:] if fname else "—")
             fname_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
             card_layout.addWidget(fname_lbl)
+        card._fname_lbl = fname_lbl
 
         # Meta + actions row
         bot = QHBoxLayout()
@@ -290,6 +293,14 @@ class HistoryTab(QWidget):
             open_btn.clicked.connect(lambda _=False, f=fname: self._open_file(f))
             bot.addWidget(open_btn)
 
+            ren_btn = QPushButton("Đổi tên")
+            ren_btn.setFixedSize(64, 28)
+            ren_btn.setStyleSheet(f"background: {T.surface2}; color: {T.text2}; {_btn_ss}")
+            ren_btn.setToolTip("Đổi tên file")
+            ren_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            ren_btn.clicked.connect(lambda _=False, tid=task_id, c=card: self._rename_entry(tid, c))
+            bot.addWidget(ren_btn)
+
         del_btn = QPushButton("Xóa")
         del_btn.setFixedSize(44, 28)
         del_btn.setStyleSheet(f"background: {T.error_bg}; color: {T.error}; {_btn_ss}")
@@ -322,6 +333,24 @@ class HistoryTab(QWidget):
         self._rendered -= before - len(self._entries)
         card.setParent(None)
         card.deleteLater()
+
+    def _rename_entry(self, task_id: str, card: QFrame) -> None:
+        entry = next((e for e in self._entries if e.get("id") == task_id), None)
+        if entry is None:
+            return
+        old_path = Path(entry.get("filename", ""))
+        new_name, ok = QInputDialog.getText(self, "Đổi tên file", "Tên file mới:", text=old_path.name)
+        if not ok or not new_name.strip():
+            return
+        try:
+            new_path = self._app.service.rename_download(task_id, new_name.strip())
+        except (FileNotFoundError, FileExistsError, ValueError) as exc:
+            QMessageBox.warning(self, "OmniDL", str(exc))
+            return
+        entry["filename"] = new_path
+        fname_lbl = getattr(card, "_fname_lbl", None)
+        if fname_lbl is not None:
+            fname_lbl.setText(new_path[-64:])
 
     def _clear_all(self) -> None:
         reply = QMessageBox.question(

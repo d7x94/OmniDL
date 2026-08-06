@@ -168,16 +168,42 @@ def _iter_real_files(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink())
 
 
-def _add_source_to_zip(zf: pyzipper.AESZipFile, source: Path) -> None:
+def _check_cancelled(cancel_event: Optional[threading.Event], message: str) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ArchiveError(message)
+
+
+def _add_source_to_zip(
+    zf: pyzipper.AESZipFile, source: Path, cancel_event: Optional[threading.Event]
+) -> None:
     if source.is_file():
+        _check_cancelled(cancel_event, "Compression cancelled")
         zf.write(source, arcname=source.name)
     else:
         for f in _iter_real_files(source):
+            _check_cancelled(cancel_event, "Compression cancelled")
             zf.write(f, arcname=str(Path(source.name) / f.relative_to(source)))
 
 
+def _add_source_to_7z(
+    archive: py7zr.SevenZipFile, source: Path, cancel_event: Optional[threading.Event]
+) -> None:
+    if source.is_file():
+        _check_cancelled(cancel_event, "Compression cancelled")
+        archive.write(source, arcname=source.name)
+    else:
+        for f in _iter_real_files(source):
+            _check_cancelled(cancel_event, "Compression cancelled")
+            archive.write(f, arcname=str(Path(source.name) / f.relative_to(source)))
+
+
 def _write_archive(
-    sources: list[Path], archive_path: Path, fmt: str, password: Optional[bytes], encrypt_header: bool
+    sources: list[Path],
+    archive_path: Path,
+    fmt: str,
+    password: Optional[bytes],
+    encrypt_header: bool,
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     if fmt == "7z":
         try:
@@ -186,7 +212,7 @@ def _write_archive(
             raise ArchiveError("Password must be valid UTF-8") from exc
         with py7zr.SevenZipFile(archive_path, "w", password=pw, header_encryption=encrypt_header) as archive:
             for src in sources:
-                archive.writeall(src, arcname=src.name)
+                _add_source_to_7z(archive, src, cancel_event)
     else:
         encryption = pyzipper.WZ_AES if password else None
         with pyzipper.AESZipFile(
@@ -195,7 +221,7 @@ def _write_archive(
             if password:
                 zf.setpassword(password)
             for src in sources:
-                _add_source_to_zip(zf, src)
+                _add_source_to_zip(zf, src, cancel_event)
 
 
 def _check_extract_destination(stage_dir: Path, dest_dir: Path) -> None:
@@ -271,7 +297,11 @@ class ArchiveService:
                 archive_path = output_dir / f"{stem}.{fmt}"
                 if archive_path.exists():
                     raise ArchiveError(f"Archive already exists: {archive_path}")
-                _write_archive([src], archive_path, fmt, password, encrypt_header)
+                try:
+                    _write_archive([src], archive_path, fmt, password, encrypt_header, cancel_event)
+                except ArchiveError:
+                    archive_path.unlink(missing_ok=True)
+                    raise
                 results.append(archive_path)
                 if on_progress:
                     on_progress(100.0 * len(results) / len(sources))
@@ -282,7 +312,11 @@ class ArchiveService:
         archive_path = output_dir / f"{archive_name}.{fmt}"
         if archive_path.exists():
             raise ArchiveError(f"Archive already exists: {archive_path}")
-        _write_archive(sources, archive_path, fmt, password, encrypt_header)
+        try:
+            _write_archive(sources, archive_path, fmt, password, encrypt_header, cancel_event)
+        except ArchiveError:
+            archive_path.unlink(missing_ok=True)
+            raise
         if on_progress:
             on_progress(100.0)
         return [archive_path]
@@ -315,9 +349,9 @@ class ArchiveService:
         stage_dir = Path(tempfile.mkdtemp(prefix="omnidl-archive-extract-"))
         try:
             if resolved_fmt == "7z":
-                raw = self._extract_7z(archive_path, stage_dir, password)
+                raw = self._extract_7z(archive_path, stage_dir, password, cancel_event)
             else:
-                raw = self._extract_zip(archive_path, stage_dir, password)
+                raw = self._extract_zip(archive_path, stage_dir, password, cancel_event)
             _check_extract_destination(stage_dir, dest_dir)
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copytree(stage_dir, dest_dir, dirs_exist_ok=True)
@@ -377,7 +411,13 @@ class ArchiveService:
 
     # ── Internal ─────────────────────────────────────────────────────────
 
-    def _extract_7z(self, archive_path: Path, stage_dir: Path, password: Optional[bytes]) -> _RawExtract:
+    def _extract_7z(
+        self,
+        archive_path: Path,
+        stage_dir: Path,
+        password: Optional[bytes],
+        cancel_event: Optional[threading.Event] = None,
+    ) -> _RawExtract:
         pw = password.decode("utf-8") if password else None
         try:
             with py7zr.SevenZipFile(archive_path, "r", password=pw) as archive:
@@ -399,10 +439,19 @@ class ArchiveService:
             if not f.is_directory:
                 extracted_paths.append(safe_path)
 
+        _check_cancelled(cancel_event, "Extraction cancelled")
+
         # Reopened rather than reused: py7zr's password/max_extract_size are
         # constructor-time settings and the listing pass above already
         # consumed the reader. Archive ops here are single-shot/bounded
         # (see RemoteConvertService design note), so the extra open is cheap.
+        #
+        # Extraction is one blocking archive.extract() call, not per-member:
+        # py7zr's solid-block compression means multiple files often share one
+        # LZMA stream, and calling extract(targets=[...]) repeatedly on the
+        # same archive to get per-file cancel checks corrupts CRC decoding
+        # for later members in the same block. Cancellation for 7z extraction
+        # is checked only before this call starts.
         try:
             with py7zr.SevenZipFile(
                 archive_path, "r", password=pw, max_extract_size=_MAX_TOTAL_UNCOMPRESSED_BYTES
@@ -416,7 +465,13 @@ class ArchiveService:
         total_bytes = sum(f.uncompressed for f in file_infos)
         return _RawExtract(extracted_paths=extracted_paths, total_bytes=total_bytes)
 
-    def _extract_zip(self, archive_path: Path, stage_dir: Path, password: Optional[bytes]) -> _RawExtract:
+    def _extract_zip(
+        self,
+        archive_path: Path,
+        stage_dir: Path,
+        password: Optional[bytes],
+        cancel_event: Optional[threading.Event] = None,
+    ) -> _RawExtract:
         try:
             zf = pyzipper.AESZipFile(archive_path, "r")
         except zipfile.BadZipFile as exc:
@@ -441,6 +496,7 @@ class ArchiveService:
             extracted_paths: list[Path] = []
             total_written = 0
             for info, safe_path in safe_members:
+                _check_cancelled(cancel_event, "Extraction cancelled")
                 if info.is_dir():
                     safe_path.mkdir(parents=True, exist_ok=True)
                     continue

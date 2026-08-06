@@ -65,6 +65,7 @@ from api.models import (
     FileDeleteRequest,
     FileDeleteResponse,
     FileInfoResponse,
+    FileRenameRequest,
     FileTransferRequest,
     FileTransferResponse,
     HistoryListResponse,
@@ -1027,6 +1028,41 @@ def create_app(
             task_id=task_id,
             action="deleted",
             detail=f"Deleted: {file_path.name}",
+        )
+
+    @app.post(
+        "/api/queue/{task_id}/rename",
+        response_model=FileActionResponse,
+        summary="Rename the output file of a completed task",
+    )
+    def rename_task_file(
+        task_id: str, body: FileRenameRequest, _: None = Depends(_require_auth)
+    ) -> FileActionResponse:
+        """
+        Rename the output file of a completed task on the server's disk.
+
+        Security: current path is validated against download_dir before the
+        rename; the new file stays in the same directory (basename-only rename).
+        """
+        task = _get_task_or_404(service, task_id)
+        if task.status.name not in {"COMPLETED", "PARTIAL_SAVED"}:
+            raise HTTPException(status_code=400, detail="Task is not COMPLETED")
+
+        _resolve_task_file(task)  # bounds check on the current path
+
+        try:
+            new_path = service.rename_download(task_id, body.new_name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return FileActionResponse(
+            task_id=task_id,
+            action="renamed",
+            detail=f"Renamed to {Path(new_path).name}",
         )
 
     @app.get(

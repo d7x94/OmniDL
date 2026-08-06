@@ -312,7 +312,6 @@ jobs:
             --add-data "resources/deno;deno" `
             --add-data "resources/gallery-dl;gallery-dl" `
             --add-data "api/static;api/static" `
-            --add-data "ui/assets;ui/assets" `
             --hidden-import multiprocessing `
             --hidden-import multiprocessing.freeze_support `
             --hidden-import customtkinter `
@@ -535,7 +534,6 @@ jobs:
             --add-data "resources/deno:deno" \
             --add-data "resources/gallery-dl:gallery-dl" \
             --add-data "api/static:api/static" \
-            --add-data "ui/assets:ui/assets" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \
@@ -805,7 +803,6 @@ jobs:
             --add-data "resources/deno:deno" \
             --add-data "resources/gallery-dl:gallery-dl" \
             --add-data "api/static:api/static" \
-            --add-data "ui/assets:ui/assets" \
             --hidden-import multiprocessing \
             --hidden-import multiprocessing.freeze_support \
             --hidden-import customtkinter \

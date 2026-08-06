@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.event_bus import EventBus
 from app.services.download_service import DownloadService
 from domain.models.download_task import DownloadTask, MediaInfo
@@ -555,3 +557,99 @@ class TestAnalyseUrlGalleryDlFallback:
 
         assert self._wait_cb(errors)
         assert "gdl failed" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# rename_download
+# ---------------------------------------------------------------------------
+
+
+class TestRenameDownload:
+    def _task(self, tmp_path, filename):
+        task = DownloadTask(url="https://example.com/video", output_dir=str(tmp_path))
+        task.filename = str(filename)
+        return task
+
+    def test_renames_file_and_updates_in_memory_task(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        old_file = tmp_path / "old.mp4"
+        old_file.write_bytes(b"data")
+        task = self._task(tmp_path, old_file)
+        mocks["manager"].get_task.return_value = task
+        mocks["history"].get_by_id.return_value = None
+
+        new_path = service.rename_download(task.id, "new.mp4")
+
+        assert Path(new_path).name == "new.mp4"
+        assert not old_file.exists()
+        assert Path(new_path).exists()
+        assert task.filename == new_path
+        mocks["history"].update_filename.assert_called_once_with(task.id, new_path)
+
+    def test_falls_back_to_history_entry_when_task_gone(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        old_file = tmp_path / "old.mp4"
+        old_file.write_bytes(b"data")
+        mocks["manager"].get_task.return_value = None
+        mocks["history"].get_by_id.return_value = {
+            "filename": str(old_file),
+            "output_dir": str(tmp_path),
+        }
+
+        new_path = service.rename_download("task-1", "renamed.mp4")
+
+        assert Path(new_path).name == "renamed.mp4"
+        assert Path(new_path).exists()
+
+    def test_raises_file_not_found_when_no_record(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        mocks["manager"].get_task.return_value = None
+        mocks["history"].get_by_id.return_value = None
+
+        with pytest.raises(FileNotFoundError):
+            service.rename_download("task-1", "new.mp4")
+
+    def test_raises_file_not_found_when_disk_file_missing(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        task = self._task(tmp_path, tmp_path / "missing.mp4")
+        mocks["manager"].get_task.return_value = task
+        mocks["history"].get_by_id.return_value = None
+
+        with pytest.raises(FileNotFoundError):
+            service.rename_download(task.id, "new.mp4")
+
+    def test_raises_file_exists_when_target_taken(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        old_file = tmp_path / "old.mp4"
+        old_file.write_bytes(b"data")
+        (tmp_path / "taken.mp4").write_bytes(b"other")
+        task = self._task(tmp_path, old_file)
+        mocks["manager"].get_task.return_value = task
+        mocks["history"].get_by_id.return_value = None
+
+        with pytest.raises(FileExistsError):
+            service.rename_download(task.id, "taken.mp4")
+
+    def test_raises_value_error_for_directory(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        gallery_dir = tmp_path / "gallery"
+        gallery_dir.mkdir()
+        task = self._task(tmp_path, gallery_dir)
+        mocks["manager"].get_task.return_value = task
+        mocks["history"].get_by_id.return_value = None
+
+        with pytest.raises(ValueError):
+            service.rename_download(task.id, "new_name")
+
+    def test_same_name_is_a_noop(self, tmp_path):
+        service, mocks = make_service(download_dir=tmp_path)
+        old_file = tmp_path / "same.mp4"
+        old_file.write_bytes(b"data")
+        task = self._task(tmp_path, old_file)
+        mocks["manager"].get_task.return_value = task
+        mocks["history"].get_by_id.return_value = None
+
+        new_path = service.rename_download(task.id, "same.mp4")
+
+        assert Path(new_path) == old_file
+        assert old_file.exists()

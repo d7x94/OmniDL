@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -165,6 +167,7 @@ class QueueTab(QWidget):
                     on_convert=lambda p, **kw: self._app.navigate_to("convert", file_path=str(p)),
                     on_send=self._on_send,
                     on_edit=lambda p: self._app.navigate_to("editor", file_path=str(p)),
+                    on_rename=self._on_rename,
                 )
                 self._items_layout.insertWidget(self._items_layout.count() - 1, w)
                 self._widgets[task.id] = w
@@ -182,6 +185,21 @@ class QueueTab(QWidget):
 
         # Slow down poll when idle
         self._poll_timer.setInterval(500 if active else 2000)
+
+    def _on_rename(self, task_id: str, current_path: str) -> None:
+        old_name = current_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        new_name, ok = QInputDialog.getText(self, "Đổi tên file", "Tên file mới:", text=old_name)
+        if not ok or not new_name.strip():
+            return
+        try:
+            self._app.service.rename_download(task_id, new_name.strip())
+        except (FileNotFoundError, FileExistsError, ValueError) as exc:
+            QMessageBox.warning(self, "OmniDL", str(exc))
+            return
+        w = self._widgets.get(task_id)
+        task = self._app.service.get_task(task_id)
+        if w and task:
+            w.refresh(task)
 
     def _on_pause(self, task_id: str) -> None:
         task = self._app.service.get_task(task_id)

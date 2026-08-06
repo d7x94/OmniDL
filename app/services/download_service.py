@@ -27,7 +27,7 @@ from infrastructure.downloader.yt_dlp_engine import (
     _resolve_cookie,
 )
 from infrastructure.storage.history_repository import HistoryRepository
-from utils.helpers import is_valid_url
+from utils.helpers import is_valid_url, sanitise_filename
 
 if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
@@ -566,6 +566,45 @@ class DownloadService:
 
     def delete_history_entry(self, task_id: str) -> None:
         self._history.remove(task_id)
+
+    def rename_download(self, task_id: str, new_name: str) -> str:
+        """
+        Rename the output file of a task on disk and sync both the in-memory
+        task (if still queued) and the history entry (if already persisted).
+
+        Raises FileNotFoundError / FileExistsError / ValueError on failure.
+        """
+        task = self._manager.get_task(task_id)
+        entry = self._history.get_by_id(task_id)
+        raw = (task.filename if task else "") or ((entry or {}).get("filename") or "")
+        if not raw:
+            raise FileNotFoundError("No file recorded for this task")
+
+        old_path = Path(raw)
+        if not old_path.is_absolute():
+            out_dir = (task.output_dir if task else "") or (entry or {}).get("output_dir", "")
+            if out_dir:
+                old_path = Path(out_dir) / old_path
+        old_path = old_path.resolve()
+
+        if old_path.is_dir():
+            raise ValueError("Cannot rename a multi-file (gallery-dl) download")
+        if not old_path.exists():
+            raise FileNotFoundError(f"File not found: {old_path}")
+
+        safe_name = sanitise_filename(new_name)
+        new_path = old_path.parent / safe_name
+        if new_path == old_path:
+            return str(new_path)
+        if new_path.exists():
+            raise FileExistsError(f"A file named '{safe_name}' already exists")
+
+        old_path.rename(new_path)
+
+        if task:
+            task.filename = str(new_path)
+        self._history.update_filename(task_id, str(new_path))
+        return str(new_path)
 
     def get_history_stats(self) -> dict:
         entries = self._history.all()

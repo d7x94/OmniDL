@@ -250,26 +250,6 @@ QSplitter::handle:vertical {
 QSplitter::handle:horizontal {
     width: 1px;
 }
-/* --- CheckBox --- */
-QCheckBox {
-    color: $text;
-    spacing: 8px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid $border2;
-    border-radius: 4px;
-    background-color: $surface2;
-}
-QCheckBox::indicator:checked {
-    background-color: $primary;
-    border-color: $primary;
-    image: url($assets_dir/check.png);
-}
-QCheckBox::indicator:hover {
-    border-color: $primary;
-}
 /* --- SpinBox --- */
 QSpinBox, QDoubleSpinBox {
     background-color: $input;

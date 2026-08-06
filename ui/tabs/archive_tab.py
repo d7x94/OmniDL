@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -48,9 +49,16 @@ _MODE_TOGGLE_QSS = f"""
     QPushButton:hover {{
         background-color: {T.surface3};
     }}
+    QPushButton:pressed {{
+        background-color: {T.border};
+    }}
     QPushButton:checked {{
         background-color: {T.primary_dim};
         color: {T.primary_text};
+    }}
+    QPushButton:disabled {{
+        background-color: {T.surface};
+        color: {T.text3};
     }}
 """
 
@@ -62,17 +70,67 @@ _PW_TOGGLE_QSS = f"""
         border-radius: 8px;
         font-size: 14px;
         padding: 0;
-        font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;
     }}
     QPushButton:hover {{
         background: {T.surface3};
+    }}
+    QPushButton:pressed {{
+        background: {T.border};
     }}
     QPushButton:checked {{
         background: {T.primary_dim};
         color: {T.primary_text};
         border: 1px solid {T.primary};
     }}
+    QPushButton:disabled {{
+        background: {T.surface};
+        border: 1px solid {T.border2};
+    }}
 """
+
+
+class _EyeToggleButton(QPushButton):
+    """Password visibility toggle painted with QPainter instead of an emoji glyph.
+
+    A font-glyph eye ("👁") depends on the runtime having a matching emoji
+    font — the same silent-render-failure class as the old checkbox
+    checkmark bug. Painting it directly sidesteps that dependency.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFixedSize(38, 38)
+        self.setStyleSheet(_PW_TOGGLE_QSS)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setCheckable(True)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        checked = self.isChecked()
+        color = QColor(T.primary_text if checked else T.text2)
+        if not self.isEnabled():
+            color.setAlpha(120)
+
+        r = self.rect().adjusted(11, 14, -11, -14)
+        left, top, right, bottom = r.left(), r.top(), r.right(), r.bottom()
+        cx = r.center().x()
+
+        eye = QPainterPath()
+        eye.moveTo(left, r.center().y())
+        eye.quadTo(cx, top, right, r.center().y())
+        eye.quadTo(cx, bottom, left, r.center().y())
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(color, 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawPath(eye)
+        painter.setBrush(color)
+        painter.drawEllipse(r.center(), 2, 2)
+        if not checked:
+            painter.drawLine(left - 1, bottom + 1, right + 1, top - 1)
+        painter.end()
 
 
 class ArchiveTab(QWidget):
@@ -146,6 +204,7 @@ class ArchiveTab(QWidget):
         self._progress.hide()
         progress_row.addWidget(self._progress, 1)
         self._cancel_btn = QPushButton("Hủy")
+        self._cancel_btn.setObjectName("danger")
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._cancel_btn.hide()
         self._cancel_btn.clicked.connect(self._cancel_current_operation)
@@ -164,17 +223,17 @@ class ArchiveTab(QWidget):
         v.setSpacing(10)
 
         src_row = QHBoxLayout()
-        add_file_btn = QPushButton("Thêm file")
-        add_file_btn.clicked.connect(self._browse_compress_files)
-        add_folder_btn = QPushButton("Thêm thư mục")
-        add_folder_btn.clicked.connect(self._browse_compress_folder)
-        remove_btn = QPushButton("Xóa mục chọn")
-        remove_btn.clicked.connect(self._remove_selected_sources)
-        for b in (add_file_btn, add_folder_btn, remove_btn):
+        self._add_file_btn = QPushButton("Thêm file")
+        self._add_file_btn.clicked.connect(self._browse_compress_files)
+        self._add_folder_btn = QPushButton("Thêm thư mục")
+        self._add_folder_btn.clicked.connect(self._browse_compress_folder)
+        self._remove_btn = QPushButton("Xóa mục chọn")
+        self._remove_btn.clicked.connect(self._remove_selected_sources)
+        for b in (self._add_file_btn, self._add_folder_btn, self._remove_btn):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-        src_row.addWidget(add_file_btn)
-        src_row.addWidget(add_folder_btn)
-        src_row.addWidget(remove_btn)
+        src_row.addWidget(self._add_file_btn)
+        src_row.addWidget(self._add_folder_btn)
+        src_row.addWidget(self._remove_btn)
         src_row.addStretch()
         v.addLayout(src_row)
 
@@ -209,11 +268,7 @@ class ArchiveTab(QWidget):
         self._compress_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
         self._compress_pw_entry.setPlaceholderText("Để trống nếu không đặt mật khẩu")
         pw_row.addWidget(self._compress_pw_entry)
-        compress_pw_toggle = QPushButton("👁")
-        compress_pw_toggle.setFixedSize(38, 38)
-        compress_pw_toggle.setStyleSheet(_PW_TOGGLE_QSS)
-        compress_pw_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        compress_pw_toggle.setCheckable(True)
+        compress_pw_toggle = _EyeToggleButton()
         compress_pw_toggle.toggled.connect(self._toggle_compress_pw_visibility)
         pw_row.addWidget(compress_pw_toggle)
         v.addLayout(pw_row)
@@ -224,6 +279,9 @@ class ArchiveTab(QWidget):
         name_row.addWidget(self._archive_name_entry)
         self._use_orig_name_chk = QCheckBox("Dùng tên gốc")
         self._use_orig_name_chk.setEnabled(False)
+        self._use_orig_name_chk.setToolTip(
+            'Chỉ dùng được khi chọn đúng 1 file/thư mục để nén và không bật "Nén từng file riêng"'
+        )
         self._use_orig_name_chk.toggled.connect(
             lambda checked: self._archive_name_entry.setEnabled(not checked)
         )
@@ -235,6 +293,7 @@ class ArchiveTab(QWidget):
         self._output_dir_entry = QLineEdit(str(self._app.config.download_dir))
         out_row.addWidget(self._output_dir_entry)
         out_browse_btn = QPushButton("Chọn...")
+        out_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         out_browse_btn.clicked.connect(self._browse_output_dir)
         out_row.addWidget(out_browse_btn)
         v.addLayout(out_row)
@@ -260,6 +319,7 @@ class ArchiveTab(QWidget):
         self._extract_archive_entry = QLineEdit()
         arc_row.addWidget(self._extract_archive_entry)
         arc_browse_btn = QPushButton("Chọn...")
+        arc_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         arc_browse_btn.clicked.connect(self._browse_extract_archive)
         arc_row.addWidget(arc_browse_btn)
         v.addLayout(arc_row)
@@ -269,6 +329,7 @@ class ArchiveTab(QWidget):
         self._extract_dest_entry = QLineEdit()
         dest_row.addWidget(self._extract_dest_entry)
         dest_browse_btn = QPushButton("Chọn...")
+        dest_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         dest_browse_btn.clicked.connect(self._browse_extract_dest)
         dest_row.addWidget(dest_browse_btn)
         v.addLayout(dest_row)
@@ -278,11 +339,7 @@ class ArchiveTab(QWidget):
         self._extract_pw_entry = QLineEdit()
         self._extract_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
         pw_row.addWidget(self._extract_pw_entry)
-        extract_pw_toggle = QPushButton("👁")
-        extract_pw_toggle.setFixedSize(38, 38)
-        extract_pw_toggle.setStyleSheet(_PW_TOGGLE_QSS)
-        extract_pw_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        extract_pw_toggle.setCheckable(True)
+        extract_pw_toggle = _EyeToggleButton()
         extract_pw_toggle.toggled.connect(self._toggle_extract_pw_visibility)
         pw_row.addWidget(extract_pw_toggle)
         v.addLayout(pw_row)
@@ -336,6 +393,19 @@ class ArchiveTab(QWidget):
         self._compress_btn.setEnabled(not busy)
         self._extract_btn.setEnabled(not busy)
         self._list_contents_btn.setEnabled(not busy)
+        self._compress_mode_btn.setEnabled(not busy)
+        self._extract_mode_btn.setEnabled(not busy)
+        self._add_file_btn.setEnabled(not busy)
+        self._add_folder_btn.setEnabled(not busy)
+        self._remove_btn.setEnabled(not busy)
+        self._individually_chk.setEnabled(not busy)
+        if busy:
+            self._header_enc_chk.setEnabled(False)
+            self._use_orig_name_chk.setEnabled(False)
+            self._use_orig_name_chk.update()
+        else:
+            self._on_fmt_changed(self._fmt_combo.currentText())
+            self._refresh_name_controls()
         self._progress.setVisible(busy)
         self._cancel_btn.setVisible(busy and cancellable)
         if busy:
@@ -353,6 +423,7 @@ class ArchiveTab(QWidget):
         if not can_use_orig:
             self._use_orig_name_chk.setChecked(False)
         self._use_orig_name_chk.setEnabled(can_use_orig)
+        self._use_orig_name_chk.update()
 
     # ── File pickers ─────────────────────────────────────────────────────
 
