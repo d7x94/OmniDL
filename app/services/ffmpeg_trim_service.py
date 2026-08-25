@@ -13,6 +13,7 @@ from app.services.ffmpeg_convert_service import (
 )
 from utils.ffmpeg_locator import locate_ffmpeg
 from utils.font_finder import find_font_path
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def trim_video(
         try:
             loc = locate_ffmpeg()
             if loc is None:
-                raise RuntimeError("FFmpeg không tìm thấy. Hãy cài FFmpeg và thử lại.")
+                raise RuntimeError(t("trim.err.no_ffmpeg"))
 
             start_s = start_ms / 1000.0
             end_s = end_ms / 1000.0
@@ -126,7 +127,7 @@ def trim_video(
         except ConversionCancelledError:
             temp.unlink(missing_ok=True)
             if on_error:
-                on_error("Đã huỷ")
+                on_error(t("convert.cancelled"))
         except Exception as exc:
             temp.unlink(missing_ok=True)
             logger.error("trim_video: %s", exc)

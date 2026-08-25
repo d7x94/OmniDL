@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
@@ -31,8 +32,8 @@ class _BasePanel(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
-        self._sections: list[tuple[str, str, QWidget, QWidget]] = []
-        # (display_text_lower, cfg_key, section_wrapper, content)
+        self._sections: list[tuple[str, str, QWidget, QWidget, Callable[..., None]]] = []
+        # (display_text_lower, cfg_key, section_wrapper, content, set_expanded)
 
     def _section(self, _parent, text: str) -> None:
         self._layout.addSpacing(28)
@@ -138,20 +139,21 @@ class _BasePanel(QWidget):
         sw_layout.addWidget(content)
 
         self._layout.addWidget(section_wrapper)
-        self._sections.append((text.lower(), cfg_key, section_wrapper, content))
 
         _state = [collapsed]
 
-        def _toggle():
-            _state[0] = not _state[0]
-            content.setVisible(not _state[0])
-            chevron.setText("▼" if _state[0] else "▲")
+        def _set_expanded(expanded: bool, persist: bool = False) -> None:
+            _state[0] = not expanded
+            content.setVisible(expanded)
+            chevron.setText("▲" if expanded else "▼")
             chevron.setStyleSheet(
-                f"color: {T.text3 if _state[0] else accent}; font-size: 10px; background: transparent;"
+                f"color: {accent if expanded else T.text3}; font-size: 10px; background: transparent;"
             )
-            self._app.config.set(cfg_key, _state[0])
+            if persist:
+                self._app.config.set(cfg_key, _state[0])
 
-        header.mousePressEvent = lambda e: _toggle()
+        header.mousePressEvent = lambda e: _set_expanded(_state[0], True)
+        self._sections.append((text.lower(), cfg_key, section_wrapper, content, _set_expanded))
         return content
 
     def _card(self, _parent=None, container: QWidget | None = None) -> QFrame:

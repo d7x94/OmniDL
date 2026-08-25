@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -34,10 +35,12 @@ class Pass0WebcastApi(LiveDetectionStrategy):
     # combos (unique_id, sec_user_id, user_id all return 10013).  After all
     # combos fail with 10013, skip API calls for 120s to avoid waste.
     _all_10013_until: dict[str, float] = {}
+    _all_10013_until_lock = threading.Lock()
 
     def check(self, ctx: LiveCheckContext) -> Optional[LiveCheckResult]:
-        if time.monotonic() < Pass0WebcastApi._all_10013_until.get(ctx.username, 0.0):
-            return None
+        with Pass0WebcastApi._all_10013_until_lock:
+            if time.monotonic() < Pass0WebcastApi._all_10013_until.get(ctx.username, 0.0):
+                return None
         from utils.tiktok_live_checker import _CHROME_UA, _get_impersonate_session, _load_cookie_jar
 
         proxies = {"http": ctx.proxy, "https": ctx.proxy} if ctx.proxy else None
@@ -127,8 +130,9 @@ class Pass0WebcastApi(LiveDetectionStrategy):
             last_body,
         )
         now = time.monotonic()
-        Pass0WebcastApi._all_10013_until = {
-            u: t for u, t in Pass0WebcastApi._all_10013_until.items() if t > now
-        }
-        Pass0WebcastApi._all_10013_until[ctx.username] = now + 120.0
+        with Pass0WebcastApi._all_10013_until_lock:
+            Pass0WebcastApi._all_10013_until = {
+                u: t for u, t in Pass0WebcastApi._all_10013_until.items() if t > now
+            }
+            Pass0WebcastApi._all_10013_until[ctx.username] = now + 120.0
         return None

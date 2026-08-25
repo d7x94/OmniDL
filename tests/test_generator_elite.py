@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -866,8 +867,9 @@ class TestConvertSync:
         )
 
         svc = FfmpegConvertService()
-        with pytest.raises(ConversionError, match="không tồn tại"):
-            svc._convert_sync(tmp_path / "nonexistent.mp4", "standard", None, None)
+        missing = tmp_path / "nonexistent.mp4"
+        with pytest.raises(ConversionError, match=re.escape(str(missing))):
+            svc._convert_sync(missing, "standard", None, None)
 
     def test_output_collision_increments_counter(self, tmp_path, fake_ffmpeg, monkeypatch):
         """If _iPhone.mp4 exists already, it tries _iPhone_2.mp4."""
@@ -922,7 +924,7 @@ class TestConvertSync:
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: proc_mock)
 
         svc = FfmpegConvertService()
-        with pytest.raises(ConversionError, match="lỗi 1"):
+        with pytest.raises(ConversionError, match="ffmpeg"):
             svc._convert_sync(src, "standard", tmp_path, None)
 
     def test_progress_callback_called(self, tmp_path, fake_ffmpeg, monkeypatch):

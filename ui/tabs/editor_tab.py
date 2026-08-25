@@ -34,6 +34,7 @@ from ui.components.frame_processor import EffectParams, FrameProcessor
 from ui.components.timeline_widget import TimelineWidget
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from PySide6.QtMultimedia import QVideoFrame
@@ -44,11 +45,11 @@ logger = logging.getLogger(__name__)
 
 _VIDEO_EXTS = frozenset({".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".flv", ".wmv"})
 
-_ROTATE_OPTIONS = [
-    ("Không xoay", None),
-    ("90° thuận chiều kim đồng hồ", 1),
-    ("90° ngược chiều kim đồng hồ", 2),
-    ("180°", 3),
+_ROTATE_KEYS = [
+    ("editor.rotate.none", None),
+    ("editor.rotate.cw90", 1),
+    ("editor.rotate.ccw90", 2),
+    ("editor.rotate.180", 3),
 ]
 
 _SPEED_LABELS = ["0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x"]
@@ -59,7 +60,7 @@ _VOLUME_LABELS = ["0%", "50%", "75%", "100%", "150%", "200%"]
 _VOLUME_VALUES = [0.0, 0.5, 0.75, 1.0, 1.5, 2.0]
 _VOLUME_DEFAULT = 3  # index for 1.0
 
-_TEXT_COLOR_LABELS = ["Trắng", "Đen", "Vàng", "Đỏ"]
+_TEXT_COLOR_KEYS = ["editor.color.white", "editor.color.black", "editor.color.yellow", "editor.color.red"]
 _TEXT_COLOR_VALUES = ["white", "black", "yellow", "red"]
 
 
@@ -136,6 +137,21 @@ class EditorTab(QWidget):
         self._file_path: str = ""
         self._build()
 
+        from PySide6.QtCore import QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(150)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._fade_anim.stop()
+        self._fade_anim.start()
+
     def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 8, 24, 8)
@@ -157,7 +173,7 @@ class EditorTab(QWidget):
         self._preview_label.setVisible(False)
         left_layout.addWidget(self._preview_label, 1)
 
-        self._empty_lbl = QLabel("Chưa có video. Mở file hoặc nhấn 'Chỉnh sửa' từ lịch sử tải xuống.")
+        self._empty_lbl = QLabel(t("editor.empty"))
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet(
             f"color: {T.text3}; font-size: 13px; background: {T.surface2}; border-radius: 8px; padding: 40px;"
@@ -199,7 +215,7 @@ class EditorTab(QWidget):
         self._info_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         ctrl_row.addWidget(self._info_lbl)
 
-        self._toggle_ctrl_btn = QPushButton("⊡ Ẩn bảng")
+        self._toggle_ctrl_btn = QPushButton(t("editor.hide_panel"))
         self._toggle_ctrl_btn.setFixedHeight(28)
         self._toggle_ctrl_btn.setEnabled(False)
         self._toggle_ctrl_btn.setStyleSheet(
@@ -237,19 +253,19 @@ class EditorTab(QWidget):
         file_btn_row = QHBoxLayout()
         file_btn_row.setSpacing(6)
 
-        open_btn = QPushButton("📂  Mở file")
-        open_btn.setFixedHeight(30)
-        open_btn.setStyleSheet(
+        self._open_btn = QPushButton(t("editor.open_file"))
+        self._open_btn.setFixedHeight(30)
+        self._open_btn.setStyleSheet(
             f"background: {T.primary}; color: white; border: none; border-radius: 8px;"
             f" font-size: 12px; font-weight: 600; padding: 0 16px;"
         )
-        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        open_btn.clicked.connect(self._pick_file)
-        file_btn_row.addWidget(open_btn)
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_btn.clicked.connect(self._pick_file)
+        file_btn_row.addWidget(self._open_btn)
 
-        self._clear_btn = QPushButton("✕  Đóng file")
+        self._clear_btn = QPushButton(t("editor.close_file"))
         self._clear_btn.setFixedHeight(30)
-        self._clear_btn.setToolTip("Đóng file hiện tại")
+        self._clear_btn.setToolTip(t("editor.close_file_tip"))
         self._clear_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.text2}; border: 1px solid {T.border};"
             f" border-radius: 8px; font-size: 12px; font-weight: 600; padding: 0 12px; }}"
@@ -267,7 +283,7 @@ class EditorTab(QWidget):
         in_row = QHBoxLayout()
         in_row.setSpacing(8)
 
-        self._set_in_btn = QPushButton("[ Set In")
+        self._set_in_btn = QPushButton(t("editor.set_in"))
         self._set_in_btn.setFixedHeight(28)
         self._set_in_btn.setEnabled(False)
         self._set_in_btn.setStyleSheet(self._pill_style(T.primary_dim, T.primary_text))
@@ -275,7 +291,7 @@ class EditorTab(QWidget):
         self._set_in_btn.clicked.connect(self._set_in)
         in_row.addWidget(self._set_in_btn)
 
-        self._in_lbl = QLabel("In: 0:00")
+        self._in_lbl = QLabel(t("editor.in_label", time="0:00"))
         self._in_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-family: monospace;")
         in_row.addWidget(self._in_lbl)
         in_row.addStretch()
@@ -284,7 +300,7 @@ class EditorTab(QWidget):
         out_row = QHBoxLayout()
         out_row.setSpacing(8)
 
-        self._set_out_btn = QPushButton("Set Out ]")
+        self._set_out_btn = QPushButton(t("editor.set_out"))
         self._set_out_btn.setFixedHeight(28)
         self._set_out_btn.setEnabled(False)
         self._set_out_btn.setStyleSheet(self._pill_style(T.primary_dim, T.primary_text))
@@ -292,7 +308,7 @@ class EditorTab(QWidget):
         self._set_out_btn.clicked.connect(self._set_out)
         out_row.addWidget(self._set_out_btn)
 
-        self._out_lbl = QLabel("Out: --:--")
+        self._out_lbl = QLabel(t("editor.out_placeholder"))
         self._out_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-family: monospace;")
         out_row.addWidget(self._out_lbl)
         out_row.addStretch()
@@ -302,12 +318,12 @@ class EditorTab(QWidget):
         edit_row = QHBoxLayout()
         edit_row.setSpacing(10)
 
-        rotate_lbl = QLabel("Xoay:")
-        rotate_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        edit_row.addWidget(rotate_lbl)
+        self._rotate_lbl = QLabel(t("editor.rotate_label"))
+        self._rotate_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        edit_row.addWidget(self._rotate_lbl)
 
         self._rotate_combo = QComboBox()
-        self._rotate_combo.addItems([label for label, _ in _ROTATE_OPTIONS])
+        self._rotate_combo.addItems([t(key) for key, _ in _ROTATE_KEYS])
         self._rotate_combo.setEnabled(False)
         self._rotate_combo.setFixedHeight(28)
         self._rotate_combo.setStyleSheet(
@@ -317,7 +333,7 @@ class EditorTab(QWidget):
         )
         edit_row.addWidget(self._rotate_combo)
 
-        self._mute_check = QCheckBox("Tắt tiếng")
+        self._mute_check = QCheckBox(t("editor.mute"))
         self._mute_check.setEnabled(False)
         self._mute_check.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         edit_row.addWidget(self._mute_check)
@@ -329,7 +345,7 @@ class EditorTab(QWidget):
         export_row = QHBoxLayout()
         export_row.setSpacing(8)
 
-        self._preview_btn = QPushButton("▶ Xem thử")
+        self._preview_btn = QPushButton(t("editor.preview_btn"))
         self._preview_btn.setFixedHeight(32)
         self._preview_btn.setEnabled(False)
         self._preview_btn.setStyleSheet(
@@ -342,7 +358,7 @@ class EditorTab(QWidget):
         self._preview_btn.clicked.connect(self._on_preview_click)
         export_row.addWidget(self._preview_btn)
 
-        self._export_btn = QPushButton("✂  Xuất")
+        self._export_btn = QPushButton(t("editor.export_btn"))
         self._export_btn.setFixedHeight(32)
         self._export_btn.setEnabled(False)
         self._export_btn.setStyleSheet(
@@ -365,9 +381,9 @@ class EditorTab(QWidget):
         sv_row = QHBoxLayout()
         sv_row.setSpacing(10)
 
-        sv_lbl = QLabel("Tốc độ:")
-        sv_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        sv_row.addWidget(sv_lbl)
+        self._speed_lbl = QLabel(t("editor.speed_label"))
+        self._speed_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        sv_row.addWidget(self._speed_lbl)
 
         self._speed_combo = QComboBox()
         self._speed_combo.addItems(_SPEED_LABELS)
@@ -383,9 +399,9 @@ class EditorTab(QWidget):
 
         sv_row.addSpacing(16)
 
-        vol_lbl = QLabel("Âm lượng:")
-        vol_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        sv_row.addWidget(vol_lbl)
+        self._vol_lbl = QLabel(t("editor.volume_label"))
+        self._vol_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        sv_row.addWidget(self._vol_lbl)
 
         self._volume_combo = QComboBox()
         self._volume_combo.addItems(_VOLUME_LABELS)
@@ -406,13 +422,13 @@ class EditorTab(QWidget):
         text_input_row = QHBoxLayout()
         text_input_row.setSpacing(8)
 
-        text_lbl = QLabel("Văn bản:")
-        text_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_input_row.addWidget(text_lbl)
+        self._text_lbl = QLabel(t("editor.text_label"))
+        self._text_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        text_input_row.addWidget(self._text_lbl)
 
         self._text_input = QLineEdit()
         self._text_input.setMaxLength(80)
-        self._text_input.setPlaceholderText("Văn bản chồng lên video...")
+        self._text_input.setPlaceholderText(t("editor.text_placeholder"))
         self._text_input.setEnabled(False)
         self._text_input.setFixedHeight(28)
         self._text_input.setStyleSheet(
@@ -427,12 +443,12 @@ class EditorTab(QWidget):
         text_opt_row = QHBoxLayout()
         text_opt_row.setSpacing(8)
 
-        pos_lbl = QLabel("Vị trí:")
-        pos_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_opt_row.addWidget(pos_lbl)
+        self._pos_lbl = QLabel(t("editor.position_label"))
+        self._pos_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        text_opt_row.addWidget(self._pos_lbl)
 
         self._text_pos_combo = QComboBox()
-        self._text_pos_combo.addItems(["Trên", "Giữa", "Dưới"])
+        self._text_pos_combo.addItems([t("editor.pos.top"), t("editor.pos.middle"), t("editor.pos.bottom")])
         self._text_pos_combo.setCurrentIndex(2)
         self._text_pos_combo.setEnabled(False)
         self._text_pos_combo.setFixedHeight(28)
@@ -443,9 +459,9 @@ class EditorTab(QWidget):
         )
         text_opt_row.addWidget(self._text_pos_combo)
 
-        size_lbl = QLabel("Cỡ:")
-        size_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_opt_row.addWidget(size_lbl)
+        self._size_lbl = QLabel(t("editor.size_label"))
+        self._size_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        text_opt_row.addWidget(self._size_lbl)
 
         self._text_size_spin = QSpinBox()
         self._text_size_spin.setRange(8, 72)
@@ -458,12 +474,12 @@ class EditorTab(QWidget):
         )
         text_opt_row.addWidget(self._text_size_spin)
 
-        color_lbl = QLabel("Màu:")
-        color_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        text_opt_row.addWidget(color_lbl)
+        self._color_lbl = QLabel(t("editor.color_label"))
+        self._color_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        text_opt_row.addWidget(self._color_lbl)
 
         self._text_color_combo = QComboBox()
-        self._text_color_combo.addItems(_TEXT_COLOR_LABELS)
+        self._text_color_combo.addItems([t(key) for key in _TEXT_COLOR_KEYS])
         self._text_color_combo.setEnabled(False)
         self._text_color_combo.setFixedHeight(28)
         self._text_color_combo.setStyleSheet(
@@ -473,12 +489,12 @@ class EditorTab(QWidget):
         )
         text_opt_row.addWidget(self._text_color_combo)
 
-        self._text_box_check = QCheckBox("Nền")
+        self._text_box_check = QCheckBox(t("editor.box"))
         self._text_box_check.setEnabled(False)
         self._text_box_check.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         text_opt_row.addWidget(self._text_box_check)
 
-        self._text_shadow_check = QCheckBox("Bóng")
+        self._text_shadow_check = QCheckBox(t("editor.shadow"))
         self._text_shadow_check.setEnabled(False)
         self._text_shadow_check.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         text_opt_row.addWidget(self._text_shadow_check)
@@ -493,11 +509,11 @@ class EditorTab(QWidget):
         panel_layout.addWidget(sep)
 
         eff_header_row = QHBoxLayout()
-        eff_lbl = QLabel("Hiệu ứng video")
-        eff_lbl.setStyleSheet(f"color: {T.text}; font-size: 12px; font-weight: 700;")
-        eff_header_row.addWidget(eff_lbl)
+        self._eff_lbl = QLabel(t("editor.effects_title"))
+        self._eff_lbl.setStyleSheet(f"color: {T.text}; font-size: 12px; font-weight: 700;")
+        eff_header_row.addWidget(self._eff_lbl)
         eff_header_row.addStretch()
-        self._toggle_effects_btn = QPushButton("- Ẩn")
+        self._toggle_effects_btn = QPushButton(t("editor.hide"))
         self._toggle_effects_btn.setFixedHeight(24)
         self._toggle_effects_btn.setEnabled(False)
         self._toggle_effects_btn.setStyleSheet(
@@ -518,17 +534,20 @@ class EditorTab(QWidget):
 
         bcs_row = QHBoxLayout()
         bcs_row.setSpacing(10)
-        bcs_row.addWidget(self._mk_eff_label("Sáng:"))
+        self._brightness_lbl = self._mk_eff_label(t("editor.brightness"))
+        bcs_row.addWidget(self._brightness_lbl)
         self._brightness_slider, self._brightness_val = self._mk_slider(-100, 100, 0)
         bcs_row.addWidget(self._brightness_slider, 2)
         bcs_row.addWidget(self._brightness_val)
         bcs_row.addSpacing(8)
-        bcs_row.addWidget(self._mk_eff_label("Tương phản:"))
+        self._contrast_lbl = self._mk_eff_label(t("editor.contrast"))
+        bcs_row.addWidget(self._contrast_lbl)
         self._contrast_slider, self._contrast_val = self._mk_slider(50, 300, 100)
         bcs_row.addWidget(self._contrast_slider, 2)
         bcs_row.addWidget(self._contrast_val)
         bcs_row.addSpacing(8)
-        bcs_row.addWidget(self._mk_eff_label("Bão hòa:"))
+        self._saturation_lbl = self._mk_eff_label(t("editor.saturation"))
+        bcs_row.addWidget(self._saturation_lbl)
         self._saturation_slider, self._saturation_val = self._mk_slider(0, 300, 100)
         bcs_row.addWidget(self._saturation_slider, 2)
         bcs_row.addWidget(self._saturation_val)
@@ -536,12 +555,14 @@ class EditorTab(QWidget):
 
         hb_row = QHBoxLayout()
         hb_row.setSpacing(10)
-        hb_row.addWidget(self._mk_eff_label("Màu (hue):"))
+        self._hue_lbl = self._mk_eff_label(t("editor.hue"))
+        hb_row.addWidget(self._hue_lbl)
         self._hue_slider, self._hue_val = self._mk_slider(-180, 180, 0)
         hb_row.addWidget(self._hue_slider, 2)
         hb_row.addWidget(self._hue_val)
         hb_row.addSpacing(8)
-        hb_row.addWidget(self._mk_eff_label("Mờ (blur):"))
+        self._blur_lbl = self._mk_eff_label(t("editor.blur"))
+        hb_row.addWidget(self._blur_lbl)
         self._blur_slider, self._blur_val = self._mk_slider(0, 100, 0)
         hb_row.addWidget(self._blur_slider, 2)
         hb_row.addWidget(self._blur_val)
@@ -549,12 +570,14 @@ class EditorTab(QWidget):
 
         fade_row = QHBoxLayout()
         fade_row.setSpacing(10)
-        fade_row.addWidget(self._mk_eff_label("Fade in:"))
+        self._fade_in_lbl = self._mk_eff_label(t("editor.fade_in"))
+        fade_row.addWidget(self._fade_in_lbl)
         self._fade_in_slider, self._fade_in_val = self._mk_slider(0, 100, 0)
         fade_row.addWidget(self._fade_in_slider, 2)
         fade_row.addWidget(self._fade_in_val)
         fade_row.addSpacing(8)
-        fade_row.addWidget(self._mk_eff_label("Fade out:"))
+        self._fade_out_lbl = self._mk_eff_label(t("editor.fade_out"))
+        fade_row.addWidget(self._fade_out_lbl)
         self._fade_out_slider, self._fade_out_val = self._mk_slider(0, 100, 0)
         fade_row.addWidget(self._fade_out_slider, 2)
         fade_row.addWidget(self._fade_out_val)
@@ -631,7 +654,7 @@ class EditorTab(QWidget):
     def _toggle_effects(self) -> None:
         vis = self._effects_panel.isVisible()
         self._effects_panel.setVisible(not vis)
-        self._toggle_effects_btn.setText("- Ẩn" if not vis else "+ Hiển thị")
+        self._toggle_effects_btn.setText(t("editor.hide") if not vis else t("editor.show"))
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -658,8 +681,8 @@ class EditorTab(QWidget):
         self._info_lbl.setText(p.name)
         self._in_ms = 0
         self._out_ms = -1
-        self._in_lbl.setText("In: 0:00")
-        self._out_lbl.setText("Out: --:--")
+        self._in_lbl.setText(t("editor.in_label", time="0:00"))
+        self._out_lbl.setText(t("editor.out_placeholder"))
         self._rotate_combo.setCurrentIndex(0)
         self._mute_check.setChecked(False)
         self._speed_combo.setCurrentIndex(_SPEED_DEFAULT)
@@ -681,11 +704,11 @@ class EditorTab(QWidget):
         self._timeline.set_in(0)
         self._export_status.setText("")
         self._cancel_trim = None
-        self._export_btn.setText("✂  Xuất")
-        self._preview_btn.setText("▶ Xem thử")
+        self._export_btn.setText(t("editor.export_btn"))
+        self._preview_btn.setText(t("editor.preview_btn"))
         if not self._right_scroll.isVisible():
             self._right_scroll.setVisible(True)
-            self._toggle_ctrl_btn.setText("⊡ Ẩn bảng")
+            self._toggle_ctrl_btn.setText(t("editor.hide_panel"))
         self._player.play()
 
     def _clear_file(self) -> None:
@@ -710,10 +733,10 @@ class EditorTab(QWidget):
         self._export_status.setText("")
         self._in_ms = 0
         self._out_ms = -1
-        self._in_lbl.setText("In: 0:00")
-        self._out_lbl.setText("Out: --:--")
-        self._export_btn.setText("✂  Xuất")
-        self._preview_btn.setText("▶ Xem thử")
+        self._in_lbl.setText(t("editor.in_label", time="0:00"))
+        self._out_lbl.setText(t("editor.out_placeholder"))
+        self._export_btn.setText(t("editor.export_btn"))
+        self._preview_btn.setText(t("editor.preview_btn"))
 
     def _cleanup_preview(self) -> None:
         self._preview_gen += 1
@@ -730,7 +753,7 @@ class EditorTab(QWidget):
     def _toggle_controls(self) -> None:
         visible = self._right_scroll.isVisible()
         self._right_scroll.setVisible(not visible)
-        self._toggle_ctrl_btn.setText("⊞ Hiện bảng" if visible else "⊡ Ẩn bảng")
+        self._toggle_ctrl_btn.setText(t("editor.show_panel") if visible else t("editor.hide_panel"))
 
     # ── Preview ───────────────────────────────────────────────────────────────
 
@@ -743,7 +766,7 @@ class EditorTab(QWidget):
             self._preview_gen += 1
             self._cancel_preview()
             self._cancel_preview = None
-            self._preview_btn.setText("▶ Xem thử")
+            self._preview_btn.setText(t("editor.preview_btn"))
             self._export_status.setText("")
         else:
             self._start_preview()
@@ -755,9 +778,9 @@ class EditorTab(QWidget):
         preview_dur = min(10000, max(1000, end_ms - self._in_ms))
         temp = Path(tempfile.gettempdir()) / f"omnidl_preview_{uuid4().hex[:8]}.mp4"
 
-        self._preview_btn.setText("⏳ Đang tạo...")
+        self._preview_btn.setText(t("editor.creating_preview_btn"))
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        self._export_status.setText("Đang tạo xem thử...")
+        self._export_status.setText(t("editor.creating_preview_status"))
 
         gen = self._preview_gen
 
@@ -794,17 +817,17 @@ class EditorTab(QWidget):
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(temp_path)))
         self._player.play()
-        self._preview_btn.setText("← Gốc")
+        self._preview_btn.setText(t("editor.back_to_original"))
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        self._export_status.setText("Đang xem thử (10s)")
+        self._export_status.setText(t("editor.previewing_status"))
 
     def _on_preview_error(self, msg: str, gen: int) -> None:
         if gen != self._preview_gen:
             return
         self._cancel_preview = None
-        self._preview_btn.setText("▶ Xem thử")
+        self._preview_btn.setText(t("editor.preview_btn"))
         self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
-        self._export_status.setText(f"Lỗi xem thử: {msg[:60]}")
+        self._export_status.setText(t("editor.preview_error", msg=msg[:60]))
 
     def _back_to_original(self) -> None:
         self._preview_mode = False
@@ -822,7 +845,7 @@ class EditorTab(QWidget):
             self._player.play()
         if old_temp is not None:
             old_temp.unlink(missing_ok=True)
-        self._preview_btn.setText("▶ Xem thử")
+        self._preview_btn.setText(t("editor.preview_btn"))
         self._export_status.setText("")
 
     def _set_all_controls_enabled(self, enabled: bool) -> None:
@@ -877,17 +900,17 @@ class EditorTab(QWidget):
 
     def _set_in(self) -> None:
         self._in_ms = self._player.position()
-        self._in_lbl.setText(f"In: {_fmt_ms(self._in_ms)}")
+        self._in_lbl.setText(t("editor.in_label", time=_fmt_ms(self._in_ms)))
         self._timeline.set_in(self._in_ms)
 
     def _set_out(self) -> None:
         self._out_ms = self._player.position()
-        self._out_lbl.setText(f"Out: {_fmt_ms(self._out_ms)}")
+        self._out_lbl.setText(t("editor.out_label", time=_fmt_ms(self._out_ms)))
         self._timeline.set_out(self._out_ms)
 
     def _collect_params(self) -> dict:
         return dict(
-            rotate=_ROTATE_OPTIONS[self._rotate_combo.currentIndex()][1],
+            rotate=_ROTATE_KEYS[self._rotate_combo.currentIndex()][1],
             mute=self._mute_check.isChecked(),
             speed=_SPEED_VALUES[self._speed_combo.currentIndex()],
             volume=_VOLUME_VALUES[self._volume_combo.currentIndex()],
@@ -922,14 +945,14 @@ class EditorTab(QWidget):
 
         if end_ms <= start_ms:
             self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
-            self._export_status.setText("In phải nhỏ hơn Out")
+            self._export_status.setText(t("editor.in_after_out_error"))
             return
 
         output = _unique_output(source)
 
-        self._export_btn.setText("Huỷ")
+        self._export_btn.setText(t("editor.export_cancel_btn"))
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
-        self._export_status.setText("Đang xuất...")
+        self._export_status.setText(t("editor.exporting_status"))
 
         def _on_progress(pct: float) -> None:
             ui_bridge.post(lambda p=pct: self._export_status.setText(f"{p:.0f}%"))
@@ -953,21 +976,23 @@ class EditorTab(QWidget):
 
     def _finish_export(self, path: Path) -> None:
         self._cancel_trim = None
-        self._export_btn.setText("✂  Xuất")
+        self._export_btn.setText(t("editor.export_btn"))
         self._export_status.setStyleSheet(f"color: {T.success}; font-size: 11px;")
-        self._export_status.setText(f"Đã lưu: {path.name}")
+        self._export_status.setText(t("editor.export_saved", name=path.name))
 
     def _fail_export(self, msg: str) -> None:
         self._cancel_trim = None
-        self._export_btn.setText("✂  Xuất")
+        self._export_btn.setText(t("editor.export_btn"))
         self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
-        self._export_status.setText(f"Lỗi: {msg[:80]}")
+        self._export_status.setText(t("editor.export_error", msg=msg[:80]))
 
     # ── Playback handlers ─────────────────────────────────────────────────────
 
     def _pick_file(self) -> None:
         exts = " ".join(f"*{e}" for e in sorted(_VIDEO_EXTS))
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn file video", "", f"Video ({exts});;Tất cả (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, t("editor.choose_video_file"), "", f"Video ({exts});;{t('editor.all_files_filter')} (*)"
+        )
         if path:
             self.load_file(path)
 
@@ -988,11 +1013,11 @@ class EditorTab(QWidget):
 
     def _on_timeline_in(self, ms: int) -> None:
         self._in_ms = ms
-        self._in_lbl.setText(f"In: {_fmt_ms(ms)}")
+        self._in_lbl.setText(t("editor.in_label", time=_fmt_ms(ms)))
 
     def _on_timeline_out(self, ms: int) -> None:
         self._out_ms = ms
-        self._out_lbl.setText(f"Out: {_fmt_ms(ms)}")
+        self._out_lbl.setText(t("editor.out_label", time=_fmt_ms(ms)))
 
     def _on_position_changed(self, pos: int) -> None:
         self._time_lbl.setText(f"{_fmt_ms(pos)} / {_fmt_ms(self._player.duration())}")
@@ -1004,7 +1029,7 @@ class EditorTab(QWidget):
             self._timeline.set_duration(dur)
             self._original_duration = dur
             if self._out_ms < 0:
-                self._out_lbl.setText(f"Out: {_fmt_ms(dur)}")
+                self._out_lbl.setText(t("editor.out_label", time=_fmt_ms(dur)))
                 self._timeline.set_out(-1)
         self._time_lbl.setText(f"{_fmt_ms(self._player.position())} / {_fmt_ms(dur)}")
 
@@ -1017,7 +1042,7 @@ class EditorTab(QWidget):
     def _on_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
         if error != QMediaPlayer.Error.NoError:
             logger.error("QMediaPlayer error: %s - %s", error, error_string)
-            self._info_lbl.setText(f"Lỗi: {error_string}")
+            self._info_lbl.setText(t("editor.export_error", msg=error_string))
 
     def _on_video_frame(self, frame: "QVideoFrame") -> None:
         pixmap = self._frame_processor.process(frame, self._preview_label.size())
@@ -1044,3 +1069,69 @@ class EditorTab(QWidget):
         pixmap = self._frame_processor.rerender(self._preview_label.size())
         if pixmap is not None:
             self._preview_label.set_frame(pixmap)
+
+    # ── i18n ─────────────────────────────────────────────────────────────
+
+    def retranslate(self) -> None:
+        self._empty_lbl.setText(t("editor.empty"))
+        self._toggle_ctrl_btn.setText(
+            t("editor.show_panel") if not self._right_scroll.isVisible() else t("editor.hide_panel")
+        )
+        self._open_btn.setText(t("editor.open_file"))
+        self._clear_btn.setText(t("editor.close_file"))
+        self._clear_btn.setToolTip(t("editor.close_file_tip"))
+        self._set_in_btn.setText(t("editor.set_in"))
+        self._set_out_btn.setText(t("editor.set_out"))
+        self._in_lbl.setText(t("editor.in_label", time=_fmt_ms(self._in_ms)))
+        self._out_lbl.setText(
+            t("editor.out_label", time=_fmt_ms(self._out_ms))
+            if self._out_ms >= 0
+            else t("editor.out_placeholder")
+        )
+        self._rotate_lbl.setText(t("editor.rotate_label"))
+        rotate_idx = self._rotate_combo.currentIndex()
+        self._rotate_combo.clear()
+        self._rotate_combo.addItems([t(key) for key, _ in _ROTATE_KEYS])
+        self._rotate_combo.setCurrentIndex(rotate_idx)
+        self._mute_check.setText(t("editor.mute"))
+
+        if self._cancel_trim is None:
+            self._export_btn.setText(t("editor.export_btn"))
+        if self._preview_mode:
+            self._preview_btn.setText(t("editor.back_to_original"))
+        elif self._cancel_preview is None:
+            self._preview_btn.setText(t("editor.preview_btn"))
+
+        self._speed_lbl.setText(t("editor.speed_label"))
+        self._vol_lbl.setText(t("editor.volume_label"))
+        self._text_lbl.setText(t("editor.text_label"))
+        self._text_input.setPlaceholderText(t("editor.text_placeholder"))
+        self._pos_lbl.setText(t("editor.position_label"))
+        pos_idx = self._text_pos_combo.currentIndex()
+        self._text_pos_combo.blockSignals(True)
+        self._text_pos_combo.clear()
+        self._text_pos_combo.addItems([t("editor.pos.top"), t("editor.pos.middle"), t("editor.pos.bottom")])
+        self._text_pos_combo.setCurrentIndex(pos_idx)
+        self._text_pos_combo.blockSignals(False)
+        self._size_lbl.setText(t("editor.size_label"))
+        self._color_lbl.setText(t("editor.color_label"))
+        color_idx = self._text_color_combo.currentIndex()
+        self._text_color_combo.blockSignals(True)
+        self._text_color_combo.clear()
+        self._text_color_combo.addItems([t(key) for key in _TEXT_COLOR_KEYS])
+        self._text_color_combo.setCurrentIndex(color_idx)
+        self._text_color_combo.blockSignals(False)
+        self._text_box_check.setText(t("editor.box"))
+        self._text_shadow_check.setText(t("editor.shadow"))
+
+        self._eff_lbl.setText(t("editor.effects_title"))
+        self._toggle_effects_btn.setText(
+            t("editor.hide") if self._effects_panel.isVisible() else t("editor.show")
+        )
+        self._brightness_lbl.setText(t("editor.brightness"))
+        self._contrast_lbl.setText(t("editor.contrast"))
+        self._saturation_lbl.setText(t("editor.saturation"))
+        self._hue_lbl.setText(t("editor.hue"))
+        self._blur_lbl.setText(t("editor.blur"))
+        self._fade_in_lbl.setText(t("editor.fade_in"))
+        self._fade_out_lbl.setText(t("editor.fade_out"))

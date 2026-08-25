@@ -382,6 +382,18 @@ def is_facebook_story_url(url: str) -> bool:
     return "facebook.com/stories/" in u or "fb.watch" in u
 
 
+def is_facebook_story_permalink(url: str) -> bool:
+    """True only for a real Story permalink, never a bare fb.watch short link.
+
+    fb.watch is Facebook's generic short-link domain: it fronts ordinary videos
+    and reels far more often than Stories, and yt-dlp downloads those natively
+    (see yt_dlp_engine._COOKIE_PLATFORM_MAP).  Callers that must refuse a URL
+    outright -- rather than merely try the CDP engine first -- have to use this
+    narrower check so an ordinary fb.watch video is not rejected.
+    """
+    return "facebook.com/stories/" in url.lower()
+
+
 # ── URL utilities ──────────────────────────────────────────────────────────────
 
 

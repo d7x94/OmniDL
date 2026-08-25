@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from ui.tabs.settings._base_panel import _BasePanel
 from ui.themes.tokens import THEME_NAMES, T
+from utils.i18n import LANGUAGES, t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -196,7 +197,7 @@ class GeneralPanel(_BasePanel):
         cfg = self._app.config
 
         # -- Download location ---------------------------------------------
-        sec_loc = self._collapsible_section("VỊ TRÍ LƯU FILE", "gen_location", icon="📁")
+        sec_loc = self._collapsible_section(t("settings.section.location"), "gen_location", icon="📁")
         loc = self._card(container=sec_loc)
 
         row = QWidget()
@@ -206,7 +207,7 @@ class GeneralPanel(_BasePanel):
         self._dir_lbl = QLabel(str(cfg.download_dir))
         self._dir_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 13px; background: transparent;")
         hl.addWidget(self._dir_lbl, 1)
-        self._browse_dir_btn = QPushButton("Duyệt...")
+        self._browse_dir_btn = QPushButton(t("settings.browse"))
         self._browse_dir_btn.setFixedSize(100, 32)
         self._browse_dir_btn.setObjectName("primary")
         self._browse_dir_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -215,39 +216,39 @@ class GeneralPanel(_BasePanel):
         loc.layout().addWidget(row)
 
         # -- Download behaviour --------------------------------------------
-        sec_beh = self._collapsible_section("HÀNH VI TẢI XUỐNG", "gen_behaviour", icon="⬇️")
+        sec_beh = self._collapsible_section(t("settings.section.behaviour"), "gen_behaviour", icon="⬇️")
         beh = self._card(container=sec_beh)
 
         self._slider_row(
             beh,
-            "Số lần tải đồng thời tối đa",
+            t("settings.max_concurrent"),
             cfg.max_concurrent,
             1,
             8,
             lambda v: cfg.set("max_concurrent", int(v)),
         )
-        self._hint(beh, "⚠  Thay đổi có hiệu lực sau khi khởi động lại ứng dụng.", T.warning_text)
+        self._hint(beh, t("settings.restart_hint"), T.warning_text)
 
         self._slider_row(
-            beh, "Số lần thử lại khi lỗi", cfg.max_retries, 0, 10, lambda v: cfg.set("max_retries", int(v))
+            beh, t("settings.max_retries"), cfg.max_retries, 0, 10, lambda v: cfg.set("max_retries", int(v))
         )
 
         self._switch_row(
-            beh, "Nhúng ảnh thu nhỏ (thumbnail)", cfg.embed_thumbnail, lambda v: cfg.set("embed_thumbnail", v)
+            beh, t("settings.embed_thumbnail"), cfg.embed_thumbnail, lambda v: cfg.set("embed_thumbnail", v)
         )
         self._switch_row(
-            beh, "Nhúng thông tin metadata", cfg.embed_metadata, lambda v: cfg.set("embed_metadata", v)
+            beh, t("settings.embed_metadata"), cfg.embed_metadata, lambda v: cfg.set("embed_metadata", v)
         )
 
         # -- Appearance ----------------------------------------------------
-        sec_app = self._collapsible_section("GIAO DIỆN", "gen_appearance", icon="🎨")
+        sec_app = self._collapsible_section(t("settings.section.appearance"), "gen_appearance", icon="🎨")
         app_card = self._card(container=sec_app)
 
         theme_row = QWidget()
         theme_row.setStyleSheet("background: transparent;")
         thl = QHBoxLayout(theme_row)
         thl.setContentsMargins(20, 14, 20, 14)
-        theme_lbl = QLabel("Giao diện màu sắc")
+        theme_lbl = QLabel(t("settings.theme"))
         theme_lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; background: transparent;")
         thl.addWidget(theme_lbl)
         thl.addStretch()
@@ -261,24 +262,46 @@ class GeneralPanel(_BasePanel):
         thl.addWidget(self._theme_combo)
         app_card.layout().addWidget(theme_row)
 
+        lang_row = QWidget()
+        lang_row.setStyleSheet("background: transparent;")
+        lhl = QHBoxLayout(lang_row)
+        lhl.setContentsMargins(20, 14, 20, 14)
+        lang_lbl = QLabel(t("settings.language"))
+        lang_lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; background: transparent;")
+        lhl.addWidget(lang_lbl)
+        lhl.addStretch()
+        self._lang_combo = QComboBox()
+        self._lang_codes = list(LANGUAGES)
+        for code in self._lang_codes:
+            self._lang_combo.addItem(LANGUAGES[code], code)
+        self._lang_combo.setFixedWidth(140)
+        current_lang = self._app.config.language
+        if current_lang in self._lang_codes:
+            self._lang_combo.setCurrentIndex(self._lang_codes.index(current_lang))
+        self._lang_combo.currentIndexChanged.connect(self._change_language)
+        lhl.addWidget(self._lang_combo)
+        app_card.layout().addWidget(lang_row)
+
+        self._hint(app_card, t("settings.language_hint"))
+
         # -- Clipboard monitor ---------------------------------------------
-        sec_clip = self._collapsible_section("THEO DÕI CLIPBOARD", "gen_clipboard", icon="📋")
+        sec_clip = self._collapsible_section(t("settings.section.clipboard"), "gen_clipboard", icon="📋")
         clip = self._card(container=sec_clip)
 
         self._switch_row(
             clip,
-            "Tự động phát hiện URL từ clipboard",
+            t("settings.clipboard_watch"),
             cfg.clipboard_monitor_enabled,
             self._on_clipboard_toggle,
         )
-        self._hint(clip, "Kiểm tra clipboard mỗi 1,5 giây và tự động điền URL vào thanh tìm kiếm")
+        self._hint(clip, t("settings.clipboard_hint"))
 
         # -- Developer -----------------------------------------------------
-        sec_dev = self._collapsible_section("NHÂN VIÊN PHÁT TRIỂN", "gen_developer", icon="🛠️")
+        sec_dev = self._collapsible_section(t("settings.section.developer"), "gen_developer", icon="🛠️")
         dev = self._card(container=sec_dev)
 
-        self._switch_row(dev, "Ghi log chi tiết (debug)", cfg.debug_logging, self._on_debug_toggle)
-        self._hint(dev, "Ghi chi tiết vào omnidl_debug.log  •  Không cần khởi động lại")
+        self._switch_row(dev, t("settings.debug_logging"), cfg.debug_logging, self._on_debug_toggle)
+        self._hint(dev, t("settings.debug_hint"))
 
         self._layout.addSpacing(20)
 
@@ -309,7 +332,7 @@ class GeneralPanel(_BasePanel):
                 _from_com = True
 
         if chosen is None:
-            chosen = QFileDialog.getExistingDirectory(self, "Select download folder", initialdir)
+            chosen = QFileDialog.getExistingDirectory(self, t("settings.select_folder"), initialdir)
 
         if not chosen:
             return
@@ -324,7 +347,7 @@ class GeneralPanel(_BasePanel):
                 recovered = _resolve_com_rename(chosen_path)
                 if recovered is None or not recovered.exists():
                     logger.warning("_browse_dir: COM path not found: %s", chosen_path)
-                    self._app.toast("Không tìm thấy thư mục. Hãy thử chọn lại.", "error")
+                    self._app.toast(t("settings.folder_not_found"), "error")
                     return
                 chosen_path = recovered
             else:
@@ -347,12 +370,29 @@ class GeneralPanel(_BasePanel):
                 chosen_path.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 logger.warning("Cannot create download dir %s: %s", chosen_path, exc)
-                self._app.toast(f"Không thể tạo thư mục: {exc}", "error")
+                self._app.toast(t("settings.folder_create_failed", err=exc), "error")
                 return
 
         chosen_str = str(chosen_path)
         self._app.config.set("download_dir", chosen_str)
         self._dir_lbl.setText(chosen_str)
+
+    def _change_language(self, index: int) -> None:
+        if not 0 <= index < len(self._lang_codes):
+            return
+        code = self._lang_codes[index]
+        if code == self._app.config.language:
+            return
+
+        from utils.i18n import set_language
+
+        self._app.config.set("language", code)
+        # set_language() fires MainWindow's i18n listener, which queues
+        # retranslate() onto the Qt event loop. Going through the listener (and
+        # not calling retranslate() straight from this slot) matters: the
+        # rebuild deletes the very combo box whose signal is running here.
+        set_language(code)
+        self._app.toast(t("settings.language_changed", language=LANGUAGES[code]))
 
     def _change_theme(self, theme: str) -> None:
         self._app.config.set("theme", theme)
@@ -362,17 +402,17 @@ class GeneralPanel(_BasePanel):
         self._app.config.set("clipboard_monitor_enabled", enabled)
         if enabled:
             self._app.start_clipboard_monitor()
-            self._app.toast("Clipboard monitor ON")
+            self._app.toast(t("settings.clipboard_on"))
         else:
             self._app.stop_clipboard_monitor()
-            self._app.toast("Clipboard monitor OFF")
+            self._app.toast(t("settings.clipboard_off"))
 
     def _on_debug_toggle(self, enabled: bool) -> None:
         self._app.config.set("debug_logging", enabled)
         from utils.logger import apply_debug_logging
 
         apply_debug_logging(enabled)
-        msg = "Debug logging ON — writing to omnidl_debug.log" if enabled else "Debug logging OFF"
-        logger.info(msg)
+        msg = t("settings.debug_on") if enabled else t("settings.debug_off")
+        logger.info("debug logging %s", "ON" if enabled else "OFF")
         if hasattr(self._app, "toast"):
             self._app.toast(msg)

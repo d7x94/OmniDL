@@ -212,6 +212,10 @@ class TestStartConvertFromPath:
             custom_crf=20,
             target_ext="mkv",
             output_codec="h265",
+            generate_subtitles=False,
+            subtitle_language="auto",
+            subtitle_model="base",
+            compute_vmaf=False,
         )
 
 

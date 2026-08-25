@@ -20,7 +20,11 @@ from app.event_bus import bus as global_bus
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask
 from infrastructure.config.config_manager import ConfigManager
-from infrastructure.downloader.account_pool import TikTokAccount, TikTokAccountPool
+from infrastructure.downloader.account_pool import (
+    TikTokAccount,
+    TikTokAccountPool,
+    _AcquireAborted,
+)
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _prepare_cookie_for_use, platform_for_url
 
 if TYPE_CHECKING:
@@ -30,6 +34,9 @@ if TYPE_CHECKING:
     from infrastructure.downloader.waaw_engine import WaawEngine
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of tasks kept in memory (oldest terminal tasks purged first)
+MAX_TASKS = 200
 
 
 class DownloadManager:
@@ -139,10 +146,12 @@ class DownloadManager:
         with self._lock:
             if not self._running or not self._executor:
                 raise RuntimeError("DownloadManager is not running.")
+            self._purge_old_tasks()
             self._tasks[task.id] = task
             _platform = platform_for_url(task.url)
-            if _platform == "tiktok" and self._tiktok_pool and len(self._tiktok_pool) > 0:
-                future = self._executor.submit(self._gated_run_tiktok, task)
+            _tiktok_pool = self._tiktok_pool
+            if _platform == "tiktok" and _tiktok_pool and len(_tiktok_pool) > 0:
+                future = self._executor.submit(self._gated_run_tiktok, task, _tiktok_pool)
             else:
                 _sem = self._platform_sems.get(_platform or "")
                 future = self._executor.submit(self._gated_run, task, _sem)
@@ -202,6 +211,21 @@ class DownloadManager:
 
     # ── Internal ──────────────────────────────────────────────────────────
 
+    def _purge_old_tasks(self) -> None:
+        """
+        Remove oldest terminal tasks when registry exceeds MAX_TASKS.
+        Must be called with self._lock held.
+        """
+        if len(self._tasks) < MAX_TASKS:
+            return
+        terminal_states = DownloadStatus.terminal_states()
+        terminal = [t for t in self._tasks.values() if t.status in terminal_states]
+        terminal.sort(key=lambda t: t.finished_at)
+        to_remove = terminal[: max(1, len(terminal) // 2)]
+        for t in to_remove:
+            del self._tasks[t.id]
+            self._futures.pop(t.id, None)
+
     def _get_task(self, task_id: str) -> Optional[DownloadTask]:
         with self._lock:
             return self._tasks.get(task_id)
@@ -215,11 +239,14 @@ class DownloadManager:
             if sem is not None:
                 sem.release()
 
-    def _gated_run_tiktok(self, task: DownloadTask) -> None:
-        assert self._tiktok_pool is not None  # caller checked
-        with self._tiktok_pool.acquire() as account:
-            task._cookie_override = account.cookie_file
-            self._run_task(task)
+    def _gated_run_tiktok(self, task: DownloadTask, pool: TikTokAccountPool) -> None:
+        try:
+            with pool.acquire(should_abort=lambda: task.is_cancellation_requested) as account:
+                task._cookie_override = account.cookie_file
+                self._run_task(task)
+        except _AcquireAborted:
+            logger.info("Task %s cancelled while waiting for a TikTok pool slot", task.id)
+            task.cancel()
 
     def _tt29_live_recheck(self, task: DownloadTask, room_id: str) -> bool:
         m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task.url, re.I)
@@ -432,10 +459,19 @@ class DownloadManager:
                 if self._story_engine_enabled:
                     from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
                         download_story,
-                        is_facebook_story_url,
+                        is_facebook_story_permalink,
                     )
 
-                    if is_facebook_story_url(task.url):
+                    # Route only real Story permalinks here.  fb.watch (which
+                    # is_facebook_story_url also matches) is Facebook's generic
+                    # short-link domain for ordinary videos and reels; sending
+                    # those through a 90 s Playwright capture instead of yt-dlp
+                    # was slow and usually wrong.
+                    _is_fb_story = is_facebook_story_permalink(task.url) or (
+                        task.media_info is not None
+                        and getattr(task.media_info, "source_engine", "") == "facebook_story"
+                    )
+                    if _is_fb_story:
 
                         def _story_progress(pct: int, speed: str, msg: str) -> None:
                             with task._lock:
@@ -444,17 +480,33 @@ class DownloadManager:
                                 task.eta = msg
                             self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
 
-                        result_path = download_story(
-                            url=task.url,
-                            config=self._config,
-                            browser=getattr(self._config, "cookies_browser", "brave"),
-                            on_progress=_story_progress,
-                            timeout=90.0,
-                        )
-                        with task._lock:
-                            task.filename = str(result_path)
-                        last_exc = None
-                        break  # success — skip yt-dlp / gallery routing
+                        try:
+                            result_path = download_story(
+                                url=task.url,
+                                config=self._config,
+                                browser=getattr(self._config, "cookies_browser", "brave"),
+                                on_progress=_story_progress,
+                                timeout=90.0,
+                            )
+                        except Exception as _story_exc:
+                            # A real /stories/ permalink has no other engine that
+                            # can fetch it — let the error propagate.  fb.watch is
+                            # Facebook's generic short-link domain, so a capture
+                            # failure there usually just means "this is a normal
+                            # video", which yt-dlp downloads below.
+                            if is_facebook_story_permalink(task.url):
+                                raise
+                            logger.info(
+                                "Task %s: Story CDP capture failed for fb.watch link "
+                                "(%s) — falling back to yt-dlp",
+                                task.id,
+                                _story_exc,
+                            )
+                        else:
+                            with task._lock:
+                                task.filename = str(result_path)
+                            last_exc = None
+                            break  # success — skip yt-dlp / gallery routing
 
                 # Route to InstagramLiveEngine for Instagram live URLs.
                 # Direct HLS recording via FFmpeg is more reliable than yt-dlp
@@ -787,7 +839,20 @@ class DownloadManager:
         # DEF-008: prune Future reference to prevent memory leak
         with self._lock:
             self._futures.pop(task_id, None)
+            task = self._tasks.get(task_id)
         # DEF-009: _run_task already logs errors — only surface true escapes here
         exc = future.exception()
         if exc:
             logger.debug("Unhandled exception escaped _run_task for task %s: %s", task_id, exc)
+            # _run_task normally resolves the task to a terminal status itself;
+            # an escape means it exited before doing so (e.g. AssertionError
+            # from a stale pool reference) — mark it FAILED so it doesn't sit
+            # in a non-terminal state forever with no visible error.
+            if task is not None and task.status not in DownloadStatus.terminal_states():
+                with task._lock:
+                    task.status = DownloadStatus.FAILED
+                    task.speed = ""
+                    task.eta = ""
+                    task.error_msg = str(exc)
+                    task.finished_at = time.time()
+                self._bus.publish(EventBus.DOWNLOAD_FAILED, task=task)

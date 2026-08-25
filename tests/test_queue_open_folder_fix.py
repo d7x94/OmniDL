@@ -116,6 +116,7 @@ def test_completed_path_snapshotted_on_first_completed(tmp_path):
         "_convert_btn",
         "_edit_btn",
         "_rename_btn",
+        "_send_btn",
         "_live_badge",
         "_elapsed_lbl",
         "_url_lbl",
@@ -127,6 +128,7 @@ def test_completed_path_snapshotted_on_first_completed(tmp_path):
     widget._on_convert = None
     widget._on_edit = None
     widget._on_rename = None
+    widget._on_send = None
     widget._converting = False
     widget.setStyleSheet = MagicMock()
 
@@ -169,6 +171,7 @@ def test_completed_path_not_overwritten_by_later_refresh(tmp_path):
         "_convert_btn",
         "_edit_btn",
         "_rename_btn",
+        "_send_btn",
         "_live_badge",
         "_elapsed_lbl",
         "_url_lbl",
@@ -180,6 +183,7 @@ def test_completed_path_not_overwritten_by_later_refresh(tmp_path):
     widget._on_convert = None
     widget._on_edit = None
     widget._on_rename = None
+    widget._on_send = None
     widget._converting = False
     widget.setStyleSheet = MagicMock()
 

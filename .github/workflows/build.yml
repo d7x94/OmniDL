@@ -201,15 +201,22 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          # "full" rather than "essentials": the essentials build ships without
+          # libsvtav1 (so the AV1 codec option cannot encode) and without the
+          # whisper filter (so auto-generated subtitles are unavailable).
+          # It is distributed as .7z, hence 7z instead of Expand-Archive.
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.7z"
+          $zip = "$env:RUNNER_TEMP\ffmpeg.7z"
           $tmp = "$env:RUNNER_TEMP\ffmpeg_extracted"
 
           Write-Output "Downloading FFmpeg from $url ..."
           Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
 
           Write-Output "Extracting archive ..."
-          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          & 7z x $zip "-o$tmp" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "7z extraction failed with exit code $LASTEXITCODE"; exit 1
+          }
 
           $binDir = Get-ChildItem -Path $tmp -Recurse -Filter "ffmpeg.exe" |
                       Select-Object -First 1 -ExpandProperty DirectoryName
@@ -238,6 +245,20 @@ jobs:
           }
           & "resources\ffmpeg\ffmpeg.exe"  -version 2>&1 | Select-Object -First 1
           & "resources\ffmpeg\ffprobe.exe" -version 2>&1 | Select-Object -First 1
+
+          # Guard the two capabilities the "full" build exists to provide.  If
+          # upstream ever changes what is compiled in, fail the build here
+          # rather than shipping a release where AV1 and subtitles silently
+          # stop working.
+          $enc = & "resources\ffmpeg\ffmpeg.exe" -hide_banner -encoders 2>&1 | Out-String
+          if ($enc -notmatch "libsvtav1") {
+            Write-Error "Bundled FFmpeg has no libsvtav1 - the AV1 codec option would fall back to the slower libaom."; exit 1
+          }
+          $filt = & "resources\ffmpeg\ffmpeg.exe" -hide_banner -h filter=whisper 2>&1 | Out-String
+          if ($filt -notmatch "whisper AVOptions") {
+            Write-Error "Bundled FFmpeg has no whisper filter - auto-subtitles would be unavailable."; exit 1
+          }
+          Write-Output "FFmpeg capability check passed: libsvtav1 + whisper present."
           Write-Output "OK  FFmpeg binaries verified"
 
       - name: Download Deno (Windows)

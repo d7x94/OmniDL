@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QScrollArea,
     QVBoxLayout,
@@ -27,6 +28,8 @@ from ui.tabs.settings.tools_panel import (  # noqa: F401
     _install_gallery_dl_frozen,
     _install_ytdlp_frozen,
 )
+from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -48,6 +51,12 @@ class SettingsTab(QWidget):
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
 
+        # Panels bake T.* colours into inline stylesheets at build time, so a
+        # theme switch only reaches them by rebuilding.  Deferred through the
+        # event loop: the theme combo that triggered this lives inside the
+        # widget tree being replaced.
+        T.register(self._on_theme_changed)
+
     def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -59,7 +68,7 @@ class SettingsTab(QWidget):
         srl = QHBoxLayout(search_row)
         srl.setContentsMargins(28, 16, 28, 4)
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Tìm kiếm cài đặt...")
+        self._search_box.setPlaceholderText(t("settings.search"))
         self._search_box.setObjectName("settings_search")
         self._search_box.setClearButtonEnabled(True)
         self._search_box.textChanged.connect(self._on_search)
@@ -67,11 +76,20 @@ class SettingsTab(QWidget):
         layout.addWidget(search_row)
 
         # Scrollable content
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._build_content())
+        layout.addWidget(self._scroll, 1)
 
+        self._no_results = QLabel(t("settings.no_results"))
+        self._no_results.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_results.setStyleSheet(f"color: {T.text3}; font-size: 12px; padding: 40px 28px;")
+        self._no_results.hide()
+        layout.addWidget(self._no_results)
+
+    def _build_content(self) -> QWidget:
         content = QWidget()
         content.setStyleSheet("background: transparent;")
         content_layout = QVBoxLayout(content)
@@ -94,8 +112,54 @@ class SettingsTab(QWidget):
             content_layout.addWidget(panel)
 
         content_layout.addStretch()
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 1)
+        return content
+
+    def retranslate(self) -> None:
+        """Rebuild every sub-panel in the new language.
+
+        The panels bake their label text in at construction time (there are no
+        stored widget refs to re-set), so rebuilding the whole content widget is
+        both the smallest and the only complete fix. In-flight worker callbacks
+        target widgets that are gone by then; ui_bridge swallows the resulting
+        "already deleted" errors, so a running cookie extract cannot crash this.
+        """
+        self._search_box.setPlaceholderText(t("settings.search"))
+        self._no_results.setText(t("settings.no_results"))
+        self._no_results.setStyleSheet(f"color: {T.text3}; font-size: 12px; padding: 40px 28px;")
+        old = self._scroll.takeWidget()
+        if old is not None:
+            old.deleteLater()
+        self._scroll.setWidget(self._build_content())
+        self._on_search(self._search_box.text())
+
+    def _on_theme_changed(self) -> None:
+        # `self` as timer context: Qt drops the call if this tab is destroyed.
+        QTimer.singleShot(0, self, self.retranslate)
+
+    @staticmethod
+    def _haystack(content: QWidget, sec_text: str) -> str:
+        """Lowercased text of every label/button/field inside a section.
+
+        Cached on the widget: matching only the section title made real
+        settings ("proxy", "theme", ...) unfindable and blanked the page.
+        """
+        cached = content.property("_omnidl_search")
+        if cached:
+            return cached
+        parts = [sec_text]
+        for w in content.findChildren(QWidget):
+            for getter in ("text", "placeholderText", "toolTip"):
+                fn = getattr(w, getter, None)
+                if callable(fn):
+                    try:
+                        val = fn()
+                    except (TypeError, RuntimeError):
+                        continue
+                    if isinstance(val, str):
+                        parts.append(val)
+        hay = " ".join(parts).lower()
+        content.setProperty("_omnidl_search", hay)
+        return hay
 
     def _on_search(self, text: str) -> None:
         q = text.strip().lower()
@@ -106,17 +170,19 @@ class SettingsTab(QWidget):
             self._taildrop_panel,
             self._api_panel,
         )
+        hits = 0
         for panel in panels:
-            for sec_text, cfg_key, wrapper, content in panel._sections:
+            for sec_text, cfg_key, wrapper, content, set_expanded in panel._sections:
                 if q:
-                    match = q in sec_text
+                    match = q in self._haystack(content, sec_text)
                     wrapper.setVisible(match)
                     if match:
-                        content.setVisible(True)
+                        hits += 1
+                        set_expanded(True)
                 else:
                     wrapper.setVisible(True)
-                    collapsed = bool(panel._app.config.get(cfg_key, False))
-                    content.setVisible(not collapsed)
+                    set_expanded(not bool(panel._app.config.get(cfg_key, False)))
+        self._no_results.setVisible(bool(q) and hits == 0)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

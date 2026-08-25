@@ -33,6 +33,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -302,7 +303,7 @@ class TestConvertSync:
     def test_raises_for_missing_source(self, tmp_path: Path):
         svc = FfmpegConvertService()
         missing = tmp_path / "does_not_exist.mkv"
-        with pytest.raises(ConversionError, match="không tồn tại"):
+        with pytest.raises(ConversionError, match=re.escape(str(missing))):
             svc._convert_sync(missing, "standard", None, None)
 
     def test_resume_skipped_when_no_partial(self, tmp_path: Path):
@@ -595,6 +596,9 @@ class TestHwEncoderCatalog:
             "nvenc_av1",
             "qsv_av1",
             "amf_av1",
+            "mf",
+            "mf_hevc",
+            "mf_av1",
         }
         assert expected == set(_HW_ENCODER_CATALOG.keys())
 
@@ -1042,6 +1046,7 @@ class TestConvertQueueEncodeSettings:
             encode_settings=None,
             cancel_event=None,
             target_ext="mp4",
+            on_result=None,
         ):
             received.append(encode_settings)
             done_event.set()
@@ -1075,6 +1080,7 @@ class TestConvertQueueEncodeSettings:
             encode_settings=None,
             cancel_event=None,
             target_ext="mp4",
+            on_result=None,
         ):
             received.append(encode_settings)
             done_event.set()

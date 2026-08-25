@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -33,27 +34,39 @@ from app.services.ffmpeg_convert_service import (
     SPEED_OPTIONS,
     SUPPORTED_EXTS,
     ConvertQueue,
+    ConvertResult,
     EncodeSettings,
     FfmpegMediaInfo,
+    get_available_codec_options,
     get_available_encoder_options,
     probe_media_info,
     scan_folder_for_media,
+)
+from app.services.whisper_subtitle_service import (
+    DEFAULT_MODEL_KEY,
+    SUBTITLE_LANGUAGE_OPTIONS,
+    WHISPER_MODELS,
+    is_model_installed,
+    is_whisper_supported,
+    language_label,
+    model_label,
 )
 from ui.components.progress_bar import OmniProgressBar
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
 from utils.helpers import fmt_bytes, fmt_duration, open_file, open_folder, reveal_in_explorer
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
-_QUALITY_OPTIONS = [
-    ("high", "Chất lượng cao", "H.264 CRF 18 · AAC 192k · Giữ độ phân giải"),
-    ("standard", "Chuẩn", "H.264 CRF 23 · AAC 128k · Phù hợp mọi iPhone"),
-    ("small", "File nhỏ", "H.264 CRF 28 · AAC 96k · Tối đa 720p"),
-    ("custom", "Tùy chỉnh", "Giá trị CRF/CQ tùy chọn (16-35)"),
+_QUALITY_KEYS = [
+    ("high", "convert.quality.high.label", "convert.quality.high.desc"),
+    ("standard", "convert.quality.standard.label", "convert.quality.standard.desc"),
+    ("small", "convert.quality.small.label", "convert.quality.small.desc"),
+    ("custom", "convert.quality.custom.label", "convert.quality.custom.desc"),
 ]
 
 _MAX_CONCURRENT = 2
@@ -67,12 +80,12 @@ class FileState(Enum):
     FAILED = auto()
 
 
-_STATE_BADGE: dict[FileState, tuple[str, str, str]] = {
-    FileState.PENDING: ("Chờ", "text3", "surface3"),
-    FileState.QUEUED: ("Hàng chờ", "text2", "surface2"),
-    FileState.CONVERTING: ("Đang chuyển…", "warning", "warning_bg"),
-    FileState.DONE: ("✓ Xong", "success", "success_bg"),
-    FileState.FAILED: ("✕ Lỗi", "error", "error_bg"),
+_STATE_BADGE_KEY: dict[FileState, tuple[str, str, str]] = {
+    FileState.PENDING: ("convert.state.pending", "text3", "surface3"),
+    FileState.QUEUED: ("convert.state.queued", "text2", "surface2"),
+    FileState.CONVERTING: ("convert.state.converting", "warning", "warning_bg"),
+    FileState.DONE: ("convert.state.done", "success", "success_bg"),
+    FileState.FAILED: ("convert.state.failed", "error", "error_bg"),
 }
 
 _STATE_PROG: dict[FileState, str] = {
@@ -94,6 +107,12 @@ class FileJob:
     error_msg: str = ""
     media_info: Optional[FfmpegMediaInfo] = field(default=None)
     output_media_info: Optional[FfmpegMediaInfo] = field(default=None)
+    subtitle_path: Optional[Path] = None
+    # Why the subtitle pass produced nothing.  The video itself still converted,
+    # so this is shown as a note next to a successful job, not as a failure.
+    subtitle_error: str = ""
+    # Mean VMAF score (0-100) of the output against the source, when requested.
+    vmaf_score: Optional[float] = None
     cancel_fn: Optional[Callable[[], None]] = field(default=None, repr=False)
 
 
@@ -170,15 +189,15 @@ class FileCard(QFrame):
         )
         top_layout.addWidget(self._ext_badge)
 
-        s_lbl, s_txt, s_bg = _STATE_BADGE[self.job.state]
-        self._state_badge = QLabel(f"  {s_lbl}  ")
+        s_key, s_txt, s_bg = _STATE_BADGE_KEY[self.job.state]
+        self._state_badge = QLabel(f"  {t(s_key)}  ")
         self._state_badge.setStyleSheet(
             f"color: {getattr(T, s_txt)}; background-color: {getattr(T, s_bg)}; border-radius: 5px; font-size: 10px; font-weight: bold; padding: 2px 4px;"
         )
         top_layout.addWidget(self._state_badge)
 
         # Buttons in order
-        self._cancel_btn = QPushButton("Hủy")
+        self._cancel_btn = QPushButton(t("archive.cancel"))
         self._cancel_btn.setFixedSize(60, 26)
         self._cancel_btn.setStyleSheet(
             f"background: {T.warning_bg}; color: {T.warning}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
@@ -188,7 +207,7 @@ class FileCard(QFrame):
         self._cancel_btn.hide()
         top_layout.addWidget(self._cancel_btn)
 
-        self._open_btn = QPushButton("Mở")
+        self._open_btn = QPushButton(t("live.open"))
         self._open_btn.setFixedSize(52, 26)
         self._open_btn.setStyleSheet(
             f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
@@ -198,7 +217,7 @@ class FileCard(QFrame):
         self._open_btn.hide()
         top_layout.addWidget(self._open_btn)
 
-        self._preview_btn = QPushButton("Xem")
+        self._preview_btn = QPushButton(t("special.view"))
         self._preview_btn.setFixedSize(52, 26)
         self._preview_btn.setStyleSheet(
             f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
@@ -208,7 +227,7 @@ class FileCard(QFrame):
         self._preview_btn.hide()
         top_layout.addWidget(self._preview_btn)
 
-        self._delete_output_btn = QPushButton("Xóa file")
+        self._delete_output_btn = QPushButton(t("convert.card.delete_output"))
         self._delete_output_btn.setFixedSize(70, 26)
         self._delete_output_btn.setStyleSheet(
             f"background: {T.error_bg}; color: {T.error_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
@@ -294,12 +313,12 @@ class FileCard(QFrame):
         before_row_l = QHBoxLayout(self._prev_before_row)
         before_row_l.setContentsMargins(12, 6, 12, 6)
         before_row_l.setSpacing(8)
-        before_pfx = QLabel("Trước")
-        before_pfx.setFixedWidth(42)
-        before_pfx.setStyleSheet(f"color: {T.text3}; font-size: 10px; font-weight: bold;")
+        self._before_pfx_lbl = QLabel(t("convert.card.before"))
+        self._before_pfx_lbl.setFixedWidth(42)
+        self._before_pfx_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px; font-weight: bold;")
         self._prev_before_lbl = QLabel("…")
         self._prev_before_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px;")
-        before_row_l.addWidget(before_pfx)
+        before_row_l.addWidget(self._before_pfx_lbl)
         before_row_l.addWidget(self._prev_before_lbl)
 
         self._prev_after_row = _ClickableFrame(
@@ -314,12 +333,12 @@ class FileCard(QFrame):
         after_row_l = QHBoxLayout(self._prev_after_row)
         after_row_l.setContentsMargins(12, 6, 12, 6)
         after_row_l.setSpacing(8)
-        after_pfx = QLabel("Sau")
-        after_pfx.setFixedWidth(42)
-        after_pfx.setStyleSheet(f"color: {T.success_text}; font-size: 10px; font-weight: bold;")
-        self._prev_after_lbl = QLabel("Đang đọc…")
+        self._after_pfx_lbl = QLabel(t("convert.card.after"))
+        self._after_pfx_lbl.setFixedWidth(42)
+        self._after_pfx_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 10px; font-weight: bold;")
+        self._prev_after_lbl = QLabel(t("convert.card.reading"))
         self._prev_after_lbl.setStyleSheet(f"color: {T.text2}; font-size: 10px;")
-        after_row_l.addWidget(after_pfx)
+        after_row_l.addWidget(self._after_pfx_lbl)
         after_row_l.addWidget(self._prev_after_lbl)
 
         prev_layout.addWidget(self._prev_before_row)
@@ -332,8 +351,8 @@ class FileCard(QFrame):
 
     def refresh(self) -> None:
         job = self.job
-        s_lbl, s_txt, s_bg = _STATE_BADGE[job.state]
-        self._state_badge.setText(f"  {s_lbl}  ")
+        s_key, s_txt, s_bg = _STATE_BADGE_KEY[job.state]
+        self._state_badge.setText(f"  {t(s_key)}  ")
         self._state_badge.setStyleSheet(
             f"color: {getattr(T, s_txt)}; background-color: {getattr(T, s_bg)}; border-radius: 5px; font-size: 10px; font-weight: bold; padding: 2px 4px;"
         )
@@ -352,11 +371,26 @@ class FileCard(QFrame):
         self._remove_btn.setEnabled(not is_active)
 
         if job.state == FileState.DONE and job.output:
-            sz = fmt_bytes(job.output.stat().st_size) if job.output.is_file() else ""
-            self._out_lbl.setText(f"→ {job.output.name}  {sz}")
-            self._open_btn.show()
-            self._preview_btn.show()
-            self._delete_output_btn.setVisible(job.output.is_file())
+            # The output can vanish between conversions: the user deletes it
+            # with the button below, or removes it outside OmniDL.  Keeping the
+            # "open it / preview it" buttons alive for a file that is gone
+            # opened an empty folder and left the card claiming a size of "".
+            on_disk = job.output.is_file()
+            if on_disk:
+                text = f"→ {job.output.name}  {fmt_bytes(job.output.stat().st_size)}"
+                if job.vmaf_score is not None:
+                    text += f"  ·  VMAF {job.vmaf_score:.1f}"
+            else:
+                text = t("convert.card.output_gone", name=job.output.name)
+            self._out_lbl.setText(text)
+            self._open_btn.setVisible(on_disk)
+            # A subtitles-only job's output is the .srt itself — there is no
+            # before/after media info to compare, so the panel would sit on
+            # "Đang đọc…" forever.
+            self._preview_btn.setVisible(on_disk and job.output.suffix.lower() != ".srt")
+            self._delete_output_btn.setVisible(on_disk)
+            if not on_disk:
+                self._preview_panel.hide()
             self._err_lbl.hide()
         elif job.state == FileState.FAILED and job.error_msg:
             self._err_lbl.setText(f"  {job.error_msg[:160]}")
@@ -400,7 +434,7 @@ class FileCard(QFrame):
         if self.job.output_media_info is not None:
             self._prev_after_lbl.setText(self._media_info_str(self.job.output_media_info, self.job.output))
         else:
-            self._prev_after_lbl.setText("Đang đọc…")
+            self._prev_after_lbl.setText(t("convert.card.reading"))
 
     def update_output_info(self) -> None:
         if self._preview_panel.isVisible():
@@ -426,7 +460,7 @@ class FileCard(QFrame):
         return "  ·  ".join(parts) if parts else "—"
 
     def _initial_info_text(self) -> str:
-        return "" if self.job.media_info is not None else "Đang đọc thông tin…"
+        return "" if self.job.media_info is not None else t("convert.card.reading_info")
 
     def _file_size_str(self) -> str:
         try:
@@ -437,6 +471,19 @@ class FileCard(QFrame):
     @staticmethod
     def _trunc(s: str, n: int) -> str:
         return s[:n] + "…" if s and len(s) > n else (s or "")
+
+    def retranslate(self) -> None:
+        self._cancel_btn.setText(t("archive.cancel"))
+        self._open_btn.setText(t("live.open"))
+        self._preview_btn.setText(t("special.view"))
+        self._delete_output_btn.setText(t("convert.card.delete_output"))
+        self._before_pfx_lbl.setText(t("convert.card.before"))
+        self._after_pfx_lbl.setText(t("convert.card.after"))
+        if self.job.media_info is None:
+            self._info_lbl.setText(t("convert.card.reading_info"))
+        if self._preview_panel.isVisible():
+            self._refresh_preview_content()
+        self.refresh()
 
 
 # ── Convert Tab ───────────────────────────────────────────────────────────────
@@ -468,9 +515,18 @@ class ConvertTab(QWidget):
         self._speed_main_labels: dict[str, QLabel] = {}
         self._codec_cards: dict[str, _ClickableFrame] = {}
         self._codec_main_labels: dict[str, QLabel] = {}
+        # Codecs the installed FFmpeg can actually encode.  Starts permissive so
+        # the cards render immediately; the async probe narrows it a moment later.
+        self._available_codecs: set[str] = {key for key, _ in CODEC_OPTIONS}
+        self._gen_subtitles = False
+        self._subtitle_language = "auto"
+        self._subtitle_model = DEFAULT_MODEL_KEY
+        # Set by the async probe; gates the standalone "Tạo phụ đề" button.
+        self._whisper_ok = False
+        self._compute_vmaf = False
 
         threading.Thread(
-            target=self._detect_encoders_async,
+            target=self._detect_capabilities_async,
             daemon=True,
             name="omnidl-detect-encoders",
         ).start()
@@ -486,7 +542,7 @@ class ConvertTab(QWidget):
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
 
-        _bus = self._app.taildrop._bus
+        _bus = self._app.taildrop.bus
         _bus.subscribe(EventBus.CONVERT_TAILDROP_COMPLETED, self._on_convert_taildrop_completed)
         _bus.subscribe(EventBus.CONVERT_TAILDROP_FAILED, self._on_convert_taildrop_failed)
 
@@ -502,7 +558,7 @@ class ConvertTab(QWidget):
         hdr_layout.setContentsMargins(28, 16, 28, 0)
         hdr_layout.setSpacing(6)
 
-        self._add_btn = QPushButton("Thêm file")
+        self._add_btn = QPushButton(t("archive.add_file"))
         self._add_btn.setFixedSize(100, 30)
         self._add_btn.setStyleSheet(
             f"background: {T.primary}; color: white; border: none; border-radius: 7px; font-size: 11px; font-weight: bold;"
@@ -511,7 +567,7 @@ class ConvertTab(QWidget):
         self._add_btn.clicked.connect(self._browse_files)
         hdr_layout.addWidget(self._add_btn)
 
-        self._folder_btn = QPushButton("Thêm thư mục")
+        self._folder_btn = QPushButton(t("archive.add_folder"))
         self._folder_btn.setFixedSize(120, 30)
         self._folder_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px; font-weight: bold;"
@@ -520,7 +576,7 @@ class ConvertTab(QWidget):
         self._folder_btn.clicked.connect(self._browse_folder)
         hdr_layout.addWidget(self._folder_btn)
 
-        self._clear_btn = QPushButton("Xóa xong/lỗi")
+        self._clear_btn = QPushButton(t("convert.clear_done"))
         self._clear_btn.setFixedSize(110, 30)
         self._clear_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
@@ -531,7 +587,7 @@ class ConvertTab(QWidget):
 
         hdr_layout.addStretch()
 
-        self._cfg_toggle_btn = QPushButton("⚙ Thông số  ▲")
+        self._cfg_toggle_btn = QPushButton(t("convert.settings_toggle_up"))
         self._cfg_toggle_btn.setFixedSize(130, 30)
         self._cfg_toggle_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
@@ -569,21 +625,23 @@ class ConvertTab(QWidget):
         q_layout.setContentsMargins(0, 0, 0, 0)
         q_layout.setSpacing(6)
 
-        q_lbl = QLabel("Chất lượng")
-        q_lbl.setFixedWidth(90)
-        q_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
-        q_layout.addWidget(q_lbl)
+        self._quality_row_lbl = QLabel(t("convert.quality_label"))
+        self._quality_row_lbl.setFixedWidth(90)
+        self._quality_row_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        q_layout.addWidget(self._quality_row_lbl)
 
-        for key, label, desc in _QUALITY_OPTIONS:
+        self._quality_desc_labels: dict[str, Optional[QLabel]] = {}
+        for key, label_key, desc_key in _QUALITY_KEYS:
             card = self._make_option_card(
-                label,
-                desc,
+                t(label_key),
+                t(desc_key),
                 selected=(key == self._quality),
                 on_click=lambda k=key: self._on_quality_change(k),
             )
             q_layout.addWidget(card, 1)
             self._quality_cards[key] = card
             self._quality_main_labels[key] = card.findChild(QLabel, "main_lbl")
+            self._quality_desc_labels[key] = card.findChild(QLabel, "desc_lbl")
 
         cfg_layout.addWidget(q_row)
 
@@ -598,9 +656,9 @@ class ConvertTab(QWidget):
         spacer_lbl.setFixedWidth(90)
         cr_layout.addWidget(spacer_lbl)
 
-        cq_lbl = QLabel("Gia tri (16-35):")
-        cq_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        cr_layout.addWidget(cq_lbl)
+        self._cq_lbl = QLabel(t("convert.custom_value_label"))
+        self._cq_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        cr_layout.addWidget(self._cq_lbl)
 
         self._custom_entry = QLineEdit("23")
         self._custom_entry.setFixedSize(60, 28)
@@ -628,10 +686,10 @@ class ConvertTab(QWidget):
         er_layout.setContentsMargins(0, 0, 0, 0)
         er_layout.setSpacing(8)
 
-        enc_lbl = QLabel("Encoder")
-        enc_lbl.setFixedWidth(90)
-        enc_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
-        er_layout.addWidget(enc_lbl)
+        self._enc_lbl = QLabel(t("convert.encoder_label"))
+        self._enc_lbl.setFixedWidth(90)
+        self._enc_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        er_layout.addWidget(self._enc_lbl)
 
         self._encoder_combo = QComboBox()
         self._encoder_combo.addItems([lbl for _, lbl in self._available_encoder_options])
@@ -639,7 +697,7 @@ class ConvertTab(QWidget):
         self._encoder_combo.currentTextChanged.connect(self._on_encoder_change)
         er_layout.addWidget(self._encoder_combo)
 
-        self._encoder_status_lbl = QLabel("Đang kiểm tra…")
+        self._encoder_status_lbl = QLabel(t("live.state.checking"))
         self._encoder_status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
         er_layout.addWidget(self._encoder_status_lbl)
         er_layout.addStretch()
@@ -653,14 +711,14 @@ class ConvertTab(QWidget):
         sr_layout.setContentsMargins(0, 0, 0, 0)
         sr_layout.setSpacing(6)
 
-        spd_lbl = QLabel("Tốc độ")
-        spd_lbl.setFixedWidth(90)
-        spd_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
-        sr_layout.addWidget(spd_lbl)
+        self._spd_lbl = QLabel(t("convert.speed_label"))
+        self._spd_lbl.setFixedWidth(90)
+        self._spd_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        sr_layout.addWidget(self._spd_lbl)
 
-        for s_key, s_label in SPEED_OPTIONS:
+        for s_key, s_label_key in SPEED_OPTIONS:
             s_card = self._make_option_card(
-                s_label,
+                t(s_label_key),
                 "",
                 selected=(s_key == self._speed_preset),
                 on_click=lambda k=s_key: self._on_speed_change(k),
@@ -679,14 +737,14 @@ class ConvertTab(QWidget):
         co_layout.setContentsMargins(0, 0, 0, 0)
         co_layout.setSpacing(6)
 
-        cod_lbl = QLabel("Codec")
-        cod_lbl.setFixedWidth(90)
-        cod_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
-        co_layout.addWidget(cod_lbl)
+        self._cod_lbl = QLabel(t("convert.codec_label"))
+        self._cod_lbl.setFixedWidth(90)
+        self._cod_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        co_layout.addWidget(self._cod_lbl)
 
-        for c_key, c_label in CODEC_OPTIONS:
+        for c_key, c_label_key in CODEC_OPTIONS:
             c_card = self._make_option_card(
-                c_label,
+                t(c_label_key),
                 "",
                 selected=(c_key == self._output_codec),
                 on_click=lambda k=c_key: self._on_codec_change(k),
@@ -697,6 +755,66 @@ class ConvertTab(QWidget):
 
         co_layout.addStretch()
         cfg_layout.addWidget(cod_row)
+
+        # Subtitle row
+        sub_row = QWidget()
+        sub_row.setStyleSheet("background: transparent;")
+        sb_layout = QHBoxLayout(sub_row)
+        sb_layout.setContentsMargins(0, 0, 0, 0)
+        sb_layout.setSpacing(6)
+
+        self._sub_lbl = QLabel(t("convert.subtitle_label"))
+        self._sub_lbl.setFixedWidth(90)
+        self._sub_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        sb_layout.addWidget(self._sub_lbl)
+
+        self._subs_check = QCheckBox(t("convert.gen_subs_check"))
+        self._subs_check.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
+        # Disabled until the async probe confirms this FFmpeg build has whisper.
+        self._subs_check.setEnabled(False)
+        self._subs_check.toggled.connect(self._on_subs_toggled)
+        sb_layout.addWidget(self._subs_check)
+
+        self._subs_lang_combo = QComboBox()
+        self._subs_lang_combo.addItems([language_label(c, lbl) for c, lbl in SUBTITLE_LANGUAGE_OPTIONS])
+        self._subs_lang_combo.setFixedWidth(170)
+        self._subs_lang_combo.setEnabled(False)
+        self._subs_lang_combo.currentIndexChanged.connect(self._on_subs_lang_change)
+        sb_layout.addWidget(self._subs_lang_combo)
+
+        self._subs_model_combo = QComboBox()
+        self._subs_model_combo.addItems([model_label(m) for m in WHISPER_MODELS])
+        self._subs_model_combo.setCurrentIndex(
+            next((i for i, m in enumerate(WHISPER_MODELS) if m.key == DEFAULT_MODEL_KEY), 0)
+        )
+        self._subs_model_combo.setFixedWidth(190)
+        self._subs_model_combo.setEnabled(False)
+        self._subs_model_combo.currentIndexChanged.connect(self._on_subs_model_change)
+        sb_layout.addWidget(self._subs_model_combo)
+
+        sb_layout.addStretch()
+        cfg_layout.addWidget(sub_row)
+
+        # VMAF row
+        vmaf_row = QWidget()
+        vmaf_row.setStyleSheet("background: transparent;")
+        vm_layout = QHBoxLayout(vmaf_row)
+        vm_layout.setContentsMargins(0, 0, 0, 0)
+        vm_layout.setSpacing(6)
+
+        self._vmaf_lbl = QLabel(t("convert.rating_label"))
+        self._vmaf_lbl.setFixedWidth(90)
+        self._vmaf_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; font-weight: bold;")
+        vm_layout.addWidget(self._vmaf_lbl)
+
+        self._vmaf_check = QCheckBox(t("convert.vmaf_check"))
+        self._vmaf_check.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
+        self._vmaf_check.setToolTip(t("convert.vmaf_tip"))
+        self._vmaf_check.toggled.connect(self._on_vmaf_toggled)
+        vm_layout.addWidget(self._vmaf_check)
+
+        vm_layout.addStretch()
+        cfg_layout.addWidget(vmaf_row)
 
         cfg_wrap_layout.addWidget(cfg)
         layout.addWidget(cfg_wrap)
@@ -721,18 +839,18 @@ class ConvertTab(QWidget):
         empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.setSpacing(8)
 
-        el1 = QLabel("Chưa có file nào")
-        el1.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        el1.setStyleSheet(f"color: {T.text3}; font-size: 16px; font-weight: bold;")
-        empty_layout.addWidget(el1)
-        el2 = QLabel('Nhấn "Thêm file" hoặc "Thêm thư mục" để chọn video')
-        el2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        el2.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
-        empty_layout.addWidget(el2)
-        el3 = QLabel("Hỗ trợ: MP4, MKV, WebM, AVI, MOV, FLV, WMV, TS, 3GP…")
-        el3.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        el3.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
-        empty_layout.addWidget(el3)
+        self._empty_title_lbl = QLabel(t("convert.empty_title"))
+        self._empty_title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_title_lbl.setStyleSheet(f"color: {T.text3}; font-size: 16px; font-weight: bold;")
+        empty_layout.addWidget(self._empty_title_lbl)
+        self._empty_hint_lbl = QLabel(t("convert.empty_hint"))
+        self._empty_hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
+        empty_layout.addWidget(self._empty_hint_lbl)
+        self._empty_formats_lbl = QLabel(t("convert.empty_formats"))
+        self._empty_formats_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_formats_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px;")
+        empty_layout.addWidget(self._empty_formats_lbl)
         self._empty.setMinimumHeight(200)
 
         self._items_layout.addWidget(self._empty)
@@ -755,7 +873,20 @@ class ConvertTab(QWidget):
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         bar_layout.addWidget(self._status_lbl, 1)
 
-        self._convert_btn = QPushButton("Chuyển đổi tất cả")
+        self._subs_btn = QPushButton(t("convert.generate_subs_btn"))
+        self._subs_btn.setFixedSize(130, 40)
+        self._subs_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text}; border: 1px solid {T.border}; "
+            "border-radius: 8px; font-size: 13px; font-weight: bold;"
+        )
+        self._subs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._subs_btn.setToolTip(t("convert.generate_subs_tip"))
+        # Enabled by the async whisper probe (_apply_whisper_support).
+        self._subs_btn.setEnabled(False)
+        self._subs_btn.clicked.connect(self._start_subtitles_only)
+        bar_layout.addWidget(self._subs_btn)
+
+        self._convert_btn = QPushButton(t("convert.convert_all_btn"))
         self._convert_btn.setFixedSize(160, 40)
         self._convert_btn.setStyleSheet(
             f"background: {T.primary}; color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: bold;"
@@ -790,6 +921,7 @@ class ConvertTab(QWidget):
 
         if desc:
             desc_lbl = QLabel(desc)
+            desc_lbl.setObjectName("desc_lbl")
             desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             desc_lbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; background: transparent;")
             desc_lbl.setWordWrap(True)
@@ -874,9 +1006,58 @@ class ConvertTab(QWidget):
 
     # ── Encoder detection ─────────────────────────────────────────────────────
 
-    def _detect_encoders_async(self) -> None:
+    def _detect_capabilities_async(self) -> None:
+        """Probe encoders, output codecs and whisper support off the UI thread."""
         available_opts = get_available_encoder_options()
+        codec_opts = get_available_codec_options()
+        whisper_ok = is_whisper_supported()
         ui_bridge.post(lambda opts=available_opts: self._apply_available_encoders(opts))
+        ui_bridge.post(lambda c=codec_opts: self._apply_available_codecs(c))
+        ui_bridge.post(lambda ok=whisper_ok: self._apply_whisper_support(ok))
+
+    def _apply_available_codecs(self, codec_opts: list[tuple[str, str]]) -> None:
+        """Hide codec cards this FFmpeg build cannot produce.
+
+        The shipped Windows binary has no SVT-AV1, so selecting AV1 used to
+        queue a conversion that always failed.  Hiding the card removes the
+        failure instead of reporting it.
+        """
+        self._available_codecs = {key for key, _ in codec_opts} or {"h264"}
+        for key, card in self._codec_cards.items():
+            card.setVisible(key in self._available_codecs)
+        if self._output_codec not in self._available_codecs:
+            self._on_codec_change("h264")
+
+    def _apply_whisper_support(self, supported: bool) -> None:
+        """Enable the subtitle controls only when the FFmpeg build supports them."""
+        self._subs_check.setEnabled(supported)
+        # The language/model combos also drive the standalone "Tạo phụ đề"
+        # button, so they follow whisper support alone, not the checkbox.
+        self._subs_lang_combo.setEnabled(supported)
+        self._subs_model_combo.setEnabled(supported)
+        self._whisper_ok = supported
+        self._subs_btn.setEnabled(supported)
+        if not supported:
+            self._subs_btn.setToolTip(t("convert.no_whisper_tip"))
+            self._subs_check.setChecked(False)
+            self._gen_subtitles = False
+            self._subs_check.setToolTip(t("convert.no_whisper_tip"))
+        elif not is_model_installed(DEFAULT_MODEL_KEY):
+            self._subs_check.setToolTip(t("convert.first_enable_tip"))
+
+    def _on_subs_toggled(self, checked: bool) -> None:
+        self._gen_subtitles = bool(checked)
+
+    def _on_subs_lang_change(self, index: int) -> None:
+        if 0 <= index < len(SUBTITLE_LANGUAGE_OPTIONS):
+            self._subtitle_language = SUBTITLE_LANGUAGE_OPTIONS[index][0]
+
+    def _on_subs_model_change(self, index: int) -> None:
+        if 0 <= index < len(WHISPER_MODELS):
+            self._subtitle_model = WHISPER_MODELS[index].key
+
+    def _on_vmaf_toggled(self, checked: bool) -> None:
+        self._compute_vmaf = bool(checked)
 
     def _apply_available_encoders(self, available_opts: list[tuple[str, str]]) -> None:
         if not any(key == "cpu" for key, _ in available_opts):
@@ -906,7 +1087,11 @@ class ConvertTab(QWidget):
                 self._encoder_combo.setCurrentText(best_label)
 
         gpu_labels = [lbl for k, lbl in available_opts if k != "cpu"]
-        status = f"GPU: {', '.join(gpu_labels)}" if gpu_labels else "Chỉ CPU"
+        status = (
+            t("convert.gpu_status", labels=", ".join(gpu_labels))
+            if gpu_labels
+            else t("convert.cpu_only_status")
+        )
         self._encoder_status_lbl.setText(status)
 
     # ── File operations ───────────────────────────────────────────────────────
@@ -915,7 +1100,7 @@ class ConvertTab(QWidget):
         ext_filter = " ".join(f"*.{ext}" for ext in sorted(SUPPORTED_EXTS))
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Chọn video để chuyển đổi",
+            t("convert.choose_videos_title"),
             "",
             f"Video files ({ext_filter});;All files (*.*)",
         )
@@ -923,10 +1108,10 @@ class ConvertTab(QWidget):
         self._refresh_ui()
 
     def _browse_folder(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục chứa video")
+        d = QFileDialog.getExistingDirectory(self, t("convert.choose_folder_title"))
         if not d:
             return
-        self._status_lbl.setText("Đang quét thư mục…")
+        self._status_lbl.setText(t("convert.scanning_folder"))
         threading.Thread(
             target=self._scan_folder_async,
             args=(Path(d),),
@@ -942,15 +1127,17 @@ class ConvertTab(QWidget):
         self._add_files(files)
         self._refresh_ui()
         if not files:
-            self._status_lbl.setText(f"Không tìm thấy video trong {folder.name}")
+            self._status_lbl.setText(t("convert.no_video_in_folder", folder=folder.name))
         else:
-            self._status_lbl.setText(f"Đã thêm {len(files)} file từ {folder.name}")
+            self._status_lbl.setText(t("convert.added_from_folder", count=len(files), folder=folder.name))
             self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;")
 
     def _toggle_cfg_panel(self) -> None:
         self._cfg_collapsed = not self._cfg_collapsed
         self._cfg_panel.setVisible(not self._cfg_collapsed)
-        self._cfg_toggle_btn.setText("⚙ Thông số  ▼" if self._cfg_collapsed else "⚙ Thông số  ▲")
+        self._cfg_toggle_btn.setText(
+            t("convert.settings_toggle_down") if self._cfg_collapsed else t("convert.settings_toggle_up")
+        )
 
     def load_file(self, path: str) -> None:
         self._add_file(Path(path))
@@ -999,15 +1186,50 @@ class ConvertTab(QWidget):
             encoder_key = "cpu"
 
         self._validate_custom_quality()
+        output_codec = self._output_codec
+        if output_codec not in self._available_codecs:
+            output_codec = "h264"
         encode_settings = EncodeSettings(
             encoder_key=encoder_key,
             quality=self._quality,
             speed_preset=self._speed_preset,
             custom_quality=self._custom_quality_val,
-            output_codec=self._output_codec,
+            output_codec=output_codec,
+            generate_subtitles=self._gen_subtitles,
+            subtitle_language=self._subtitle_language,
+            subtitle_model=self._subtitle_model,
+            compute_vmaf=self._compute_vmaf,
         )
 
         self._convert_btn.setEnabled(False)
+        self._subs_btn.setEnabled(False)
+
+        for job in pending:
+            job.state = FileState.QUEUED
+            job.progress = 0.0
+            self._active_count += 1
+            self._rebuild_card(job)
+
+        for job in pending:
+            self._submit_job(job, self._quality, encode_settings)
+
+        self._refresh_ui()
+
+    def _start_subtitles_only(self) -> None:
+        """Transcribe every pending file to a .srt — no video re-encode."""
+        pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
+        if not pending:
+            return
+
+        encode_settings = EncodeSettings(
+            generate_subtitles=True,
+            subtitle_language=self._subtitle_language,
+            subtitle_model=self._subtitle_model,
+            subtitles_only=True,
+        )
+
+        self._convert_btn.setEnabled(False)
+        self._subs_btn.setEnabled(False)
 
         for job in pending:
             job.state = FileState.QUEUED
@@ -1050,6 +1272,11 @@ class ConvertTab(QWidget):
             job.error_msg = msg
             ui_bridge.post(lambda j=job: self._finish_job(j))
 
+        def on_result(result: ConvertResult) -> None:
+            job.subtitle_path = result.subtitle_path
+            job.subtitle_error = result.subtitle_error
+            job.vmaf_score = result.vmaf_score
+
         job.cancel_fn = self._queue.submit(
             source=job.source,
             quality=quality,
@@ -1058,6 +1285,7 @@ class ConvertTab(QWidget):
             on_error=on_error,
             on_start=on_start,
             encode_settings=encode_settings,
+            on_result=on_result,
         )
 
     # ── Card management ───────────────────────────────────────────────────────
@@ -1097,7 +1325,16 @@ class ConvertTab(QWidget):
         self._refresh_status()
         if self._active_count == 0:
             self._convert_btn.setEnabled(True)
-        if job.output and job.output.is_file():
+            self._subs_btn.setEnabled(self._whisper_ok)
+        if job.subtitle_error:
+            self._status_lbl.setText(f"{job.source.name}: {job.subtitle_error}")
+            self._status_lbl.setStyleSheet(f"color: {T.warning}; font-size: 11px;")
+        elif job.subtitle_path is not None:
+            self._status_lbl.setText(t("convert.subtitle_created", name=job.subtitle_path.name))
+            self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;")
+        # A subtitles-only job's "output" is the .srt itself — ffprobe has
+        # nothing to report on it.
+        if job.output and job.output.is_file() and job.output.suffix.lower() != ".srt":
             threading.Thread(
                 target=self._probe_output_async,
                 args=(job,),
@@ -1150,23 +1387,23 @@ class ConvertTab(QWidget):
         elif converting > 0 or queued > 0:
             parts = []
             if converting:
-                parts.append(f"Đang xử lý {converting}")
+                parts.append(t("convert.status.processing", count=converting))
             if queued:
-                parts.append(f"{queued} chờ")
-            self._status_lbl.setText("  ·  ".join(parts) + f" / {total} file")
+                parts.append(t("convert.status.waiting_count", count=queued))
+            self._status_lbl.setText("  ·  ".join(parts) + t("convert.status.total_files", total=total))
             self._status_lbl.setStyleSheet(f"color: {T.warning}; font-size: 11px;")
         elif done == total:
-            self._status_lbl.setText(f"Hoàn tất {done}/{total} file ✓")
+            self._status_lbl.setText(t("convert.status.complete", done=done, total=total))
             self._status_lbl.setStyleSheet(f"color: {T.success}; font-size: 11px;")
         else:
             parts2 = []
             if done:
-                parts2.append(f"{done} xong")
+                parts2.append(t("convert.status.done_count", count=done))
             if failed:
-                parts2.append(f"{failed} lỗi")
+                parts2.append(t("convert.status.failed_count", count=failed))
             pending = total - done - failed
             if pending:
-                parts2.append(f"{pending} chờ")
+                parts2.append(t("convert.status.waiting_count", count=pending))
             self._status_lbl.setText("  ·  ".join(parts2))
             self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
 
@@ -1180,7 +1417,6 @@ class ConvertTab(QWidget):
         job = self._jobs.get(job_id)
         if job and job.cancel_fn is not None:
             job.cancel_fn()
-        self._jobs.pop(job_id, None)
         self._refresh_ui()
 
     def _clear_done(self) -> None:
@@ -1211,11 +1447,8 @@ class ConvertTab(QWidget):
 
         reply = QMessageBox.question(
             self,
-            "Xóa file đã convert",
-            f"Bạn có chắc muốn xóa file đã convert trên laptop không?\n\n"
-            f"{job.output.name}\n\n"
-            f"Hãy chắc chắn file đã được lưu trên iPhone trước khi xóa.\n"
-            f"Thao tác này không thể hoàn tác.",
+            t("convert.delete_output_title"),
+            t("convert.delete_output_msg", name=job.output.name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -1224,7 +1457,9 @@ class ConvertTab(QWidget):
         try:
             job.output.unlink()
         except OSError as exc:
-            QMessageBox.critical(self, "Lỗi xóa file", f"Không thể xóa file:\n{exc}")
+            QMessageBox.critical(
+                self, t("convert.delete_error_title"), t("convert.delete_error_msg", err=exc)
+            )
             return
 
         card = self._cards.get(job_id)
@@ -1234,7 +1469,7 @@ class ConvertTab(QWidget):
     # ── Taildrop event handlers ───────────────────────────────────────────────
 
     def _on_convert_taildrop_completed(self, *, out_path: Path, dest_node: str, **_kw) -> None:
-        msg = f"Đã gửi '{out_path.name}' đến {dest_node}"
+        msg = t("convert.taildrop_sent", name=out_path.name, node=dest_node)
         ui_bridge.post(
             lambda m=msg: (
                 self._status_lbl.setText(m),
@@ -1243,7 +1478,7 @@ class ConvertTab(QWidget):
         )
 
     def _on_convert_taildrop_failed(self, *, out_path: Path, dest_node: str, error: str = "", **_kw) -> None:
-        msg = f"Taildrop thất bại '{out_path.name}': {error}"
+        msg = t("convert.taildrop_failed", name=out_path.name, err=error)
         ui_bridge.post(
             lambda m=msg: (
                 self._status_lbl.setText(m),
@@ -1255,3 +1490,81 @@ class ConvertTab(QWidget):
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    # ── i18n ─────────────────────────────────────────────────────────────
+
+    def retranslate(self) -> None:
+        self._add_btn.setText(t("archive.add_file"))
+        self._folder_btn.setText(t("archive.add_folder"))
+        self._clear_btn.setText(t("convert.clear_done"))
+        self._cfg_toggle_btn.setText(
+            t("convert.settings_toggle_down") if self._cfg_collapsed else t("convert.settings_toggle_up")
+        )
+
+        self._quality_row_lbl.setText(t("convert.quality_label"))
+        for key, label_key, desc_key in _QUALITY_KEYS:
+            lbl = self._quality_main_labels.get(key)
+            if lbl:
+                lbl.setText(t(label_key))
+            desc_lbl = self._quality_desc_labels.get(key)
+            if desc_lbl:
+                desc_lbl.setText(t(desc_key))
+        self._cq_lbl.setText(t("convert.custom_value_label"))
+
+        self._enc_lbl.setText(t("convert.encoder_label"))
+        gpu_labels = [lbl for k, lbl in self._available_encoder_options if k != "cpu"]
+        self._encoder_status_lbl.setText(
+            t("convert.gpu_status", labels=", ".join(gpu_labels))
+            if gpu_labels
+            else t("convert.cpu_only_status")
+        )
+
+        self._spd_lbl.setText(t("convert.speed_label"))
+        for s_key, s_label_key in SPEED_OPTIONS:
+            lbl = self._speed_main_labels.get(s_key)
+            if lbl:
+                lbl.setText(t(s_label_key))
+
+        self._cod_lbl.setText(t("convert.codec_label"))
+        for c_key, c_label_key in CODEC_OPTIONS:
+            lbl = self._codec_main_labels.get(c_key)
+            if lbl:
+                lbl.setText(t(c_label_key))
+
+        # The two combos are filled once at build time — refill them in place
+        # so the "Auto-detect" entry and the whisper model names follow too.
+        for combo, labels in (
+            (self._subs_lang_combo, [language_label(c, lbl) for c, lbl in SUBTITLE_LANGUAGE_OPTIONS]),
+            (self._subs_model_combo, [model_label(m) for m in WHISPER_MODELS]),
+        ):
+            idx = combo.currentIndex()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(labels)
+            combo.setCurrentIndex(max(0, idx))
+            combo.blockSignals(False)
+
+        self._sub_lbl.setText(t("convert.subtitle_label"))
+        self._subs_check.setText(t("convert.gen_subs_check"))
+        self._vmaf_lbl.setText(t("convert.rating_label"))
+        self._vmaf_check.setText(t("convert.vmaf_check"))
+        self._vmaf_check.setToolTip(t("convert.vmaf_tip"))
+
+        self._subs_btn.setText(t("convert.generate_subs_btn"))
+        if not self._whisper_ok:
+            self._subs_btn.setToolTip(t("convert.no_whisper_tip"))
+            self._subs_check.setToolTip(t("convert.no_whisper_tip"))
+        else:
+            self._subs_btn.setToolTip(t("convert.generate_subs_tip"))
+            if not is_model_installed(DEFAULT_MODEL_KEY):
+                self._subs_check.setToolTip(t("convert.first_enable_tip"))
+
+        self._empty_title_lbl.setText(t("convert.empty_title"))
+        self._empty_hint_lbl.setText(t("convert.empty_hint"))
+        self._empty_formats_lbl.setText(t("convert.empty_formats"))
+
+        self._convert_btn.setText(t("convert.convert_all_btn"))
+
+        for card in self._cards.values():
+            card.retranslate()
+        self._refresh_status()

@@ -77,6 +77,17 @@
       letter-spacing: -0.3px;
     }
     .logo span { color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    /* Compact language picker — overrides the full-width `select` rule below. */
+    #lang-sel {
+      width: auto;
+      padding: 5px 28px 5px 10px;
+      font-size: 12px;
+      border-radius: 20px;
+      background-color: var(--surface2);
+      background-position: right 10px center;
+      color: var(--text2);
+    }
     #conn-badge {
       display: flex;
       align-items: center;
@@ -444,6 +455,17 @@
     .crf-row input[type=range] { flex:1; accent-color:var(--accent); }
     .crf-val { font-size:13px; font-weight:700; color:var(--accent);
                min-width:28px; text-align:center; }
+    /* Checkbox rows for the subtitle / VMAF options */
+    .cv-check-row { display:flex; align-items:center; gap:10px; }
+    .cv-check-row input[type=checkbox] {
+      width:18px; height:18px; accent-color:var(--accent); flex-shrink:0;
+    }
+    .cv-check-row label {
+      display:inline; margin:0; font-size:13px; font-weight:400;
+      color:var(--text2); cursor:pointer;
+    }
+    .cv-check-row input[type=checkbox]:disabled + label { opacity:.5; cursor:not-allowed; }
+    .cv-hint { font-size:11px; color:var(--text3); margin-top:6px; line-height:1.4; }
     /* Convert progress in queue card */
     .qi-convert-progress {
       margin-top:10px;
@@ -870,9 +892,12 @@
   <!-- Header -->
   <header>
     <div class="logo">Omni<span>DL</span> Remote</div>
-    <div id="conn-badge" onclick="openSettings()">
-      <div id="conn-dot"></div>
-      <span id="conn-label">Đang kết nối…</span>
+    <div class="header-right">
+      <select id="lang-sel" onchange="setLang(this.value)" aria-label="Language"></select>
+      <div id="conn-badge" onclick="openSettings()">
+        <div id="conn-dot"></div>
+        <span id="conn-label" data-i18n="conn.connecting">Đang kết nối…</span>
+      </div>
     </div>
   </header>
 
@@ -880,20 +905,20 @@
   <nav>
     <button class="tab-btn active" onclick="switchTab('download',this)" id="tab-download">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Tải xuống
+      <span data-i18n="nav.download">Tải xuống</span>
     </button>
     <button class="tab-btn" onclick="switchTab('queue',this)" id="tab-queue">
       <span id="queue-badge"></span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-      Hàng đợi
+      <span data-i18n="nav.queue">Hàng đợi</span>
     </button>
     <button class="tab-btn" onclick="switchTab('monitor',this)" id="tab-monitor">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-      Live Monitor
+      <span data-i18n="nav.monitor">Live Monitor</span>
     </button>
     <button class="tab-btn" onclick="switchTab('files',this)" id="tab-files">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-      Tệp tin
+      <span data-i18n="nav.files">Tệp tin</span>
     </button>
   </nav>
 
@@ -903,10 +928,10 @@
     <!-- ── Download tab ──────────────────────────────────────────────── -->
     <div class="tab-panel active" id="panel-download">
       <div class="card">
-        <label>Dán URL vào đây...</label>
+        <label data-i18n="dl.paste_label">Dán URL vào đây...</label>
         <div id="url-wrap">
           <input type="url" id="url-input" placeholder="https://…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-          <button id="url-paste" onclick="pasteUrl()">Dán & Phân tích</button>
+          <button id="url-paste" onclick="pasteUrl()" data-i18n="dl.paste_btn">Dán & Phân tích</button>
         </div>
 
         <!-- Metadata preview (shown after analyse) -->
@@ -918,17 +943,17 @@
 
         <div class="format-row" id="format-row">
           <div>
-            <label>Chất lượng</label>
+            <label data-i18n="dl.quality">Chất lượng</label>
             <select id="format-sel">
-              <option value="bestvideo+bestaudio/best">Chất lượng cao nhất</option>
+              <option value="bestvideo+bestaudio/best" data-i18n="dl.q.best">Chất lượng cao nhất</option>
               <option value="bestvideo[height<=1080]+bestaudio/best[height<=1080]">1080p</option>
               <option value="bestvideo[height<=720]+bestaudio/best[height<=720]">720p</option>
               <option value="bestvideo[height<=480]+bestaudio/best[height<=480]">480p</option>
-              <option value="bestaudio/best">Chỉ âm thanh</option>
+              <option value="bestaudio/best" data-i18n="dl.q.audio">Chỉ âm thanh</option>
             </select>
           </div>
           <div>
-            <label>Định dạng</label>
+            <label data-i18n="dl.format">Định dạng</label>
             <select id="ext-sel">
               <option value="mp4">MP4</option>
               <option value="mp3">MP3</option>
@@ -942,23 +967,23 @@
         <div id="live-banner" style="display:none; margin-top:10px; padding:10px 12px;
              background:var(--danger,#e53e3e)22; border:1px solid var(--danger,#e53e3e)66;
              border-radius:8px; font-size:13px; color:var(--danger,#e53e3e); line-height:1.4;">
-          ⏺ <strong>Phát trực tiếp được phát hiện</strong> — bộ chọn định dạng &amp; chất lượng
+          <span data-i18n-html="dl.live_banner">⏺ <strong>Phát trực tiếp được phát hiện</strong> — bộ chọn định dạng &amp; chất lượng
           bị vô hiệu hóa. Luồng sẽ được ghi lại dưới dạng <code>.ts</code> (MPEG-TS) từ
-          thời điểm này trở đi.
+          thời điểm này trở đi.</span>
         </div>
 
         <button class="btn btn-secondary" id="analyse-btn" onclick="doAnalyse()" style="margin-top:12px;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-          Phân tích
+          <span data-i18n="dl.analyse">Phân tích</span>
         </button>
         <button class="btn btn-danger btn-sm" id="analyse-cancel-btn" onclick="cancelAnalyse()" style="margin-top:12px; display:none;">
-          ✕ Huỷ
+          <span data-i18n="common.cancel_x">✕ Huỷ</span>
         </button>
         <div id="analyse-status"></div>
 
         <button class="btn btn-primary" id="dl-btn" onclick="doDownload()" style="margin-top:12px;" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Thêm vào hàng đợi
+          <span data-i18n="dl.enqueue">Thêm vào hàng đợi</span>
         </button>
       </div>
     </div>
@@ -966,8 +991,8 @@
     <!-- ── Queue tab ─────────────────────────────────────────────────── -->
     <div class="tab-panel" id="panel-queue">
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:10px;">
-        <button class="btn btn-secondary btn-sm" id="select-mode-btn" onclick="toggleSelectMode()">Chọn</button>
-        <button class="btn btn-secondary btn-sm" id="clear-finished-btn" onclick="clearFinished()">Xóa đã xong</button>
+        <button class="btn btn-secondary btn-sm" id="select-mode-btn" onclick="toggleSelectMode()" data-i18n="q.select">Chọn</button>
+        <button class="btn btn-secondary btn-sm" id="clear-finished-btn" onclick="clearFinished()" data-i18n="q.clear_finished">Xóa đã xong</button>
       </div>
       <div id="queue-list"></div>
     </div>
@@ -975,15 +1000,15 @@
     <!-- ── Live Monitor tab ──────────────────────────────────────────── -->
     <div class="tab-panel" id="panel-monitor">
       <div class="card">
-        <label>Theo dõi profile / live URL (TikTok, Instagram)</label>
+        <label data-i18n="mon.label">Theo dõi profile / live URL (TikTok, Instagram)</label>
         <div id="url-wrap">
           <input type="url" id="monitor-input" placeholder="https://www.tiktok.com/@user" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
         </div>
         <div id="monitor-status" style="font-size:12px; color:var(--text3); margin-top:8px;">
-          Tự động ghi lại dưới dạng <code>.ts</code> khi stream bắt đầu.
+          <span data-i18n-html="mon.hint">Tự động ghi lại dưới dạng <code>.ts</code> khi stream bắt đầu.</span>
         </div>
         <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <label for="monitor-interval" style="font-size:12px; color:var(--text3);">Kiểm tra mỗi (giây):</label>
+          <label for="monitor-interval" style="font-size:12px; color:var(--text3);" data-i18n="mon.interval">Kiểm tra mỗi (giây):</label>
           <select id="monitor-interval" onchange="setMonitorInterval(this.value)" style="font-size:12px;">
             <option value="15">15</option>
             <option value="30" selected>30</option>
@@ -991,8 +1016,8 @@
             <option value="120">120</option>
             <option value="300">300</option>
           </select>
-          <button id="monitor-add-btn" class="btn btn-secondary btn-sm" onclick="addMonitorUrl()" style="margin-left:8px;">Theo dõi</button>
-          <button id="monitor-pause-btn" class="btn btn-secondary btn-sm" onclick="toggleMonitorPause()" style="margin-left:4px;">Tạm ngưng</button>
+          <button id="monitor-add-btn" class="btn btn-secondary btn-sm" onclick="addMonitorUrl()" style="margin-left:8px;" data-i18n="mon.add">Theo dõi</button>
+          <button id="monitor-pause-btn" class="btn btn-secondary btn-sm" onclick="toggleMonitorPause()" style="margin-left:4px;" data-i18n="mon.pause">Tạm ngưng</button>
         </div>
       </div>
       <div id="monitor-list"></div>
@@ -1001,16 +1026,16 @@
     <!-- ── Files tab ────────────────────────────────────────────────── -->
     <div class="tab-panel" id="panel-files">
       <div class="fb-nav" id="fb-nav">
-        <button class="btn btn-secondary btn-sm" id="fb-up-btn" onclick="browseUp()" style="display:none">⬆ Lên</button>
+        <button class="btn btn-secondary btn-sm" id="fb-up-btn" onclick="browseUp()" style="display:none" data-i18n="fb.up">⬆ Lên</button>
         <div class="fb-path" id="fb-path"></div>
       </div>
       <div class="fb-toolbar">
-        <input type="search" id="fb-search" placeholder="Tìm tên file..." oninput="renderFileBrowser()" />
+        <input type="search" id="fb-search" data-i18n-ph="fb.search" placeholder="Tìm tên file..." oninput="renderFileBrowser()" />
         <select id="fb-sort" onchange="renderFileBrowser()">
-          <option value="name-asc">Tên A-Z</option>
-          <option value="name-desc">Tên Z-A</option>
-          <option value="date-desc">Mới nhất</option>
-          <option value="date-asc">Cũ nhất</option>
+          <option value="name-asc" data-i18n="fb.sort.name_asc">Tên A-Z</option>
+          <option value="name-desc" data-i18n="fb.sort.name_desc">Tên Z-A</option>
+          <option value="date-desc" data-i18n="fb.sort.date_desc">Mới nhất</option>
+          <option value="date-asc" data-i18n="fb.sort.date_asc">Cũ nhất</option>
         </select>
       </div>
       <div id="fb-list"></div>
@@ -1023,35 +1048,35 @@
 <div id="preview-overlay">
   <div id="preview-title"></div>
   <div id="preview-content"></div>
-  <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()">✕ Đóng</button>
+  <button class="btn btn-secondary btn-sm preview-close" id="preview-close" onclick="closePreview()" data-i18n="common.close_x">✕ Đóng</button>
 </div>
 
 <!-- Convert bottom sheet -->
 <div id="convert-overlay">
   <div id="convert-sheet">
     <div class="sheet-handle"></div>
-    <h2>🎬 Convert to MP4</h2>
+    <h2 data-i18n="cv.title">🎬 Convert to MP4</h2>
     <div class="convert-sub" id="convert-sheet-sub"></div>
 
     <div class="convert-section">
-      <label>Chất lượng</label>
+      <label data-i18n="cv.quality">Chất lượng</label>
       <div class="radio-grid" id="cvq-grid">
-        <div class="radio-btn active" data-cvq="standard" onclick="setCvq(this)">Chuẩn</div>
-        <div class="radio-btn"       data-cvq="high"     onclick="setCvq(this)">Cao</div>
-        <div class="radio-btn"       data-cvq="small"    onclick="setCvq(this)">Nhỏ (720p)</div>
-        <div class="radio-btn"       data-cvq="custom"   onclick="setCvq(this)"
+        <div class="radio-btn active" data-cvq="standard" onclick="setCvq(this)" data-i18n="cv.q.standard">Chuẩn</div>
+        <div class="radio-btn"       data-cvq="high"     onclick="setCvq(this)" data-i18n="cv.q.high">Cao</div>
+        <div class="radio-btn"       data-cvq="small"    onclick="setCvq(this)" data-i18n="cv.q.small">Nhỏ (720p)</div>
+        <div class="radio-btn"       data-cvq="custom"   onclick="setCvq(this)" data-i18n="cv.q.custom"
              style="grid-column:1/-1">Tuỳ chỉnh (CRF)</div>
       </div>
       <div class="crf-row" id="crf-row" style="display:none">
         <input type="range" min="0" max="51" value="23" id="crf-slider"
                oninput="document.getElementById('crf-val').textContent=this.value">
         <span class="crf-val" id="crf-val">23</span>
-        <span style="font-size:11px;color:var(--text3)">0=lossless · 51=worst</span>
+        <span style="font-size:11px;color:var(--text3)" data-i18n="cv.crf_hint">0=lossless · 51=worst</span>
       </div>
     </div>
 
     <div class="convert-section">
-      <label>Encoder</label>
+      <label data-i18n="cv.encoder">Encoder</label>
       <div class="radio-grid two-col" id="cvenc-grid">
         <!-- populated dynamically from GET /api/convert/encoders -->
         <div class="radio-btn active" data-cvenc="cpu" onclick="setCvenc(this)">CPU (libx264)</div>
@@ -1059,27 +1084,56 @@
     </div>
 
     <div class="convert-section">
-      <label>Tốc độ encode</label>
+      <label data-i18n="cv.speed">Tốc độ encode</label>
       <div class="radio-grid" id="cvspd-grid">
-        <div class="radio-btn"       data-cvspd="quality"  onclick="setCvspd(this)">Chậm<br><span style="font-size:10px;font-weight:400">Nén tốt</span></div>
-        <div class="radio-btn active" data-cvspd="balanced" onclick="setCvspd(this)">Cân bằng</div>
-        <div class="radio-btn"       data-cvspd="fast"     onclick="setCvspd(this)">Nhanh<br><span style="font-size:10px;font-weight:400">File lớn hơn</span></div>
+        <div class="radio-btn"       data-cvspd="quality"  onclick="setCvspd(this)" data-i18n-html="cv.spd.slow">Chậm<br><span style="font-size:10px;font-weight:400">Nén tốt</span></div>
+        <div class="radio-btn active" data-cvspd="balanced" onclick="setCvspd(this)" data-i18n="cv.spd.balanced">Cân bằng</div>
+        <div class="radio-btn"       data-cvspd="fast"     onclick="setCvspd(this)" data-i18n-html="cv.spd.fast">Nhanh<br><span style="font-size:10px;font-weight:400">File lớn hơn</span></div>
       </div>
     </div>
 
     <div class="convert-section">
-      <label>Codec output</label>
+      <label data-i18n="cv.codec">Codec output</label>
       <div class="radio-grid" id="cvcodec-grid">
-        <div class="radio-btn active" data-cvcodec="h264" onclick="setCvcodec(this)">H.264<br><span style="font-size:10px;font-weight:400">Tương thích cao nhất</span></div>
-        <div class="radio-btn"       data-cvcodec="hevc" onclick="setCvcodec(this)">H.265 / HEVC<br><span style="font-size:10px;font-weight:400">~30% nhỏ hơn</span></div>
-        <div class="radio-btn"       data-cvcodec="av1"  onclick="setCvcodec(this)">AV1<br><span style="font-size:10px;font-weight:400">~50% nhỏ hơn</span></div>
+        <div class="radio-btn active" data-cvcodec="h264" onclick="setCvcodec(this)" data-i18n-html="cv.codec.h264">H.264<br><span style="font-size:10px;font-weight:400">Tương thích cao nhất</span></div>
+        <div class="radio-btn"       data-cvcodec="hevc" onclick="setCvcodec(this)" data-i18n-html="cv.codec.hevc">H.265 / HEVC<br><span style="font-size:10px;font-weight:400">~30% nhỏ hơn</span></div>
+        <div class="radio-btn"       data-cvcodec="av1"  onclick="setCvcodec(this)" data-i18n-html="cv.codec.av1">AV1<br><span style="font-size:10px;font-weight:400">~50% nhỏ hơn</span></div>
       </div>
     </div>
 
-    <button class="btn btn-primary" onclick="submitConvert()" style="margin-top:4px">
+    <div class="convert-section" id="cvsubs-section">
+      <label data-i18n="cv.subs">Phụ đề tự động</label>
+      <div class="cv-check-row">
+        <input type="checkbox" id="cvsubs-toggle" onchange="onCvSubsToggled()">
+        <label for="cvsubs-toggle" data-i18n="cv.subs_toggle">Tạo file .srt từ giọng nói (Whisper)</label>
+      </div>
+      <select id="cvsubs-lang" disabled style="margin-top:8px">
+        <option value="auto" data-i18n="cv.subs_auto">Tự động nhận diện</option>
+      </select>
+      <select id="cvsubs-model" disabled style="margin-top:8px">
+        <option value="base" data-i18n="cv.model_base_default">Base (141 MB, cân bằng)</option>
+      </select>
+      <div class="cv-hint" id="cvsubs-hint" style="display:none" data-i18n="cv.subs_unavailable">
+        Bản FFmpeg trên máy chủ không có bộ lọc whisper nên không tạo được phụ đề.
+      </div>
+    </div>
+
+    <div class="convert-section">
+      <label data-i18n="cv.qc">Kiểm tra chất lượng</label>
+      <div class="cv-check-row">
+        <input type="checkbox" id="cvvmaf-toggle">
+        <label for="cvvmaf-toggle" data-i18n="cv.vmaf_toggle">Chấm điểm VMAF so với file gốc</label>
+      </div>
+      <div class="cv-hint" data-i18n="cv.vmaf_hint">Điểm 0–100, càng cao càng giống bản gốc. Bật sẽ làm convert lâu gần gấp đôi.</div>
+    </div>
+
+    <button class="btn btn-primary" onclick="submitConvert()" style="margin-top:4px" data-i18n="cv.start">
       🎬 Bắt đầu Convert
     </button>
-    <button class="btn btn-secondary" onclick="closeConvertSheet()" style="margin-top:8px">
+    <button class="btn btn-secondary" id="cvsubs-only-btn" onclick="submitSubtitles()" style="margin-top:8px" data-i18n="cv.subs_only">
+      📝 Chỉ tạo phụ đề (.srt)
+    </button>
+    <button class="btn btn-secondary" onclick="closeConvertSheet()" style="margin-top:8px" data-i18n="common.cancel">
       Huỷ
     </button>
   </div>
@@ -1089,11 +1143,11 @@
 <div id="nodes-overlay">
   <div id="nodes-sheet">
     <div class="sheet-handle"></div>
-    <h2>📲 Gửi đến</h2>
+    <h2 data-i18n="nodes.title">📲 Gửi đến</h2>
     <div class="node-sub" id="nodes-sheet-sub"></div>
     <div id="nodes-list"></div>
-    <button class="btn btn-primary" onclick="confirmSendToNodes()" style="margin-top:14px">Gửi</button>
-    <button class="btn btn-secondary" onclick="closeNodePicker()" style="margin-top:8px">Huỷ</button>
+    <button class="btn btn-primary" onclick="confirmSendToNodes()" style="margin-top:14px" data-i18n="nodes.send">Gửi</button>
+    <button class="btn btn-secondary" onclick="closeNodePicker()" style="margin-top:8px" data-i18n="common.cancel">Huỷ</button>
   </div>
 </div>
 
@@ -1101,35 +1155,35 @@
 <div id="archive-compress-overlay">
   <div id="archive-compress-sheet">
     <div class="sheet-handle"></div>
-    <h2>📦 Nén</h2>
+    <h2 data-i18n="arc.compress_title">📦 Nén</h2>
     <div class="archive-sheet-sub" id="archc-sheet-sub"></div>
 
     <div class="setting-row">
-      <label>Định dạng</label>
+      <label data-i18n="arc.format">Định dạng</label>
       <select id="archc-fmt" onchange="onArchiveFmtChanged()">
         <option value="zip">zip</option>
         <option value="7z">7z</option>
       </select>
     </div>
     <div class="setting-row">
-      <label>Mật khẩu</label>
-      <input type="password" id="archc-pw" placeholder="Để trống nếu không đặt mật khẩu" />
+      <label data-i18n="arc.password">Mật khẩu</label>
+      <input type="password" id="archc-pw" data-i18n-ph="arc.pw_ph_set" placeholder="Để trống nếu không đặt mật khẩu" />
     </div>
     <div class="archive-check-row">
       <input type="checkbox" id="archc-headerenc" disabled onchange="void 0">
-      <label for="archc-headerenc">Mã hóa tên file (chỉ 7z)</label>
+      <label for="archc-headerenc" data-i18n="arc.header_enc">Mã hóa tên file (chỉ 7z)</label>
     </div>
     <div class="setting-row">
-      <label>Tên archive</label>
+      <label data-i18n="arc.name">Tên archive</label>
       <input type="text" id="archc-name" disabled />
     </div>
     <div class="archive-check-row">
       <input type="checkbox" id="archc-use-orig" checked onchange="onArchiveUseOrigChanged()">
-      <label for="archc-use-orig">Dùng tên gốc</label>
+      <label for="archc-use-orig" data-i18n="arc.use_orig">Dùng tên gốc</label>
     </div>
 
-    <button class="btn btn-primary" onclick="submitArchiveCompress()">📦 Bắt đầu nén</button>
-    <button class="btn btn-secondary" onclick="closeArchiveCompressSheet()" style="margin-top:8px">Huỷ</button>
+    <button class="btn btn-primary" onclick="submitArchiveCompress()" data-i18n="arc.compress_start">📦 Bắt đầu nén</button>
+    <button class="btn btn-secondary" onclick="closeArchiveCompressSheet()" style="margin-top:8px" data-i18n="common.cancel">Huỷ</button>
   </div>
 </div>
 
@@ -1137,22 +1191,22 @@
 <div id="archive-extract-overlay">
   <div id="archive-extract-sheet">
     <div class="sheet-handle"></div>
-    <h2>📂 Giải nén</h2>
+    <h2 data-i18n="arc.extract_title">📂 Giải nén</h2>
     <div class="archive-sheet-sub" id="arche-sheet-sub"></div>
 
     <div class="setting-row">
-      <label>Thư mục giải nén</label>
-      <input type="text" id="arche-dest" placeholder="Để trống dùng mặc định" />
+      <label data-i18n="arc.dest">Thư mục giải nén</label>
+      <input type="text" id="arche-dest" data-i18n-ph="arc.dest_ph" placeholder="Để trống dùng mặc định" />
     </div>
     <div class="setting-row">
-      <label>Mật khẩu</label>
-      <input type="password" id="arche-pw" placeholder="Để trống nếu không có mật khẩu" />
+      <label data-i18n="arc.password">Mật khẩu</label>
+      <input type="password" id="arche-pw" data-i18n-ph="arc.pw_ph_get" placeholder="Để trống nếu không có mật khẩu" />
     </div>
-    <button class="btn btn-secondary" onclick="previewArchiveContents()">👁 Xem nội dung</button>
+    <button class="btn btn-secondary" onclick="previewArchiveContents()" data-i18n="arc.preview">👁 Xem nội dung</button>
     <div id="archive-contents-list"></div>
 
-    <button class="btn btn-primary" onclick="submitArchiveExtract()">📂 Giải nén</button>
-    <button class="btn btn-secondary" onclick="closeArchiveExtractSheet()" style="margin-top:8px">Huỷ</button>
+    <button class="btn btn-primary" onclick="submitArchiveExtract()" data-i18n="arc.extract_start">📂 Giải nén</button>
+    <button class="btn btn-secondary" onclick="closeArchiveExtractSheet()" style="margin-top:8px" data-i18n="common.cancel">Huỷ</button>
   </div>
 </div>
 
@@ -1160,20 +1214,24 @@
 <div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
   <div id="settings-sheet">
     <div class="sheet-handle"></div>
-    <h2>⚙ Kết nối</h2>
+    <h2 data-i18n="set.title">⚙ Kết nối</h2>
     <div class="setting-row">
-      <label>Server Address</label>
+      <label data-i18n="set.host">Server Address</label>
       <input type="text" id="cfg-host" placeholder="http://192.168.1.x:7799" />
     </div>
     <div class="setting-row">
-      <label>Access Token</label>
+      <label data-i18n="set.token">Access Token</label>
       <div class="token-display">
-        <input type="password" id="cfg-token" placeholder="Paste token here" style="flex:1;" />
+        <input type="password" id="cfg-token" data-i18n-ph="set.token_ph" placeholder="Paste token here" style="flex:1;" />
       </div>
-      <div style="font-size:12px; color:var(--text3); margin-top:6px;">Find the token in OmniDL Settings → Remote API.</div>
+      <div style="font-size:12px; color:var(--text3); margin-top:6px;" data-i18n="set.token_hint">Find the token in OmniDL Settings → Remote API.</div>
     </div>
-    <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:8px;">Lưu & Kết nối</button>
-    <button class="btn btn-secondary" onclick="closeSettings()" style="margin-top:8px;">Huỷ</button>
+    <div class="setting-row">
+      <label data-i18n="set.language">Ngôn ngữ</label>
+      <select id="cfg-lang" onchange="setLang(this.value)"></select>
+    </div>
+    <button class="btn btn-primary" onclick="saveSettings()" style="margin-top:8px;" data-i18n="set.save">Lưu & Kết nối</button>
+    <button class="btn btn-secondary" onclick="closeSettings()" style="margin-top:8px;" data-i18n="common.cancel">Huỷ</button>
   </div>
 </div>
 
@@ -1197,6 +1255,605 @@ let _fileJobMap = {};          // absolute filePath → job_id (file-based conve
 let _browseData = null;        // last /api/files/browse response (for re-render without re-fetch)
 let _availableNodes = [];      // cached from GET /api/nodes
 let _transferFilePath = null;  // path being sent via node picker
+
+/* ── i18n ───────────────────────────────────────────────────────────────
+   Vietnamese is the source language (it matches the markup defaults), so a
+   missing key falls back to vi and finally to the key itself.
+   Static text is tagged in the HTML with:
+     data-i18n      → element.textContent
+     data-i18n-html → element.innerHTML (strings containing markup)
+     data-i18n-ph   → element.placeholder
+   Dynamic strings call the T() helper directly.                            */
+const LANGS = { en: 'English', vi: 'Tiếng Việt', zh: '中文' };
+
+const I18N = {
+  vi: {
+    'conn.connecting': 'Đang kết nối…',
+    'conn.connected': 'Đã kết nối',
+    'conn.disconnected': 'Ngắt kết nối',
+    'nav.download': 'Tải xuống',
+    'nav.queue': 'Hàng đợi',
+    'nav.monitor': 'Live Monitor',
+    'nav.files': 'Tệp tin',
+    'common.cancel': 'Huỷ',
+    'common.cancel_x': '✕ Huỷ',
+    'common.close_x': '✕ Đóng',
+    'dl.paste_label': 'Dán URL vào đây...',
+    'dl.paste_btn': 'Dán & Phân tích',
+    'dl.quality': 'Chất lượng',
+    'dl.q.best': 'Chất lượng cao nhất',
+    'dl.q.audio': 'Chỉ âm thanh',
+    'dl.format': 'Định dạng',
+    'dl.live_banner': '⏺ <strong>Phát trực tiếp được phát hiện</strong> — bộ chọn định dạng &amp; chất lượng bị vô hiệu hóa. Luồng sẽ được ghi lại dưới dạng <code>.ts</code> (MPEG-TS) từ thời điểm này trở đi.',
+    'dl.analyse': 'Phân tích',
+    'dl.enqueue': 'Thêm vào hàng đợi',
+    'q.select': 'Chọn',
+    'q.clear_finished': 'Xóa đã xong',
+    'q.clear_selected': 'Xóa đã chọn ({n})',
+    'q.empty': 'Hàng đợi trống',
+    'q.pause': 'Tạm dừng',
+    'q.resume': 'Tiếp tục',
+    'q.send': '☁ Gửi đến iPhone',
+    'q.preview': '▶ Xem trước',
+    'q.rename': '✎ Đổi tên',
+    'q.delete': '🗑 Xoá file',
+    'q.delete_convert': '🗑 Xoá file convert',
+    'q.convert': '🎬 Convert',
+    'q.cancel_convert': '✕ Huỷ convert',
+    'q.adding': 'Đang thêm…',
+    'mon.label': 'Theo dõi profile / live URL (TikTok, Instagram)',
+    'mon.hint': 'Tự động ghi lại dưới dạng <code>.ts</code> khi stream bắt đầu.',
+    'mon.interval': 'Kiểm tra mỗi (giây):',
+    'mon.add': 'Theo dõi',
+    'mon.pause': 'Tạm ngưng',
+    'mon.resume': 'Tiếp tục',
+    'mon.empty': 'Chưa theo dõi stream nào',
+    'mon.recording_dots': 'Đang ghi…',
+    'mon.saved': 'Đã lưu:',
+    'mon.stop_rec': 'Dừng ghi',
+    'mon.check_now': 'Kiểm tra ngay',
+    'mon.remove': 'Gỡ',
+    'mon.state.waiting': 'Chờ live',
+    'mon.state.checking': 'Đang kiểm tra…',
+    'mon.state.live': 'Đang LIVE',
+    'mon.state.recording': 'Đang ghi',
+    'mon.state.ended': 'Đã ghi xong',
+    'mon.state.error': 'Lỗi',
+    'fb.up': '⬆ Lên',
+    'fb.search': 'Tìm tên file...',
+    'fb.sort.name_asc': 'Tên A-Z',
+    'fb.sort.name_desc': 'Tên Z-A',
+    'fb.sort.date_desc': 'Mới nhất',
+    'fb.sort.date_asc': 'Cũ nhất',
+    'cv.title': '🎬 Convert to MP4',
+    'cv.quality': 'Chất lượng',
+    'cv.q.standard': 'Chuẩn',
+    'cv.q.high': 'Cao',
+    'cv.q.small': 'Nhỏ (720p)',
+    'cv.q.custom': 'Tuỳ chỉnh (CRF)',
+    'cv.crf_hint': '0=lossless · 51=worst',
+    'cv.encoder': 'Encoder',
+    'cv.speed': 'Tốc độ encode',
+    'cv.spd.slow': 'Chậm<br><span style="font-size:10px;font-weight:400">Nén tốt</span>',
+    'cv.spd.balanced': 'Cân bằng',
+    'cv.spd.fast': 'Nhanh<br><span style="font-size:10px;font-weight:400">File lớn hơn</span>',
+    'cv.codec': 'Codec output',
+    'cv.codec.h264': 'H.264<br><span style="font-size:10px;font-weight:400">Tương thích cao nhất</span>',
+    'cv.codec.hevc': 'H.265 / HEVC<br><span style="font-size:10px;font-weight:400">~30% nhỏ hơn</span>',
+    'cv.codec.av1': 'AV1<br><span style="font-size:10px;font-weight:400">~50% nhỏ hơn</span>',
+    'cv.subs': 'Phụ đề tự động',
+    'cv.subs_toggle': 'Tạo file .srt từ giọng nói (Whisper)',
+    'cv.subs_auto': 'Tự động nhận diện',
+    'cv.subs_unavailable': 'Bản FFmpeg trên máy chủ không có bộ lọc whisper nên không tạo được phụ đề.',
+    'cv.qc': 'Kiểm tra chất lượng',
+    'cv.vmaf_toggle': 'Chấm điểm VMAF so với file gốc',
+    'cv.vmaf_hint': 'Điểm 0–100, càng cao càng giống bản gốc. Bật sẽ làm convert lâu gần gấp đôi.',
+    'cv.start': '🎬 Bắt đầu Convert',
+    'cv.subs_only': '📝 Chỉ tạo phụ đề (.srt)',
+    'nodes.title': '📲 Gửi đến',
+    'nodes.send': 'Gửi',
+    'arc.compress_title': '📦 Nén',
+    'arc.format': 'Định dạng',
+    'arc.password': 'Mật khẩu',
+    'arc.pw_ph_set': 'Để trống nếu không đặt mật khẩu',
+    'arc.header_enc': 'Mã hóa tên file (chỉ 7z)',
+    'arc.name': 'Tên archive',
+    'arc.use_orig': 'Dùng tên gốc',
+    'arc.compress_start': '📦 Bắt đầu nén',
+    'arc.extract_title': '📂 Giải nén',
+    'arc.dest': 'Thư mục giải nén',
+    'arc.dest_ph': 'Để trống dùng mặc định',
+    'arc.pw_ph_get': 'Để trống nếu không có mật khẩu',
+    'arc.preview': '👁 Xem nội dung',
+    'arc.extract_start': '📂 Giải nén',
+    'set.title': '⚙ Kết nối',
+    'set.host': 'Server Address',
+    'set.token': 'Access Token',
+    'set.token_ph': 'Paste token here',
+    'set.token_hint': 'Tìm token trong OmniDL Settings → Remote API.',
+    'set.language': 'Ngôn ngữ',
+    'set.save': 'Lưu & Kết nối',
+    'conn.not_connected': 'Chưa kết nối',
+    'dl.clipboard_empty': 'Clipboard trống',
+    'dl.clipboard_denied': 'Không có quyền truy cập clipboard',
+    'dl.enter_url_first': 'Hãy nhập URL trước',
+    'q.added_toast': 'Đã thêm vào hàng đợi',
+    'q.delete_confirm': 'Xoá file khỏi laptop? Thao tác này không thể hoàn tác.',
+    'q.file_deleted': 'Đã xoá file',
+    'q.delete_failed': 'Xoá thất bại: ',
+    'q.rename_prompt': 'Tên file mới:',
+    'q.renamed': 'Đã đổi tên',
+    'q.rename_failed': 'Đổi tên thất bại: ',
+    'q.cleared_count': 'Đã xóa {n} tác vụ',
+    'common.error_prefix': 'Lỗi: ',
+    'common.unknown_error': 'lỗi không xác định',
+    'nodes.none_configured': 'Taildrop: chưa có node nào được cấu hình',
+    'nodes.select_at_least_one': 'Chọn ít nhất 1 node',
+    'nodes.sending': '📡 Đang gửi…',
+    'nodes.transfer_failed': 'Gửi thất bại: ',
+    'nodes.sent_file': '✅ Đã gửi {name} → {node}',
+    'nodes.send_failed_evt': '❌ Gửi thất bại → {node}: {err}',
+    'taildrop.sent_via': '✅ Đã gửi đến {node} qua Taildrop!',
+    'taildrop.failed_evt': '❌ Taildrop thất bại: {err}',
+    'cv.cancelled': '⊘ Đã huỷ convert',
+    'cv.converting': '🎬 Đang convert…',
+    'cv.generating_subs': '📝 Đang tạo phụ đề…',
+    'cv.cancelling': '⊘ Đang huỷ convert…',
+    'cv.completed_named': '✅ Convert xong: {name}',
+    'cv.subs_completed': '✅ Đã tạo phụ đề xong',
+    'cv.failed': '❌ Convert thất bại: {err}',
+    'cv.delete_output_confirm': 'Xoá file đã convert trên laptop? Thao tác này không thể hoàn tác.',
+    'cv.output_deleted': '🗑 File convert đã xoá',
+    'cv.delete_output_failed': '❌ Xoá thất bại: ',
+    'subs.failed_prefix': '❌ Tạo phụ đề thất bại: {err}',
+    'fb.delete_confirm': 'Xoá "{name}"?\n\nHành động này không thể hoàn tác.',
+    'fb.deleted': 'Đã xoá: {name}',
+    'fb.reading': 'Đang đọc…',
+    'arc.compressing': '📦 Đang nén…',
+    'arc.compress_done': '✅ Đã nén xong',
+    'arc.extracting': '📂 Đang giải nén…',
+    'arc.extracted_count': '✅ Đã giải nén {n} file',
+    'arc.empty': 'Archive trống',
+    'cv.job.subtitling': '📝 Đang tạo phụ đề…',
+    'cv.job.converting': '🎬 Đang chuyển đổi…',
+    'cv.job.subs_created': 'Đã tạo phụ đề',
+    'cv.job.stop': '✕ Dừng',
+    'cv.job.subs_failed': 'Tạo phụ đề thất bại',
+    'cv.job.convert_failed': 'Convert thất bại',
+    'cv.download_srt': '📝 Tải phụ đề .srt',
+    'cv.model_base_default': 'Base (141 MB, cân bằng)',
+    'preview.no_video': 'Trình duyệt không hỗ trợ phát video.',
+    'fb.no_match': 'Không tìm thấy',
+    'fb.empty_dir': 'Thư mục trống',
+    'fb.compress': '📦 Nén',
+    'fb.delete': '🗑 Xoá',
+    'fb.delete_icon': '🗑',
+    'fb.preview': '▶ Xem trước',
+    'fb.convert': '🎬 Convert',
+    'fb.send': '📲 Gửi',
+    'fb.rename': '✎ Đổi tên',
+    'fb.extract': '📂 Giải nén',
+  },
+  en: {
+    'conn.connecting': 'Connecting…',
+    'conn.connected': 'Connected',
+    'conn.disconnected': 'Disconnected',
+    'nav.download': 'Download',
+    'nav.queue': 'Queue',
+    'nav.monitor': 'Live Monitor',
+    'nav.files': 'Files',
+    'common.cancel': 'Cancel',
+    'common.cancel_x': '✕ Cancel',
+    'common.close_x': '✕ Close',
+    'dl.paste_label': 'Paste a URL here...',
+    'dl.paste_btn': 'Paste & Analyse',
+    'dl.quality': 'Quality',
+    'dl.q.best': 'Best quality',
+    'dl.q.audio': 'Audio only',
+    'dl.format': 'Format',
+    'dl.live_banner': '⏺ <strong>Live stream detected</strong> — the format &amp; quality pickers are disabled. The stream is recorded as <code>.ts</code> (MPEG-TS) from now on.',
+    'dl.analyse': 'Analyse',
+    'dl.enqueue': 'Add to queue',
+    'q.select': 'Select',
+    'q.clear_finished': 'Clear finished',
+    'q.clear_selected': 'Clear selected ({n})',
+    'q.empty': 'Queue is empty',
+    'q.pause': 'Pause',
+    'q.resume': 'Resume',
+    'q.send': '☁ Send to iPhone',
+    'q.preview': '▶ Preview',
+    'q.rename': '✎ Rename',
+    'q.delete': '🗑 Delete file',
+    'q.delete_convert': '🗑 Delete converted file',
+    'q.convert': '🎬 Convert',
+    'q.cancel_convert': '✕ Cancel convert',
+    'q.adding': 'Adding…',
+    'mon.label': 'Watch a profile / live URL (TikTok, Instagram)',
+    'mon.hint': 'Records automatically as <code>.ts</code> when the stream starts.',
+    'mon.interval': 'Check every (seconds):',
+    'mon.add': 'Watch',
+    'mon.pause': 'Pause',
+    'mon.resume': 'Resume',
+    'mon.empty': 'No streams watched yet',
+    'mon.recording_dots': 'Recording…',
+    'mon.saved': 'Saved:',
+    'mon.stop_rec': 'Stop recording',
+    'mon.check_now': 'Check now',
+    'mon.remove': 'Remove',
+    'mon.state.waiting': 'Waiting for live',
+    'mon.state.checking': 'Checking…',
+    'mon.state.live': 'LIVE',
+    'mon.state.recording': 'Recording',
+    'mon.state.ended': 'Recorded',
+    'mon.state.error': 'Error',
+    'fb.up': '⬆ Up',
+    'fb.search': 'Search file name...',
+    'fb.sort.name_asc': 'Name A-Z',
+    'fb.sort.name_desc': 'Name Z-A',
+    'fb.sort.date_desc': 'Newest',
+    'fb.sort.date_asc': 'Oldest',
+    'cv.title': '🎬 Convert to MP4',
+    'cv.quality': 'Quality',
+    'cv.q.standard': 'Standard',
+    'cv.q.high': 'High',
+    'cv.q.small': 'Small (720p)',
+    'cv.q.custom': 'Custom (CRF)',
+    'cv.crf_hint': '0=lossless · 51=worst',
+    'cv.encoder': 'Encoder',
+    'cv.speed': 'Encode speed',
+    'cv.spd.slow': 'Slow<br><span style="font-size:10px;font-weight:400">Better compression</span>',
+    'cv.spd.balanced': 'Balanced',
+    'cv.spd.fast': 'Fast<br><span style="font-size:10px;font-weight:400">Bigger file</span>',
+    'cv.codec': 'Output codec',
+    'cv.codec.h264': 'H.264<br><span style="font-size:10px;font-weight:400">Most compatible</span>',
+    'cv.codec.hevc': 'H.265 / HEVC<br><span style="font-size:10px;font-weight:400">~30% smaller</span>',
+    'cv.codec.av1': 'AV1<br><span style="font-size:10px;font-weight:400">~50% smaller</span>',
+    'cv.subs': 'Automatic subtitles',
+    'cv.subs_toggle': 'Generate an .srt file from speech (Whisper)',
+    'cv.subs_auto': 'Auto-detect',
+    'cv.subs_unavailable': "The server's FFmpeg build has no whisper filter, so subtitles cannot be generated.",
+    'cv.qc': 'Quality check',
+    'cv.vmaf_toggle': 'Score VMAF against the source file',
+    'cv.vmaf_hint': 'Score 0–100; higher is closer to the original. Enabling it roughly doubles the convert time.',
+    'cv.start': '🎬 Start convert',
+    'cv.subs_only': '📝 Subtitles only (.srt)',
+    'nodes.title': '📲 Send to',
+    'nodes.send': 'Send',
+    'arc.compress_title': '📦 Compress',
+    'arc.format': 'Format',
+    'arc.password': 'Password',
+    'arc.pw_ph_set': 'Leave empty for no password',
+    'arc.header_enc': 'Encrypt file names (7z only)',
+    'arc.name': 'Archive name',
+    'arc.use_orig': 'Use original name',
+    'arc.compress_start': '📦 Start compressing',
+    'arc.extract_title': '📂 Extract',
+    'arc.dest': 'Destination folder',
+    'arc.dest_ph': 'Leave empty for the default',
+    'arc.pw_ph_get': 'Leave empty if there is no password',
+    'arc.preview': '👁 View contents',
+    'arc.extract_start': '📂 Extract',
+    'set.title': '⚙ Connection',
+    'set.host': 'Server Address',
+    'set.token': 'Access Token',
+    'set.token_ph': 'Paste token here',
+    'set.token_hint': 'Find the token in OmniDL Settings → Remote API.',
+    'set.language': 'Language',
+    'set.save': 'Save & Connect',
+    'conn.not_connected': 'Not connected',
+    'dl.clipboard_empty': 'Clipboard is empty',
+    'dl.clipboard_denied': 'Clipboard access denied',
+    'dl.enter_url_first': 'Enter a URL first',
+    'q.added_toast': 'Added to queue',
+    'q.delete_confirm': 'Delete the file from the laptop? This cannot be undone.',
+    'q.file_deleted': 'File deleted',
+    'q.delete_failed': 'Delete failed: ',
+    'q.rename_prompt': 'New file name:',
+    'q.renamed': 'Renamed',
+    'q.rename_failed': 'Rename failed: ',
+    'q.cleared_count': 'Cleared {n} task(s)',
+    'common.error_prefix': 'Error: ',
+    'common.unknown_error': 'unknown error',
+    'nodes.none_configured': 'Taildrop: no node configured yet',
+    'nodes.select_at_least_one': 'Select at least 1 node',
+    'nodes.sending': '📡 Sending…',
+    'nodes.transfer_failed': 'Transfer failed: ',
+    'nodes.sent_file': '✅ Sent {name} → {node}',
+    'nodes.send_failed_evt': '❌ Send failed → {node}: {err}',
+    'taildrop.sent_via': '✅ Sent to {node} via Taildrop!',
+    'taildrop.failed_evt': '❌ Taildrop failed: {err}',
+    'cv.cancelled': '⊘ Convert cancelled',
+    'cv.converting': '🎬 Converting…',
+    'cv.generating_subs': '📝 Generating subtitles…',
+    'cv.cancelling': '⊘ Cancelling convert…',
+    'cv.completed_named': '✅ Convert done: {name}',
+    'cv.subs_completed': '✅ Subtitle generation done',
+    'cv.failed': '❌ Convert failed: {err}',
+    'cv.delete_output_confirm': 'Delete the converted file from the laptop? This cannot be undone.',
+    'cv.output_deleted': '🗑 Converted file deleted',
+    'cv.delete_output_failed': '❌ Delete failed: ',
+    'subs.failed_prefix': '❌ Subtitle generation failed: {err}',
+    'fb.delete_confirm': 'Delete "{name}"?\n\nThis cannot be undone.',
+    'fb.deleted': 'Deleted: {name}',
+    'fb.reading': 'Reading…',
+    'arc.compressing': '📦 Compressing…',
+    'arc.compress_done': '✅ Compression done',
+    'arc.extracting': '📂 Extracting…',
+    'arc.extracted_count': '✅ Extracted {n} file(s)',
+    'arc.empty': 'Archive is empty',
+    'cv.job.subtitling': '📝 Generating subtitles…',
+    'cv.job.converting': '🎬 Converting…',
+    'cv.job.subs_created': 'Subtitles created',
+    'cv.job.stop': '✕ Stop',
+    'cv.job.subs_failed': 'Subtitle generation failed',
+    'cv.job.convert_failed': 'Conversion failed',
+    'cv.download_srt': '📝 Download .srt subtitles',
+    'cv.model_base_default': 'Base (141 MB, balanced)',
+    'preview.no_video': 'Your browser cannot play this video.',
+    'fb.no_match': 'No matches',
+    'fb.empty_dir': 'Folder is empty',
+    'fb.compress': '📦 Compress',
+    'fb.delete': '🗑 Delete',
+    'fb.delete_icon': '🗑',
+    'fb.preview': '▶ Preview',
+    'fb.convert': '🎬 Convert',
+    'fb.send': '📲 Send',
+    'fb.rename': '✎ Rename',
+    'fb.extract': '📂 Extract',
+  },
+  zh: {
+    'conn.connecting': '连接中…',
+    'conn.connected': '已连接',
+    'conn.disconnected': '已断开',
+    'nav.download': '下载',
+    'nav.queue': '队列',
+    'nav.monitor': '直播监控',
+    'nav.files': '文件',
+    'common.cancel': '取消',
+    'common.cancel_x': '✕ 取消',
+    'common.close_x': '✕ 关闭',
+    'dl.paste_label': '在此粘贴网址...',
+    'dl.paste_btn': '粘贴并解析',
+    'dl.quality': '画质',
+    'dl.q.best': '最高画质',
+    'dl.q.audio': '仅音频',
+    'dl.format': '格式',
+    'dl.live_banner': '⏺ <strong>检测到直播</strong> — 格式与画质选择器已停用。从现在起将以 <code>.ts</code> (MPEG-TS) 格式录制。',
+    'dl.analyse': '解析',
+    'dl.enqueue': '加入队列',
+    'q.select': '选择',
+    'q.clear_finished': '清除已完成',
+    'q.clear_selected': '清除已选 ({n})',
+    'q.empty': '队列为空',
+    'q.pause': '暂停',
+    'q.resume': '继续',
+    'q.send': '☁ 发送到 iPhone',
+    'q.preview': '▶ 预览',
+    'q.rename': '✎ 重命名',
+    'q.delete': '🗑 删除文件',
+    'q.delete_convert': '🗑 删除转换后的文件',
+    'q.convert': '🎬 转换',
+    'q.cancel_convert': '✕ 取消转换',
+    'q.adding': '正在添加…',
+    'mon.label': '监控主页 / 直播网址 (TikTok, Instagram)',
+    'mon.hint': '直播开始时自动以 <code>.ts</code> 格式录制。',
+    'mon.interval': '检查间隔（秒）：',
+    'mon.add': '监控',
+    'mon.pause': '暂停',
+    'mon.resume': '继续',
+    'mon.empty': '尚未监控任何直播',
+    'mon.recording_dots': '录制中…',
+    'mon.saved': '已保存：',
+    'mon.stop_rec': '停止录制',
+    'mon.check_now': '立即检查',
+    'mon.remove': '移除',
+    'mon.state.waiting': '等待开播',
+    'mon.state.checking': '检查中…',
+    'mon.state.live': '正在直播',
+    'mon.state.recording': '录制中',
+    'mon.state.ended': '录制完成',
+    'mon.state.error': '错误',
+    'fb.up': '⬆ 上一级',
+    'fb.search': '搜索文件名...',
+    'fb.sort.name_asc': '名称 A-Z',
+    'fb.sort.name_desc': '名称 Z-A',
+    'fb.sort.date_desc': '最新',
+    'fb.sort.date_asc': '最旧',
+    'cv.title': '🎬 转换为 MP4',
+    'cv.quality': '画质',
+    'cv.q.standard': '标准',
+    'cv.q.high': '高',
+    'cv.q.small': '小 (720p)',
+    'cv.q.custom': '自定义 (CRF)',
+    'cv.crf_hint': '0=无损 · 51=最差',
+    'cv.encoder': '编码器',
+    'cv.speed': '编码速度',
+    'cv.spd.slow': '慢<br><span style="font-size:10px;font-weight:400">压缩更好</span>',
+    'cv.spd.balanced': '平衡',
+    'cv.spd.fast': '快<br><span style="font-size:10px;font-weight:400">文件更大</span>',
+    'cv.codec': '输出编码',
+    'cv.codec.h264': 'H.264<br><span style="font-size:10px;font-weight:400">兼容性最好</span>',
+    'cv.codec.hevc': 'H.265 / HEVC<br><span style="font-size:10px;font-weight:400">体积约小 30%</span>',
+    'cv.codec.av1': 'AV1<br><span style="font-size:10px;font-weight:400">体积约小 50%</span>',
+    'cv.subs': '自动字幕',
+    'cv.subs_toggle': '从语音生成 .srt 文件 (Whisper)',
+    'cv.subs_auto': '自动识别',
+    'cv.subs_unavailable': '服务器上的 FFmpeg 不含 whisper 滤镜，无法生成字幕。',
+    'cv.qc': '质量检查',
+    'cv.vmaf_toggle': '与源文件对比并给出 VMAF 分数',
+    'cv.vmaf_hint': '分数 0–100，越高越接近原片。开启后转换耗时约翻倍。',
+    'cv.start': '🎬 开始转换',
+    'cv.subs_only': '📝 仅生成字幕 (.srt)',
+    'nodes.title': '📲 发送到',
+    'nodes.send': '发送',
+    'arc.compress_title': '📦 压缩',
+    'arc.format': '格式',
+    'arc.password': '密码',
+    'arc.pw_ph_set': '留空表示不设密码',
+    'arc.header_enc': '加密文件名（仅 7z）',
+    'arc.name': '压缩包名称',
+    'arc.use_orig': '使用原始名称',
+    'arc.compress_start': '📦 开始压缩',
+    'arc.extract_title': '📂 解压',
+    'arc.dest': '解压目标文件夹',
+    'arc.dest_ph': '留空使用默认位置',
+    'arc.pw_ph_get': '若无密码请留空',
+    'arc.preview': '👁 查看内容',
+    'arc.extract_start': '📂 解压',
+    'set.title': '⚙ 连接',
+    'set.host': '服务器地址',
+    'set.token': '访问令牌',
+    'set.token_ph': '在此粘贴令牌',
+    'set.token_hint': '在 OmniDL 设置 → Remote API 中查看令牌。',
+    'set.language': '语言',
+    'set.save': '保存并连接',
+    'conn.not_connected': '未连接',
+    'dl.clipboard_empty': '剪贴板为空',
+    'dl.clipboard_denied': '剪贴板访问被拒绝',
+    'dl.enter_url_first': '请先输入网址',
+    'q.added_toast': '已加入队列',
+    'q.delete_confirm': '确定要从电脑上删除此文件吗？此操作无法撤销。',
+    'q.file_deleted': '文件已删除',
+    'q.delete_failed': '删除失败：',
+    'q.rename_prompt': '新文件名：',
+    'q.renamed': '已重命名',
+    'q.rename_failed': '重命名失败：',
+    'q.cleared_count': '已清除 {n} 个任务',
+    'common.error_prefix': '错误：',
+    'common.unknown_error': '未知错误',
+    'nodes.none_configured': 'Taildrop：尚未配置任何节点',
+    'nodes.select_at_least_one': '请至少选择 1 个节点',
+    'nodes.sending': '📡 发送中…',
+    'nodes.transfer_failed': '传输失败：',
+    'nodes.sent_file': '✅ 已发送 {name} → {node}',
+    'nodes.send_failed_evt': '❌ 发送失败 → {node}：{err}',
+    'taildrop.sent_via': '✅ 已通过 Taildrop 发送到 {node}！',
+    'taildrop.failed_evt': '❌ Taildrop 失败：{err}',
+    'cv.cancelled': '⊘ 已取消转换',
+    'cv.converting': '🎬 转换中…',
+    'cv.generating_subs': '📝 正在生成字幕…',
+    'cv.cancelling': '⊘ 正在取消转换…',
+    'cv.completed_named': '✅ 转换完成：{name}',
+    'cv.subs_completed': '✅ 字幕生成完成',
+    'cv.failed': '❌ 转换失败：{err}',
+    'cv.delete_output_confirm': '确定要从电脑上删除已转换的文件吗？此操作无法撤销。',
+    'cv.output_deleted': '🗑 转换文件已删除',
+    'cv.delete_output_failed': '❌ 删除失败：',
+    'subs.failed_prefix': '❌ 字幕生成失败：{err}',
+    'fb.delete_confirm': '删除 "{name}"？\n\n此操作无法撤销。',
+    'fb.deleted': '已删除：{name}',
+    'fb.reading': '读取中…',
+    'arc.compressing': '📦 压缩中…',
+    'arc.compress_done': '✅ 压缩完成',
+    'arc.extracting': '📂 解压中…',
+    'arc.extracted_count': '✅ 已解压 {n} 个文件',
+    'arc.empty': '压缩包为空',
+    'cv.job.subtitling': '📝 正在生成字幕…',
+    'cv.job.converting': '🎬 转换中…',
+    'cv.job.subs_created': '字幕已生成',
+    'cv.job.stop': '✕ 停止',
+    'cv.job.subs_failed': '字幕生成失败',
+    'cv.job.convert_failed': '转换失败',
+    'cv.download_srt': '📝 下载 .srt 字幕',
+    'cv.model_base_default': 'Base（141 MB，均衡）',
+    'preview.no_video': '您的浏览器不支持播放此视频。',
+    'fb.no_match': '未找到匹配项',
+    'fb.empty_dir': '文件夹为空',
+    'fb.compress': '📦 压缩',
+    'fb.delete': '🗑 删除',
+    'fb.delete_icon': '🗑',
+    'fb.preview': '▶ 预览',
+    'fb.convert': '🎬 转换',
+    'fb.send': '📲 发送',
+    'fb.rename': '✎ 重命名',
+    'fb.extract': '📂 解压',
+  },
+};
+
+let uiLang = 'en';
+
+function T(key, vars) {
+  let s = (I18N[uiLang] && I18N[uiLang][key]);
+  if (s === undefined) s = (I18N.en && I18N.en[key]);
+  if (s === undefined) s = (I18N.vi && I18N.vi[key]);
+  if (s === undefined) return key;
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
+  return s;
+}
+
+function normalizeLang(code) {
+  if (typeof code !== 'string') return 'en';
+  const base = code.trim().toLowerCase().replace(/_/g, '-').split('-')[0];
+  return LANGS[base] ? base : 'en';
+}
+
+function applyI18n() {
+  document.documentElement.lang = uiLang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = T(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = T(el.getAttribute('data-i18n-html'));
+  });
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+    el.placeholder = T(el.getAttribute('data-i18n-ph'));
+  });
+  ['lang-sel', 'cfg-lang'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (sel) sel.value = uiLang;
+  });
+  // Re-render the lists whose rows are built in JS so their labels follow.
+  // Guarded: a throwing renderer must not abort the switch half-way and leave
+  // the page in two languages.
+  [renderQueue, renderMonitor, renderFileBrowser, updateClearBtnLabel].forEach(fn => {
+    try { if (typeof fn === 'function') fn(); }
+    catch (e) { console.warn('applyI18n: re-render failed', e); }
+  });
+}
+
+function buildLangSelects() {
+  ['lang-sel', 'cfg-lang'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = '';
+    for (const code in LANGS) {
+      const opt = document.createElement('option');
+      opt.value = code;
+      opt.textContent = LANGS[code];
+      sel.appendChild(opt);
+    }
+    sel.value = uiLang;
+  });
+}
+
+function setLang(code) {
+  uiLang = normalizeLang(code);
+  try { localStorage.setItem('omnidl_lang', uiLang); } catch {}
+  applyI18n();
+  // Mirror the choice onto the desktop app so both stay in sync.
+  if (cfg.host) {
+    api('POST', '/api/settings/language', { language: uiLang }).catch(() => {});
+  }
+}
+
+function loadLang() {
+  let saved = null;
+  try { saved = localStorage.getItem('omnidl_lang'); } catch {}
+  uiLang = saved ? normalizeLang(saved) : normalizeLang(navigator.language || 'en');
+  buildLangSelects();
+  applyI18n();
+}
+
+// Adopt the server's saved language when this browser has no explicit choice.
+async function syncLangFromServer() {
+  let hasLocal = false;
+  try { hasLocal = !!localStorage.getItem('omnidl_lang'); } catch {}
+  if (hasLocal || !cfg.host) return;
+  try {
+    const r = await api('GET', '/api/settings/language');
+    if (r && r.language) { uiLang = normalizeLang(r.language); buildLangSelects(); applyI18n(); }
+  } catch {}
+}
 
 /* ── Persistence ────────────────────────────────────────────────────── */
 function loadCfg() {
@@ -1292,14 +1949,14 @@ function connectSSE() {
   // completes or fails on the server side.
   evtSrc.addEventListener('taildrop_completed', e => {
     const d = JSON.parse(e.data);
-    toast(`✅ Sent to ${d.dest_node} via Taildrop!`);
-    _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+    toast(T('taildrop.sent_via', { node: d.dest_node }));
+    _restoreTransferBtn(d.task_id, T('q.send'));
   });
 
   evtSrc.addEventListener('taildrop_failed', e => {
     const d = JSON.parse(e.data);
-    toast(`❌ Taildrop failed: ${d.error || 'unknown error'}`, 'error');
-    _restoreTransferBtn(d.task_id, '📲 Send to iPhone');
+    toast(T('taildrop.failed_evt', { err: d.error || T('common.unknown_error') }), 'error');
+    _restoreTransferBtn(d.task_id, T('q.send'));
   });
 
   // ── Convert events ────────────────────────────────────────────────────
@@ -1342,21 +1999,21 @@ function connectSSE() {
   evtSrc.addEventListener('convert_completed', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;
-    toast(`✅ Convert xong: ${j.output_filename || 'file'}`);
+    toast(j.output_filename ? T('cv.completed_named', { name: j.output_filename }) : T('cv.subs_completed'));
     renderQueue();
     _maybeRenderFileBrowser();
   });
   evtSrc.addEventListener('convert_failed', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;
-    toast(`❌ Convert thất bại: ${j.error_msg || 'lỗi không xác định'}`);
+    toast(T('cv.failed', { err: j.error_msg || T('common.unknown_error') }));
     renderQueue();
     _maybeRenderFileBrowser();
   });
   evtSrc.addEventListener('convert_cancelled', e => {
     const j = JSON.parse(e.data);
     convertJobs[j.job_id] = j;
-    toast('⊘ Đã huỷ convert');
+    toast(T('cv.cancelled'));
     renderQueue();
     _maybeRenderFileBrowser();
   });
@@ -1385,12 +2042,12 @@ function connectSSE() {
   evtSrc.addEventListener('file_transfer_done', e => {
     const d = JSON.parse(e.data);
     const fname = (d.path || '').split(/[\\/]/).pop();
-    toast(`✅ Đã gửi ${fname} → ${d.node}`);
+    toast(T('nodes.sent_file', { name: fname, node: d.node }));
   });
   evtSrc.addEventListener('file_transfer_failed', e => {
     const d = JSON.parse(e.data);
     const fname = (d.path || '').split(/[\\/]/).pop();
-    toast(`❌ Gửi thất bại → ${d.node}: ${d.error || 'lỗi không xác định'}`);
+    toast(T('nodes.send_failed_evt', { node: d.node, err: d.error || T('common.unknown_error') }));
   });
 
   evtSrc.onerror = () => setConnected(false);
@@ -1402,7 +2059,7 @@ function setConnected(ok) {
   const dot   = document.getElementById('conn-dot');
   const label = document.getElementById('conn-label');
   dot.className = ok ? 'ok' : 'err';
-  label.textContent = ok ? 'Đã kết nối' : 'Ngắt kết nối';
+  label.textContent = ok ? T('conn.connected') : T('conn.disconnected');
   if (ok) {
     document.getElementById('dl-btn').disabled = false;
     loadNodes();
@@ -1435,13 +2092,13 @@ async function pasteUrl() {
   try {
     const text = await navigator.clipboard.readText();
     const trimmed = text.trim();
-    if (!trimmed) { toast('Clipboard is empty'); return; }
+    if (!trimmed) { toast(T('dl.clipboard_empty')); return; }
     document.getElementById('url-input').value = trimmed;
     if (connected) {
       // Auto-analyse immediately after paste — mirrors desktop clipboard monitor behaviour
       doAnalyse();
     }
-  } catch { toast('Clipboard access denied'); }
+  } catch { toast(T('dl.clipboard_denied')); }
 }
 
 function cancelAnalyse() {
@@ -1453,8 +2110,8 @@ function cancelAnalyse() {
 
 async function doAnalyse() {
   const url = document.getElementById('url-input').value.trim();
-  if (!url) { toast('Enter a URL first'); return; }
-  if (!connected) { toast('Not connected'); return; }
+  if (!url) { toast(T('dl.enter_url_first')); return; }
+  if (!connected) { toast(T('conn.not_connected')); return; }
 
   // Cancel any in-flight analyse
   if (_analyseAbortCtrl) { _analyseAbortCtrl.abort(); }
@@ -1601,7 +2258,7 @@ async function doAnalyse() {
   } finally {
     _analyseAbortCtrl = null;
     btn.disabled = false;
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Phân tích';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> ' + T('dl.analyse');
     cancelBt.style.display = 'none';
     if (!analysedInfo) {
       document.getElementById('format-row').style.display  = '';
@@ -1614,8 +2271,8 @@ async function doAnalyse() {
 
 async function doDownload() {
   const url = document.getElementById('url-input').value.trim();
-  if (!url) { toast('Enter a URL first'); return; }
-  if (!connected) { toast('Not connected'); return; }
+  if (!url) { toast(T('dl.enter_url_first')); return; }
+  if (!connected) { toast(T('conn.not_connected')); return; }
 
   const isLive     = analysedInfo?.is_live ?? false;
   const format_id  = isLive ? 'best' : document.getElementById('format-sel').value;
@@ -1640,14 +2297,14 @@ async function doDownload() {
 
   const btn = document.getElementById('dl-btn');
   btn.disabled = true;
-  btn.innerHTML = '<div class="spinner"></div> Adding…';
+  btn.innerHTML = '<div class="spinner"></div> ' + T('q.adding');
 
   try {
     const task = await api('POST', '/api/download', body);
     tasks[task.id] = task;
     renderQueue();
     updateQueueBadge();
-    toast('Added to queue');
+    toast(T('q.added_toast'));
     // Switch to queue tab
     switchTab('queue', document.getElementById('tab-queue'));
     document.querySelector('[onclick="switchTab(\'queue\',this)"]')?.classList.add('active');
@@ -1659,10 +2316,10 @@ async function doDownload() {
     document.getElementById('live-banner').style.display = 'none';
     analysedInfo = null;
   } catch(err) {
-    toast('Error: ' + err.message);
+    toast(T('common.error_prefix') + err.message);
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Thêm vào hàng đợi';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> ' + T('dl.enqueue');
   }
 }
 
@@ -1673,7 +2330,7 @@ function renderQueue() {
   if (!arr.length) {
     list.innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      <p>Queue is empty</p></div>`;
+      <p>${escHtml(T('q.empty'))}</p></div>`;
     return;
   }
   list.innerHTML = arr.map(t => queueItemHtml(t)).join('');
@@ -1701,13 +2358,13 @@ function queueItemHtml(t) {
 
   let controls = '';
   if (isActive && t.status !== 'QUEUED') {
-    controls = `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">Tạm dừng</button>
-                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
+    controls = `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">${escHtml(T('q.pause'))}</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">${escHtml(T('common.cancel'))}</button>`;
   } else if (isPaused) {
-    controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">Tiếp tục</button>
-                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
+    controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">${escHtml(T('q.resume'))}</button>
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">${escHtml(T('common.cancel'))}</button>`;
   } else if (t.status === 'QUEUED') {
-    controls = `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">Huỷ</button>`;
+    controls = `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">${escHtml(T('common.cancel'))}</button>`;
   }
 
   // ── File-action buttons (only when original file still exists on disk) ──
@@ -1715,15 +2372,18 @@ function queueItemHtml(t) {
   if ((t.status === 'COMPLETED' || t.status === 'PARTIAL_SAVED') && t.filename) {
     fileActionBtns = `<div class="qi-file-actions">
       <button class="btn btn-sm btn-transfer" onclick="transferFile('${t.id}', this)">
-        ☁ Send to iPhone
+        ${escHtml(T('q.send'))}
       </button>
       <button class="btn btn-sm btn-preview" data-tid="${t.id}" data-title="${escHtml(t.title)}"
               onclick="previewFile(this.dataset.tid, this.dataset.title)">
-        ▶ Preview
+        ${escHtml(T('q.preview'))}
+      </button>
+      <button class="btn btn-sm btn-secondary" onclick="renameFile('${t.id}', this)">
+        ${escHtml(T('q.rename'))}
       </button>
       <button class="btn btn-sm btn-delete" style="grid-column:1/-1"
               onclick="deleteFile('${t.id}', this)">
-        🗑 Delete file
+        ${escHtml(T('q.delete'))}
       </button>
     </div>`;
   }
@@ -1732,22 +2392,41 @@ function queueItemHtml(t) {
   // Stays visible even after the original file is deleted, so the user can
   // still delete / preview the converted output.
   let convertBlock = '';
+  let activeJob, subsJob;
   if (t.status === 'COMPLETED' || t.status === 'PARTIAL_SAVED') {
-    const activeJob = Object.values(convertJobs).find(
+    activeJob = Object.values(convertJobs).find(
       j => j.source_task_id === t.id &&
            ['PENDING','CONVERTING'].includes(j.status)
     );
     const completedJob = Object.values(convertJobs).find(
       j => j.source_task_id === t.id &&
            j.status === 'COMPLETED' &&
-           !j.output_deleted
+           !j.output_deleted &&
+           !j.subtitles_only
+    );
+    // A subtitle-only job produces no video, so it must not take over the card:
+    // it used to match completedJob and hide the "Convert" button permanently.
+    subsJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           j.subtitles_only &&
+           ['COMPLETED','FAILED'].includes(j.status)
+    );
+    // A failed video conversion matched none of the three finders above, so
+    // the card fell straight back to the plain "Convert" button and the only
+    // trace of the failure was a toast the user had to be watching for.  After
+    // a reload the convert_snapshot restored the FAILED job and still showed
+    // nothing.  The Files tab already renders this case.
+    const failedJob = Object.values(convertJobs).find(
+      j => j.source_task_id === t.id &&
+           !j.subtitles_only &&
+           j.status === 'FAILED'
     );
 
     if (activeJob) {
       // Case A: conversion in progress → progress bar + Cancel
       convertBlock = `<div class="qi-convert-progress" id="cvprog-${activeJob.job_id}">
         <div class="qi-convert-label">
-          <span>🎬 Converting…</span>
+          <span>${T(activeJob.subtitles_only ? 'cv.job.subtitling' : 'cv.job.converting')}</span>
           <span id="cvpct-${activeJob.job_id}">${activeJob.progress.toFixed(0)}%</span>
         </div>
         <div class="qi-convert-track">
@@ -1756,7 +2435,7 @@ function queueItemHtml(t) {
         </div>
         <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
                 onclick="cancelConvert('${activeJob.job_id}', this)">
-          ✕ Cancel convert
+          ${escHtml(T('q.cancel_convert'))}
         </button>
       </div>`;
     } else if (completedJob) {
@@ -1766,35 +2445,52 @@ function queueItemHtml(t) {
         <div style="font-size:12px;color:var(--success);margin-bottom:8px;
                     display:flex;align-items:flex-start;gap:6px;">
           ✅ <span style="color:var(--text2);word-break:break-all;line-height:1.4;">
-            ${escHtml(completedJob.output_filename || 'Đã convert xong')}
+            ${escHtml(completedJob.output_filename || T('cv.job.subs_created'))}
           </span>
         </div>
-        <div class="qi-file-actions">
+        ${convertExtrasHtml(completedJob)}
+        ${completedJob.output_filename ? `<div class="qi-file-actions">
           <button class="btn btn-sm btn-preview"
                   data-jid="${completedJob.job_id}" data-title="${escHtml(completedJob.output_filename || t.title)}"
                   onclick="previewConvertFile(this.dataset.jid, this.dataset.title)">
-            ▶ Xem trước
+            ${escHtml(T('q.preview'))}
           </button>
           <button class="btn btn-sm btn-delete"
                   onclick="deleteConvertFile('${completedJob.job_id}', this)">
-            🗑 Xoá file convert
+            ${escHtml(T('q.delete_convert'))}
           </button>
-        </div>
+        </div>` : ''}
       </div>`;
     } else if (t.filename) {
       // Case C: no convert job yet (or all deleted) → show Convert button
       // Only shown when original file still exists (nothing to convert otherwise)
-      convertBlock = `<div style="margin-top:8px;">
+      // A previous failure is shown above the button so the reason survives a
+      // reload and the user knows why they are being asked to convert again.
+      const failHtml = failedJob
+        ? `<div style="margin-top:8px;font-size:12px;color:var(--danger);word-break:break-all">
+             ❌ ${escHtml(failedJob.error_msg || T('cv.job.convert_failed'))}
+           </div>`
+        : '';
+      convertBlock = failHtml + `<div style="margin-top:8px;">
         <button class="btn btn-sm btn-convert" style="width:100%"
                 data-tid="${t.id}" data-title="${escHtml(t.title)}"
                 onclick="openConvertSheet(this.dataset.tid, this.dataset.title)">
-          🎬 Convert
+          ${escHtml(T('q.convert'))}
         </button>
       </div>`;
     }
   }
 
-  const fileActions = fileActionBtns + convertBlock;
+  let subsBlock = '';
+  if (subsJob && (!activeJob || activeJob.job_id !== subsJob.job_id)) {
+    subsBlock = subsJob.status === 'FAILED'
+      ? `<div style="margin-top:8px;font-size:12px;color:var(--danger)">
+           ${escHtml(T('subs.failed_prefix', { err: subsJob.error_msg || T('common.unknown_error') }))}
+         </div>`
+      : `<div style="margin-top:8px">${convertExtrasHtml(subsJob)}</div>`;
+  }
+
+  const fileActions = fileActionBtns + convertBlock + subsBlock;
 
   return `<div class="queue-item" id="qi-${t.id}">
     <div class="qi-header">
@@ -1855,7 +2551,7 @@ async function cancelTask(id) {
     if (e.name !== 'AbortError') {
       toast(e.message);
       // Re-enable button on real error so user can retry
-      if (btn) { btn.disabled = false; btn.textContent = 'Huỷ'; }
+      if (btn) { btn.disabled = false; btn.textContent = T('common.cancel'); }
     }
     // On AbortError (timeout / iOS background kill): leave button disabled —
     // the server-side cancel may still go through; SSE will update the UI.
@@ -1864,25 +2560,27 @@ async function cancelTask(id) {
 let selectMode = false;
 const selectedIds = new Set();
 
+function updateClearBtnLabel() {
+  const clearBtn = document.getElementById('clear-finished-btn');
+  if (!clearBtn) return;
+  clearBtn.textContent = (selectMode && selectedIds.size > 0)
+    ? T('q.clear_selected', { n: selectedIds.size })
+    : T('q.clear_finished');
+}
+
 function toggleSelectMode() {
   selectMode = !selectMode;
   selectedIds.clear();
   const btn = document.getElementById('select-mode-btn');
   if (btn) btn.classList.toggle('btn-primary', selectMode);
-  const clearBtn = document.getElementById('clear-finished-btn');
-  if (clearBtn) clearBtn.textContent = 'Xóa đã xong';
+  updateClearBtnLabel();
   renderQueue();
 }
 
 function toggleSelectItem(id, checked) {
   if (checked) selectedIds.add(id);
   else selectedIds.delete(id);
-  const clearBtn = document.getElementById('clear-finished-btn');
-  if (clearBtn) {
-    clearBtn.textContent = (selectMode && selectedIds.size > 0)
-      ? `Xóa đã chọn (${selectedIds.size})`
-      : 'Xóa đã xong';
-  }
+  updateClearBtnLabel();
 }
 
 const _TERMINAL = new Set(['COMPLETED','FAILED','CANCELLED','PARTIAL_SAVED']);
@@ -1894,11 +2592,10 @@ async function clearFinished() {
       await api('DELETE', '/api/queue/items', {ids});
       ids.forEach(id => delete tasks[id]);
       selectedIds.clear();
-      const clearBtn = document.getElementById('clear-finished-btn');
-      if (clearBtn) clearBtn.textContent = 'Xóa đã xong';
+      updateClearBtnLabel();
       renderQueue();
       updateQueueBadge();
-      toast(`Đã xóa ${ids.length} tác vụ`);
+      toast(T('q.cleared_count', { n: ids.length }));
       return;
     }
     const r = await api('DELETE', '/api/queue/finished');
@@ -1938,7 +2635,7 @@ async function transferFile(id, btn) {
       }
     }, 180_000);
   } catch(e) {
-    toast('Transfer failed: ' + e.message);
+    toast(T('nodes.transfer_failed') + e.message);
     btn.disabled = false;
     btn.textContent = orig;
   }
@@ -1957,15 +2654,32 @@ function _restoreTransferBtn(taskId, label) {
 }
 
 async function deleteFile(id, btn) {
-  if (!confirm('Delete the file from the laptop? This cannot be undone.')) return;
+  if (!confirm(T('q.delete_confirm'))) return;
   btn.disabled = true;
   try {
     const r = await api('DELETE', `/api/queue/${id}/file`);
-    toast(r.detail || 'File deleted');
+    toast(r.detail || T('q.file_deleted'));
     // Clear filename in local state so file-action buttons disappear
     if (tasks[id]) { tasks[id].filename = ''; renderQueue(); }
   } catch(e) {
-    toast('Delete failed: ' + e.message);
+    toast(T('q.delete_failed') + e.message);
+    btn.disabled = false;
+  }
+}
+
+async function renameFile(id, btn) {
+  const t = tasks[id];
+  const oldName = t && t.filename ? t.filename.split(/[\\/]/).pop() : '';
+  const newName = prompt(T('q.rename_prompt'), oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  btn.disabled = true;
+  try {
+    const r = await api('POST', `/api/queue/${id}/rename`, {new_name: newName.trim()});
+    toast(r.detail || T('q.renamed'));
+    if (t) { renderQueue(); }
+  } catch(e) {
+    toast(T('q.rename_failed') + e.message);
+  } finally {
     btn.disabled = false;
   }
 }
@@ -2031,6 +2745,9 @@ function closePreview() {
 /* ── Convert sheet ──────────────────────────────────────────────────── */
 async function openConvertSheet(taskId, title) {
   _pendingConvertTaskId = taskId;
+  // submitConvert() checks _pendingFilePath first, so a leftover path from an
+  // earlier Files-tab sheet would convert that file instead of this task.
+  _pendingFilePath      = null;
   document.getElementById('convert-sheet-sub').textContent = title || taskId;
 
   // Reset selections to defaults
@@ -2041,21 +2758,120 @@ async function openConvertSheet(taskId, title) {
   document.getElementById('crf-row').style.display = 'none';
   document.getElementById('crf-slider').value = '23';
   document.getElementById('crf-val').textContent = '23';
+  _resetConvertExtras();
 
-  // Fetch available encoders from server and populate grid
+  await populateConvertOptions();
+
+  document.getElementById('convert-overlay').classList.add('open');
+}
+
+// Fill the encoder and codec grids from the server.  Both endpoints report what
+// this machine's FFmpeg binary can really do, so the sheet stops offering
+// options that are guaranteed to come back as a 422 (e.g. AV1 on a build
+// without an AV1 encoder).  Failures leave the safe built-in defaults in place.
+async function populateConvertOptions() {
   try {
     const encs = await api('GET', '/api/convert/encoders');
     const grid = document.getElementById('cvenc-grid');
-    grid.innerHTML = encs.map((e, i) =>
-      `<div class="radio-btn ${i===0?'active':''}"
-            data-cvenc="${escHtml(e.key)}"
-            onclick="setCvenc(this)">${escHtml(e.label)}</div>`
-    ).join('');
+    if (encs.length) {
+      grid.innerHTML = encs.map((e, i) =>
+        `<div class="radio-btn ${i===0?'active':''}"
+              data-cvenc="${escHtml(e.key)}"
+              onclick="setCvenc(this)">${escHtml(e.label)}</div>`
+      ).join('');
+    }
   } catch(_) {
     // Keep default CPU option on error
   }
 
-  document.getElementById('convert-overlay').classList.add('open');
+  try {
+    const caps = await api('GET', '/api/convert/codecs');
+    const grid = document.getElementById('cvcodec-grid');
+    if (caps.codecs && caps.codecs.length) {
+      grid.innerHTML = caps.codecs.map((c, i) =>
+        `<div class="radio-btn ${i===0?'active':''}"
+              data-cvcodec="${escHtml(c.key)}"
+              onclick="setCvcodec(this)">${escHtml(c.label)}</div>`
+      ).join('');
+    }
+    applySubtitleCaps(caps);
+  } catch(_) {
+    // Keep the built-in H.264 option on error
+  }
+}
+
+// Enable the subtitle controls only when the server's FFmpeg build actually has
+// the whisper filter; requesting them otherwise comes back as a 422.
+function applySubtitleCaps(caps) {
+  const toggle = document.getElementById('cvsubs-toggle');
+  const select = document.getElementById('cvsubs-lang');
+  const modelSelect = document.getElementById('cvsubs-model');
+  const hint   = document.getElementById('cvsubs-hint');
+  const langs  = caps.subtitle_languages && caps.subtitle_languages.length
+    ? caps.subtitle_languages : ['auto'];
+  const models = caps.subtitle_models && caps.subtitle_models.length
+    ? caps.subtitle_models : [{ key: 'base', label: T('cv.model_base_default') }];
+
+  // "auto" first, the rest alphabetically by label, so the default is on top.
+  const ordered = langs.slice().sort((a, b) =>
+    a === 'auto' ? -1 : b === 'auto' ? 1 :
+    (SUBTITLE_LANG_LABELS[a] || a).localeCompare(SUBTITLE_LANG_LABELS[b] || b));
+  select.innerHTML = ordered.map(code =>
+    `<option value="${escHtml(code)}">${escHtml(code === 'auto' ? T('cv.subs_auto') : (SUBTITLE_LANG_LABELS[code] || code))}</option>`
+  ).join('');
+  select.value = 'auto';
+
+  // Models come from the server smallest-first already; keep that order so
+  // "tiny" (fastest) sits above "medium" (most accurate but slow to download).
+  modelSelect.innerHTML = models.map(m =>
+    `<option value="${escHtml(m.key)}">${escHtml(m.label)}</option>`
+  ).join('');
+  modelSelect.value = 'base';
+
+  const supported = !!caps.subtitles;
+  toggle.disabled = !supported;
+  if (!supported) toggle.checked = false;
+  // The two selects also feed the standalone "Chỉ tạo phụ đề" button, so they
+  // stay usable whenever the server supports whisper, checkbox or not.
+  select.disabled = !supported;
+  modelSelect.disabled = !supported;
+  const subsBtn = document.getElementById('cvsubs-only-btn');
+  if (subsBtn) subsBtn.disabled = !supported;
+  hint.style.display = supported ? 'none' : 'block';
+}
+
+// Human-readable names for the language codes GET /api/convert/codecs returns.
+// Codes the server reports but that are missing here fall back to the raw code,
+// so a new server-side language never disappears from the dropdown.
+const SUBTITLE_LANG_LABELS = {
+  vi: 'Tiếng Việt', en: 'English', zh: '中文',
+  ja: '日本語', ko: '한국어', th: 'ไทย', id: 'Bahasa Indonesia',
+  ms: 'Bahasa Melayu', tl: 'Tagalog', fr: 'Français', de: 'Deutsch',
+  es: 'Español', pt: 'Português', it: 'Italiano', ru: 'Русский',
+  hi: 'हिन्दी', ar: 'العربية', tr: 'Türkçe',
+};
+
+// Subtitle + VMAF checkboxes live outside the radio grids, so the two open*()
+// helpers must clear them explicitly — otherwise the flags from the previous
+// conversion leak into the next one and silently double its runtime.
+function _resetConvertExtras() {
+  document.getElementById('cvsubs-toggle').checked = false;
+  document.getElementById('cvvmaf-toggle').checked = false;
+  // Disabled here only as the pre-probe state; applySubtitleCaps() re-enables
+  // them as soon as GET /api/convert/codecs confirms whisper support.
+  const lang = document.getElementById('cvsubs-lang');
+  lang.value    = 'auto';
+  lang.disabled = true;
+  const model = document.getElementById('cvsubs-model');
+  model.value    = 'base';
+  model.disabled = true;
+  const subsBtn = document.getElementById('cvsubs-only-btn');
+  if (subsBtn) subsBtn.disabled = true;
+}
+
+function onCvSubsToggled() {
+  // The selects are gated by whisper support, not by this checkbox, so there
+  // is nothing to toggle here beyond what submitConvert() already reads.
 }
 
 function closeConvertSheet() {
@@ -2090,6 +2906,11 @@ async function submitConvert() {
   const speedPreset = document.querySelector('#cvspd-grid   .radio-btn.active')?.dataset.cvspd   || 'balanced';
   const outputCodec = document.querySelector('#cvcodec-grid .radio-btn.active')?.dataset.cvcodec || 'h264';
   const customCrf   = parseInt(document.getElementById('crf-slider').value, 10) || 23;
+  const subsToggle  = document.getElementById('cvsubs-toggle');
+  const genSubs     = subsToggle.checked && !subsToggle.disabled;
+  const subsLang    = document.getElementById('cvsubs-lang').value || 'auto';
+  const subsModel   = document.getElementById('cvsubs-model').value || 'base';
+  const computeVmaf = document.getElementById('cvvmaf-toggle').checked;
 
   closeConvertSheet();
 
@@ -2104,10 +2925,14 @@ async function submitConvert() {
         speed_preset: speedPreset,
         custom_crf:   customCrf,
         output_codec: outputCodec,
+        generate_subtitles: genSubs,
+        subtitle_language:  subsLang,
+        subtitle_model:     subsModel,
+        compute_vmaf:       computeVmaf,
       });
       convertJobs[job.job_id] = { ...job, status: 'PENDING', progress: 0, output_filename: '', error_msg: '' };
       _fileJobMap[filePath]   = job.job_id;
-      toast('🎬 Đang convert…');
+      toast(T('cv.converting'));
       renderFileBrowser();
     } catch(e) {
       toast('❌ ' + e.message);
@@ -2121,9 +2946,13 @@ async function submitConvert() {
         speed_preset: speedPreset,
         custom_crf:   customCrf,
         output_codec: outputCodec,
+        generate_subtitles: genSubs,
+        subtitle_language:  subsLang,
+        subtitle_model:     subsModel,
+        compute_vmaf:       computeVmaf,
       });
       convertJobs[job.job_id] = job;
-      toast('🎬 Đang convert…');
+      toast(T('cv.converting'));
       renderQueue();
     } catch(e) {
       toast('❌ ' + e.message);
@@ -2131,11 +2960,47 @@ async function submitConvert() {
   }
 }
 
+async function submitSubtitles() {
+  // Subtitle-only job: no encode, so quality/encoder/codec are irrelevant.
+  const taskId   = _pendingConvertTaskId;
+  const filePath = _pendingFilePath;
+  if (!taskId && !filePath) return;
+
+  const subsLang  = document.getElementById('cvsubs-lang').value  || 'auto';
+  const subsModel = document.getElementById('cvsubs-model').value || 'base';
+
+  closeConvertSheet();
+
+  try {
+    let job;
+    if (filePath) {
+      job = await api('POST', '/api/files/subtitles', {
+        file_path:         filePath,
+        subtitle_language: subsLang,
+        subtitle_model:    subsModel,
+      });
+      convertJobs[job.job_id] = { ...job, status: 'PENDING', progress: 0, output_filename: '', error_msg: '' };
+      _fileJobMap[filePath]   = job.job_id;
+      renderFileBrowser();
+    } else {
+      job = await api('POST', `/api/queue/${taskId}/subtitles`, {
+        subtitle_language: subsLang,
+        subtitle_model:    subsModel,
+      });
+      convertJobs[job.job_id] = job;
+      renderQueue();
+    }
+    toast(T('cv.generating_subs'));
+  } catch(e) {
+    toast('❌ ' + e.message);
+  }
+}
+
 async function cancelConvert(jobId, btn) {
   btn.disabled = true;
   try {
     await api('POST', `/api/convert/${jobId}/cancel`);
-    toast('⊘ Đang huỷ convert…');
+    toast(T('cv.cancelling'));
   } catch(e) {
     toast('❌ ' + e.message);
     btn.disabled = false;
@@ -2143,11 +3008,11 @@ async function cancelConvert(jobId, btn) {
 }
 
 async function deleteConvertFile(jobId, btn) {
-  if (!confirm('Xoá file đã convert trên laptop? Thao tác này không thể hoàn tác.')) return;
+  if (!confirm(T('cv.delete_output_confirm'))) return;
   btn.disabled = true;
   try {
     const r = await api('DELETE', `/api/convert/${jobId}/file`);
-    toast(r.detail || '🗑 File convert đã xoá');
+    toast(r.detail || T('cv.output_deleted'));
     // Mark output_deleted locally so renderQueue() hides the delete/preview buttons
     // and switches back to the "🎬 Convert" button immediately — no polling needed.
     if (convertJobs[jobId]) {
@@ -2156,9 +3021,41 @@ async function deleteConvertFile(jobId, btn) {
       _maybeRenderFileBrowser();
     }
   } catch(e) {
-    toast('❌ Xoá thất bại: ' + e.message);
+    toast(T('cv.delete_output_failed') + e.message);
     btn.disabled = false;
   }
+}
+
+// VMAF score + subtitle sidecar, shared by the queue card and the file browser
+// card so both surfaces report what a finished job actually produced.
+function convertExtrasHtml(job) {
+  let html = '';
+  if (typeof job.vmaf_score === 'number') {
+    // 93+ is the usual "visually indistinguishable" threshold; 80+ still good.
+    const score = job.vmaf_score;
+    const color = score >= 93 ? 'var(--success)' : score >= 80 ? 'var(--warn)' : 'var(--danger)';
+    html += `<div style="font-size:12px;margin-bottom:6px;color:var(--text2)">
+      \u{1F4CA} VMAF: <b style="color:${color}">${score.toFixed(1)}</b> / 100
+    </div>`;
+  }
+  if (job.subtitle_filename) {
+    html += `<button class="btn btn-sm btn-secondary" style="width:100%;margin-bottom:6px"
+      data-jid="${escHtml(job.job_id)}"
+      onclick="downloadSubtitle(this.dataset.jid)">
+      ${escHtml(T('cv.download_srt'))}
+    </button>`;
+  } else if (job.subtitle_error) {
+    html += `<div style="font-size:12px;margin-bottom:6px;color:var(--warn)">
+      \u{26A0} ${escHtml(job.subtitle_error)}
+    </div>`;
+  }
+  return html;
+}
+
+function downloadSubtitle(jobId) {
+  const base  = cfg.host.replace(/\/+$/, '');
+  const token = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+  window.open(`${base}/api/convert/${jobId}/file?kind=srt${token}`, '_blank');
 }
 
 function previewConvertFile(jobId, title) {
@@ -2179,7 +3076,7 @@ function previewConvertFile(jobId, title) {
       <video controls autoplay playsinline preload="metadata"
         style="max-width:100%;max-height:65vh;border-radius:12px">
         <source src="${fileUrl}" type="video/mp4">
-        Trình duyệt không hỗ trợ phát video.
+        ${escHtml(T('preview.no_video'))}
       </video>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
         <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
@@ -2218,7 +3115,7 @@ async function toggleMonitorPause() {
 function _updateMonitorPauseBtn() {
   const btn = document.getElementById('monitor-pause-btn');
   if (!btn) return;
-  btn.textContent = monitorPaused ? 'Tiếp tục' : 'Tạm ngưng';
+  btn.textContent = monitorPaused ? T('mon.resume') : T('mon.pause');
 }
 
 async function setMonitorInterval(value) {
@@ -2278,13 +3175,14 @@ async function checkMonitorNow(id) {
   } catch(e) { toast(e.message, 'error'); }
 }
 
+// Colours are fixed; the label is looked up per render so it follows uiLang.
 const _MON_STATE = {
-  WAITING:   { label:'Chờ live',        color:'var(--text3)'  },
-  CHECKING:  { label:'Đang kiểm tra…',  color:'var(--text2)'  },
-  LIVE:      { label:'Đang LIVE',       color:'var(--danger)' },
-  RECORDING: { label:'Đang ghi',        color:'var(--success)'},
-  ENDED:     { label:'Đã ghi xong',     color:'var(--text2)'  },
-  ERROR:     { label:'Lỗi',             color:'var(--danger)' },
+  WAITING:   { key:'mon.state.waiting',   color:'var(--text3)'  },
+  CHECKING:  { key:'mon.state.checking',  color:'var(--text2)'  },
+  LIVE:      { key:'mon.state.live',      color:'var(--danger)' },
+  RECORDING: { key:'mon.state.recording', color:'var(--success)'},
+  ENDED:     { key:'mon.state.ended',     color:'var(--text2)'  },
+  ERROR:     { key:'mon.state.error',     color:'var(--danger)' },
 };
 
 function renderMonitor() {
@@ -2294,7 +3192,7 @@ function renderMonitor() {
   if (!items.length) {
     list.innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-      <p>Chưa theo dõi stream nào</p></div>`;
+      <p>${escHtml(T('mon.empty'))}</p></div>`;
     return;
   }
   list.innerHTML = items.map(monitorItemHtml).join('');
@@ -2308,9 +3206,9 @@ function monitorItemHtml(m) {
     const t = tasks[m.task_id];
     pct = t.progress != null ? (parseFloat(t.progress) || 0) : 0;
     const pctStr = pct.toFixed(0) + '%';
-    sub = [t.eta, t.speed, pctStr].filter(Boolean).join('  ·  ') || 'Đang ghi…';
+    sub = [t.eta, t.speed, pctStr].filter(Boolean).join('  ·  ') || T('mon.recording_dots');
   } else if (m.state === 'ENDED' && m.filename) {
-    sub = 'Đã lưu: ' + (m.filename.split(/[\\/]/).pop());
+    sub = T('mon.saved') + ' ' + (m.filename.split(/[\\/]/).pop());
   } else if (m.state === 'ERROR' && m.error_msg) {
     sub = m.error_msg;
   } else if (m.platform) {
@@ -2325,19 +3223,19 @@ function monitorItemHtml(m) {
   const platform = m.platform
     ? `<span class="mon-platform-tag">${escHtml(m.platform)}</span>` : '';
   const pausedTag = paused
-    ? `<span class="mon-paused-tag">Tạm ngưng</span>` : '';
+    ? `<span class="mon-paused-tag">${escHtml(T('mon.pause'))}</span>` : '';
 
   const cancelBtn = m.state === 'RECORDING'
-    ? `<button class="btn btn-danger btn-sm" onclick="cancelMonitorItem('${m.id}')">Dừng ghi</button>` : '';
+    ? `<button class="btn btn-danger btn-sm" onclick="cancelMonitorItem('${m.id}')">${escHtml(T('mon.stop_rec'))}</button>` : '';
   const pauseBtn = ['WAITING','CHECKING','LIVE','RECORDING'].includes(m.state)
-    ? `<button class="btn btn-secondary btn-sm" onclick="toggleItemPause('${m.id}')">${paused ? 'Tiếp tục' : 'Tạm ngưng'}</button>` : '';
+    ? `<button class="btn btn-secondary btn-sm" onclick="toggleItemPause('${m.id}')">${escHtml(paused ? T('mon.resume') : T('mon.pause'))}</button>` : '';
   const checkNowBtn = ['WAITING','ERROR'].includes(m.state)
-    ? `<button class="btn btn-secondary btn-sm" onclick="checkMonitorNow('${m.id}')">Kiểm tra ngay</button>` : '';
+    ? `<button class="btn btn-secondary btn-sm" onclick="checkMonitorNow('${m.id}')">${escHtml(T('mon.check_now'))}</button>` : '';
 
   return `<div class="mon-item">
     <div class="mon-header">
       <div class="mon-status" style="color:${st.color}">
-        <span class="mon-dot" style="background:${st.color}"></span>${st.label}
+        <span class="mon-dot" style="background:${st.color}"></span>${escHtml(T(st.key))}
       </div>
       <div class="mon-tags">${platform}${pausedTag}</div>
     </div>
@@ -2346,7 +3244,7 @@ function monitorItemHtml(m) {
     ${progressBar}
     <div class="mon-actions">
       ${pauseBtn}${cancelBtn}${checkNowBtn}
-      <button class="btn btn-secondary btn-sm" onclick="removeMonitorItem('${m.id}')">Gỡ</button>
+      <button class="btn btn-secondary btn-sm" onclick="removeMonitorItem('${m.id}')">${escHtml(T('mon.remove'))}</button>
     </div>
   </div>`;
 }
@@ -2368,7 +3266,7 @@ function saveSettings() {
   tasks = {};
   renderQueue();
   ping();
-  toast('Connecting…');
+  toast(T('conn.connecting'));
 }
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
@@ -2403,7 +3301,7 @@ async function loadNodes() {
 
 async function openNodePicker(path) {
   if (!_availableNodes.length) await loadNodes();
-  if (!_availableNodes.length) { toast('Taildrop: chưa có node nào được cấu hình'); return; }
+  if (!_availableNodes.length) { toast(T('nodes.none_configured')); return; }
   _transferFilePath = path;
   document.getElementById('nodes-sheet-sub').textContent = path.split(/[\\/]/).pop();
   document.getElementById('nodes-list').innerHTML = _availableNodes.map(node =>
@@ -2424,12 +3322,12 @@ async function confirmSendToNodes() {
   const nodes = Array.from(
     document.querySelectorAll('#nodes-list input[type=checkbox]:checked')
   ).map(cb => cb.value);
-  if (!nodes.length) { toast('Chọn ít nhất 1 node'); return; }
+  if (!nodes.length) { toast(T('nodes.select_at_least_one')); return; }
   const path = _transferFilePath;
   closeNodePicker();
   try {
     await api('POST', '/api/files/transfer', { path, nodes });
-    toast('📡 Đang gửi…');
+    toast(T('nodes.sending'));
   } catch(e) { toast('❌ ' + e.message); }
 }
 
@@ -2483,7 +3381,7 @@ function joinPath(dir, name) {
 }
 
 async function browseFiles(path) {
-  if (!connected) { toast('Not connected'); return; }
+  if (!connected) { toast(T('conn.not_connected')); return; }
   const list = document.getElementById('fb-list');
   list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
   try {
@@ -2535,7 +3433,7 @@ function renderFileBrowser() {
   const items = [...dirs, ...files];
 
   if (!items.length) {
-    list.innerHTML = '<div class="empty"><p>' + (searchVal ? 'Không tìm thấy' : 'Thư mục trống') + '</p></div>';
+    list.innerHTML = '<div class="empty"><p>' + escHtml(T(searchVal ? 'fb.no_match' : 'fb.empty_dir')) + '</p></div>';
     return;
   }
 
@@ -2551,12 +3449,12 @@ function renderFileBrowser() {
             <button class="btn btn-sm btn-secondary"
               data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
               onclick="openArchiveCompressSheet(this.dataset.path,this.dataset.name)">
-              📦 Nén
+              ${escHtml(T('fb.compress'))}
             </button>
             <button class="btn btn-sm btn-delete"
               data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
               onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
-              🗑 Xoá
+              ${escHtml(T('fb.delete'))}
             </button>
           </div>
         </div>
@@ -2569,12 +3467,16 @@ function renderFileBrowser() {
 
     const jobId = _fileJobMap[fullPath];
     const job   = jobId ? convertJobs[jobId] : null;
+    // POST /api/files/convert only accepts video containers, so offering the
+    // button on a .jpg or a .zip just queued a job that died on a raw FFmpeg
+    // error.  Mirrors ffmpeg_convert_service.SUPPORTED_EXTS.
+    const isConvertible = /\.(mp4|mkv|webm|avi|mov|flv|wmv|m4v|ts|mpeg|mpg|3gp)$/i.test(item.name);
 
     let cvBlock = '';
     if (job && ['PENDING','CONVERTING'].includes(job.status)) {
       cvBlock = `<div class="fb-cvprog">
         <div class="fb-cvprog-label">
-          <span>🎬 Converting…</span>
+          <span>${T(job.subtitles_only ? 'cv.job.subtitling' : 'cv.job.converting')}</span>
           <span id="cvpct-${job.job_id}">${job.progress.toFixed(0)}%</span>
         </div>
         <div class="qi-convert-track">
@@ -2583,44 +3485,61 @@ function renderFileBrowser() {
         <button class="btn btn-sm btn-danger" style="margin-top:8px;width:100%"
                 data-jid="${job.job_id}"
                 onclick="cancelConvert(this.dataset.jid, this)">
-          ✕ Dừng
+          ${escHtml(T('cv.job.stop'))}
         </button>
       </div>`;
-    } else if (job && job.status === 'COMPLETED' && !job.output_deleted) {
+    } else if (job && job.status === 'COMPLETED' && !job.output_deleted && !job.subtitles_only) {
       cvBlock = `<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:6px;border:1px solid var(--border)">
         <div style="font-size:12px;color:var(--success);margin-bottom:6px;">
-          ✅ ${escHtml(job.output_filename || 'Đã convert xong')}
+          ✅ ${escHtml(job.output_filename || T('cv.job.subs_created'))}
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        ${convertExtrasHtml(job)}
+        ${job.output_filename ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
           <button class="btn btn-sm btn-preview"
             data-jid="${escHtml(job.job_id)}" data-fname="${escHtml(job.output_filename||'')}"
             onclick="previewConvertFile(this.dataset.jid,this.dataset.fname)">
-            ▶ Xem trước
+            ${escHtml(T('fb.preview'))}
           </button>
           <button class="btn btn-sm btn-delete"
             data-jid="${escHtml(job.job_id)}"
             onclick="deleteConvertFile(this.dataset.jid,this)">
-            🗑 Xoá
+            ${escHtml(T('fb.delete'))}
           </button>
-        </div>
+        </div>` : ''}
       </div>`;
+    } else if (job && job.status === 'COMPLETED' && job.subtitles_only) {
+      // Transcription only: show the .srt download, but keep the Convert /
+      // delete row below so the file itself stays actionable.
+      cvBlock = `<div style="margin-top:6px">${convertExtrasHtml(job)}</div>`;
     } else if (job && job.status === 'FAILED') {
       cvBlock = `<div style="margin-top:6px;font-size:12px;color:var(--danger)">
-        ❌ ${escHtml(job.error_msg || 'Convert thất bại')}
+        ❌ ${escHtml(job.error_msg || T(job.subtitles_only ? 'cv.job.subs_failed' : 'cv.job.convert_failed'))}
       </div>`;
     }
 
-    if (!cvBlock) {
-      cvBlock = `<div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-top:6px;align-items:stretch">
-        <button class="btn btn-sm btn-convert"
-          data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
-          onclick="openFileConvertSheet(this.dataset.path,this.dataset.name)">
-          🎬 Convert
-        </button>
+    // The action row is suppressed only while a job is running or when a
+    // converted video is sitting on disk; after a failure or a subtitles-only
+    // job the user still needs "Convert" and "Xoá".
+    const keepActions = !(job && (
+      ['PENDING','CONVERTING'].includes(job.status) ||
+      (job.status === 'COMPLETED' && !job.output_deleted && !job.subtitles_only)
+    ));
+    if (keepActions) {
+      // The Convert button is dropped for non-video files; Delete then takes
+      // the full width so every file still has a delete action.
+      const convertBtn = isConvertible
+        ? `<button class="btn btn-sm btn-convert"
+             data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+             onclick="openFileConvertSheet(this.dataset.path,this.dataset.name)">
+             ${escHtml(T('fb.convert'))}
+           </button>`
+        : '';
+      cvBlock += `<div style="display:grid;grid-template-columns:${isConvertible ? '1fr auto' : '1fr'};gap:6px;margin-top:6px;align-items:stretch">
+        ${convertBtn}
         <button class="btn btn-sm btn-delete"
           data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
           onclick="deleteFileItem(this.dataset.path,this.dataset.name,this)">
-          🗑
+          ${escHtml(T('fb.delete_icon'))}
         </button>
       </div>`;
     }
@@ -2630,22 +3549,27 @@ function renderFileBrowser() {
       <button class="btn btn-sm btn-preview"
         data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
         onclick="previewFileByPath(this.dataset.path,this.dataset.name)">
-        ▶ Preview
+        ${escHtml(T('fb.preview'))}
       </button>
       <button class="btn btn-sm btn-transfer"
         data-path="${escHtml(fullPath)}"
         onclick="openNodePicker(this.dataset.path)">
-        📲 Gửi
+        ${escHtml(T('fb.send'))}
       </button>
       <button class="btn btn-sm btn-secondary"
         data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
         onclick="openArchiveCompressSheet(this.dataset.path,this.dataset.name)">
-        📦 Nén
+        ${escHtml(T('fb.compress'))}
+      </button>
+      <button class="btn btn-sm btn-secondary"
+        data-path="${escHtml(fullPath)}" data-name="${escHtml(item.name)}"
+        onclick="renameFileByPath(this.dataset.path,this.dataset.name,this)">
+        ${escHtml(T('fb.rename'))}
       </button>
       ${isArchiveFile ? `<button class="btn btn-sm btn-secondary"
         data-path="${escHtml(fullPath)}"
         onclick="openArchiveExtractSheet(this.dataset.path)">
-        📂 Giải nén
+        ${escHtml(T('fb.extract'))}
       </button>` : ''}
     </div>`;
 
@@ -2662,14 +3586,28 @@ function renderFileBrowser() {
 }
 
 async function deleteFileItem(path, name, btn) {
-  if (!confirm(`Xoá "${name}"?\n\nHành động này không thể hoàn tác.`)) return;
+  if (!confirm(T('fb.delete_confirm', { name }))) return;
   btn.disabled = true;
   try {
     await api('DELETE', '/api/files/delete', { path });
-    toast(`Đã xoá: ${name}`);
+    toast(T('fb.deleted', { name }));
     browseFiles(_browseData.current_path);
   } catch(e) {
-    toast(`Lỗi: ${e.message}`);
+    toast(T('common.error_prefix') + e.message);
+    btn.disabled = false;
+  }
+}
+
+async function renameFileByPath(path, name, btn) {
+  const newName = prompt(T('q.rename_prompt'), name);
+  if (!newName || !newName.trim() || newName.trim() === name) return;
+  btn.disabled = true;
+  try {
+    const r = await api('POST', '/api/files/rename', { path, new_name: newName.trim() });
+    toast(r.detail || T('q.renamed'));
+    browseFiles(_browseData.current_path);
+  } catch(e) {
+    toast(T('common.error_prefix') + e.message);
     btn.disabled = false;
   }
 }
@@ -2721,7 +3659,7 @@ async function submitArchiveCompress() {
   const archiveName = useOrig ? _stripExt(src.name) : (document.getElementById('archc-name').value.trim() || 'archive');
 
   closeArchiveCompressSheet();
-  toast('📦 Đang nén…');
+  toast(T('arc.compressing'));
   try {
     await apiDownload('/api/archive/compress', {
       sources: [src.path],
@@ -2731,7 +3669,7 @@ async function submitArchiveCompress() {
       encrypt_header: encryptHeader,
       individually: false,
     }, `${archiveName}.${fmt}`);
-    toast('✅ Đã nén xong');
+    toast(T('arc.compress_done'));
   } catch(e) {
     toast('❌ ' + e.message);
   }
@@ -2756,14 +3694,14 @@ async function previewArchiveContents() {
   if (!archive_path) return;
   const password = document.getElementById('arche-pw').value;
   const box = document.getElementById('archive-contents-list');
-  box.innerHTML = '<div style="font-size:12px;color:var(--text3)">Đang đọc…</div>';
+  box.innerHTML = `<div style="font-size:12px;color:var(--text3)">${escHtml(T('fb.reading'))}</div>`;
   try {
     const data = await api('POST', '/api/archive/contents', { archive_path, password: password || undefined });
     box.innerHTML = data.members.map(m =>
       `<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)">
         ${m.is_dir ? '📁' : '📄'} ${escHtml(m.name)}${m.is_dir ? '' : ' · ' + fmtSize(m.size)}
       </div>`
-    ).join('') || '<div style="font-size:12px;color:var(--text3)">Archive trống</div>';
+    ).join('') || `<div style="font-size:12px;color:var(--text3)">${escHtml(T('arc.empty'))}</div>`;
   } catch(e) {
     box.innerHTML = `<div style="font-size:12px;color:var(--danger)">❌ ${escHtml(e.message)}</div>`;
   }
@@ -2776,10 +3714,10 @@ async function submitArchiveExtract() {
   const password = document.getElementById('arche-pw').value || undefined;
 
   closeArchiveExtractSheet();
-  toast('📂 Đang giải nén…');
+  toast(T('arc.extracting'));
   try {
     const result = await api('POST', '/api/archive/extract', { archive_path, dest_dir, password });
-    toast(`✅ Đã giải nén ${result.extracted_paths.length} file`);
+    toast(T('arc.extracted_count', { n: result.extracted_paths.length }));
     browseFiles(_browseData.current_path);
   } catch(e) {
     toast('❌ ' + e.message);
@@ -2798,14 +3736,9 @@ function openFileConvertSheet(filePath, fileName) {
   document.getElementById('crf-row').style.display = 'none';
   document.getElementById('crf-slider').value      = '23';
   document.getElementById('crf-val').textContent   = '23';
+  _resetConvertExtras();
 
-  api('GET', '/api/convert/encoders').then(encs => {
-    const grid = document.getElementById('cvenc-grid');
-    grid.innerHTML = encs.map((e, i) =>
-      `<div class="radio-btn ${i===0?'active':''}" data-cvenc="${escHtml(e.key)}"
-            onclick="setCvenc(this)">${escHtml(e.label)}</div>`
-    ).join('');
-  }).catch(() => {});
+  populateConvertOptions();
 
   document.getElementById('convert-overlay').classList.add('open');
 }
@@ -2826,7 +3759,9 @@ function _maybeRenderFileBrowser() {
 
 /* ── Bootstrap ──────────────────────────────────────────────────────── */
 loadCfg();
+loadLang();
 if (cfg.host) {
+  syncLangFromServer();
   ping();
 } else {
   // First launch — open settings immediately

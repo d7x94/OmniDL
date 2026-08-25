@@ -29,20 +29,24 @@ from infrastructure.config.config_manager import ConfigManager
 from ui.theme_qt import apply_theme
 from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T
 from utils.clipboard_monitor import ClipboardMonitor
+from utils.i18n import register as i18n_register
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
+# (tab key, icon, label i18n key, section i18n key) — labels resolve at render
+# time so switching language only needs a retranslate() pass, not a rebuild.
 NAV_ITEMS = [
-    ("home", "↓", "Tải xuống", "TẢI XUỐNG"),
-    ("queue", "≡", "Hàng đợi", "TẢI XUỐNG"),
-    ("batch", "⊞", "Hàng loạt", "TẢI XUỐNG"),
-    ("live_monitor", "◉", "Trực tiếp", "TẢI XUỐNG"),
-    ("convert", "⇄", "Chuyển đổi", "CÔNG CỤ"),
-    ("editor", "✂", "Editor", "CÔNG CỤ"),
-    ("archive", "⧉", "Nén/Giải nén", "CÔNG CỤ"),
-    ("history", "◷", "Lịch sử", "THƯ VIỆN"),
-    ("settings", "⊙", "Cài đặt", "HỆ THỐNG"),
-    ("special_dl", "◆", "Đặc biệt", "HỆ THỐNG"),
+    ("home", "↓", "nav.home", "nav.section.download"),
+    ("queue", "≡", "nav.queue", "nav.section.download"),
+    ("batch", "⊞", "nav.batch", "nav.section.download"),
+    ("live_monitor", "◉", "nav.live_monitor", "nav.section.download"),
+    ("convert", "⇄", "nav.convert", "nav.section.tools"),
+    ("editor", "✂", "nav.editor", "nav.section.tools"),
+    ("archive", "⧉", "nav.archive", "nav.section.tools"),
+    ("history", "◷", "nav.history", "nav.section.library"),
+    ("settings", "⊙", "nav.settings", "nav.section.system"),
+    ("special_dl", "◆", "nav.special_dl", "nav.section.system"),
 ]
 
 _TOAST_COLOR = {
@@ -68,6 +72,11 @@ class MainWindow(QMainWindow):
         self._pill_badges: dict[str, QLabel] = {}
         self._build()
         self._start_clipboard_monitor_if_enabled()
+        # The Web UI can switch the language through POST /api/settings/language,
+        # which flips the process-global catalogue from the API thread. Without
+        # this the desktop kept every widget it had already built in the old
+        # language and only new strings followed, leaving a mixed-language UI.
+        i18n_register(self._on_language_changed)
 
     # ── Build ─────────────────────────────────────────────────────────────
 
@@ -88,7 +97,7 @@ class MainWindow(QMainWindow):
         # Toolbar
         from ui.components.toolbar import Toolbar
 
-        self._toolbar_strip = self._make_collapse_strip("Thanh phân tích", self._expand_toolbar)
+        self._toolbar_strip = self._make_collapse_strip(t("topbar.toolbar_strip"), self._expand_toolbar)
         root.addWidget(self._toolbar_strip)
         self._toolbar_strip.setVisible(False)
 
@@ -106,7 +115,7 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(self._pill_bar, 1)
 
         # Theme toggle button
-        self._theme_btn = QPushButton("☀ Sáng")
+        self._theme_btn = QPushButton(t("topbar.theme_light"))
         self._theme_btn.setFixedSize(80, 28)
         self._theme_btn.clicked.connect(self._toggle_theme)
         top_bar_layout.addWidget(self._theme_btn)
@@ -114,7 +123,7 @@ class MainWindow(QMainWindow):
         # Notification bell
         self._notif_btn = QPushButton("🔔")
         self._notif_btn.setFixedSize(32, 28)
-        self._notif_btn.setToolTip("Thông báo")
+        self._notif_btn.setToolTip(t("topbar.notifications"))
         self._notif_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {T.surface2};
@@ -135,7 +144,7 @@ class MainWindow(QMainWindow):
         self._collapse_nav_btn = QPushButton("∧")
         self._collapse_nav_btn.setFixedSize(24, 28)
         self._collapse_nav_btn.setFlat(True)
-        self._collapse_nav_btn.setToolTip("Ẩn thanh điều hướng")
+        self._collapse_nav_btn.setToolTip(t("topbar.hide_nav"))
         self._collapse_nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._collapse_nav_btn.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
@@ -144,7 +153,7 @@ class MainWindow(QMainWindow):
         self._collapse_nav_btn.clicked.connect(self._collapse_nav)
         top_bar_layout.addWidget(self._collapse_nav_btn)
 
-        self._nav_strip = self._make_collapse_strip("Thanh điều hướng", self._expand_nav)
+        self._nav_strip = self._make_collapse_strip(t("topbar.nav_strip"), self._expand_nav)
         root.addWidget(self._nav_strip)
         self._nav_strip.setVisible(False)
         root.addWidget(self._top_bar)
@@ -203,7 +212,7 @@ class MainWindow(QMainWindow):
         # Register theme callback
         T.register(self._on_theme)
         is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText("🌙 Tối" if not is_dark else "☀ Sáng")
+        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
 
         self.navigate_to("home")
 
@@ -215,8 +224,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        for key, icon, label, _section in NAV_ITEMS:
-            btn = QPushButton(f"{icon}  {label}")
+        for key, icon, label_key, _section in NAV_ITEMS:
+            btn = QPushButton(f"{icon}  {t(label_key)}")
             btn.setObjectName("pill_tab")
             btn.setProperty("active", "false")
             btn.setProperty("tab_key", key)
@@ -355,6 +364,49 @@ class MainWindow(QMainWindow):
     def _open_notification_panel(self) -> None:
         self._notification_panel.toggle()
 
+    # ── Language ──────────────────────────────────────────────────────────
+
+    def _on_language_changed(self, _code: str) -> None:
+        """i18n listener — may fire on the API thread, so marshal to Qt's."""
+        from ui.signals import ui_bridge
+
+        ui_bridge.post(self.retranslate)
+
+    def retranslate(self) -> None:
+        """Re-apply every translated string after a language switch.
+
+        Only the app chrome is handled here; each tab that owns translated
+        text exposes its own retranslate() and is called at the end.
+        """
+        for key, icon, label_key, _section in NAV_ITEMS:
+            btn = self._pill_btns.get(key)
+            if btn is None:
+                continue
+            btn.setText(f"{icon}  {t(label_key)}")
+            btn.setMinimumWidth(0)
+            btn.setMinimumWidth(btn.sizeHint().width())
+
+        is_dark = T.mode not in ("light", "solarized", "lavender")
+        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._notif_btn.setToolTip(t("topbar.notifications"))
+        self._collapse_nav_btn.setToolTip(t("topbar.hide_nav"))
+
+        for strip, label in (
+            (self._toolbar_strip, t("topbar.toolbar_strip")),
+            (self._nav_strip, t("topbar.nav_strip")),
+        ):
+            inner = strip.findChild(QPushButton)
+            if inner is not None:
+                inner.setText(f"∨  {label}")
+
+        for widget in (self._toolbar, self._status_bar, *self._tabs.values()):
+            retranslate = getattr(widget, "retranslate", None)
+            if callable(retranslate):
+                try:
+                    retranslate()
+                except Exception as exc:  # one bad tab must not abort the rest
+                    logger.warning("retranslate failed for %s: %s", type(widget).__name__, exc)
+
     # ── Theme ─────────────────────────────────────────────────────────────
 
     def _toggle_theme(self) -> None:
@@ -364,7 +416,8 @@ class MainWindow(QMainWindow):
         T.set_mode(new_mode)
         self._config.set("theme", new_mode)
         is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText("🌙 Tối" if not is_dark else "☀ Sáng")
+        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self.toast(t("topbar.theme_changed"), "info")
 
     def _on_theme(self) -> None:
         apply_theme()
@@ -441,9 +494,9 @@ class MainWindow(QMainWindow):
         else:
             return
         self.navigate_to("home")
-        home = self._tabs.get("home")
-        if home and hasattr(home, "url_input"):
-            home.url_input.setText(url)
+        toolbar = self.get_toolbar()
+        if toolbar is not None:
+            toolbar.set_url(url)
 
     # ── Toast ─────────────────────────────────────────────────────────────
 
@@ -547,22 +600,26 @@ class MainWindow(QMainWindow):
         if total_active:
             parts = []
             if active_dl:
-                parts.append(f"{len(active_dl)} download(s)")
+                parts.append(t("app.quit.downloads", count=len(active_dl)))
             if active_cv:
-                parts.append(f"{active_cv} conversion(s)")
-            summary = " và ".join(parts)
+                parts.append(t("app.quit.conversions", count=active_cv))
+            summary = t("app.quit.and").join(parts)
             reply = QMessageBox.question(
                 self,
                 "OmniDL",
-                f"{summary} đang chạy.\nĐóng và huỷ tất cả?",
+                t("app.quit.confirm", summary=summary),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
 
-        for t in active_dl:
-            self._service.cancel_download(t.id)
+        for task in active_dl:
+            self._service.cancel_download(task.id)
+
+        editor_tab = self._tabs.get("editor")
+        if editor_tab is not None and hasattr(editor_tab, "_cleanup_preview"):
+            editor_tab._cleanup_preview()
 
         self._config.save()
         self.stop_clipboard_monitor()
@@ -627,6 +684,9 @@ class ServiceFacade:
     def delete_history_entry(self, tid):
         self._svc.delete_history_entry(tid)
 
+    def rename_download(self, task_id: str, new_name: str) -> str:
+        return self._svc.rename_download(task_id, new_name)
+
     def get_history_stats(self):
         return self._svc.get_history_stats()
 
@@ -657,8 +717,8 @@ class ServiceFacade:
     def fetch_thumbnail(self, url: str, width: int, height: int, on_done, on_error) -> None:
         self._svc.fetch_thumbnail(url=url, width=width, height=height, on_done=on_done, on_error=on_error)
 
-    def check_profile_live(self, url: str, on_done, on_error) -> None:
-        self._svc.check_profile_live(url=url, on_done=on_done, on_error=on_error)
+    def check_profile_live(self, url: str, on_done, on_error, deep: bool = False) -> None:
+        self._svc.check_profile_live(url=url, on_done=on_done, on_error=on_error, deep=deep)
 
     def check_tiktok_profile_live(self, url: str, on_done, on_error) -> None:
         self._svc.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)

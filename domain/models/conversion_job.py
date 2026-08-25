@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 class ConversionStatus:
@@ -60,6 +61,14 @@ class ConversionJob:
     speed_preset: str = "balanced"
     custom_crf:   int = 23
     output_codec: str = "h264"
+    # Opt-in extra passes requested at submission time.
+    generate_subtitles: bool = False
+    subtitle_language:  str  = "auto"
+    compute_vmaf:       bool = False
+    # True when the job only transcribes and produces no video output.  Clients
+    # branch on this: a finished subtitles-only job must not look like a
+    # finished conversion, otherwise the "Convert" button disappears for good.
+    subtitles_only:     bool = False
 
     # ── Mutable state ─────────────────────────────────────────────────────
     status:          str   = ConversionStatus.PENDING
@@ -71,6 +80,14 @@ class ConversionJob:
     # UI state (hide "delete" button, show "file removed" label) without
     # polling the filesystem.
     output_deleted:  bool  = False
+    # Absolute path of the generated .srt sidecar (empty when not requested,
+    # or when transcription found no speech).
+    subtitle_filename: str = ""
+    # Reason the subtitle pass produced nothing.  The conversion itself still
+    # succeeded, so this is surfaced as a warning rather than an error.
+    subtitle_error: str = ""
+    # Mean VMAF score of the output against the source (None when not requested).
+    vmaf_score: Optional[float] = None
 
     # ── Timing ────────────────────────────────────────────────────────────
     created_at:  float = field(default_factory=time.time)
@@ -117,4 +134,11 @@ class ConversionJob:
                 "created_at":      self.created_at,
                 "finished_at":     self.finished_at,
                 "output_deleted":  self.output_deleted,
+                "generate_subtitles": self.generate_subtitles,
+                "subtitle_language":  self.subtitle_language,
+                "compute_vmaf":       self.compute_vmaf,
+                "subtitles_only":     self.subtitles_only,
+                "subtitle_filename":  self.subtitle_filename,
+                "subtitle_error":     self.subtitle_error,
+                "vmaf_score":         self.vmaf_score,
             }

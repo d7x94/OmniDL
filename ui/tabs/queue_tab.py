@@ -23,6 +23,7 @@ from domain.enums.download_status import DownloadStatus
 from ui.components.download_item_widget import DownloadItemWidget
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -62,7 +63,7 @@ class QueueTab(QWidget):
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 14)
 
-        self._title_lbl = QLabel("Hàng đợi tải xuống")
+        self._title_lbl = QLabel(t("queue.title"))
         self._title_lbl.setObjectName("page_title")
         hdr_layout.addWidget(self._title_lbl)
 
@@ -72,7 +73,7 @@ class QueueTab(QWidget):
         self._style_count_lbl()
         hdr_layout.addWidget(self._count_lbl)
 
-        self._select_btn = QPushButton("Chọn")
+        self._select_btn = QPushButton(t("queue.select"))
         self._select_btn.setFixedHeight(32)
         self._select_btn.setCheckable(True)
         self._select_btn.setStyleSheet(f"""
@@ -94,11 +95,11 @@ class QueueTab(QWidget):
             }}
         """)
         self._select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._select_btn.setToolTip("Chọn nhiều tác vụ")
+        self._select_btn.setToolTip(t("queue.select_tip"))
         self._select_btn.clicked.connect(self._toggle_select_mode)
         hdr_layout.addWidget(self._select_btn)
 
-        self._clear_btn = QPushButton("Xóa đã xong")
+        self._clear_btn = QPushButton(t("queue.clear_finished"))
         self._clear_btn.setFixedHeight(32)
         self._clear_btn.setStyleSheet(f"""
             QPushButton {{
@@ -133,13 +134,22 @@ class QueueTab(QWidget):
         self._items_layout.setSpacing(8)
         self._items_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self._empty_lbl = QLabel("Không có tác vụ nào\nDán URL vào tab Tải xuống để bắt đầu")
+        self._empty_lbl = QLabel(t("queue.empty"))
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet(f"color: {T.text3}; font-size: 14px;")
         self._items_layout.addWidget(self._empty_lbl)
 
         scroll.setWidget(self._scroll_content)
         layout.addWidget(scroll, 1)
+
+    def retranslate(self) -> None:
+        self._title_lbl.setText(t("queue.title"))
+        self._select_btn.setText(t("queue.select"))
+        self._select_btn.setToolTip(t("queue.select_tip"))
+        self._empty_lbl.setText(t("queue.empty"))
+        self._update_clear_btn_label()
+        for w in self._widgets.values():
+            w.retranslate()
 
     def _poll(self) -> None:
         try:
@@ -181,19 +191,21 @@ class QueueTab(QWidget):
         self._empty_lbl.setVisible(not has_tasks)
 
         active = sum(1 for t in tasks if t.status in DownloadStatus.active_states())
-        self._count_lbl.setText(f"  {active} đang tải  ·  {len(tasks)} tổng  ")
+        self._count_lbl.setText(t("queue.count", active=active, total=len(tasks)))
 
         # Slow down poll when idle
         self._poll_timer.setInterval(500 if active else 2000)
 
     def _on_rename(self, task_id: str, current_path: str) -> None:
         old_name = current_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        new_name, ok = QInputDialog.getText(self, "Đổi tên file", "Tên file mới:", text=old_name)
+        new_name, ok = QInputDialog.getText(
+            self, t("queue.rename_title"), t("queue.rename_label"), text=old_name
+        )
         if not ok or not new_name.strip():
             return
         try:
             self._app.service.rename_download(task_id, new_name.strip())
-        except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "OmniDL", str(exc))
             return
         w = self._widgets.get(task_id)
@@ -230,9 +242,9 @@ class QueueTab(QWidget):
 
     def _update_clear_btn_label(self) -> None:
         if self._select_mode and self._selected_ids:
-            self._clear_btn.setText(f"Xóa đã chọn ({len(self._selected_ids)})")
+            self._clear_btn.setText(t("queue.clear_selected", count=len(self._selected_ids)))
         else:
-            self._clear_btn.setText("Xóa đã xong")
+            self._clear_btn.setText(t("queue.clear_finished"))
 
     def _clear_finished(self) -> None:
         if self._select_mode and self._selected_ids:
@@ -245,21 +257,21 @@ class QueueTab(QWidget):
     def _on_send(self, file_path, restore_btn, task=None, specific_files=None) -> None:
         nodes = self._app.config.taildrop_target_nodes
         if not nodes:
-            self._app.toast("Chưa cấu hình thiết bị đích trong Settings → Taildrop", "warning")
+            self._app.toast(t("queue.no_target"), "warning")
             restore_btn()
             return
         if not self._app.config.taildrop_enabled:
-            self._app.toast("Taildrop chưa được bật trong Settings", "warning")
+            self._app.toast(t("queue.taildrop_off"), "warning")
             restore_btn()
             return
 
         node_list_str = ", ".join(nodes)
 
         def _on_node_done(node: str) -> None:
-            ui_bridge.post(lambda: self._app.toast(f"📲  Đã gửi → {node}", "success"))
+            ui_bridge.post(lambda: self._app.toast(t("queue.sent_to", node=node), "success"))
 
         def _on_node_error(node: str, err: str) -> None:
-            ui_bridge.post(lambda: self._app.toast(f"❌  Gửi thất bại → {node}: {err[:60]}", "error"))
+            ui_bridge.post(lambda: self._app.toast(t("queue.send_failed", node=node, err=err[:60]), "error"))
 
         try:
             self._app.taildrop.send_file_to_nodes(
@@ -270,10 +282,10 @@ class QueueTab(QWidget):
                 task=task,
                 specific_files_override=specific_files,
             )
-            self._app.toast(f"📲  Đang gửi đến {len(nodes)} thiết bị: {node_list_str}", "info")
+            self._app.toast(t("queue.sending", count=len(nodes), nodes=node_list_str), "info")
         except Exception as exc:
             logger.warning("QueueTab _on_send error: %s", exc)
-            self._app.toast(f"❌  Lỗi gửi file: {str(exc)[:80]}", "error")
+            self._app.toast(t("queue.send_error", err=str(exc)[:80]), "error")
         finally:
             QTimer.singleShot(800, restore_btn)
 

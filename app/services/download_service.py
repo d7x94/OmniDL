@@ -153,11 +153,14 @@ class DownloadService:
 
                 # Facebook Story URLs are not handled by yt-dlp or gallery-dl;
                 # skip extract_info and return synthetic MediaInfo immediately.
+                # Permalink-only: is_facebook_story_url() also matches fb.watch,
+                # which fronts ordinary videos.  Stubbing those out here robbed
+                # the user of the real title/format list yt-dlp can resolve.
                 from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
-                    is_facebook_story_url,
+                    is_facebook_story_permalink,
                 )
 
-                if is_facebook_story_url(url):
+                if is_facebook_story_permalink(url):
                     import re as _re  # noqa: PLC0415
 
                     _sm = _re.search(r"/stories/(\d+)", url)
@@ -276,6 +279,13 @@ class DownloadService:
                     or "429" in err_l
                     or "too many requests" in err_l
                 ):
+                    # Initialised before the try: the finally below reads both,
+                    # and _resolve_cookie() / the imports can raise before the
+                    # in-body assignment is reached. An UnboundLocalError there
+                    # escapes _worker entirely, so on_error() is never called and
+                    # the caller hangs until its 180 s analyse timeout.
+                    _tt_cookie_txt = ""
+                    _tt_cookie_is_temp = False
                     try:
                         from utils.tiktok_live_checker import (  # noqa: PLC0415
                             _check_tiktok_live_with_room_id,
@@ -305,8 +315,6 @@ class DownloadService:
                                         )
                             except Exception:
                                 pass
-                        _tt_cookie_txt = ""
-                        _tt_cookie_is_temp = False
                         if _tt_cookie_raw:
                             _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(_tt_cookie_raw)
                         # Resolve short link first if needed.
@@ -563,6 +571,10 @@ class DownloadService:
 
     def clear_history(self) -> None:
         self._history.clear()
+        # Also drop terminal tasks from the manager — otherwise their
+        # MediaInfo/format data stays resident even though the persisted
+        # history record is gone (memory leak: "cleared" history, RAM stays up).
+        self._manager.clear_terminal()
 
     def delete_history_entry(self, task_id: str) -> None:
         self._history.remove(task_id)
@@ -594,9 +606,13 @@ class DownloadService:
 
         safe_name = sanitise_filename(new_name)
         new_path = old_path.parent / safe_name
-        if new_path == old_path:
+        if str(new_path) == str(old_path):
             return str(new_path)
-        if new_path.exists():
+        # new_path.exists() can be True for a case-only rename on case-insensitive
+        # filesystems (Windows) — it resolves back to old_path itself. Compare
+        # inodes so a genuine same-name collision still raises, but a pure case
+        # change (e.g. video.mp4 -> Video.MP4) proceeds instead of silently no-op'ing.
+        if new_path.exists() and new_path.stat().st_ino != old_path.stat().st_ino:
             raise FileExistsError(f"A file named '{safe_name}' already exists")
 
         old_path.rename(new_path)

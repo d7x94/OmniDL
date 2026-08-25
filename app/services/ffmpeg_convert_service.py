@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Callable, Literal, Optional
 
 from utils.ffmpeg_locator import locate_ffmpeg
+from utils.i18n import t
 
 # Suppress console window on Windows for all subprocess calls.
 # subprocess.CREATE_NO_WINDOW is 0x08000000 on Windows; absent on other platforms.
@@ -94,14 +95,14 @@ _PRESETS: dict[str, dict] = {
         "preset": "medium",
         "audio_b": "192k",
         "scale": None,
-        "label": "Chất lượng cao",
+        "label_key": "convert.quality.high.label",
     },
     "standard": {
         "crf": "23",
         "preset": "fast",
         "audio_b": "128k",
         "scale": None,
-        "label": "Chuẩn",
+        "label_key": "convert.quality.standard.label",
     },
     "small": {
         "crf": "28",
@@ -111,14 +112,14 @@ _PRESETS: dict[str, dict] = {
             "scale='if(gt(ih,720),trunc(iw*720/ih/2)*2,trunc(iw/2)*2)'"
             ":'if(gt(ih,720),720,trunc(ih/2)*2)':flags=lanczos"
         ),
-        "label": "File nhỏ (720p)",
+        "label_key": "convert.quality.small.label",
     },
     "custom": {
         "crf": "23",
         "preset": "fast",
         "audio_b": "128k",
         "scale": None,
-        "label": "Tuỳ chỉnh",
+        "label_key": "convert.quality.custom.label",
     },
 }
 
@@ -146,6 +147,20 @@ def _ff_int(val, default: int = 0) -> int:
         return int(val or 0)
     except (ValueError, TypeError):
         return default
+
+
+def escape_filter_path(path: Path) -> str:
+    """Return *path* quoted for use as an FFmpeg filter option value.
+
+    FFmpeg parses filter arguments in two passes, so a Windows path needs
+    forward slashes, a backslash-escaped drive colon, AND single quotes around
+    the whole thing: ``C:\\dir\\f.json`` -> ``'C\\:/dir/f.json'``.  Without the
+    quotes the parser stops at the colon and reports "No option name near ...".
+    Verified against FFmpeg 9.0.1 on Windows.
+    """
+    text = str(path).replace("\\", "/")
+    text = text.replace("'", r"\'").replace(":", r"\:")
+    return f"'{text}'"
 
 
 # ── Public data types ─────────────────────────────────────────────────────────
@@ -193,6 +208,20 @@ class HwEncoderSpec:
     supports_profile_level: bool
     speed_flag: str
     speed_map: dict[str, str]
+    # Values used when supports_profile_level is True.  Most encoders take the
+    # named constants; MediaFoundation registers no names and rejects "main",
+    # so it needs the numeric H.264 profile_idc instead.
+    profile_value: str = "main"
+    level_value: str = "4.1"
+    # Flags emitted verbatim before the quality flag.  Needed by encoders that
+    # require an explicit rate-control mode before their quality value means
+    # anything (MediaFoundation ignores -quality unless -rate_control quality).
+    extra_flags: tuple[str, ...] = ()
+    # True when quality_flag takes a 0-100 "higher is better" percentage
+    # instead of a CRF-style "lower is better" value.  A custom CRF must be
+    # converted before it reaches such an encoder, otherwise the user asking
+    # for CRF 16 (near-lossless) gets quality 16/100 (near-worst).
+    percent_quality: bool = False
 
 
 _HW_ENCODER_CATALOG: dict[str, HwEncoderSpec] = {
@@ -227,6 +256,7 @@ _HW_ENCODER_CATALOG: dict[str, HwEncoderSpec] = {
         supports_profile_level=False,
         speed_flag="",
         speed_map={},
+        percent_quality=True,
     ),
     # ── HEVC / H.265 hardware encoders ────────────────────────────────────
     "nvenc_hevc": HwEncoderSpec(
@@ -278,10 +308,73 @@ _HW_ENCODER_CATALOG: dict[str, HwEncoderSpec] = {
         speed_flag="-quality",
         speed_map={"quality": "quality", "balanced": "balanced", "fast": "speed"},
     ),
+    # ── MediaFoundation (Windows, vendor-neutral) ─────────────────────────
+    # Windows picks whatever GPU is present instead of us naming a vendor, so
+    # this is a fallback GPU path on machines where the NVENC/QSV/AMF probe
+    # fails (old or partially broken vendor drivers).  Accepts software nv12 /
+    # yuv420p frames, so it needs no change to the filter chain.
+    # -quality is 0–100 and HIGHER means better, the inverse of a CRF.
+    "mf": HwEncoderSpec(
+        ffmpeg_codec="h264_mf",
+        quality_flag="-quality",
+        quality_values={"high": "85", "standard": "70", "small": "50"},
+        supports_profile_level=True,
+        # 77 is H.264 profile_idc for Main — the same iPhone-compatible profile
+        # the other encoders get via the name "main", which h264_mf rejects.
+        profile_value="77",
+        speed_flag="",
+        speed_map={},
+        extra_flags=("-rate_control", "quality"),
+        percent_quality=True,
+    ),
+    "mf_hevc": HwEncoderSpec(
+        ffmpeg_codec="hevc_mf",
+        quality_flag="-quality",
+        quality_values={"high": "85", "standard": "70", "small": "50"},
+        supports_profile_level=False,
+        speed_flag="",
+        speed_map={},
+        extra_flags=("-rate_control", "quality"),
+        percent_quality=True,
+    ),
+    "mf_av1": HwEncoderSpec(
+        ffmpeg_codec="av1_mf",
+        quality_flag="-quality",
+        quality_values={"high": "85", "standard": "70", "small": "50"},
+        supports_profile_level=False,
+        speed_flag="",
+        speed_map={},
+        extra_flags=("-rate_control", "quality"),
+        percent_quality=True,
+    ),
 }
 
 # Maps ffmpeg codec string -> catalog key for detection
 _CODEC_TO_KEY: dict[str, str] = {spec.ffmpeg_codec: key for key, spec in _HW_ENCODER_CATALOG.items()}
+
+
+# The two CRF values the preset table uses for its best and smallest tiers.
+# _crf_to_percent_quality interpolates between the encoder's own "high" and
+# "small" percentages using these as the anchors, so a custom CRF lands on the
+# same quality the named tiers would have produced.
+_CRF_ANCHOR_HIGH: float = 18.0
+_CRF_ANCHOR_SMALL: float = 28.0
+
+
+def _crf_to_percent_quality(crf: int, spec: HwEncoderSpec) -> str:
+    """Translate a CRF value onto *spec*'s 0-100 "higher is better" scale.
+
+    VideoToolbox and MediaFoundation take a percentage, not a CRF, so passing
+    the user's custom CRF through verbatim inverted the meaning of the setting:
+    CRF 16 ("give me near-lossless") became quality 16/100 ("give me the worst
+    picture you can").  Clamped to 0-100 so an out-of-range CRF still yields a
+    value FFmpeg accepts.
+    """
+    high = float(spec.quality_values.get("high", "65"))
+    small = float(spec.quality_values.get("small", "35"))
+    frac = (crf - _CRF_ANCHOR_HIGH) / (_CRF_ANCHOR_SMALL - _CRF_ANCHOR_HIGH)
+    value = high + (small - high) * frac
+    return str(int(round(max(0.0, min(100.0, value)))))
 
 # H.264 probe targets — one per GPU brand; sufficient to populate ENCODER_OPTIONS base keys.
 # HEVC/AV1 variants are looked up from _HW_ENCODER_CATALOG at encode time, not from the available set.
@@ -291,6 +384,12 @@ _PROBE_CODECS: list[tuple[str, str]] = [
     ("amf", "h264_amf"),
     ("videotoolbox", "h264_videotoolbox"),
 ]
+
+# MediaFoundation exists only on Windows; probing it elsewhere spends a
+# subprocess to learn nothing.  Listed last so a working vendor encoder is
+# always preferred over the generic Windows path when both are available.
+if sys.platform == "win32":
+    _PROBE_CODECS.append(("mf", "h264_mf"))
 
 # CPU speed-preset mapping
 _CPU_SPEED_MAP: dict[str, str] = {
@@ -307,19 +406,34 @@ ENCODER_OPTIONS: list[tuple[str, str]] = [
     ("qsv", "Intel Quick Sync"),
     ("amf", "AMD AMF"),
     ("videotoolbox", "VideoToolbox (macOS)"),
+    ("mf", "GPU Windows (MediaFoundation)"),
 ]
 
+# (codec key, label i18n key) — resolved at render time so the picker follows
+# the active language.
 CODEC_OPTIONS: list[tuple[str, str]] = [
-    ("h264", "H.264 (tương thích cao nhất)"),
-    ("hevc", "H.265 / HEVC (~30% nhỏ hơn)"),
-    ("av1", "AV1 (~50% nhỏ hơn, cần ff8+)"),
+    ("h264", "convert.codec.h264"),
+    ("hevc", "convert.codec.hevc"),
+    ("av1", "convert.codec.av1"),
 ]
 
+# CPU encoders that can produce each output codec, in order of preference.
+# AV1 has two: libsvtav1 is much faster, but it is compiled into FFmpeg's
+# "full" build only — the "essentials" build that ships in the Windows release
+# has libaom-av1 instead.  Offering AV1 while emitting an encoder the bundled
+# binary does not contain is what made the AV1 option fail in every release.
+_CODEC_CPU_ENCODERS: dict[str, tuple[str, ...]] = {
+    "h264": ("libx264",),
+    "hevc": ("libx265",),
+    "av1": ("libsvtav1", "libaom-av1"),
+}
+
+# (preset key, label i18n key)
 SPEED_OPTIONS: list[tuple[str, str]] = [
     # "quality" → slower encode, better compression (not a quality *level*)
-    ("quality", "Chậm (Nén tốt nhất)"),
-    ("balanced", "Cân bằng"),
-    ("fast", "Nhanh (Nén ít hơn)"),
+    ("quality", "convert.speed.quality"),
+    ("balanced", "convert.speed.balanced"),
+    ("fast", "convert.speed.fast"),
 ]
 
 
@@ -332,6 +446,31 @@ class EncodeSettings:
     speed_preset: str = "balanced"
     custom_quality: int = 23
     output_codec: str = "h264"  # h264|hevc|av1
+    # ── Optional extra passes (both default off — they cost real time) ────
+    # Transcribe the audio to a sidecar .srt via FFmpeg's whisper filter.
+    generate_subtitles: bool = False
+    subtitle_language: str = "auto"
+    subtitle_model: str = "base"
+    # Score the finished file against the source with VMAF (0–100).
+    compute_vmaf: bool = False
+    # Subtitle-only job: skip the video encode entirely and produce just the
+    # .srt next to the source.  Used by the "Tạo phụ đề" button on the desktop
+    # tab and by POST /api/files/subtitles.
+    subtitles_only: bool = False
+
+
+@dataclass
+class ConvertResult:
+    """Everything one conversion produced, beyond the output file itself."""
+
+    output: Path
+    subtitle_path: Optional[Path] = None
+    subtitle_error: str = ""
+    vmaf_score: Optional[float] = None
+    # The encoder actually used, which may differ from the requested one after
+    # a GPU→CPU fallback (see _try_encode_with_fallback).  Empty for jobs that
+    # never encoded video (subtitles-only, MP3 extraction).
+    encoder_key: str = ""
 
 
 # ── Encoder detection cache ───────────────────────────────────────────────────
@@ -386,6 +525,156 @@ def get_available_encoder_options(
     """
     available = detect_available_encoders(ffmpeg_bin=ffmpeg_bin)
     return [(key, label) for key, label in ENCODER_OPTIONS if key in available]
+
+
+# ── Output-codec detection ────────────────────────────────────────────────────
+# Separate from encoder detection: "which GPU can encode" and "which codecs
+# this FFmpeg build was compiled with" are different questions.  A build can
+# have a working GPU and still be unable to produce AV1.
+
+_codec_cache: Optional[dict[str, str]] = None
+_codec_cache_ts: float = 0.0
+_codec_cache_lock: threading.Lock = threading.Lock()
+
+
+def detect_available_codecs(
+    ffmpeg_bin: Optional[Path] = None,
+) -> dict[str, str]:
+    """Return ``{output_codec: cpu_encoder_name}`` for codecs this build supports.
+
+    For each entry in :data:`_CODEC_CPU_ENCODERS` the candidate encoders are
+    tried in order with :func:`_validate_encoder_codec` (the same one-frame test
+    encode used for GPU detection) and the first working one wins.  A codec with
+    no working encoder is omitted entirely, so the UI and the Web API can stop
+    offering it.
+
+    ``h264`` is always present: ``libx264`` is compiled into every FFmpeg build
+    OmniDL ships, and a machine that cannot encode H.264 cannot convert at all.
+
+    Cached for :data:`_ENCODER_CACHE_TTL_S` seconds.  Pass an explicit
+    *ffmpeg_bin* to bypass the cache.
+    """
+    global _codec_cache, _codec_cache_ts  # noqa: PLW0603
+
+    _use_cache = ffmpeg_bin is None
+    if _use_cache:
+        with _codec_cache_lock:
+            if _codec_cache is not None and (time.monotonic() - _codec_cache_ts < _ENCODER_CACHE_TTL_S):
+                return dict(_codec_cache)
+
+    result: dict[str, str] = {}
+
+    if ffmpeg_bin is None:
+        loc = locate_ffmpeg()
+        if loc is None:
+            return {"h264": "libx264"}
+        ffmpeg_bin = Path(loc.ffmpeg_bin)
+
+    for codec, candidates in _CODEC_CPU_ENCODERS.items():
+        for enc in candidates:
+            if _validate_encoder_codec(ffmpeg_bin, enc):
+                result[codec] = enc
+                logger.debug("detect_available_codecs: %s → %s", codec, enc)
+                break
+        else:
+            logger.info(
+                "detect_available_codecs: %s unavailable in this FFmpeg build "
+                "(tried %s) — hidden from the codec list",
+                codec,
+                ", ".join(candidates),
+            )
+
+    result.setdefault("h264", "libx264")
+
+    if _use_cache:
+        with _codec_cache_lock:
+            _codec_cache = dict(result)
+            _codec_cache_ts = time.monotonic()
+    return result
+
+
+def get_available_codec_options(
+    ffmpeg_bin: Optional[Path] = None,
+) -> list[tuple[str, str]]:
+    """Return :data:`CODEC_OPTIONS` filtered to codecs this build can produce."""
+    available = detect_available_codecs(ffmpeg_bin=ffmpeg_bin)
+    return [(key, label) for key, label in CODEC_OPTIONS if key in available]
+
+
+def compute_vmaf(
+    ffmpeg_bin: Path,
+    reference: Path,
+    distorted: Path,
+    timeout_s: float = 1800.0,
+) -> Optional[float]:
+    """Return the mean VMAF score of *distorted* against *reference*, or ``None``.
+
+    VMAF answers "does the converted file still look like the original to a
+    human eye" on a 0–100 scale (Netflix's model; ~93+ is visually transparent,
+    below ~85 is usually noticeable).  ``libvmaf`` is compiled into both the
+    essentials and full FFmpeg builds, so this always works on shipped binaries.
+
+    This is a full extra decode of both files, so it roughly doubles the time a
+    conversion takes — it is opt-in everywhere.  Returns ``None`` on any failure
+    (missing filter, mismatched resolutions, timeout); a quality score is a nice
+    extra, never a reason to fail a conversion the user already has the file for.
+    """
+    with tempfile.TemporaryDirectory(prefix="omnidl_vmaf_") as tmpdir:
+        log_path = Path(tmpdir) / "vmaf.json"
+        # Distorted first, reference second — libvmaf reads input 0 as the
+        # distorted stream.  scale2ref makes a resized output still comparable.
+        lavfi = (
+            "[0:v]setpts=PTS-STARTPTS[dist];"
+            "[1:v]setpts=PTS-STARTPTS[ref];"
+            "[dist][ref]libvmaf=log_path=" + escape_filter_path(log_path) + ":log_fmt=json:shortest=1"
+        )
+        cmd = [
+            str(ffmpeg_bin),
+            "-nostdin",
+            "-i",
+            str(distorted),
+            "-i",
+            str(reference),
+            "-lavfi",
+            lavfi,
+            "-f",
+            "null",
+            "-",
+            "-loglevel",
+            "error",
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=timeout_s,
+                creationflags=_WIN_NO_WINDOW,
+            )
+            if result.returncode != 0:
+                logger.info(
+                    "compute_vmaf: ffmpeg exited %d: %s",
+                    result.returncode,
+                    (result.stderr or b"").decode("utf-8", "replace")[-300:],
+                )
+                return None
+            data = json.loads(log_path.read_text(encoding="utf-8"))
+            score = data.get("pooled_metrics", {}).get("vmaf", {}).get("mean")
+            return round(float(score), 2) if score is not None else None
+        except Exception as exc:
+            logger.info("compute_vmaf: failed: %s", exc)
+            return None
+
+
+def resolve_cpu_encoder(codec: str) -> str:
+    """Return the CPU encoder name to use for *codec* on this machine.
+
+    Falls back to the first documented candidate when detection failed, so the
+    caller still emits a sensible command rather than nothing.
+    """
+    detected = detect_available_codecs()
+    if codec in detected:
+        return detected[codec]
+    return _CODEC_CPU_ENCODERS.get(codec, ("libx264",))[0]
 
 
 # ── Hardware detection ────────────────────────────────────────────────────────
@@ -689,6 +978,7 @@ class FfmpegConvertService:
         on_done: Optional[Callable[[Path], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
         encode_settings: Optional[EncodeSettings] = None,
+        on_result: Optional[Callable[["ConvertResult"], None]] = None,
     ) -> None:
         """Start a background conversion. All callbacks fire on worker thread.
 
@@ -699,17 +989,16 @@ class FfmpegConvertService:
         When encode_settings is provided, its quality field is used instead of
         the *quality* parameter.
         """
-        # When EncodeSettings carries a quality tier, use it as the quality arg
-        # so the preset lookup is consistent.
-        effective_quality: Quality = (
-            encode_settings.quality  # type: ignore[assignment]
-            if encode_settings is not None and encode_settings.quality in ("high", "standard", "small")
-            else quality
-        )
+        # The preset tier is reconciled inside _convert_sync so that every entry
+        # point (convert(), ConvertQueue.submit()) resolves it the same way.
         thread = threading.Thread(
             target=self._run,
-            args=(source, effective_quality, output_dir, on_progress, on_done, on_error),
-            kwargs={"encode_settings": encode_settings, "target_ext": target_ext},
+            args=(source, quality, output_dir, on_progress, on_done, on_error),
+            kwargs={
+                "encode_settings": encode_settings,
+                "target_ext": target_ext,
+                "on_result": on_result,
+            },
             daemon=True,
             name=f"omnidl-convert-{source.stem[:20]}",
         )
@@ -717,7 +1006,7 @@ class FfmpegConvertService:
 
     @staticmethod
     def quality_label(quality: Quality) -> str:
-        return _PRESETS[quality]["label"]
+        return t(_PRESETS[quality]["label_key"])
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -732,6 +1021,7 @@ class FfmpegConvertService:
         encode_settings: Optional[EncodeSettings] = None,
         cancel_event: Optional[threading.Event] = None,
         target_ext: str = "mp4",
+        on_result: Optional[Callable[["ConvertResult"], None]] = None,
     ) -> None:
         try:
             out = self._convert_sync(
@@ -742,13 +1032,14 @@ class FfmpegConvertService:
                 encode_settings,
                 cancel_event=cancel_event,
                 target_ext=target_ext,
+                on_result=on_result,
             )
             if on_done:
                 on_done(out)
         except ConversionCancelledError:
             logger.info("Conversion cancelled: %s", source.name)
             if on_error:
-                on_error("Đã huỷ")
+                on_error(t("convert.cancelled"))
         except Exception as exc:
             logger.error("Conversion failed for %s: %s", source, exc)
             if on_error:
@@ -763,24 +1054,57 @@ class FfmpegConvertService:
         encode_settings: Optional[EncodeSettings] = None,
         cancel_event: Optional[threading.Event] = None,
         target_ext: str = "mp4",
+        on_result: Optional[Callable[["ConvertResult"], None]] = None,
     ) -> Path:
         # Pre-flight cancel check: job may have been cancelled while queued
         if cancel_event is not None and cancel_event.is_set():
-            raise ConversionCancelledError("Đã huỷ")
+            raise ConversionCancelledError(t("convert.cancelled"))
 
         if not source.is_file():
-            raise ConversionError(f"File không tồn tại: {source}")
+            raise ConversionError(t("convert.err.file_missing", path=source))
 
         target_ext = target_ext.lstrip(".").lower() or "mp4"
 
+        # Subtitle-only job: no encode at all, just transcribe the source.
+        if encode_settings is not None and encode_settings.subtitles_only:
+            return self._subtitles_only_sync(
+                source,
+                output_dir,
+                on_progress,
+                encode_settings,
+                cancel_event,
+                on_result,
+            )
+
+        # EncodeSettings is the authority on the preset tier when it carries a
+        # known one.  ConvertQueue.submit() forwards its own *quality* argument
+        # straight to _run(), so without this the queue path silently used the
+        # wrong preset: "small" lost its 720p downscale and "high"/"small" got
+        # the standard 128k audio bitrate instead of 192k/96k.
+        if encode_settings is not None and encode_settings.quality in _PRESETS:
+            quality = encode_settings.quality  # type: ignore[assignment]
+
         # MP3: audio-only extraction — bypass the video encode pipeline entirely
         if target_ext == "mp3":
-            return self._extract_audio_mp3(
+            mp3_ffmpeg_bin = self._locate_ffmpeg_bin()
+            mp3_output = self._extract_audio_mp3(
                 source,
                 output_dir,
                 on_progress,
                 cancel_event=cancel_event,
             )
+            # VMAF scores a video against a video; an MP3 has no video stream,
+            # so only the subtitle pass is meaningful here.
+            self._emit_post_passes(
+                mp3_ffmpeg_bin,
+                source,
+                mp3_output,
+                encode_settings,
+                cancel_event,
+                on_result,
+                allow_vmaf=False,
+            )
+            return mp3_output
 
         ffmpeg_bin = self._locate_ffmpeg_bin()
         preset = _PRESETS.get(quality, _PRESETS["standard"])
@@ -819,7 +1143,7 @@ class FfmpegConvertService:
             except OSError:
                 pass
 
-        output = self._try_encode_with_fallback(
+        output, encoder_key_used = self._try_encode_with_fallback(
             ffmpeg_bin,
             source,
             dest_dir,
@@ -834,7 +1158,147 @@ class FfmpegConvertService:
 
         size_mb = output.stat().st_size / 1_048_576
         logger.info("Done: %s (%.1f MB)", output.name, size_mb)
+
+        # ── Optional extra passes ─────────────────────────────────────────
+        # Both run after the video is already finished and safely renamed, and
+        # neither is allowed to fail the job: the user has a working file, so a
+        # missing .srt or a missing score is a degraded result, not an error.
+        self._emit_post_passes(
+            ffmpeg_bin,
+            source,
+            output,
+            encode_settings,
+            cancel_event,
+            on_result,
+            duration_s=duration_s,
+            encoder_key_used=encoder_key_used,
+        )
         return output
+
+    def _subtitles_only_sync(
+        self,
+        source: Path,
+        output_dir: Optional[Path],
+        on_progress: Optional[Callable[[float], None]],
+        encode_settings: EncodeSettings,
+        cancel_event: Optional[threading.Event],
+        on_result: Optional[Callable[["ConvertResult"], None]],
+    ) -> Path:
+        """Transcribe *source* to a sidecar .srt without re-encoding anything.
+
+        Unlike the post-pass used by a normal conversion, a failure here *is*
+        the job failing: there is no converted video to fall back on, so the
+        exception propagates to ``_run`` and reaches ``on_error``.
+        """
+        from app.services import whisper_subtitle_service as wss
+
+        ffmpeg_bin = self._locate_ffmpeg_bin()
+        dest_dir = output_dir or source.parent
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        duration_s = self._probe_duration(ffmpeg_bin, source)
+
+        srt = wss.generate_srt(
+            ffmpeg_bin,
+            source,
+            dest_dir / f"{source.stem}.srt",
+            duration_s=duration_s,
+            model_key=encode_settings.subtitle_model,
+            language=encode_settings.subtitle_language,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
+        )
+        logger.info("Subtitles-only job done: %s", srt.name)
+        if on_result is not None:
+            on_result(ConvertResult(output=srt, subtitle_path=srt))
+        return srt
+
+    def _emit_post_passes(
+        self,
+        ffmpeg_bin: Path,
+        source: Path,
+        output: Path,
+        encode_settings: Optional[EncodeSettings],
+        cancel_event: Optional[threading.Event],
+        on_result: Optional[Callable[["ConvertResult"], None]],
+        duration_s: Optional[float] = None,
+        allow_vmaf: bool = True,
+        encoder_key_used: str = "",
+    ) -> None:
+        """Run the opt-in passes and hand the outcome to *on_result* if given.
+
+        Whether a pass runs is decided by *encode_settings* alone.  Previously
+        it also required an ``on_result`` callback, so a caller that asked for
+        subtitles but only passed ``on_done`` got no subtitles and no error.
+        """
+        wants_subs = encode_settings is not None and encode_settings.generate_subtitles
+        wants_vmaf = allow_vmaf and encode_settings is not None and encode_settings.compute_vmaf
+        if not wants_subs and not wants_vmaf:
+            if on_result is not None:
+                on_result(ConvertResult(output=output, encoder_key=encoder_key_used))
+            return
+        if duration_s is None:
+            duration_s = self._probe_duration(ffmpeg_bin, source)
+        result = self._run_post_passes(
+            ffmpeg_bin,
+            source,
+            output,
+            duration_s,
+            encode_settings,
+            cancel_event,
+            allow_vmaf=allow_vmaf,
+            encoder_key_used=encoder_key_used,
+        )
+        if on_result is not None:
+            on_result(result)
+
+    def _run_post_passes(
+        self,
+        ffmpeg_bin: Path,
+        source: Path,
+        output: Path,
+        duration_s: float,
+        encode_settings: Optional[EncodeSettings],
+        cancel_event: Optional[threading.Event],
+        allow_vmaf: bool = True,
+        encoder_key_used: str = "",
+    ) -> "ConvertResult":
+        """Run the opt-in subtitle and VMAF passes.
+
+        Only :class:`ConversionCancelledError` escapes; every other failure is
+        recorded on the result, because the user already has a working file.
+        """
+        result = ConvertResult(output=output, encoder_key=encoder_key_used)
+        if encode_settings is None:
+            return result
+
+        if encode_settings.generate_subtitles:
+            from app.services import whisper_subtitle_service as wss
+
+            try:
+                result.subtitle_path = wss.generate_srt(
+                    ffmpeg_bin,
+                    source,
+                    output.with_suffix(".srt"),
+                    duration_s=duration_s,
+                    model_key=encode_settings.subtitle_model,
+                    language=encode_settings.subtitle_language,
+                    cancel_event=cancel_event,
+                )
+            except ConversionCancelledError:
+                raise
+            except Exception as exc:
+                result.subtitle_error = str(exc)
+                logger.warning("Subtitle generation failed for %s: %s", source.name, exc)
+
+        # VMAF is a second full decode of both files.  Running it after the user
+        # already pressed cancel wastes minutes on a result nobody will read.
+        if encode_settings.compute_vmaf and allow_vmaf:
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info("VMAF pass skipped for %s: cancel requested", source.name)
+            else:
+                result.vmaf_score = compute_vmaf(ffmpeg_bin, source, output)
+
+        return result
 
     def _extract_audio_mp3(
         self,
@@ -845,7 +1309,7 @@ class FfmpegConvertService:
     ) -> Path:
         """Extract audio from *source* to MP3 (libmp3lame, 192k)."""
         if cancel_event is not None and cancel_event.is_set():
-            raise ConversionCancelledError("Đã huỷ")
+            raise ConversionCancelledError(t("convert.cancelled"))
 
         ffmpeg_bin = self._locate_ffmpeg_bin()
         dest_dir = output_dir or source.parent
@@ -905,6 +1369,21 @@ class FfmpegConvertService:
         logger.info("MP3 done: %s (%.1f MB)", candidate.name, candidate.stat().st_size / 1_048_576)
         return candidate
 
+    @staticmethod
+    def _effective_encoder_key(encode_settings: Optional[EncodeSettings]) -> str:
+        """Return the encoder key :meth:`_build_cmd` will actually emit flags for.
+
+        Mirrors _build_cmd's catalog lookup: a GPU key with no entry for the
+        requested output codec silently produces a CPU encode, so "cpu" is the
+        honest answer for that combination.
+        """
+        if encode_settings is None or encode_settings.encoder_key == "cpu":
+            return "cpu"
+        key = encode_settings.encoder_key
+        codec = encode_settings.output_codec
+        catalog_key = f"{key}_{codec}" if codec != "h264" else key
+        return key if catalog_key in _HW_ENCODER_CATALOG else "cpu"
+
     def _try_encode_with_fallback(
         self,
         ffmpeg_bin: Path,
@@ -917,31 +1396,30 @@ class FfmpegConvertService:
         encode_settings: Optional[EncodeSettings],
         cancel_event: Optional[threading.Event] = None,
         target_ext: str = "mp4",
-    ) -> Path:
+    ) -> tuple[Path, str]:
         """Attempt encode; if GPU fails, retry with CPU (libx264).
 
-        CPU failures propagate immediately without retry.
+        CPU failures propagate immediately without retry.  Returns the output
+        path plus the encoder key that actually produced it — after a GPU→CPU
+        fallback this is "cpu", not the originally requested key.
         """
         # Resolve "auto" → best available GPU encoder, fallback to CPU
         if encode_settings is not None and encode_settings.encoder_key == "auto":
             avail = get_available_encoder_options()
             gpu_keys = [k for k, _ in avail if k != "cpu"]
-            encode_settings = EncodeSettings(
-                encoder_key=gpu_keys[0] if gpu_keys else "cpu",
-                quality=encode_settings.quality,
-                speed_preset=encode_settings.speed_preset,
-                custom_quality=encode_settings.custom_quality,
-                output_codec=encode_settings.output_codec,
+            encode_settings = dataclass_replace(
+                encode_settings, encoder_key=gpu_keys[0] if gpu_keys else "cpu"
             )
 
-        is_gpu = (
-            encode_settings is not None
-            and encode_settings.encoder_key != "cpu"
-            and encode_settings.encoder_key in _HW_ENCODER_CATALOG
-        )
+        # _build_cmd drops to the CPU encoder when the chosen GPU has no entry
+        # for the chosen codec (e.g. VideoToolbox + AV1).  The job then really
+        # ran on libx264, so it must neither be retried as a "GPU failure" nor
+        # reported to the caller as a GPU encode.
+        effective_key = self._effective_encoder_key(encode_settings)
+        is_gpu = effective_key != "cpu"
 
         try:
-            return self._fresh_encode(
+            output = self._fresh_encode(
                 ffmpeg_bin,
                 source,
                 dest_dir,
@@ -953,6 +1431,7 @@ class FfmpegConvertService:
                 cancel_event=cancel_event,
                 target_ext=target_ext,
             )
+            return output, effective_key
         except ConversionCancelledError:
             raise  # cancelled — never retry
         except ConversionError as exc:
@@ -966,7 +1445,7 @@ class FfmpegConvertService:
             )
             _encoder_cache_invalidate()
             encode_settings = dataclass_replace(encode_settings, encoder_key="cpu")  # type: ignore[union-attr,type-var]  # None guarded by outer check
-            return self._fresh_encode(
+            output = self._fresh_encode(
                 ffmpeg_bin,
                 source,
                 dest_dir,
@@ -978,6 +1457,7 @@ class FfmpegConvertService:
                 cancel_event=cancel_event,
                 target_ext=target_ext,
             )
+            return output, "cpu"
 
     # ── Encode paths ──────────────────────────────────────────────────────
 
@@ -1180,9 +1660,40 @@ class FfmpegConvertService:
             if encode_settings.quality == "custom"
             else _crf_map.get(encode_settings.quality, "32")
         )
+        encoder = resolve_cpu_encoder("av1")
+        if encoder == "libaom-av1":
+            # The bundled "essentials" FFmpeg build has no SVT-AV1.  libaom is
+            # present in both builds; it is slower, and it needs -b:v 0 to
+            # actually run in constant-quality mode instead of ignoring -crf.
+            _aom_cpu_used = {"quality": "4", "balanced": "6", "fast": "8"}
+            return [
+                "-c:v",
+                "libaom-av1",
+                "-cpu-used",
+                _aom_cpu_used.get(encode_settings.speed_preset, "6"),
+                "-crf",
+                crf_val,
+                "-b:v",
+                "0",
+                "-row-mt",
+                "1",
+            ]
         _speed_map = {"quality": "4", "balanced": "7", "fast": "10"}
         svt_preset = _speed_map.get(encode_settings.speed_preset, "7")
         return ["-c:v", "libsvtav1", "-preset", svt_preset, "-crf", crf_val]
+
+    @staticmethod
+    def _build_cpu_flags_for_codec(
+        codec: str,
+        preset: dict,
+        encode_settings: EncodeSettings,
+    ) -> list[str]:
+        """Dispatch to the CPU flag builder for *codec* (h264 when unrecognised)."""
+        if codec == "hevc":
+            return FfmpegConvertService._build_cpu_flags_hevc(preset, encode_settings)
+        if codec == "av1":
+            return FfmpegConvertService._build_cpu_flags_av1(preset, encode_settings)
+        return FfmpegConvertService._build_cpu_flags(preset, encode_settings)
 
     @staticmethod
     def _build_gpu_flags(
@@ -1196,20 +1707,24 @@ class FfmpegConvertService:
         or taken from *encode_settings.custom_quality* when quality is
         ``"custom"``.
         """
-        quality_val = (
-            str(encode_settings.custom_quality)
-            if encode_settings.quality == "custom"
-            else hw_spec.quality_values.get(
+        if encode_settings.quality == "custom":
+            quality_val = (
+                _crf_to_percent_quality(encode_settings.custom_quality, hw_spec)
+                if hw_spec.percent_quality
+                else str(encode_settings.custom_quality)
+            )
+        else:
+            quality_val = hw_spec.quality_values.get(
                 encode_settings.quality,
                 hw_spec.quality_values.get("standard", "23"),
             )
-        )
 
         flags: list[str] = ["-c:v", hw_spec.ffmpeg_codec]
 
         if hw_spec.supports_profile_level:
-            flags += ["-profile:v", "main", "-level:v", "4.1"]
+            flags += ["-profile:v", hw_spec.profile_value, "-level:v", hw_spec.level_value]
 
+        flags += list(hw_spec.extra_flags)
         flags += [hw_spec.quality_flag, quality_val]
 
         if hw_spec.speed_flag and hw_spec.speed_map:
@@ -1308,23 +1823,23 @@ class FfmpegConvertService:
         else:
             encoder_key = encode_settings.encoder_key
             if encoder_key == "cpu":
-                if codec == "hevc":
-                    cmd += FfmpegConvertService._build_cpu_flags_hevc(preset, encode_settings)
-                elif codec == "av1":
-                    cmd += FfmpegConvertService._build_cpu_flags_av1(preset, encode_settings)
-                else:
-                    cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
+                cmd += FfmpegConvertService._build_cpu_flags_for_codec(codec, preset, encode_settings)
             else:
                 catalog_key = f"{encoder_key}_{codec}" if codec != "h264" else encoder_key
-                hw_spec: Optional[HwEncoderSpec] = _HW_ENCODER_CATALOG.get(
-                    catalog_key
-                ) or _HW_ENCODER_CATALOG.get(encoder_key)
+                hw_spec: Optional[HwEncoderSpec] = _HW_ENCODER_CATALOG.get(catalog_key)
                 if hw_spec is None:
+                    # This GPU has no encoder for the requested codec (e.g.
+                    # VideoToolbox has no AV1 entry).  Falling back to the
+                    # encoder_key entry would silently emit H.264 while the user
+                    # believes they asked for AV1, so drop to the CPU encoder
+                    # for the codec they actually chose instead.
                     logger.warning(
-                        "_build_cmd: unknown encoder %r, falling back to libx264",
+                        "_build_cmd: encoder %r has no %s support — using the CPU %s encoder",
                         encoder_key,
+                        codec,
+                        codec,
                     )
-                    cmd += FfmpegConvertService._build_cpu_flags(preset, encode_settings)
+                    cmd += FfmpegConvertService._build_cpu_flags_for_codec(codec, preset, encode_settings)
                 else:
                     cmd += FfmpegConvertService._build_gpu_flags(hw_spec, encode_settings)
 
@@ -1370,6 +1885,7 @@ class FfmpegConvertService:
         on_progress: Optional[Callable[[float], None]],
         watchdog_timeout_s: float = 30.0,
         cancel_event: Optional[threading.Event] = None,
+        timeout_s: Optional[float] = None,
     ) -> None:
         """Execute *cmd*, parse stdout for FFmpeg progress API data.
 
@@ -1391,16 +1907,21 @@ class FfmpegConvertService:
         the full process tree — including any child processes spawned by exotic
         codec wrappers.
 
+        An explicit *timeout_s* overrides the default duration*6 budget.  The
+        whisper subtitle pass needs this: transcription runs slower than real
+        time on a CPU-only machine, so the encode budget would kill it.
+
         Raises :class:`ConversionError` on non-zero exit, overall timeout, or
         watchdog timeout.  Raises :class:`ConversionCancelledError` on cancel.
         """
-        timeout_s = max(
-            60.0,
-            min(
-                duration_s * 6 if duration_s > 0 else 3600.0,
-                14400.0,
-            ),
-        )
+        if timeout_s is None:
+            timeout_s = max(
+                60.0,
+                min(
+                    duration_s * 6 if duration_s > 0 else 3600.0,
+                    14400.0,
+                ),
+            )
 
         popen_kwargs: dict = {
             "stdout": subprocess.PIPE,
@@ -1495,9 +2016,9 @@ class FfmpegConvertService:
         if proc.returncode != 0:
             # Cancelled — raise the specific subclass so callers can distinguish
             if cancel_event is not None and cancel_event.is_set():
-                raise ConversionCancelledError("Đã huỷ")
+                raise ConversionCancelledError(t("convert.cancelled"))
             tail = "\n".join(stderr_lines[-10:])
-            raise ConversionError(f"ffmpeg thoát với lỗi {proc.returncode}.\n{tail}")
+            raise ConversionError(t("convert.err.ffmpeg_exit", code=proc.returncode, tail=tail))
 
         # Log FFmpeg warnings even on success — helps diagnose FLV/TS issues
         # where returncode=0 but frames were dropped or codec errors occurred.
@@ -1631,6 +2152,7 @@ class ConvertQueue:
         on_start: Optional[Callable[[], None]] = None,
         encode_settings: Optional[EncodeSettings] = None,
         target_ext: str = "mp4",
+        on_result: Optional[Callable[["ConvertResult"], None]] = None,
     ) -> Callable[[], None]:
         """Queue a conversion job.  Returns immediately.
 
@@ -1646,7 +2168,7 @@ class ConvertQueue:
             try:
                 if cancel_event.is_set():
                     if on_error:
-                        on_error("Đã huỷ")
+                        on_error(t("convert.cancelled"))
                     return
                 if on_start:
                     on_start()
@@ -1660,6 +2182,7 @@ class ConvertQueue:
                     encode_settings=encode_settings,
                     cancel_event=cancel_event,
                     target_ext=target_ext,
+                    on_result=on_result,
                 )
             finally:
                 self._semaphore.release()

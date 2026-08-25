@@ -4,6 +4,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from utils.tiktok_detection.strategy import StreamConfirmedEndedError
+
 if TYPE_CHECKING:
     from utils.tiktok_detection.strategy import LiveDetectionStrategy
 
@@ -86,6 +88,9 @@ class HealthDaemon:
                 # None = not live, that's fine - strategy is working
                 self._registry.record_probe_success(strategy.name)
                 logger.debug("tiktok_detection: probe %s ok (result=%s)", strategy.name, result)
+            except StreamConfirmedEndedError:
+                # Strategy correctly detected the canary's stream ended - working as intended.
+                self._registry.record_probe_success(strategy.name)
             except RuntimeError as exc:
                 msg = str(exc).lower()
                 if "not found" in msg or "404" in msg:

@@ -772,6 +772,11 @@ class InstagramLiveEngine:
         empties = 0
         cancelled = False
         ffmpeg_err = False
+        # BUG-IG-FORMAT: Instagram can hand back a different delivery format on a
+        # re-capture (DASH .mpd <-> HLS .m3u8).  is_dash drives the FFmpeg input
+        # args, so it has to follow the URL actually being recorded, not the one
+        # captured first.
+        mixed_formats = False
 
         while attempt <= _MAX_RESUME_ATTEMPTS:
             part_path = Path(f"{output_path}.part{attempt}")
@@ -827,6 +832,14 @@ class InstagramLiveEngine:
                     len(parts),
                 )
                 break
+            _new_is_dash = ".mpd" in hls_url.lower()
+            if _new_is_dash != is_dash:
+                logger.info(
+                    "BUG-IG-FORMAT: stream switched to %s -- recording remaining parts with its args",
+                    "DASH" if _new_is_dash else "HLS",
+                )
+                is_dash = _new_is_dash
+                mixed_formats = True
             attempt += 1
 
         # Finalize: nothing usable -> raise; one part -> rename; many -> concat.
@@ -840,6 +853,13 @@ class InstagramLiveEngine:
                 "FFmpeg khong ghi duoc du lieu tu stream (stream da ket thuc hoac URL het han).\n"
                 "Thu lai ngay khi stream dang phat."
             )
+
+        if len(parts) > 1 and mixed_formats:
+            # Parts span both delivery formats; matroska is the only container
+            # that reliably holds every codec DASH and HLS may have produced.
+            output_path = output_path.with_suffix(".mkv")
+            with task._lock:
+                task.filename = str(output_path)
 
         if len(parts) == 1:
             parts[0].replace(output_path)

@@ -44,7 +44,15 @@ Security
 - shell=False on all subprocess calls
 - No user data logged (CDN URLs truncated to 80 chars)
 - Cookie file validated via CWE-22 guard in yt_dlp_engine._resolve_cookie
+- Strategy E (CDP) launches the user's real Brave/Chrome profile with an
+  unauthenticated --remote-debugging-port. For the lifetime of that run, any
+  local process able to reach the port can drive the whole profile — every
+  site's cookies/sessions, not only Kuaishou's — and --disable-gpu-sandbox
+  also narrows the renderer sandbox. This is inherent to the CDP-intercept
+  approach (shared with facebook_story_engine), not a bug to fix here; kept
+  as a deliberate trade-off since it only runs locally and briefly.
 """
+
 from __future__ import annotations
 
 import json
@@ -109,9 +117,14 @@ _PHOTO_ID_RE = re.compile(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_RESOLVE_TIMEOUT = 15   # seconds — HEAD almost always fails from non-CN; 15s is enough
-_API_TIMEOUT     = 25   # seconds — GraphQL / page fetch
-_DL_TIMEOUT      = 30   # seconds — CDN connect timeout
+_RESOLVE_TIMEOUT = 15  # seconds — HEAD almost always fails from non-CN; 15s is enough
+_API_TIMEOUT = 25  # seconds — GraphQL / page fetch
+_DL_TIMEOUT = 30  # seconds — CDN connect timeout
+
+# Total wall-clock budget for extract_info_kuaishou (strategies A-D + CDP).
+# Must stay comfortably under api/server.py's 180s /api/analyse deadline so
+# the client never times out while strategy E is still running.
+_EXTRACT_BUDGET_S = 160.0
 
 _GQL_URL = "https://www.kuaishou.com/graphql"
 
@@ -135,7 +148,7 @@ _PAGE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -146,7 +159,7 @@ _API_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -172,53 +185,48 @@ def is_kuaishou_url(url: str) -> bool:
 
 
 def _get_impersonate_string() -> str:
-    """Return the curl_cffi impersonate string (map VALUE, e.g. 'chrome131').
+    """Return the curl_cffi impersonate string, pinned to a specific Chrome
+    version so it matches the hardcoded UA in _PAGE_HEADERS/_API_HEADERS.
 
-    BUG-TT-10 pattern: curl_cffi >= 0.15 requires the string VALUE from the
-    BrowserTypeLiteral map, not the ImpersonateTarget enum key.
-    Falls back to "chrome" if the map is unavailable.
+    BrowserTypeLiteral is a typing.Literal, not a dict — the previous probe
+    checked isinstance(target_map, dict) against it, which is always False,
+    so this always fell through to the bare "chrome" alias (whatever
+    curl_cffi's current DEFAULT_CHROME happens to be — chrome146 as of
+    curl_cffi 0.16, up from chrome136). Pin explicitly instead of relying on
+    that alias, so a curl_cffi upgrade can't silently move the TLS
+    fingerprint out from under the UA strings below.
     """
     try:
-        from curl_cffi import requests as cffi_req  # noqa: PLC0415
-        target_map = getattr(cffi_req, "BrowserTypeLiteral", None) or getattr(
-            cffi_req, "_BROWSER_TYPE_LITERAL_MAP", None
-        )
-        if target_map and isinstance(target_map, dict):
-            for key in target_map:
-                key_name = getattr(key, "name", None) or str(key)
-                if key_name.lower() == "chrome":
-                    val = target_map[key]
-                    if isinstance(val, str):
-                        return val
+        import typing
+
+        from curl_cffi.requests.impersonate import BrowserTypeLiteral  # noqa: PLC0415
+
+        if "chrome131" in typing.get_args(BrowserTypeLiteral):
+            return "chrome131"
     except Exception:
         pass
     return "chrome"
 
 
-def _make_session(cookie_str: str = "") -> Any:
+def _make_session() -> Any:
+    # Cookies are attached per-request via an explicit "Cookie" header (see each
+    # strategy / download call site) rather than a session-level cookie jar.
+    # A jar entry needs a single fixed `domain=`, but requests here span multiple
+    # hosts (www.kuaishou.com, kwai.com, assorted CDN hosts) — a jar would either
+    # under-send (wrong domain) or over-send (leak across unrelated hosts).
     try:
         from curl_cffi import requests as cffi_req  # noqa: PLC0415
+
         _imp = _get_impersonate_string()
         session: Any = cffi_req.Session(impersonate=_imp)  # type: ignore[arg-type]
-        if cookie_str:
-            for part in cookie_str.split(";"):
-                part = part.strip()
-                if "=" in part:
-                    k, _, v = part.partition("=")
-                    session.cookies.set(k.strip(), v.strip(), domain=".kuaishou.com")
         logger.debug("Kuaishou: curl_cffi session (Chrome impersonation)")
         return session
     except ImportError:
         pass
 
     import requests as req  # noqa: PLC0415
+
     session = req.Session()
-    if cookie_str:
-        for part in cookie_str.split(";"):
-            part = part.strip()
-            if "=" in part:
-                k, _, v = part.partition("=")
-                session.cookies.set(k.strip(), v.strip(), domain=".kuaishou.com")
     logger.debug("Kuaishou: requests session (no TLS impersonation)")
     return session
 
@@ -241,15 +249,16 @@ def _resolve_short_url(url: str, session) -> str:
             if final and final != url and "kuaishou.com" in final:
                 logger.debug(
                     "Kuaishou: short URL resolved (%s): %s -> %s",
-                    method, url, final[:80],
+                    method,
+                    url,
+                    final[:80],
                 )
                 return final
         except Exception as exc:
             logger.debug("Kuaishou: short URL resolve %s failed: %s", method, exc)
 
     logger.warning(
-        "Kuaishou: could not resolve short URL %s — "
-        "photo_id will be wrong (short code, not real ID)",
+        "Kuaishou: could not resolve short URL %s — photo_id will be wrong (short code, not real ID)",
         url,
     )
     return url
@@ -299,14 +308,11 @@ def _strategy_html(session, photo_id: str, cookie_str: str = "") -> tuple | None
         ]
         photo = next((c for c in candidates if c), None)
         if photo:
-            author = (
-                pp.get("initialState", {}).get("singlePhotoPage", {}).get("author") or {}
-            )
+            author = pp.get("initialState", {}).get("singlePhotoPage", {}).get("author") or {}
             return photo, author
 
         logger.debug(
-            "Kuaishou strategy A: photo not in __NEXT_DATA__; pageProps keys: %s; "
-            "initialState keys: %s",
+            "Kuaishou strategy A: photo not in __NEXT_DATA__; pageProps keys: %s; initialState keys: %s",
             list(pp.keys()),
             list((pp.get("initialState") or {}).keys())[:10],
         )
@@ -316,15 +322,13 @@ def _strategy_html(session, photo_id: str, cookie_str: str = "") -> tuple | None
     # Fallback: window.__INITIAL_STATE__
     m2 = re.search(
         r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\});\s*(?:</script>|window\.)",
-        html, re.S,
+        html,
+        re.S,
     )
     if m2:
         try:
             state = json.loads(m2.group(1))
-            photo = (
-                state.get("singlePhotoPage", {}).get("photo")
-                or state.get("photoDetail", {}).get("photo")
-            )
+            photo = state.get("singlePhotoPage", {}).get("photo") or state.get("photoDetail", {}).get("photo")
             if photo:
                 author = state.get("singlePhotoPage", {}).get("author") or {}
                 return photo, author
@@ -360,12 +364,12 @@ def _strategy_html(session, photo_id: str, cookie_str: str = "") -> tuple | None
         candidates = filtered if filtered else cdn_matches
         best = max(candidates, key=len)
         logger.debug(
-            "Kuaishou strategy A: CDN URL found via HTML scan "
-            "(%d matches, %d after filter): %s",
-            len(cdn_matches), len(candidates), best[:80],
+            "Kuaishou strategy A: CDN URL found via HTML scan (%d matches, %d after filter): %s",
+            len(cdn_matches),
+            len(candidates),
+            best[:80],
         )
-        synthetic_photo = {"id": photo_id, "caption": "", "duration": 0, "coverUrl": "",
-                           "photoUrl": best}
+        synthetic_photo = {"id": photo_id, "caption": "", "duration": 0, "coverUrl": "", "photoUrl": best}
         return synthetic_photo, {}
 
     return None
@@ -401,9 +405,7 @@ def _strategy_gql(session, photo_id: str, cookie_str: str = "") -> tuple | None:
     if cookie_str:
         headers["Cookie"] = cookie_str
     try:
-        resp = session.post(
-            _GQL_URL, json=payload, headers=headers, timeout=_API_TIMEOUT
-        )
+        resp = session.post(_GQL_URL, json=payload, headers=headers, timeout=_API_TIMEOUT)
     except Exception as exc:
         logger.debug("Kuaishou strategy B: POST failed (%s)", exc)
         return None
@@ -411,7 +413,8 @@ def _strategy_gql(session, photo_id: str, cookie_str: str = "") -> tuple | None:
     if resp.status_code != 200:
         logger.debug(
             "Kuaishou strategy B: HTTP %d body=%s",
-            resp.status_code, resp.text[:120],
+            resp.status_code,
+            resp.text[:120],
         )
         return None
 
@@ -424,8 +427,7 @@ def _strategy_gql(session, photo_id: str, cookie_str: str = "") -> tuple | None:
     photo = vvd.get("photo")
     if not photo:
         logger.debug(
-            "Kuaishou strategy B: photo=null (did cookie missing or invalid); "
-            "status=%s errors=%s",
+            "Kuaishou strategy B: photo=null (did cookie missing or invalid); status=%s errors=%s",
             vvd.get("status"),
             data.get("errors"),
         )
@@ -437,17 +439,17 @@ def _strategy_gql(session, photo_id: str, cookie_str: str = "") -> tuple | None:
 # ── Strategy C: kwai.com international API ────────────────────────────────────
 
 
-def _strategy_kwai(session, photo_id: str) -> tuple | None:
+def _strategy_kwai(session, photo_id: str, cookie_str: str = "") -> tuple | None:
     payload = {"photoId": photo_id, "pageSource": "PROFILE"}
     kwai_headers = {
         **_API_HEADERS,
         "Origin": "https://www.kwai.com",
         "Referer": f"https://www.kwai.com/short-video/{photo_id}",
     }
+    if cookie_str:
+        kwai_headers["Cookie"] = cookie_str
     try:
-        resp = session.post(
-            _KWAI_FEED_URL, json=payload, headers=kwai_headers, timeout=_API_TIMEOUT
-        )
+        resp = session.post(_KWAI_FEED_URL, json=payload, headers=kwai_headers, timeout=_API_TIMEOUT)
     except Exception as exc:
         logger.debug("Kuaishou strategy C: POST failed (%s)", exc)
         return None
@@ -503,25 +505,15 @@ def _strategy_mobile(session, photo_id: str, cookie_str: str = "") -> tuple | No
     except (json.JSONDecodeError, ValueError):
         return None
 
-    photo = (
-        data.get("photo")
-        or data.get("data", {}).get("photo")
-        or data.get("result", {}).get("photo")
-    )
+    photo = data.get("photo") or data.get("data", {}).get("photo") or data.get("result", {}).get("photo")
     if not photo:
         logger.debug("Kuaishou strategy D: photo not in response; keys=%s", list(data.keys())[:8])
         return None
 
     author = (
-        data.get("author")
-        or data.get("data", {}).get("author")
-        or data.get("result", {}).get("author")
-        or {}
+        data.get("author") or data.get("data", {}).get("author") or data.get("result", {}).get("author") or {}
     )
     return photo, author
-
-
-
 
 
 def _pick_best_video_url(photo: dict) -> Optional[str]:
@@ -532,30 +524,30 @@ def _pick_best_video_url(photo: dict) -> Optional[str]:
         return photo_url
 
     # mainMvUrls — kept for backward compatibility with cached/old responses
-    for entry in (photo.get("mainMvUrls") or []):
+    for entry in photo.get("mainMvUrls") or []:
         url = (entry.get("url") or "").strip()
         if url.startswith("http"):
             logger.debug("Kuaishou: mainMvUrls CDN: %s", url[:80])
             return url
 
-    # hlsPlayUrl — HLS stream fallback
-    hls_url = (photo.get("hlsPlayUrl") or "").strip()
-    if hls_url.startswith("http"):
-        logger.debug("Kuaishou: hlsPlayUrl: %s", hls_url[:80])
-        return hls_url
+    # NOTE: hlsPlayUrl (m3u8 playlist) is intentionally not used — download()
+    # streams the URL as a raw byte copy, which cannot mux an HLS playlist
+    # into a valid MP4. Using it here made _is_valid_mp4 fail downstream and
+    # reported a misleading "CDN URL expired" error.
 
     # videoResource — GQL returns this as opaque scalar JSON (dict or JSON string)
     try:
         vr = photo.get("videoResource")
         if isinstance(vr, str):
             import json as _json  # noqa: PLC0415
+
             vr = _json.loads(vr)
         if isinstance(vr, dict):
             best_url: Optional[str] = None
             best_bitrate = -1
             h264 = vr.get("h264") or {}
-            for adaptation in (h264.get("adaptationSet") or []):
-                for rep in (adaptation.get("representation") or []):
+            for adaptation in h264.get("adaptationSet") or []:
+                for rep in adaptation.get("representation") or []:
                     bitrate = rep.get("avgBitrate") or 0
                     url = (rep.get("url") or "").strip()
                     if url.startswith("http") and bitrate > best_bitrate:
@@ -564,7 +556,8 @@ def _pick_best_video_url(photo: dict) -> Optional[str]:
             if best_url:
                 logger.debug(
                     "Kuaishou: videoResource h264 (bitrate=%d): %s",
-                    best_bitrate, best_url[:80],
+                    best_bitrate,
+                    best_url[:80],
                 )
                 return best_url
     except (KeyError, TypeError, ValueError):
@@ -598,9 +591,7 @@ def _load_cookie_str(config: ConfigManager) -> str:
                 Path(usable).unlink(missing_ok=True)
 
         parts = [
-            f"{c.name}={c.value}"
-            for c in jar
-            if "kuaishou" in (c.domain or "") or "kwai" in (c.domain or "")
+            f"{c.name}={c.value}" for c in jar if "kuaishou" in (c.domain or "") or "kwai" in (c.domain or "")
         ]
         cookie_result = "; ".join(parts)
         # SEC-KS-02: never log raw cookie values — log only redacted key names
@@ -781,6 +772,7 @@ def _cdp_caption_from_url(cdn_url: str, page_url: str) -> str:
         else:
             # Fallback: use current local date so filename always has a date component
             from datetime import date as _date  # noqa: PLC0415
+
             date_str = _date.today().isoformat()
 
     # Prefer real photo_id from resolved URL, fall back to short code from original
@@ -850,11 +842,25 @@ def _strategy_cdp_locked(
             except Exception:
                 pass
 
+    # BUG-KS-LINUX FIX: facebook_story_engine._find_browser_exe raises
+    # "chỉ hỗ trợ Windows và macOS" on any other platform, but the except
+    # clauses below swallowed that and always reported "browser not found" —
+    # telling a Linux user to install Brave/Chrome would never fix anything,
+    # since strategy E's CDP profile handling only supports win32/darwin.
+    if sys.platform not in ("win32", "darwin"):
+        raise RuntimeError(
+            "Kuaishou: phương thức dự phòng cuối cùng (Strategy E) chỉ hỗ trợ "
+            "Windows và macOS.\n\n"
+            "Thử cấu hình cookie Kuaishou trong Settings → Network để kích hoạt "
+            "các phương thức trích xuất khác."
+        )
+
     # ── Locate browser + real profile dir ────────────────────────────────────
     try:
         from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
             _find_browser_exe,
         )
+
         exe = _find_browser_exe("brave")
         browser_name = "brave"
     except Exception:
@@ -862,6 +868,7 @@ def _strategy_cdp_locked(
             from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
                 _find_browser_exe,
             )
+
             exe = _find_browser_exe("chrome")
             browser_name = "chrome"
         except Exception as exc:
@@ -879,25 +886,25 @@ def _strategy_cdp_locked(
             ) from exc
 
     # ── Resolve real profile base dir ─────────────────────────────────────────
+    # sys.platform is guaranteed win32/darwin here (checked above).
     if sys.platform == "win32":
         local_app = Path(os.environ.get("LOCALAPPDATA", ""))
         if browser_name == "brave":
             profile_base = local_app / "BraveSoftware/Brave-Browser/User Data"
         else:
             profile_base = local_app / "Google/Chrome/User Data"
-    elif sys.platform == "darwin":
+    else:
         if browser_name == "brave":
             profile_base = Path.home() / "Library/Application Support/BraveSoftware/Brave-Browser"
         else:
             profile_base = Path.home() / "Library/Application Support/Google/Chrome"
-    else:
-        profile_base = Path()
 
     if profile_base.exists():
         try:
             from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
                 _clear_crashed_flag,
             )
+
             _clear_crashed_flag(profile_base)
         except Exception:
             pass
@@ -952,9 +959,7 @@ def _strategy_cdp_locked(
             last_exc = None
             while time.monotonic() < _cdp_connect_deadline:
                 try:
-                    cdp_browser = pw.chromium.connect_over_cdp(
-                        f"http://127.0.0.1:{port}", timeout=3_000
-                    )
+                    cdp_browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=3_000)
                     break
                 except Exception as exc:
                     last_exc = exc
@@ -1006,6 +1011,7 @@ def _strategy_cdp_locked(
                         return
                     logger.debug("Kuaishou CDP[A]: caught %s", request.url[:80])
                     cdn_url = request.url
+
             page.on("request", _on_request)
 
             # Layer B: response MIME
@@ -1018,10 +1024,9 @@ def _strategy_cdp_locked(
                     if _is_ks_cdn_url(response.url):
                         if not _pid_ok():
                             return
-                        logger.debug(
-                            "Kuaishou CDP[B]: video MIME=%s url=%s", ct, response.url[:80]
-                        )
+                        logger.debug("Kuaishou CDP[B]: video MIME=%s url=%s", ct, response.url[:80])
                         cdn_url = response.url
+
             page.on("response", _on_response)
 
             # Layer C: CDP Network domain
@@ -1043,12 +1048,14 @@ def _strategy_cdp_locked(
                             return
                         logger.debug("Kuaishou CDP[C]: Network domain caught %s", u[:80])
                         cdn_url = u
+
                 cdp_session.on("Network.requestWillBeSent", _on_cdp_request)
             except Exception as exc:
                 logger.debug("Kuaishou CDP[C]: Network domain unavailable: %s", exc)
 
             # Layer D: responseReceived — catches video/* MIME even without .mp4 in URL
             try:
+
                 def _on_cdp_response(params: dict) -> None:
                     nonlocal cdn_url
                     if cdn_url:
@@ -1061,9 +1068,11 @@ def _strategy_cdp_locked(
                                 return
                             logger.debug(
                                 "Kuaishou CDP[D]: responseReceived MIME=%s url=%s",
-                                mime, u[:80],
+                                mime,
+                                u[:80],
                             )
                             cdn_url = u
+
                 cdp_session.on("Network.responseReceived", _on_cdp_response)
             except Exception:
                 pass
@@ -1094,8 +1103,11 @@ def _strategy_cdp_locked(
 
             try:
                 _remaining = _abs_deadline - time.monotonic()
-                page.goto(_nav_url, wait_until="domcontentloaded",
-                          timeout=min(max(_remaining * 0.35, 8.0), 40.0) * 1_000)
+                page.goto(
+                    _nav_url,
+                    wait_until="domcontentloaded",
+                    timeout=min(max(_remaining * 0.35, 8.0), 40.0) * 1_000,
+                )
             except PWTimeout:
                 pass
             except Exception as exc:
@@ -1131,7 +1143,8 @@ def _strategy_cdp_locked(
                 if _pid_valid:
                     logger.debug(
                         "Kuaishou CDP: short URL redirected %s -> real pid=%s",
-                        _pid, _redirected_pid,
+                        _pid,
+                        _redirected_pid,
                     )
                     _nav_url = f"https://www.kuaishou.com/short-video/{_redirected_pid}"
                     _pid = _redirected_pid
@@ -1142,9 +1155,7 @@ def _strategy_cdp_locked(
                     # time; if still blank, return None immediately so user gets a fast
                     # failure instead of a 150s freeze per attempt.
                     _is_blank = (
-                        not _redirected_pid
-                        or _redirected_pid in _RESERVED
-                        or len(_redirected_pid) < 6
+                        not _redirected_pid or _redirected_pid in _RESERVED or len(_redirected_pid) < 6
                     )
                     if _is_blank and "kuaishou.com" not in (_redirected_url or ""):
                         logger.debug(
@@ -1161,15 +1172,11 @@ def _strategy_cdp_locked(
                                     timeout=min(_retry_remaining, 40.0) * 1_000,
                                 )
                             except Exception as _retry_exc:
-                                logger.debug(
-                                    "Kuaishou CDP: retry goto also failed: %s", _retry_exc
-                                )
+                                logger.debug("Kuaishou CDP: retry goto also failed: %s", _retry_exc)
                             _retry_url = page.url
                             _retry_pid = _extract_photo_id(_retry_url)
                             if (
-                                not _retry_pid
-                                or _retry_pid in _RESERVED
-                                or len(_retry_pid) < 6
+                                not _retry_pid or _retry_pid in _RESERVED or len(_retry_pid) < 6
                             ) and "kuaishou.com" not in (_retry_url or ""):
                                 logger.debug(
                                     "Kuaishou CDP: still blank after retry (%r) -- "
@@ -1187,9 +1194,7 @@ def _strategy_cdp_locked(
                             ):
                                 _nav_url = f"https://www.kuaishou.com/short-video/{_retry_valid_pid}"
                                 _pid = _retry_valid_pid
-                                logger.debug(
-                                    "Kuaishou CDP: retry redirect -> real pid=%s", _retry_valid_pid
-                                )
+                                logger.debug("Kuaishou CDP: retry redirect -> real pid=%s", _retry_valid_pid)
                         else:
                             logger.debug(
                                 "Kuaishou CDP: insufficient time for retry (%.1fs) -- "
@@ -1201,7 +1206,8 @@ def _strategy_cdp_locked(
                         logger.debug(
                             "Kuaishou CDP: short URL redirected %s -> real pid=%s "
                             "(ignored -- not a valid pid)",
-                            _pid, _redirected_pid,
+                            _pid,
+                            _redirected_pid,
                         )
             except Exception:
                 pass
@@ -1263,8 +1269,10 @@ def _strategy_cdp_locked(
                     last_poll = now
                     try:
                         val = page.evaluate(_KS_POLL_JS)
-                        if val and val.startswith("http") and (
-                            _is_ks_cdn_url(val) or _KS_CDN_HOST_RE.search(val)
+                        if (
+                            val
+                            and val.startswith("http")
+                            and (_is_ks_cdn_url(val) or _KS_CDN_HOST_RE.search(val))
                         ):
                             logger.debug("Kuaishou CDP[JS]: poll caught %s", val[:80])
                             cdn_url = val
@@ -1282,7 +1290,8 @@ def _strategy_cdp_locked(
                                     logger.debug(
                                         "Kuaishou CDP: auto-advance to %s detected — "
                                         "navigating back to target %s",
-                                        _cur_pid, _target_pid,
+                                        _cur_pid,
+                                        _target_pid,
                                     )
                                     try:
                                         page.goto(
@@ -1387,7 +1396,8 @@ def _strategy_cdp_locked(
     author: dict = {}
     logger.info(
         "Kuaishou strategy E (CDP): captured CDN URL %s (real_pid=%s)",
-        cdn_url[:80], _real_pid,
+        cdn_url[:80],
+        _real_pid,
     )
     return photo, author
 
@@ -1409,20 +1419,19 @@ def extract_info_kuaishou(
       D. kuaishou.com REST info API
       E. yt-dlp built-in extractor (last resort)
     """
+
     def _cancelled() -> bool:
         return bool(cancel_event and cancel_event.is_set())
 
+    _start = time.monotonic()
     cookie_str = _load_cookie_str(config) if config else ""
-    session = _make_session(cookie_str)
+    session = _make_session()
 
     try:
         resolved = _resolve_short_url(url, session)
         photo_id = _extract_photo_id(resolved)
         if not photo_id:
-            raise RuntimeError(
-                f"Không tách được photo_id từ URL: {resolved}\n"
-                "Kiểm tra lại URL Kuaishou."
-            )
+            raise RuntimeError(f"Không tách được photo_id từ URL: {resolved}\nKiểm tra lại URL Kuaishou.")
         logger.debug("Kuaishou: photo_id=%s (resolved from %s)", photo_id, url)
 
         result: tuple | None = None
@@ -1442,7 +1451,7 @@ def extract_info_kuaishou(
             if _cancelled():
                 raise RuntimeError("Kuaishou: đã huỷ.")
             logger.debug("Kuaishou: trying strategy C (kwai.com API)")
-            result = _strategy_kwai(session, photo_id)
+            result = _strategy_kwai(session, photo_id, cookie_str)
 
         if result is None:
             if _cancelled():
@@ -1454,7 +1463,14 @@ def extract_info_kuaishou(
             if _cancelled():
                 raise RuntimeError("Kuaishou: đã huỷ.")
             logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
-            result = _strategy_cdp(resolved, config, timeout=150.0, cancel_event=cancel_event)
+            # BUG-KS-BUDGET FIX: strategies A-D plus short-URL resolution can
+            # burn well over 100s before strategy E even starts. A fixed 150s
+            # CDP timeout on top of that overran api/server.py's 180s analyse
+            # deadline (client sees a timeout while the browser keeps running).
+            # Give strategy E only what's left of the shared budget.
+            _elapsed = time.monotonic() - _start
+            _cdp_timeout = max(20.0, _EXTRACT_BUDGET_S - _elapsed)
+            result = _strategy_cdp(resolved, config, timeout=_cdp_timeout, cancel_event=cancel_event)
 
         if result is None:
             raise RuntimeError(
@@ -1469,8 +1485,8 @@ def extract_info_kuaishou(
 
         photo, author = result
 
-        uploader  = (author.get("name") or "").strip()
-        duration  = int(photo.get("duration") or 0) // 1000  # ms -> s
+        uploader = (author.get("name") or "").strip()
+        duration = int(photo.get("duration") or 0) // 1000  # ms -> s
         thumbnail = photo.get("coverUrl") or ""
 
         video_url = _pick_best_video_url(photo)
@@ -1494,17 +1510,13 @@ def extract_info_kuaishou(
             else photo_id
         )
 
-        # Pass video_url so _clean_caption can extract upload date from CDN path.
-        title = _clean_caption(
-            (photo.get("caption") or "").strip(),
-            photo_id=_effective_id,
-            uploader=uploader,
-            cdn_url=video_url,
-        )
+        title = _clean_caption((photo.get("caption") or "").strip())
 
         logger.info(
             "Kuaishou: extracted — title=%r uploader=%r duration=%ds",
-            title[:50], uploader[:30], duration,
+            title[:50],
+            uploader[:30],
+            duration,
         )
 
         return MediaInfo(
@@ -1522,6 +1534,102 @@ def extract_info_kuaishou(
         )
     finally:
         session.close()
+
+
+# ── download() helpers ────────────────────────────────────────────────────────
+
+
+def _looks_like_photo_id(value: str) -> bool:
+    """True if `value` looks like a bare Kuaishou photo id, not a URL/CDN host."""
+    return bool(
+        value
+        and re.match(r"^[A-Za-z0-9_-]{6,}$", value)
+        and "kuaishou.com" not in value
+        and "ksapisrv.com" not in value
+        and "kwaicdn.com" not in value
+    )
+
+
+def _build_output_path(output_dir: Path, media_info: MediaInfo) -> tuple[Path, Path]:
+    """Return (filename, part_path) for media_info.
+
+    BUG-KS-09: filename pattern unified with yt-dlp platforms:
+      <title> [<photo_id[:12]>].mp4
+    ID bracket makes every file uniquely identifiable regardless of CDN host,
+    matching the [%(id).12B] convention yt-dlp uses for TikTok, YouTube, etc.
+    """
+    photo_id = media_info.video_id or ""
+    id_bracket = f" [{photo_id[:12]}]" if photo_id else ""
+    title_part = _sanitise_filename(media_info.title or "kuaishou")
+    # Mirror yt-dlp trim_file_name=180: cap stem so total path < MAX_PATH.
+    title_part = title_part[: 180 - len(id_bracket)]
+    safe_title = f"{title_part}{id_bracket}"
+    filename = output_dir / f"{safe_title}.mp4"
+    stem = filename.stem
+    counter = 1
+    while filename.exists():
+        filename = output_dir / f"{stem} ({counter}).mp4"
+        counter += 1
+    return filename, filename.with_suffix(".part")
+
+
+def _stream_to_part_file(resp, part_path: Path, task: DownloadTask, on_progress) -> None:
+    """Stream resp's body to part_path, updating task progress/speed/eta.
+
+    Respects task cancellation/pause. Shared by the initial download attempt
+    and the post-expiry retry attempt so both get identical progress reporting
+    and cancellation handling.
+    """
+    total_bytes = int(resp.headers.get("Content-Length", 0) or 0)
+    downloaded = 0
+    chunk_size = 1024 * 256  # 256 KB
+    speed_window: list[tuple[float, int]] = []
+
+    with open(part_path, "wb") as fh:
+        for chunk in resp.iter_content(chunk_size=chunk_size):
+            if task.is_cancellation_requested:
+                break
+            task.wait_if_paused()
+
+            fh.write(chunk)
+            downloaded += len(chunk)
+            now = time.monotonic()
+
+            speed_window.append((now, len(chunk)))
+            speed_window[:] = [(t, b) for t, b in speed_window if now - t <= 3.0]
+            window_bytes = sum(b for _, b in speed_window)
+            window_sec = now - speed_window[0][0] if len(speed_window) > 1 else 1.0
+            speed_bps = window_bytes / max(window_sec, 0.001)
+
+            progress_pct = (downloaded / total_bytes * 100.0) if total_bytes else 0.0
+            eta_s = ""
+            if total_bytes and speed_bps > 0:
+                secs = int((total_bytes - downloaded) / speed_bps)
+                mm, ss = divmod(secs, 60)
+                eta_s = f"{mm:02d}:{ss:02d}"
+
+            with task._lock:
+                task.progress = min(progress_pct, 99.0)
+                task.downloaded_bytes = downloaded
+                task.total_bytes = total_bytes
+                task.speed = _fmt_speed(speed_bps)
+                task.eta = eta_s
+
+            if on_progress:
+                on_progress(task)
+
+
+def _handle_cancel(task: DownloadTask, part_path: Path) -> bool:
+    """If cancellation was requested, clean up part_path and mark task CANCELLED.
+
+    Returns True when the caller should stop (cancellation was handled).
+    """
+    if not task.is_cancellation_requested:
+        return False
+    part_path.unlink(missing_ok=True)
+    with task._lock:
+        task.status = DownloadStatus.CANCELLED
+    return True
 
 
 # ── Engine class ──────────────────────────────────────────────────────────────
@@ -1559,6 +1667,10 @@ class KuaishouEngine:
         if media_info is None:
             raise RuntimeError("KuaishouEngine.download: task.media_info is None")
 
+        # Same threading.Event the task's own cancel button sets — reusing it
+        # (instead of ignoring cancellation here) lets a re-extract triggered
+        # mid-download abort promptly instead of running the full CDP timeout.
+        cancel_event = task._cancel_event
         cdn_url = media_info.url
         cookie_str = _load_cookie_str(self._config)
 
@@ -1588,33 +1700,51 @@ class KuaishouEngine:
             # Short timeout (8s): if CDN is unreachable we skip re-extract and
             # attempt the download directly — better than 150s CDP fallback.
             try:
-                _probe_sess = _make_session(cookie_str)
+                _probe_sess = _make_session()
+                _probe_headers = {
+                    **_PAGE_HEADERS,
+                    "Referer": "https://www.kuaishou.com/",
+                    "Range": "bytes=0-11",
+                }
+                if cookie_str:
+                    _probe_headers["Cookie"] = cookie_str
+                # BUG-KS-PROBE-MEM FIX: stream=True + reading a single bounded
+                # chunk means at most `chunk_size` bytes ever come over the
+                # wire, even when the CDN ignores Range and returns HTTP 200
+                # with the full video body. The previous `.content[:12]` read
+                # (no stream=True) buffered the entire response into memory
+                # first — multiple MB per probe on a server that ignores Range.
                 _probe_resp = _probe_sess.get(
                     cdn_url,
-                    headers={
-                        **_PAGE_HEADERS,
-                        "Referer": "https://www.kuaishou.com/",
-                        "Range": "bytes=0-11",
-                    },
+                    headers=_probe_headers,
                     timeout=8,
+                    stream=True,
                     allow_redirects=True,
                 )
+                _probe_bytes = b""
+                for _chunk in _probe_resp.iter_content(chunk_size=12):
+                    _probe_bytes = _chunk
+                    break
+                _probe_resp.close()
                 _probe_sess.close()
-                _probe_bytes = _probe_resp.content[:12]
-                _probe_is_mp4 = (
-                    len(_probe_bytes) >= 8
-                    and _probe_bytes[4:8] in (b"ftyp", b"moov", b"mdat", b"wide")
+                _probe_is_mp4 = len(_probe_bytes) >= 8 and _probe_bytes[4:8] in (
+                    b"ftyp",
+                    b"moov",
+                    b"mdat",
+                    b"wide",
                 )
                 if _probe_resp.status_code not in (200, 206) or not _probe_is_mp4:
                     logger.debug(
                         "Kuaishou CDN probe: HTTP %d mp4=%s — CDN URL expired, re-extracting",
-                        _probe_resp.status_code, _probe_is_mp4,
+                        _probe_resp.status_code,
+                        _probe_is_mp4,
                     )
                     _need_reextract = True
                 else:
                     logger.debug(
                         "Kuaishou CDN probe: HTTP %d mp4=%s — CDN URL still valid",
-                        _probe_resp.status_code, _probe_is_mp4,
+                        _probe_resp.status_code,
+                        _probe_is_mp4,
                     )
             except Exception as exc:
                 # Network timeout or connection error — NOT a URL expiry signal.
@@ -1646,29 +1776,24 @@ class KuaishouEngine:
                 and "kwaicdn.com" not in _vid_id
             )
             if _is_valid_id:
-                _reextract_url = (
-                    f"https://www.kuaishou.com/short-video/{_vid_id}"
-                )
+                _reextract_url = f"https://www.kuaishou.com/short-video/{_vid_id}"
             else:
                 # Prefer photo_id extracted from the original task URL (page URL)
                 # over any CDN URL that might be stored in task.url (Remote API flow).
                 _ks_m = re.search(
                     r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)",
-                    task.url, re.I,
+                    task.url,
+                    re.I,
                 )
                 if _ks_m:
-                    _reextract_url = (
-                        f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
-                    )
+                    _reextract_url = f"https://www.kuaishou.com/short-video/{_ks_m.group(1)}"
                 elif "v.kuaishou.com" in task.url:
                     # Short URL — avoid server-side resolution (times out on non-CN IP).
                     # Extract the short code and build a kuaishou.com canonical URL
                     # so _resolve_short_url is skipped (it HEAD+GET timeouts 15s each).
                     _short_code_m = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", task.url, re.I)
                     if _short_code_m:
-                        _reextract_url = (
-                            f"https://www.kuaishou.com/short-video/{_short_code_m.group(1)}"
-                        )
+                        _reextract_url = f"https://www.kuaishou.com/short-video/{_short_code_m.group(1)}"
                     else:
                         _reextract_url = task.url
                 else:
@@ -1681,20 +1806,14 @@ class KuaishouEngine:
                     # If video_id contains the real id (len >= 6, no CDN host), use it.
                     # Otherwise there is genuinely nothing to work with — raise early
                     # with a clear message instead of letting 150s CDP run on a CDN URL.
-                    _salvage_id = (
-                        (media_info.video_id or "").strip()
-                        if media_info
-                        else ""
-                    )
+                    _salvage_id = (media_info.video_id or "").strip() if media_info else ""
                     if (
                         _salvage_id
                         and len(_salvage_id) >= 6
                         and "." not in _salvage_id
                         and "/" not in _salvage_id
                     ):
-                        _reextract_url = (
-                            f"https://www.kuaishou.com/short-video/{_salvage_id}"
-                        )
+                        _reextract_url = f"https://www.kuaishou.com/short-video/{_salvage_id}"
                         logger.info(
                             "Kuaishou: Remote API re-extract — salvaged video_id=%s from media_info",
                             _salvage_id,
@@ -1707,37 +1826,17 @@ class KuaishouEngine:
                         )
             logger.info(
                 "Kuaishou: re-extracting fresh CDN URL for task %s via %s",
-                task.id, _reextract_url[:80],
+                task.id,
+                _reextract_url[:80],
             )
-            media_info = extract_info_kuaishou(_reextract_url, self._config)
+            media_info = extract_info_kuaishou(_reextract_url, self._config, cancel_event=cancel_event)
             cdn_url = media_info.url
 
-
         # ── Output path ───────────────────────────────────────────────────
-        output_dir = (
-            Path(task.output_dir) if task.output_dir else self._config.download_dir
-        )
+        output_dir = Path(task.output_dir) if task.output_dir else self._config.download_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # BUG-KS-09 FIX: filename pattern unified with yt-dlp platforms:
-        #   <title> [<photo_id[:12]>].mp4
-        # ID bracket makes every file uniquely identifiable regardless of
-        # CDN host, and matches the [%(id).12B] convention used by yt-dlp
-        # for TikTok, YouTube, etc. photo_id[:12] is sufficient for uniqueness.
-        _photo_id = media_info.video_id or ""
-        _id_bracket = f" [{_photo_id[:12]}]" if _photo_id else ""
-        _title_part = _sanitise_filename(media_info.title or "kuaishou")
-        # Mirror yt-dlp trim_file_name=180: cap stem so total path < MAX_PATH.
-        _title_part = _title_part[:180 - len(_id_bracket)]
-        safe_title = f"{_title_part}{_id_bracket}"
-        filename = output_dir / f"{safe_title}.mp4"
-        stem = filename.stem
-        counter = 1
-        while filename.exists():
-            filename = output_dir / f"{stem} ({counter}).mp4"
-            counter += 1
-
-        part_path = filename.with_suffix(".part")
+        filename, part_path = _build_output_path(output_dir, media_info)
 
         with task._lock:
             task.filename = str(filename)
@@ -1749,11 +1848,14 @@ class KuaishouEngine:
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Referer": "https://www.kuaishou.com/",
         }
-        # Pass cookie_str so CDN requests carry the kuaishou session cookies.
-        # kwaicdn.com signed URLs are tied to the session that issued them;
-        # downloading without the same cookies causes the CDN to return an
-        # HTML error page (HTTP 200 with <!DOCTYPE html> body) instead of the MP4.
-        session = _make_session(cookie_str)
+        # Cookie is attached explicitly so CDN requests carry the kuaishou
+        # session cookies. kwaicdn.com signed URLs are tied to the session
+        # that issued them; downloading without the same cookies causes the
+        # CDN to return an HTML error page (HTTP 200, <!DOCTYPE html> body)
+        # instead of the MP4.
+        if cookie_str:
+            _CDN_HEADERS["Cookie"] = cookie_str
+        session = _make_session()
         try:
             resp = session.get(
                 cdn_url,
@@ -1765,11 +1867,12 @@ class KuaishouEngine:
                 ct = resp.headers.get("content-type", "")
                 logger.debug(
                     "Kuaishou CDN: HTTP %d content-type=%r url=%s",
-                    resp.status_code, ct, cdn_url[:100],
+                    resp.status_code,
+                    ct,
+                    cdn_url[:100],
                 )
                 raise RuntimeError(
-                    f"Kuaishou CDN trả về HTTP {resp.status_code}. "
-                    "URL CDN có thể đã hết hạn — thử lại."
+                    f"Kuaishou CDN trả về HTTP {resp.status_code}. URL CDN có thể đã hết hạn — thử lại."
                 )
 
             # Early content-type check: if CDN returns text/html the URL has
@@ -1788,21 +1891,16 @@ class KuaishouEngine:
                 _vid_id = media_info.video_id or ""
                 _reextract_inline_url: str
                 if _vid_id and re.match(r"^[A-Za-z0-9_-]{6,}$", _vid_id) and "." not in _vid_id:
-                    _reextract_inline_url = (
-                        f"https://www.kuaishou.com/short-video/{_vid_id}"
-                    )
+                    _reextract_inline_url = f"https://www.kuaishou.com/short-video/{_vid_id}"
                 elif re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I):
-                    _m = re.search(
-                        r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I
-                    )
-                    _reextract_inline_url = (
-                        f"https://www.kuaishou.com/short-video/{_m.group(1)}"  # type: ignore[union-attr]
-                    )
+                    _m = re.search(r"kuaishou\.com/(?:short-video|video)/([A-Za-z0-9_-]+)", task.url, re.I)
+                    _reextract_inline_url = f"https://www.kuaishou.com/short-video/{_m.group(1)}"  # type: ignore[union-attr]
                 elif "v.kuaishou.com" in task.url:
                     _sc = re.search(r"v\.kuaishou\.com/([A-Za-z0-9_-]+)", task.url, re.I)
                     _reextract_inline_url = (
                         f"https://www.kuaishou.com/short-video/{_sc.group(1)}"  # type: ignore[union-attr]
-                        if _sc else task.url
+                        if _sc
+                        else task.url
                     )
                 else:
                     # task.url is a CDN URL (Remote API) — cannot navigate to it.
@@ -1812,15 +1910,26 @@ class KuaishouEngine:
                         "Kuaishou CDN trả về HTML nhưng không thể xác định page URL để re-extract.\n"
                         "Remote API cần truyền page URL Kuaishou, không phải CDN URL."
                     )
-                logger.info(
-                    "Kuaishou: inline re-extract via %s", _reextract_inline_url[:80]
+                logger.info("Kuaishou: inline re-extract via %s", _reextract_inline_url[:80])
+                media_info = extract_info_kuaishou(
+                    _reextract_inline_url, self._config, cancel_event=cancel_event
                 )
-                media_info = extract_info_kuaishou(_reextract_inline_url, self._config)
                 cdn_url = media_info.url
+                # BUG-KS-FN FIX: recompute filename/part_path — the re-extract
+                # may have returned a different title/id than the original
+                # media_info the output path above was built from, otherwise
+                # the finished file keeps the stale pre-re-extract name.
+                filename, part_path = _build_output_path(output_dir, media_info)
                 with task._lock:
                     task.media_info = media_info
+                    task.filename = str(filename)
                 cookie_str = _load_cookie_str(self._config)
-                session = _make_session(cookie_str)
+                _CDN_HEADERS = dict(_CDN_HEADERS)
+                if cookie_str:
+                    _CDN_HEADERS["Cookie"] = cookie_str
+                else:
+                    _CDN_HEADERS.pop("Cookie", None)
+                session = _make_session()
                 resp = session.get(
                     cdn_url,
                     headers=_CDN_HEADERS,
@@ -1839,52 +1948,19 @@ class KuaishouEngine:
                         "IP bị chặn hoặc video không còn khả dụng."
                     )
 
-            total_bytes = int(resp.headers.get("Content-Length", 0) or 0)
-            downloaded = 0
-            chunk_size = 1024 * 256  # 256 KB
-            speed_window: list[tuple[float, int]] = []
-
-            with open(part_path, "wb") as fh:
-                for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if task.is_cancellation_requested:
-                        break
-                    task.wait_if_paused()
-
-                    fh.write(chunk)
-                    downloaded += len(chunk)
-                    now = time.monotonic()
-
-                    speed_window.append((now, len(chunk)))
-                    speed_window = [(t, b) for t, b in speed_window if now - t <= 3.0]
-                    window_bytes = sum(b for _, b in speed_window)
-                    window_sec = (
-                        now - speed_window[0][0] if len(speed_window) > 1 else 1.0
-                    )
-                    speed_bps = window_bytes / max(window_sec, 0.001)
-
-                    progress_pct = (downloaded / total_bytes * 100.0) if total_bytes else 0.0
-                    eta_s = ""
-                    if total_bytes and speed_bps > 0:
-                        secs = int((total_bytes - downloaded) / speed_bps)
-                        mm, ss = divmod(secs, 60)
-                        eta_s = f"{mm:02d}:{ss:02d}"
-
-                    with task._lock:
-                        task.progress = min(progress_pct, 99.0)
-                        task.downloaded_bytes = downloaded
-                        task.total_bytes = total_bytes
-                        task.speed = _fmt_speed(speed_bps)
-                        task.eta = eta_s
-
-                    if on_progress:
-                        on_progress(task)
+            try:
+                _stream_to_part_file(resp, part_path, task, on_progress)
+            except Exception:
+                # BUG-KS-PART-LEAK FIX: a mid-stream network error left the
+                # partial file on disk indefinitely — only cancellation and
+                # invalid-MP4 cleaned it up. Clean up here too, then re-raise
+                # so the caller still sees the failure.
+                part_path.unlink(missing_ok=True)
+                raise
         finally:
             session.close()
 
-        if task.is_cancellation_requested:
-            part_path.unlink(missing_ok=True)
-            with task._lock:
-                task.status = DownloadStatus.CANCELLED
+        if _handle_cancel(task, part_path):
             return
 
         if not _is_valid_mp4(part_path):
@@ -1894,7 +1970,8 @@ class KuaishouEngine:
                     _head = _f.read(200)
                 logger.debug(
                     "Kuaishou: invalid MP4 — first bytes: %r (size=%d)",
-                    _head[:80], part_path.stat().st_size,
+                    _head[:80],
+                    part_path.stat().st_size,
                 )
             except Exception:
                 pass
@@ -1902,43 +1979,50 @@ class KuaishouEngine:
 
             # CDN URLs expire quickly (~minutes). If video_id is known, rebuild
             # the canonical URL and re-extract a fresh CDN URL, then retry once.
+            #
+            # BUG-KS-VIDID FIX: the previous guard `vid_id and vid_id != task.url`
+            # compared a bare photo id against a full URL — always true when
+            # vid_id was non-empty, including when vid_id was itself a stray
+            # CDN URL. Use the same id-shaped check as the initial re-extract.
             vid_id = media_info.video_id if media_info else ""
-            if vid_id and vid_id != task.url:
-                logger.info(
-                    "Kuaishou: CDN URL expired, re-extracting via video_id=%s", vid_id
-                )
+            if _looks_like_photo_id(vid_id):
+                logger.info("Kuaishou: CDN URL expired, re-extracting via video_id=%s", vid_id)
                 try:
                     canonical = f"https://www.kuaishou.com/short-video/{vid_id}"
-                    media_info = extract_info_kuaishou(canonical, self._config)
+                    media_info = extract_info_kuaishou(canonical, self._config, cancel_event=cancel_event)
                     cdn_url = media_info.url
                     if not cdn_url or not cdn_url.startswith("http"):
                         raise RuntimeError("re-extract returned no CDN URL")
 
-                    # Pass cookie_str so the retry download also carries session cookies.
-                    _retry_sess = _make_session(cookie_str)
+                    # BUG-KS-FN FIX: rebuild filename/part_path from the fresh
+                    # media_info via the same helper the main path uses — the
+                    # previous ad-hoc rebuild dropped the [id] bracket and the
+                    # 180-char cap that BUG-KS-09 added.
+                    filename, part_path = _build_output_path(output_dir, media_info)
+                    with task._lock:
+                        task.filename = str(filename)
+
+                    _retry_headers = {**_CDN_HEADERS, "Accept": "*/*"}
+                    if cookie_str:
+                        _retry_headers["Cookie"] = cookie_str
+                    _retry_sess = _make_session()
                     try:
                         resp2 = _retry_sess.get(
                             cdn_url,
-                            headers={**_CDN_HEADERS, "Accept": "*/*"},
+                            headers=_retry_headers,
                             stream=True,
                             timeout=_DL_TIMEOUT,
                         )
                         if resp2.status_code == 200:
-                            with open(part_path, "wb") as fh2:
-                                for chunk in resp2.iter_content(1024 * 256):
-                                    fh2.write(chunk)
+                            # BUG-KS-RETRY-PROGRESS FIX: reuse the same streaming
+                            # helper as the main attempt so this retry also
+                            # respects cancellation/pause and reports progress —
+                            # the previous inline loop did neither.
+                            _stream_to_part_file(resp2, part_path, task, on_progress)
                             resp2.close()
+                            if _handle_cancel(task, part_path):
+                                return
                             if _is_valid_mp4(part_path):
-                                # Update filename based on fresh title
-                                safe_title2 = _sanitise_filename(
-                                    media_info.title or media_info.video_id or "video"
-                                )
-                                filename = output_dir / f"{safe_title2}.mp4"
-                                stem2 = filename.stem
-                                counter2 = 1
-                                while filename.exists():
-                                    filename = output_dir / f"{stem2} ({counter2}).mp4"
-                                    counter2 += 1
                                 part_path.rename(filename)
                                 with task._lock:
                                     task.status = DownloadStatus.COMPLETED
@@ -1962,8 +2046,7 @@ class KuaishouEngine:
                     part_path.unlink(missing_ok=True)
 
             raise RuntimeError(
-                "File tải về không hợp lệ (không phải MP4 hoặc quá nhỏ). "
-                "URL CDN có thể đã hết hạn — thử lại."
+                "File tải về không hợp lệ (không phải MP4 hoặc quá nhỏ). URL CDN có thể đã hết hạn — thử lại."
             )
 
         part_path.rename(filename)
@@ -1986,23 +2069,7 @@ class KuaishouEngine:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _extract_upload_date(cdn_url: str) -> str:
-    """Extract upload date string from CDN URL, e.g. /upic/2026/02/25/ -> '2026-02-25'."""
-    dm = re.search(r"/upic/(\d{4})/(\d{2})/(\d{2})/", cdn_url)
-    if dm:
-        return f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}"
-    dm2 = re.search(r"/(?:uc/)?(\d{4})(\d{2})(\d{2})\d{0,6}(?:/|_|\.)", cdn_url)
-    if dm2:
-        return f"{dm2.group(1)}-{dm2.group(2)}-{dm2.group(3)}"
-    return ""
-
-
-def _clean_caption(
-    caption: str,
-    photo_id: str = "",
-    uploader: str = "",
-    cdn_url: str = "",
-) -> str:
+def _clean_caption(caption: str) -> str:
     """Turn a raw Kuaishou caption into a usable filename stem.
 
     BUG-KS-07 FIX: Raw captions contain hashtags (#tag), @mentions with
@@ -2017,12 +2084,14 @@ def _clean_caption(
     3. Collapse runs of whitespace / punctuation.
     4. Truncate to 60 chars so paths stay short on Windows (MAX_PATH = 260).
     5. If the remaining text has no ASCII content (pure Arabic/CJK/etc.), fall
-       back to kuaishou_<uploader>_<date> immediately — Taildrop's NFKD+ascii
+       back to the generic "kuaishou" stem immediately — Taildrop's NFKD+ascii
        encode would reduce it to empty anyway, producing 'file.mp4' on iOS.
-    6. Fall back to kuaishou_<uploader>_<date> if nothing meaningful remains.
+    6. Fall back to the generic "kuaishou" stem if nothing meaningful remains.
+       (The photo-id bracket that makes the filename unique is appended by the
+       output-path builder, not here — see BUG-KS-09.)
     """
     if not caption:
-        return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
+        return "kuaishou"
 
     # Remove @name(InternalID) -> keep display name only
     text = re.sub(r"@([^(\s#@]+)\([^)]*\)", r"\1", caption)
@@ -2036,7 +2105,7 @@ def _clean_caption(
     text = text[:60].strip()
 
     if not text:
-        return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
+        return "kuaishou"
 
     # BUG-KS-08 FIX: Taildrop strips all non-ASCII chars via NFKD+ascii encode.
     # If the caption is pure CJK/non-ASCII with only punctuation surviving
@@ -2045,26 +2114,12 @@ def _clean_caption(
     # fallback — the file was saved as "??????????.mp4" which Taildrop reduced to
     # ",.mp4" on iOS.  Fix: require at least one alphanumeric ASCII character.
     import unicodedata as _ud
+
     _ascii_preview = _ud.normalize("NFKD", text).encode("ascii", errors="ignore").decode("ascii")
     if not re.search(r"[A-Za-z0-9]", _ascii_preview):
-        return _kuaishou_fallback_name(photo_id, uploader, cdn_url)
+        return "kuaishou"
 
     return text
-
-
-def _kuaishou_fallback_name(photo_id: str, uploader: str, cdn_url: str) -> str:
-    """Return the title-part of the fallback stem when caption is unusable.
-
-    Returns "kuaishou" — the ID bracket is appended by the output-path builder
-    so the final filename follows the same pattern as yt-dlp platforms:
-      <title> [<photo_id[:12]>].mp4
-
-    Uploader and date are excluded:
-      - Uploader is always CJK for CN content; ascii/ignore encode yields empty.
-      - Date from CDN path (/upic/YYYY/MM/DD/) is absent on oskwai.com CDN,
-        making names non-deterministic across re-extracts (BUG-KS-09).
-    """
-    return "kuaishou"
 
 
 def _sanitise_filename(name: str) -> str:

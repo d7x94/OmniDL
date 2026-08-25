@@ -324,10 +324,10 @@ class TestIgRateLimiterOnDownloadPath:
 
 
 class TestGalleryDlInstagramPacing:
-    def test_base_cmd_adds_sleep_request_and_user_agent(self):
+    def test_base_cmd_adds_sleep_request_and_browser_profile(self):
         from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
 
-        cfg = MagicMock(proxy="")
+        cfg = MagicMock(proxy="", use_cookies=False)
         engine = GalleryDlEngine(cfg)
 
         with (
@@ -341,7 +341,55 @@ class TestGalleryDlInstagramPacing:
 
         assert "--sleep-request" in cmd
         assert "6.0-12.0" in cmd
-        assert "--user-agent" in cmd
+        # "-o browser=chrome" (not "--user-agent"): gives gallery-dl its own
+        # coherent Chrome header/cipher profile instead of just a UA string.
+        assert "-o" in cmd
+        assert "browser=chrome" in cmd
+
+    def test_base_cmd_uses_cookies_from_browser_when_no_cookie_file(self):
+        from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
+
+        cfg = MagicMock(proxy="", use_cookies=True, cookies_browser="firefox")
+        engine = GalleryDlEngine(cfg)
+
+        with (
+            patch(
+                "infrastructure.downloader.gallery_dl_engine._find_executable",
+                return_value="gallery-dl",
+            ),
+            patch("infrastructure.downloader.yt_dlp_engine._resolve_cookie", return_value=None),
+            patch("infrastructure.downloader.yt_dlp_engine._validate_cookie_path", return_value=None),
+        ):
+            cmd, _cookie_temp = engine._base_cmd(url="https://www.instagram.com/p/ABC123/")
+
+        assert "--cookies-from-browser" in cmd
+        assert "firefox" in cmd
+        assert "--cookies" not in cmd
+
+    def test_base_cmd_prefers_cookie_file_over_browser(self):
+        from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
+
+        cfg = MagicMock(proxy="", use_cookies=True, cookies_browser="firefox")
+        engine = GalleryDlEngine(cfg)
+
+        with (
+            patch(
+                "infrastructure.downloader.gallery_dl_engine._find_executable",
+                return_value="gallery-dl",
+            ),
+            patch(
+                "infrastructure.downloader.yt_dlp_engine._resolve_cookie",
+                return_value="/tmp/fake_cookies.txt",
+            ),
+            patch(
+                "infrastructure.downloader.yt_dlp_engine._prepare_cookie_for_use",
+                return_value=("/tmp/fake_cookies.txt", False),
+            ),
+        ):
+            cmd, _cookie_temp = engine._base_cmd(url="https://www.instagram.com/p/ABC123/")
+
+        assert "--cookies" in cmd
+        assert "--cookies-from-browser" not in cmd
 
     def test_base_cmd_skips_pacing_for_non_instagram_url(self):
         from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine

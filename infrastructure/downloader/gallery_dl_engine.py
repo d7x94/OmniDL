@@ -367,17 +367,28 @@ class GalleryDlEngine:
                 cookie_temp = usable
             cmd += ["--cookies", usable]
             logger.debug("gallery-dl using cookie file: %s", usable)
+        elif self._config.use_cookies and self._config.cookies_browser:
+            # Same precedence as yt_dlp_engine: cookie file wins when set,
+            # browser cookies only as the fallback. Previously gallery-dl
+            # never saw this setting at all, so users who chose "cookies
+            # from browser" (no cookie file) got logged-out gallery-dl runs
+            # for Instagram/Twitter/Facebook photo posts.
+            cmd += ["--cookies-from-browser", self._config.cookies_browser]
+            logger.debug("gallery-dl using cookies from browser: %s", self._config.cookies_browser)
 
         if self._config.proxy:
             cmd += ["--proxy", self._config.proxy]
 
         # BUG-IG-ANTIBOT: gallery-dl runs bare otherwise — stock UA, no
-        # request pacing. Instagram image/gallery posts get the same browser
-        # UA and jittered inter-request delay as the rest of the app.
+        # request pacing. Instagram image/gallery posts get a jittered
+        # inter-request delay and a full Chrome header profile.
+        # "-o browser=chrome" (not "--user-agent") because gallery-dl's own
+        # browser profiles pair the UA with matching sec-ch-ua client hints
+        # and TLS cipher order (extractor/common.py HEADERS/CIPHERS) —
+        # overriding only the UA string left those other headers on
+        # gallery-dl's Firefox default, disagreeing with a Chrome UA.
         if url and platform_for_url(url) == "instagram":
-            from utils.tiktok_live_checker import _CHROME_UA  # noqa: PLC0415
-
-            cmd += ["--sleep-request", "6.0-12.0", "--user-agent", _CHROME_UA]
+            cmd += ["--sleep-request", "6.0-12.0", "-o", "browser=chrome"]
 
         return cmd, cookie_temp
 
@@ -765,23 +776,18 @@ class GalleryDlEngine:
         # videos, so we download them here with yt-dlp which performs a
         # proper bestvideo+bestaudio merge via FFmpeg.
         #
-        # Skip the rescue pass entirely when gallery-dl found only images —
-        # a pure-image carousel will always return "No video formats found"
-        # from yt-dlp, wasting ~10s and spamming ERROR lines into the log.
+        # BUG-IG-MIX: the rescue must run for EVERY /p/ carousel.  A previous
+        # version skipped it when all gallery-dl files were images, reasoning
+        # that such a post contains no video.  That check can never be false:
+        # the --filter above forbids gallery-dl from writing a video file, so
+        # a mixed photo+video post looks exactly like a photo-only post and
+        # its videos were silently dropped.  A photo-only post costs one extra
+        # yt-dlp extraction here (ignoreerrors=True → returns []).
         _current_gdl_files: list[str] = getattr(task, "gallery_dl_files", None) or []
 
         _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
-        _img_exts_set = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic"})
 
-        # Determine whether the carousel contains any video items by checking
-        # whether gallery-dl downloaded video files despite the --filter, OR
-        # by asking yt-dlp extract_info for the playlist item count vs image count.
-        # Simpler heuristic: if ALL gallery-dl files are images → skip rescue.
-        _all_images_only = bool(_current_gdl_files) and all(
-            Path(f).suffix.lower() in _img_exts_set for f in _current_gdl_files
-        )
-
-        if _is_ig_carousel and not task.is_cancellation_requested and not _all_images_only:
+        if _is_ig_carousel and not task.is_cancellation_requested:
             from utils.ffmpeg_locator import get_ffmpeg_path  # noqa: PLC0415
 
             _ffmpeg_dir = get_ffmpeg_path()
@@ -809,8 +815,14 @@ class GalleryDlEngine:
 
             # Determine output directory for yt-dlp videos — same folder as
             # gallery-dl images so Taildrop zips everything together.
+            # BUG-IG-MIX: a video-only post gives gallery-dl nothing to write,
+            # so there is no image to borrow the folder from.  Fall back to the
+            # per-post slug folder instead of None — None makes yt-dlp create a
+            # nested "<uploader>/" subdir and splits the post across two dirs.
             _image_files = [Path(f) for f in _current_gdl_files if Path(f).is_file()]
-            _video_out_dir: Path | None = _image_files[0].parent if _image_files else None
+            _video_out_dir: Path | None = (
+                _image_files[0].parent if _image_files else (output_dir if _is_post_isolated else None)
+            )
 
             # Prepare cookie — reuse the decrypted temp if still alive.
             _vid_cookie: str | None = None
@@ -862,9 +874,10 @@ class GalleryDlEngine:
                     len(video_files),
                 )
             else:
-                logger.warning(
-                    "Instagram carousel: yt-dlp could not download videos — "
-                    "carousel may have images only or video download failed"
+                logger.info(
+                    "Instagram carousel: no video items rescued for %s — "
+                    "post is image-only, or the video download failed",
+                    task.url,
                 )
 
         # Always clean up the decrypted temp cookie file after subprocess exits.

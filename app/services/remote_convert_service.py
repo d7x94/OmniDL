@@ -33,16 +33,30 @@ Typical lifecycle
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from app.services.ffmpeg_convert_service import (
     _HW_ENCODER_CATALOG,
+    SUPPORTED_EXTS,
     ConvertQueue,
+    ConvertResult,
     EncodeSettings,
+    get_available_codec_options,
     get_available_encoder_options,
+)
+from app.services.whisper_subtitle_service import (
+    DEFAULT_MODEL_KEY,
+    TRANSCRIBABLE_EXTS,
+    VALID_LANGUAGES,
+    WHISPER_MODELS,
+    is_transcribable,
+    is_whisper_supported,
+    model_label,
 )
 from domain.models.conversion_job import ConversionJob, ConversionStatus
 
@@ -58,12 +72,70 @@ logger = logging.getLogger(__name__)
 _VALID_ENCODERS: frozenset[str] = frozenset(_HW_ENCODER_CATALOG.keys()) | {"cpu", "auto"}
 _VALID_QUALITIES: frozenset[str] = frozenset({"high", "standard", "small", "custom"})
 _VALID_SPEEDS: frozenset[str] = frozenset({"quality", "balanced", "fast"})
-_VALID_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1"})
-_VALID_EXTS: frozenset[str] = frozenset({"mp4", "mkv", "mov", "avi", "webm", "mp3"})
+# Superset of every codec OmniDL knows about.  The *effective* allowlist is
+# narrower and computed at request time from the FFmpeg binary that is actually
+# installed (see _allowed_codecs) — the shipped Windows build cannot encode AV1
+# with SVT-AV1, and accepting a codec the binary cannot produce means handing
+# the user a job that is guaranteed to fail.
+_KNOWN_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1"})
+_VALID_SUBTITLE_LANGUAGES: frozenset[str] = VALID_LANGUAGES
+_VALID_SUBTITLE_MODELS: frozenset[str] = frozenset(m.key for m in WHISPER_MODELS)
+# "webm" is deliberately absent: the conversion pipeline produces H.264 + AAC
+# and then remuxes with "-c copy", and the WebM muxer accepts only VP8/VP9/AV1
+# video with Vorbis/Opus audio.  Every webm request therefore failed at the
+# remux step, after the full encode had already run.
+_VALID_EXTS: frozenset[str] = frozenset({"mp4", "mkv", "mov", "avi", "mp3"})
+# Codecs each container's muxer refuses, verified against FFmpeg 8 with a
+# "-c copy" remux: the MOV muxer reports "av1 only supported in MP4 and AVIF".
+# Catching the combination here beats running the full (slow) encode and only
+# then dying at the remux step — the same reasoning that excluded "webm" above.
+_EXT_REJECTED_CODECS: dict[str, frozenset[str]] = {
+    "mov": frozenset({"av1"}),
+}
+# Extensions that may be used as a *source* for an audio-only (mp3) job.
+# Video sources come from SUPPORTED_EXTS; these are the audio containers a
+# user can reasonably ask to re-encode as MP3 from the file browser.
+_AUDIO_SOURCE_EXTS: frozenset[str] = frozenset(
+    {"mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma"}
+)
 _CRF_MIN, _CRF_MAX = 0, 51
 
 # Maximum number of jobs kept in memory (oldest terminal jobs purged first)
 MAX_JOBS = 100
+# Maximum number of jobs allowed to be PENDING/CONVERTING at once, independent
+# of MAX_JOBS.  Without this, a client that fires job-creation requests in a
+# tight loop starts one blocked OS thread per call (ConvertQueue.submit()) —
+# MAX_JOBS only purges terminal jobs, so an all-active registry never shrinks.
+MAX_ACTIVE_JOBS = 20
+
+# Matches an absolute filesystem path (Windows drive-letter or POSIX) so it
+# can be redacted down to just the filename before an error message leaves
+# the server — raw ConversionError/SubtitleError text can embed the source
+# file's or a temp file's full path (e.g. "File không tồn tại: D:\Taive\...",
+# or an ffmpeg stderr tail mentioning a path), and job.error_msg /
+# job.subtitle_error are returned verbatim to any client holding the shared
+# API token.  The POSIX branch excludes a "/" preceded by ":", "/", or a word
+# character so a doc URL ffmpeg sometimes prints (e.g. "see
+# https://trac.ffmpeg.org/...") is left untouched instead of being mangled.
+_PATH_RE = re.compile(r"(?<![:\w/])/[^\s'\"]+|[A-Za-z]:\\[^\s'\"]+")
+
+
+def _redact_paths(msg: str) -> str:
+    """Replace absolute filesystem paths in *msg* with just their basename."""
+    return _PATH_RE.sub(lambda m: Path(m.group(0)).name, msg)
+
+
+def _allowed_codecs() -> frozenset[str]:
+    """Return the output codecs this machine's FFmpeg can actually encode.
+
+    Backed by the same cached probe the desktop Convert tab uses, so this costs
+    one test-encode per codec every 5 minutes, not one per request.
+    """
+    try:
+        return frozenset(key for key, _ in get_available_codec_options())
+    except Exception:
+        # Detection is best-effort; never let a probe failure block conversion.
+        return frozenset({"h264"})
 
 
 class RemoteConvertService:
@@ -110,6 +182,11 @@ class RemoteConvertService:
         custom_crf: int = 23,
         target_ext: str = "mp4",
         output_codec: str = "h264",
+        generate_subtitles: bool = False,
+        subtitle_language: str = "auto",
+        subtitle_model: str = DEFAULT_MODEL_KEY,
+        compute_vmaf: bool = False,
+        subtitles_only: bool = False,
     ) -> ConversionJob:
         """
         Validate settings, create a ConversionJob, and dispatch to ConvertQueue.
@@ -138,12 +215,55 @@ class RemoteConvertService:
                 f"speed_preset '{speed_preset}' is not allowed. Valid values: {sorted(_VALID_SPEEDS)}"
             )
         custom_crf = max(_CRF_MIN, min(_CRF_MAX, int(custom_crf)))
-        if output_codec not in _VALID_CODECS:
+        allowed_codecs = _allowed_codecs()
+        if output_codec not in allowed_codecs:
+            if output_codec in _KNOWN_CODECS:
+                raise ValueError(
+                    f"output_codec '{output_codec}' is not supported by the FFmpeg build "
+                    f"installed on this machine. Available: {sorted(allowed_codecs)}"
+                )
             raise ValueError(
-                f"output_codec '{output_codec}' is not allowed. Valid values: {sorted(_VALID_CODECS)}"
+                f"output_codec '{output_codec}' is not allowed. Valid values: {sorted(allowed_codecs)}"
             )
+        if subtitle_language not in _VALID_SUBTITLE_LANGUAGES:
+            raise ValueError(
+                f"subtitle_language '{subtitle_language}' is not allowed. "
+                f"Valid values: {sorted(_VALID_SUBTITLE_LANGUAGES)}"
+            )
+        if subtitle_model not in _VALID_SUBTITLE_MODELS:
+            raise ValueError(
+                f"subtitle_model '{subtitle_model}' is not allowed. "
+                f"Valid values: {sorted(_VALID_SUBTITLE_MODELS)}"
+            )
+        if subtitles_only and not generate_subtitles:
+            raise ValueError("subtitles_only requires generate_subtitles=True")
+        if generate_subtitles and not is_whisper_supported():
+            raise ValueError("Subtitle generation is unavailable: this FFmpeg build has no whisper filter.")
         if target_ext not in _VALID_EXTS:
             raise ValueError(f"target_ext '{target_ext}' is not allowed. Valid values: {sorted(_VALID_EXTS)}")
+        if output_codec in _EXT_REJECTED_CODECS.get(target_ext, frozenset()):
+            raise ValueError(
+                f"output_codec '{output_codec}' cannot be stored in a .{target_ext} file. "
+                f"Use target_ext 'mp4' or 'mkv' instead."
+            )
+        if not subtitles_only:
+            _src_ext = file_path.suffix.lower().lstrip(".")
+            _allowed_src = (
+                SUPPORTED_EXTS | _AUDIO_SOURCE_EXTS if target_ext == "mp3" else SUPPORTED_EXTS
+            )
+            if _src_ext not in _allowed_src:
+                # Without this an image, archive or subtitle file picked from
+                # the file browser queued a job that always died on a raw
+                # FFmpeg error.  start_subtitles() already guards its own path
+                # with is_transcribable(); this is the encode-path equivalent.
+                raise ValueError(
+                    f"'{file_path.name}' is not a convertible media file. "
+                    f"Allowed extensions: {sorted(_allowed_src)}"
+                )
+        if compute_vmaf and target_ext == "mp3":
+            # VMAF compares two video streams; an MP3 output has none.  Say so
+            # instead of accepting the flag and quietly dropping it.
+            raise ValueError("compute_vmaf is not available for target_ext 'mp3' (audio-only output).")
 
         # Resolve "auto" → best available GPU encoder, fallback to CPU
         if encoder_key == "auto":
@@ -160,11 +280,27 @@ class RemoteConvertService:
             speed_preset=speed_preset,
             custom_crf=custom_crf,
             output_codec=output_codec,
+            generate_subtitles=generate_subtitles,
+            subtitle_language=subtitle_language,
+            compute_vmaf=compute_vmaf,
+            subtitles_only=subtitles_only,
             status=ConversionStatus.PENDING,
         )
 
         with self._lock:
             self._purge_old_jobs()
+            active = sum(
+                1
+                for j in self._jobs.values()
+                if j.status in (ConversionStatus.PENDING, ConversionStatus.CONVERTING)
+            )
+            if active >= MAX_ACTIVE_JOBS:
+                raise ValueError(
+                    f"Too many convert/subtitle jobs in progress (max {MAX_ACTIVE_JOBS}). "
+                    "Wait for one to finish before starting another."
+                )
+            while job.job_id in self._jobs:
+                job.job_id = uuid.uuid4().hex[:8]
             self._jobs[job.job_id] = job
 
         # ── Dispatch ──────────────────────────────────────────────────────
@@ -174,6 +310,11 @@ class RemoteConvertService:
             speed_preset=speed_preset,
             custom_quality=custom_crf,
             output_codec=output_codec,
+            generate_subtitles=generate_subtitles,
+            subtitle_language=subtitle_language,
+            subtitle_model=subtitle_model,
+            compute_vmaf=compute_vmaf,
+            subtitles_only=subtitles_only,
         )
 
         def _on_start() -> None:
@@ -188,13 +329,27 @@ class RemoteConvertService:
                 job.progress = pct
             self._bus.publish_convert_progress(job=job)
 
+        def _on_result(result: ConvertResult) -> None:
+            with job._lock:
+                job.subtitle_filename = str(result.subtitle_path) if result.subtitle_path else ""
+                job.subtitle_error = _redact_paths(result.subtitle_error) if result.subtitle_error else ""
+                job.vmaf_score = result.vmaf_score
+                # The actual encoder used, which may differ from the requested
+                # one after a GPU→CPU fallback inside _try_encode_with_fallback.
+                # Empty for jobs that never touched the video encode path
+                # (subtitles-only) — leave job.encoder_key as set at creation.
+                if result.encoder_key:
+                    job.encoder_key = result.encoder_key
+
         def _on_done(output_path: Path) -> None:
             with job._lock:
                 job.status = ConversionStatus.COMPLETED
                 job.progress = 100.0
-                job.output_filename = str(output_path)
+                # A subtitles-only job produces no video; leaving
+                # output_filename empty keeps the client from offering a
+                # "download the converted video" button for a .srt.
+                job.output_filename = "" if subtitles_only else str(output_path)
                 job.finished_at = time.time()
-                job.encoder_key = encode_settings.encoder_key
             self._bus.publish_convert_completed(job=job)
             logger.info(
                 "RemoteConvert: completed job %s → %s",
@@ -206,7 +361,7 @@ class RemoteConvertService:
             # send_mode="ask", or target_node is empty — all guards already
             # live inside TaildropService; safe to call unconditionally.
             # Never raises — any failure is logged by TaildropService.
-            if self._taildrop is not None:
+            if self._taildrop is not None and not subtitles_only:
                 try:
                     self._taildrop.send_converted_file(output_path)
                 except Exception:
@@ -222,7 +377,10 @@ class RemoteConvertService:
                     job.status = ConversionStatus.CANCELLED
                 else:
                     job.status = ConversionStatus.FAILED
-                    job.error_msg = err
+                    # Log the raw detail (may contain an absolute server
+                    # path) server-side only; the client-facing field is
+                    # redacted down to filenames.
+                    job.error_msg = _redact_paths(err)
                 job.finished_at = time.time()
             if cancelled:
                 self._bus.publish_convert_cancelled(job=job)
@@ -243,6 +401,7 @@ class RemoteConvertService:
             on_start=_on_start,
             encode_settings=encode_settings,
             target_ext=target_ext,
+            on_result=_on_result,
         )
         # Store the ConvertQueue cancel callable so cancel_convert() can
         # call it.  We also wire the job's own cancel_event to it so the
@@ -260,6 +419,10 @@ class RemoteConvertService:
         custom_crf: int = 23,
         target_ext: str = "mp4",
         output_codec: str = "h264",
+        generate_subtitles: bool = False,
+        subtitle_language: str = "auto",
+        subtitle_model: str = DEFAULT_MODEL_KEY,
+        compute_vmaf: bool = False,
     ) -> ConversionJob:
         """
         Start a conversion job on an arbitrary local file.
@@ -277,6 +440,43 @@ class RemoteConvertService:
             custom_crf=custom_crf,
             target_ext=target_ext,
             output_codec=output_codec,
+            generate_subtitles=generate_subtitles,
+            subtitle_language=subtitle_language,
+            subtitle_model=subtitle_model,
+            compute_vmaf=compute_vmaf,
+        )
+
+    def start_subtitles(
+        self,
+        file_path: Path,
+        source_task_id: str = "",
+        subtitle_language: str = "auto",
+        subtitle_model: str = DEFAULT_MODEL_KEY,
+    ) -> ConversionJob:
+        """
+        Start a subtitle-only job: transcribe *file_path* to a sidecar .srt.
+
+        No video is re-encoded, so encoder / quality / codec are irrelevant and
+        the defaults are used purely to satisfy start_convert()'s validation.
+        The finished .srt is fetched with
+        ``GET /api/convert/{job_id}/file?kind=srt``.
+
+        Raises ValueError (→ HTTP 422) when *file_path* is not a media file:
+        without this, asking for subtitles on a .jpg from a gallery download
+        queued a job that always died on a cryptic FFmpeg error.
+        """
+        if not is_transcribable(file_path):
+            raise ValueError(
+                f"'{file_path.name}' is not an audio/video file. "
+                f"Allowed extensions: {sorted(TRANSCRIBABLE_EXTS)}"
+            )
+        return self.start_convert(
+            source_task_id=source_task_id,
+            file_path=file_path,
+            generate_subtitles=True,
+            subtitle_language=subtitle_language,
+            subtitle_model=subtitle_model,
+            subtitles_only=True,
         )
 
     def delete_convert_file(self, job_id: str, allowed_dir: Path) -> tuple[bool, str]:
@@ -328,20 +528,25 @@ class RemoteConvertService:
             )
             return False, "Output file is outside the allowed download directory"
 
-        if not out_path.is_file():
-            # File already gone — still mark as deleted so UI is consistent.
-            with job._lock:
-                job.output_deleted = True
-            return True, ""
-
         # ── Delete ────────────────────────────────────────────────────────
-        try:
-            out_path.unlink()
-        except OSError as exc:
-            logger.error("delete_convert_file: failed to delete '%s': %s", out_path, exc)
-            return False, str(exc)
-
+        # The is_file() check and the unlink() are both done under job._lock
+        # so two concurrent DELETE requests for the same job can't race each
+        # other between the check and the unlink; FileNotFoundError (the
+        # loser of that race, or the file already being gone) is treated as
+        # success rather than surfaced as a 500 — a double-delete should be
+        # idempotent, not an error.
         with job._lock:
+            if job.output_deleted or not out_path.is_file():
+                job.output_deleted = True
+                return True, ""
+            try:
+                out_path.unlink()
+            except FileNotFoundError:
+                job.output_deleted = True
+                return True, ""
+            except OSError as exc:
+                logger.error("delete_convert_file: failed to delete '%s': %s", out_path, exc)
+                return False, str(exc)
             job.output_deleted = True
 
         logger.info(
@@ -383,6 +588,26 @@ class RemoteConvertService:
         Result is cached inside detect_available_encoders() for 5 min.
         """
         return get_available_encoder_options()
+
+    def get_available_codecs(self) -> list[tuple[str, str]]:
+        """
+        Return (key, label) pairs for output codecs this FFmpeg build supports.
+        Codecs the bundled binary cannot encode are omitted so clients never
+        offer an option that is guaranteed to fail.
+        """
+        return get_available_codec_options()
+
+    def supports_subtitles(self) -> bool:
+        """Return True when this FFmpeg build can transcribe speech to SRT."""
+        return is_whisper_supported()
+
+    def get_subtitle_languages(self) -> list[str]:
+        """Return the language codes accepted by generate_subtitles requests."""
+        return sorted(_VALID_SUBTITLE_LANGUAGES)
+
+    def get_subtitle_models(self) -> list[tuple[str, str, int]]:
+        """Return (key, label, size_mb) for every whisper model, smallest first."""
+        return [(m.key, model_label(m), m.size_mb) for m in WHISPER_MODELS]
 
     # ── Internal ──────────────────────────────────────────────────────────
 

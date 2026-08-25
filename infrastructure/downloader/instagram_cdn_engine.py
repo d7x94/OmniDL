@@ -40,6 +40,21 @@ def is_ig_cdn_url(url: str) -> bool:
     return "oh" in query and "oe" in query
 
 
+# Extensions an Instagram/Facebook CDN link actually serves.  is_ig_cdn_url()
+# accepts any signed media URL, photos included, so the container must come
+# from the URL instead of being hardcoded to .mp4 -- a JPEG written as .mp4
+# opens in no player and in no image viewer.
+_CDN_EXTS = frozenset(
+    {".mp4", ".mov", ".webm", ".m4v", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif"}
+)
+
+
+def _ext_for(url: str) -> str:
+    """Return the media extension carried by *url*'s path, or ".mp4"."""
+    ext = Path(urlparse(url).path).suffix.lower()
+    return ext if ext in _CDN_EXTS else ".mp4"
+
+
 def download_ig_cdn_url(
     url: str,
     output_dir: Path,
@@ -62,11 +77,11 @@ def download_ig_cdn_url(
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    dest = output_dir / f"{filename_hint}.mp4"
+    dest = output_dir / f"{filename_hint}{_ext_for(url)}"
     stem = dest.stem
     counter = 1
     while dest.exists():
-        dest = output_dir / f"{stem} ({counter}).mp4"
+        dest = output_dir / f"{stem} ({counter}){dest.suffix}"
         counter += 1
     part = dest.with_suffix(dest.suffix + ".part")
 

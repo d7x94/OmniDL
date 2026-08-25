@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from ui.signals import ui_bridge
 from ui.tabs.settings._base_panel import _BasePanel
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -50,21 +51,19 @@ class RemoteApiPanel(_BasePanel):
     def _build(self) -> None:
         cfg = self._app.config
 
-        sec_api = self._collapsible_section("REMOTE API", "api_remote", icon="🔌")
+        sec_api = self._collapsible_section(t("settings.api.section.remote"), "api_remote", icon="🔌")
         api_card = self._card(container=sec_api)
 
         self._row_label(
             api_card,
-            "Bật để điều khiển OmniDL từ xa qua mạng LAN (iPhone, Android).\n"
-            "Server chạy trong luồng riêng, không ảnh hưởng download hiện tại.\n"
-            "Chỉ bật khi cần — tắt khi không dùng để bảo mật thiết bị.",
+            t("settings.api.description"),
             wrap=True,
         )
 
         # ── Toggle row ──────────────────────────────────────────────────
         self._api_switch = self._switch_row(
             api_card,
-            "Bật Remote API",
+            t("settings.api.enable"),
             bool(getattr(cfg, "api_enabled", False)),
             self._on_api_toggle,
         )
@@ -79,7 +78,7 @@ class RemoteApiPanel(_BasePanel):
         self._separator(api_card)
 
         # ── Token row ───────────────────────────────────────────────────
-        tok_hdr = QLabel("🔑  Bearer Token")
+        tok_hdr = QLabel(t("settings.api.token_header"))
         tok_hdr.setStyleSheet(
             f"color: {T.text2}; font-size: 11px; font-weight: bold; background: transparent; padding: 0 16px 4px;"
         )
@@ -94,7 +93,7 @@ class RemoteApiPanel(_BasePanel):
             f"color: {T.primary_text}; font-size: 11px; font-family: monospace;"
         )
         thl.addWidget(self._api_token_lbl, 1)
-        self._api_copy_btn = QPushButton("📋 Copy")
+        self._api_copy_btn = QPushButton(t("settings.api.copy_btn"))
         self._api_copy_btn.setFixedSize(80, 28)
         self._api_copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._api_copy_btn.setStyleSheet(
@@ -108,7 +107,7 @@ class RemoteApiPanel(_BasePanel):
         token_action_row.setStyleSheet("background: transparent;")
         tahl = QHBoxLayout(token_action_row)
         tahl.setContentsMargins(16, 0, 16, 14)
-        self._api_rotate_btn = QPushButton("🔄  Tạo token mới")
+        self._api_rotate_btn = QPushButton(t("settings.api.rotate_btn"))
         self._api_rotate_btn.setFixedHeight(32)
         self._api_rotate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._api_rotate_btn.setStyleSheet(
@@ -123,20 +122,18 @@ class RemoteApiPanel(_BasePanel):
         api_card.layout().addWidget(token_action_row)
 
         # ── Tailscale HTTPS Profile section ─────────────────────────────
-        sec_ts = self._collapsible_section("TAILSCALE HTTPS PROFILE", "api_tailscale", icon="🔒")
+        sec_ts = self._collapsible_section(t("settings.api.section.tailscale"), "api_tailscale", icon="🔒")
         ts_card = self._card(container=sec_ts)
 
         self._row_label(
             ts_card,
-            "Truy cập Remote API qua HTTPS trên mạng Tailscale.\n"
-            "OmniDL tự động chạy tailscale serve — không cần mở port tường lửa.\n"
-            "Yêu cầu: Tailscale đã cài và đang nhập trên máy này.",
+            t("settings.api.ts_description"),
             wrap=True,
         )
 
         self._ts_https_switch = self._switch_row(
             ts_card,
-            "Bật Tailscale HTTPS Profile",
+            t("settings.api.ts_enable"),
             bool(getattr(cfg, "api_ts_https_enabled", False)),
             self._on_ts_https_toggle,
         )
@@ -163,7 +160,7 @@ class RemoteApiPanel(_BasePanel):
             f"color: {T.primary_text}; font-size: 11px; font-family: monospace;"
         )
         tth.addWidget(self._ts_https_token_lbl, 1)
-        self._ts_https_copy_btn = QPushButton("📋 Copy")
+        self._ts_https_copy_btn = QPushButton(t("settings.api.copy_btn"))
         self._ts_https_copy_btn.setFixedSize(80, 28)
         self._ts_https_copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ts_https_copy_btn.setStyleSheet(
@@ -177,7 +174,7 @@ class RemoteApiPanel(_BasePanel):
         ts_reset_row.setStyleSheet("background: transparent;")
         trh = QHBoxLayout(ts_reset_row)
         trh.setContentsMargins(16, 0, 16, 14)
-        self._ts_https_reset_btn = QPushButton("Reset Profile")
+        self._ts_https_reset_btn = QPushButton(t("settings.api.reset_profile_btn"))
         self._ts_https_reset_btn.setFixedHeight(32)
         self._ts_https_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ts_https_reset_btn.setStyleSheet(
@@ -201,7 +198,7 @@ class RemoteApiPanel(_BasePanel):
     def _masked_token(self) -> str:
         tok = str(getattr(self._app.config, "api_token", "") or "")
         if not tok:
-            return "(chưa có token — bật API để tạo tự động)"
+            return t("settings.api.no_token")
         if len(tok) <= 8:
             return "*" * len(tok)
         return tok[:8] + "••••••••••••••••"
@@ -221,17 +218,17 @@ class RemoteApiPanel(_BasePanel):
             cfg = self._app.config
             if running:
                 port = getattr(cfg, "api_port", 7799)
-                lbl.setText(f"🟢  Đang chạy  —  http://<IP LAN>:{port}")
+                lbl.setText(t("settings.api.running", port=port))
                 lbl.setStyleSheet(
                     f"color: {T.success}; font-size: 11px; background: transparent; padding: 2px 16px 8px;"
                 )
             elif getattr(cfg, "api_enabled", False):
-                lbl.setText("⚠️  Đã bật nhưng chưa khởi động (thiếu fastapi/uvicorn?)")
+                lbl.setText(t("settings.api.enabled_not_started"))
                 lbl.setStyleSheet(
                     f"color: {T.warning_text}; font-size: 11px; background: transparent; padding: 2px 16px 8px;"
                 )
             else:
-                lbl.setText("⚫  Đã tắt")
+                lbl.setText(t("settings.api.disabled"))
                 lbl.setStyleSheet(
                     f"color: {T.text3}; font-size: 11px; background: transparent; padding: 2px 16px 8px;"
                 )
@@ -253,17 +250,21 @@ class RemoteApiPanel(_BasePanel):
                 if not is_api_running():
                     start_api_server(service=svc, config=cfg, bus=_bus)
                 QTimer.singleShot(400, self._refresh_api_status_label)
-                self._app.toast("✅  Remote API đã bật.", "success")
+                self._app.toast(t("settings.api.enabled_toast"), "success")
             except ImportError:
                 self._api_switch.setChecked(False)
                 cfg.set("api_enabled", False)
                 cfg.save()
-                self._app.toast(
-                    "⚠️  Cần cài fastapi & uvicorn trước: pip install -r requirements-api.txt", "error"
-                )
+                self._app.toast(t("settings.api.missing_deps"), "error")
             except Exception as exc:
                 logger.exception("Failed to start API server from Settings: %s", exc)
-                self._app.toast(f"Lỗi khởi động API: {exc!s:.60}", "error")
+                # Server never came up — leaving the switch on would persist
+                # api_enabled=True and retry the broken start on next launch.
+                self._api_switch.setChecked(False)
+                cfg.set("api_enabled", False)
+                cfg.save()
+                self._refresh_api_status_label()
+                self._app.toast(t("settings.api.start_error", err=f"{exc!s:.60}"), "error")
         else:
             try:
                 from api.server import stop_api_server
@@ -272,21 +273,21 @@ class RemoteApiPanel(_BasePanel):
             except ImportError:
                 pass
             QTimer.singleShot(600, self._refresh_api_status_label)
-            self._app.toast("⚫  Remote API đã tắt.", "info")
+            self._app.toast(t("settings.api.disabled_toast"), "info")
 
     def _on_api_copy_token(self) -> None:
         tok = str(getattr(self._app.config, "api_token", "") or "")
         if not tok:
-            self._app.toast("Chưa có token. Hãy bật Remote API trước.", "error")
+            self._app.toast(t("settings.api.no_token_toast"), "error")
             return
         QGuiApplication.clipboard().setText(tok)
-        self._app.toast("✅  Token đã sao chép vào clipboard.", "success")
+        self._app.toast(t("settings.api.token_copied"), "success")
 
     def _on_api_rotate_token(self) -> None:
         reply = QMessageBox.question(
             self,
-            "Tạo token mới",
-            "Token hiện tại sẽ bị vô hiệu hóa.\nTất cả thiết bị đang kết nối cần cập nhật token mới.\n\nTiếp tục?",
+            t("settings.api.rotate_dialog_title"),
+            t("settings.api.rotate_confirm_msg"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -298,7 +299,7 @@ class RemoteApiPanel(_BasePanel):
         self._refresh_api_token_label()
 
         st = self._api_token_status
-        st.setText("✅  Token mới đã lưu")
+        st.setText(t("settings.api.new_token_saved"))
         QTimer.singleShot(3000, lambda: st.setText(""))
 
         was_running = False
@@ -310,7 +311,7 @@ class RemoteApiPanel(_BasePanel):
             pass
 
         if was_running:
-            self._app.toast("🔄  Token mới đã tạo — đang khởi động lại server…", "info")
+            self._app.toast(t("settings.api.restarting_toast"), "info")
 
             def _do_restart():
                 try:
@@ -321,16 +322,18 @@ class RemoteApiPanel(_BasePanel):
                     if svc:
                         restart_api_server(service=svc, config=cfg, bus=_bus)
                     ui_bridge.post(self._refresh_api_status_label)
-                    ui_bridge.post(
-                        lambda: self._app.toast("✅  Server đã khởi động lại với token mới.", "success")
-                    )
+                    ui_bridge.post(lambda: self._app.toast(t("settings.api.restarted_toast"), "success"))
                 except Exception as exc:
                     logger.exception("Failed to restart API after token rotation: %s", exc)
-                    ui_bridge.post(lambda e=exc: self._app.toast(f"Lỗi restart API: {e!s:.60}", "error"))
+                    ui_bridge.post(
+                        lambda e=exc: self._app.toast(
+                            t("settings.api.restart_error", err=f"{e!s:.60}"), "error"
+                        )
+                    )
 
             threading.Thread(target=_do_restart, daemon=True, name="omnidl-api-restart").start()
         else:
-            self._app.toast("✅  Token mới đã tạo. Copy và cập nhật trên thiết bị.", "success")
+            self._app.toast(t("settings.api.new_token_toast"), "success")
 
     def _refresh_api_token_label(self) -> None:
         masked = self._masked_token()
@@ -352,21 +355,21 @@ class RemoteApiPanel(_BasePanel):
         port_lbl = getattr(self, "_ts_https_port_lbl", None)
 
         if enabled and dns_name:
-            lbl.setText(f"Remote API đang chạy tại:\nhttps://{dns_name}")
+            lbl.setText(t("settings.api.ts_running", dns=dns_name))
             lbl.setStyleSheet(
-                "color: #22c55e; font-size: 11px; background: transparent; padding: 4px 16px 2px;"
+                f"color: {T.success}; font-size: 11px; background: transparent; padding: 4px 16px 2px;"
             )
             if port_lbl:
-                port_lbl.setText(f"Port nội bộ (ngẫu nhiên): {int_port}")
+                port_lbl.setText(t("settings.api.ts_internal_port", port=int_port))
         elif enabled and not dns_name:
-            lbl.setText("Đang thiết lập... (kiểm tra Tailscale đã kết nối chưa)")
+            lbl.setText(t("settings.api.ts_setting_up"))
             lbl.setStyleSheet(
                 f"color: {T.text2}; font-size: 11px; background: transparent; padding: 4px 16px 2px;"
             )
             if port_lbl:
-                port_lbl.setText(f"Port nội bộ: {int_port}" if int_port else "")
+                port_lbl.setText(t("settings.api.ts_internal_port_plain", port=int_port) if int_port else "")
         else:
-            lbl.setText("Đã tắt")
+            lbl.setText(t("settings.api.ts_off"))
             lbl.setStyleSheet(
                 f"color: {T.text3}; font-size: 11px; background: transparent; padding: 4px 16px 2px;"
             )
@@ -383,11 +386,11 @@ class RemoteApiPanel(_BasePanel):
         if enabled:
             if not getattr(cfg, "api_enabled", False):
                 self._ts_https_switch.setChecked(False)
-                self._app.toast("Bật Remote API trước khi dùng Tailscale HTTPS Profile.", "error")
+                self._app.toast(t("settings.api.enable_api_first"), "error")
                 return
             if not shutil.which("tailscale"):
                 self._ts_https_switch.setChecked(False)
-                self._app.toast("Không tìm thấy tailscale CLI — cài Tailscale trên máy này.", "error")
+                self._app.toast(t("settings.api.no_tailscale_cli"), "error")
                 return
 
             new_port = _pick_bindable_port()
@@ -395,7 +398,7 @@ class RemoteApiPanel(_BasePanel):
             cfg.set("api_ts_https_internal_port", new_port)
             cfg.save()
             self._refresh_ts_https_status()
-            self._app.toast("Đang thiết lập Tailscale HTTPS Profile...", "info")
+            self._app.toast(t("settings.api.setting_up_https"), "info")
 
             def _enable_worker():
                 try:
@@ -419,15 +422,11 @@ class RemoteApiPanel(_BasePanel):
                                 restart_api_server(service=svc, config=cfg, bus=_bus)
                         except Exception as exc:
                             logger.exception("HTTPS Profile rollback: API restart failed: %s", exc)
-                        hint = (
-                            " Tailscale chưa đăng nhập? Chạy 'tailscale login' rồi thử lại."
-                            if not dns
-                            else ""
-                        )
+                        hint = t("settings.api.login_hint") if not dns else ""
                         ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
                         ui_bridge.post(self._refresh_ts_https_status)
                         ui_bridge.post(
-                            lambda h=hint: self._app.toast(f"tailscale serve thất bại.{h}", "error")
+                            lambda h=hint: self._app.toast(t("settings.api.serve_failed", hint=h), "error")
                         )
                         return
                     try:
@@ -439,24 +438,27 @@ class RemoteApiPanel(_BasePanel):
                             restart_api_server(service=svc, config=cfg, bus=_bus)
                     except Exception as exc:
                         logger.exception("HTTPS Profile: API restart failed: %s", exc)
-                        ui_bridge.post(lambda e=exc: self._app.toast(f"Lỗi restart API: {e!s:.60}", "error"))
+                        ui_bridge.post(
+                            lambda e=exc: self._app.toast(
+                                t("settings.api.restart_error", err=f"{e!s:.60}"), "error"
+                            )
+                        )
                         return
                     ui_bridge.post(self._refresh_ts_https_status)
                     if dns:
                         ui_bridge.post(
-                            lambda d=dns: self._app.toast(f"HTTPS Profile đã bật: https://{d}", "success")
-                        )
-                    else:
-                        ui_bridge.post(
-                            lambda: self._app.toast(
-                                "serve đã bật nhưng không lấy được DNS name. Kiểm tra Tailscale đã đăng nhập.",
-                                "error",
+                            lambda d=dns: self._app.toast(
+                                t("settings.api.https_enabled_toast", dns=d), "success"
                             )
                         )
+                    else:
+                        ui_bridge.post(lambda: self._app.toast(t("settings.api.no_dns_error"), "error"))
                 except Exception as exc:
                     logger.exception("HTTPS Profile enable error: %s", exc)
                     ui_bridge.post(
-                        lambda e=exc: self._app.toast(f"Lỗi thiết lập HTTPS Profile: {e!s:.60}", "error")
+                        lambda e=exc: self._app.toast(
+                            t("settings.api.setup_error", err=f"{e!s:.60}"), "error"
+                        )
                     )
 
             threading.Thread(target=_enable_worker, daemon=True, name="omnidl-ts-https-enable").start()
@@ -467,7 +469,7 @@ class RemoteApiPanel(_BasePanel):
             cfg.set("api_ts_https_dns_name", "")
             cfg.save()
             self._refresh_ts_https_status()
-            self._app.toast("Đang tắt Tailscale HTTPS Profile...", "info")
+            self._app.toast(t("settings.api.disabling_https"), "info")
 
             def _disable_worker():
                 try:
@@ -485,11 +487,13 @@ class RemoteApiPanel(_BasePanel):
                     except Exception as exc:
                         logger.exception("HTTPS Profile disable: API restart error: %s", exc)
                     ui_bridge.post(self._refresh_ts_https_status)
-                    ui_bridge.post(lambda: self._app.toast("Tailscale HTTPS Profile đã tắt.", "info"))
+                    ui_bridge.post(lambda: self._app.toast(t("settings.api.https_disabled_toast"), "info"))
                 except Exception as exc:
                     logger.exception("HTTPS Profile disable error: %s", exc)
                     ui_bridge.post(
-                        lambda e=exc: self._app.toast(f"Lỗi tắt HTTPS Profile: {e!s:.60}", "error")
+                        lambda e=exc: self._app.toast(
+                            t("settings.api.disable_error", err=f"{e!s:.60}"), "error"
+                        )
                     )
 
             threading.Thread(target=_disable_worker, daemon=True, name="omnidl-ts-https-disable").start()
@@ -497,13 +501,13 @@ class RemoteApiPanel(_BasePanel):
     def _on_ts_https_reset(self) -> None:
         cfg = self._app.config
         if not getattr(cfg, "api_ts_https_enabled", False):
-            self._app.toast("Hãy bật HTTPS Profile trước khi reset.", "error")
+            self._app.toast(t("settings.api.enable_https_first"), "error")
             return
 
         reply = QMessageBox.question(
             self,
-            "Reset Profile",
-            "Thao tác này sẽ:\n• Tạo lại Tailscale serve profile\n• Tạo token mới (thiết bị cần cập nhật)\n\nTiếp tục?",
+            t("settings.api.reset_profile_btn"),
+            t("settings.api.reset_confirm_msg"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -518,8 +522,8 @@ class RemoteApiPanel(_BasePanel):
         self._refresh_ts_https_status()
 
         st = self._ts_https_reset_status
-        st.setText("Đang reset...")
-        self._app.toast("Đang reset Tailscale HTTPS Profile...", "info")
+        st.setText(t("settings.api.resetting_status"))
+        self._app.toast(t("settings.api.resetting_toast"), "info")
 
         def _reset_worker():
             try:
@@ -548,11 +552,7 @@ class RemoteApiPanel(_BasePanel):
                     ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
                     ui_bridge.post(self._refresh_ts_https_status)
                     ui_bridge.post(lambda: st.setText(""))
-                    ui_bridge.post(
-                        lambda: self._app.toast(
-                            "tailscale serve thất bại khi reset. Kiểm tra Tailscale đã đăng nhập.", "error"
-                        )
-                    )
+                    ui_bridge.post(lambda: self._app.toast(t("settings.api.reset_serve_failed"), "error"))
                     return
                 dns = get_tailscale_dns_name()
                 cfg.set_api_token(new_token)
@@ -574,18 +574,16 @@ class RemoteApiPanel(_BasePanel):
                 if dns:
                     ui_bridge.post(
                         lambda d=dns: self._app.toast(
-                            f"Profile đã reset: https://{d}. Token mới đã tạo - cập nhật trên thiết bị.",
+                            t("settings.api.reset_success_dns", dns=d),
                             "success",
                         )
                     )
                 else:
-                    ui_bridge.post(
-                        lambda: self._app.toast(
-                            "Profile đã reset. Token mới đã tạo - cập nhật trên thiết bị.", "success"
-                        )
-                    )
+                    ui_bridge.post(lambda: self._app.toast(t("settings.api.reset_success"), "success"))
             except Exception as exc:
                 logger.exception("HTTPS Profile reset error: %s", exc)
-                ui_bridge.post(lambda e=exc: self._app.toast(f"Lỗi reset Profile: {e!s:.60}", "error"))
+                ui_bridge.post(
+                    lambda e=exc: self._app.toast(t("settings.api.reset_error", err=f"{e!s:.60}"), "error")
+                )
 
         threading.Thread(target=_reset_worker, daemon=True, name="omnidl-ts-https-reset").start()

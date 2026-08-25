@@ -48,6 +48,10 @@ def make_config(
     cfg.embed_thumbnail = embed_thumbnail
     cfg.embed_metadata = embed_metadata
     cfg.download_dir = download_dir or Path("/tmp")  # nosec B108
+    # extract_info() consults the per-platform cookie; an unstubbed MagicMock
+    # would return a truthy sentinel and silently unlock Stories/Live URLs.
+    cfg.platform_cookies = {}
+    cfg.get_cookie_for_platform.return_value = ""
     return cfg
 
 

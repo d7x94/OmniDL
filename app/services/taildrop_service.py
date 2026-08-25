@@ -102,6 +102,11 @@ class TaildropService:
 
     # ── Public API ────────────────────────────────────────────────────────
 
+    @property
+    def bus(self) -> "EventBus":
+        """Public read-only handle on the event bus (UI subscribes to convert events)."""
+        return self._bus
+
     def on_download_completed(self, task: "DownloadTask") -> None:
         """
         EventBus subscriber for DOWNLOAD_COMPLETED.

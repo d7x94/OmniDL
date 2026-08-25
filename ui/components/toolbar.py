@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from ui.components.url_utils import _CLIPBOARD_URL_RE, _URL_TRAILING_JUNK
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -69,7 +70,7 @@ class Toolbar(QWidget):
 
         # URL entry
         self._url_entry = QLineEdit()
-        self._url_entry.setPlaceholderText("Dán link video vào đây và nhấn Enter hoặc nhấp Phân tích...")
+        self._url_entry.setPlaceholderText(t("toolbar.url_placeholder"))
         self._url_entry.setObjectName("url_entry")
         self._url_entry.setFixedHeight(44)
         self._url_entry.setStyleSheet(f"""
@@ -91,7 +92,7 @@ class Toolbar(QWidget):
         row.addWidget(self._url_entry, 1)
 
         # Analyze button
-        self._analyse_btn = QPushButton("Phân tích")
+        self._analyse_btn = QPushButton(t("toolbar.analyse"))
         self._analyse_btn.setObjectName("primary")
         self._analyse_btn.setFixedSize(128, 44)
         self._analyse_btn.setStyleSheet(f"""
@@ -119,7 +120,7 @@ class Toolbar(QWidget):
         row.addWidget(self._analyse_btn)
 
         # Stop button (hidden initially)
-        self._stop_btn = QPushButton("Dừng")
+        self._stop_btn = QPushButton(t("toolbar.stop"))
         self._stop_btn.setObjectName("danger")
         self._stop_btn.setFixedSize(80, 44)
         self._stop_btn.setStyleSheet(f"""
@@ -144,7 +145,7 @@ class Toolbar(QWidget):
         self._paste_btn = QPushButton("⎘")
         self._paste_btn.setFixedSize(40, 40)
         self._paste_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._paste_btn.setToolTip("Dán từ clipboard")
+        self._paste_btn.setToolTip(t("toolbar.paste_tip"))
         self._paste_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {T.surface2};
@@ -166,7 +167,7 @@ class Toolbar(QWidget):
         self._clear_btn = QPushButton("✕")
         self._clear_btn.setFixedSize(40, 40)
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_btn.setToolTip("Xóa URL")
+        self._clear_btn.setToolTip(t("toolbar.clear_tip"))
         self._clear_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {T.surface2};
@@ -192,7 +193,7 @@ class Toolbar(QWidget):
         self._collapse_btn = QPushButton("∧")
         self._collapse_btn.setFixedSize(24, 24)
         self._collapse_btn.setFlat(True)
-        self._collapse_btn.setToolTip("Ẩn thanh phân tích")
+        self._collapse_btn.setToolTip(t("toolbar.collapse_tip"))
         self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._collapse_btn.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {T.text3}; border: none; font-size: 12px; padding: 0; }}
@@ -220,7 +221,16 @@ class Toolbar(QWidget):
 
     def trigger_from_clipboard(self, url: str) -> None:
         self._url_entry.setText(url)
-        self._set_status("URL từ clipboard - nhấn Enter để phân tích", T.text2)
+        self._set_status(t("toolbar.status.clipboard"), T.text2)
+
+    def retranslate(self) -> None:
+        self._url_entry.setPlaceholderText(t("toolbar.url_placeholder"))
+        self._stop_btn.setText(t("toolbar.stop"))
+        self._paste_btn.setToolTip(t("toolbar.paste_tip"))
+        self._clear_btn.setToolTip(t("toolbar.clear_tip"))
+        self._collapse_btn.setToolTip(t("toolbar.collapse_tip"))
+        if not self._analysing:
+            self._analyse_btn.setText(t("toolbar.analyse"))
 
     # ── Analysis flow ─────────────────────────────────────────────────────
 
@@ -239,10 +249,10 @@ class Toolbar(QWidget):
         self._analyse_token += 1
         my_token = self._analyse_token
 
-        self._analyse_btn.setText("Đang phân tích...")
+        self._analyse_btn.setText(t("toolbar.analysing_dots"))
         self._analyse_btn.setEnabled(False)
         self._stop_btn.show()
-        self._set_status("Đang tải thông tin media...", T.text2)
+        self._set_status(t("toolbar.status.loading"), T.text2)
         self._spinner_timer.start()
 
         self._app.navigate_to("home")
@@ -273,28 +283,28 @@ class Toolbar(QWidget):
             self._current_cancel.set()
             self._current_cancel = None
         self._analyse_token += 1
-        self._set_status("Đã hủy.", T.text3)
+        self._set_status(t("toolbar.status.cancelled"), T.text3)
         self._reset_btn()
 
     def _on_done(self, info) -> None:
         self._spinner_timer.stop()
         self._reset_btn()
         if not info or not info.title:
-            self._set_status("Không tìm thấy media", T.error)
-            self._app.toast("Phân tích không trả về kết quả.", "error")
+            self._set_status(t("toolbar.status.no_media"), T.error)
+            self._app.toast(t("toolbar.toast.no_result"), "error")
             return
         self._set_status(f"✓  {info.title[:50]}", T.success)
         home = self._app.get_tab("home")
         if home:
             home.on_analysis_done(info)
-        self._app.toast(f"Sẵn sàng: {info.title[:44]}", "success")
+        self._app.toast(t("toolbar.toast.ready", title=info.title[:44]), "success")
 
     def _on_error(self, err: str) -> None:
         self._spinner_timer.stop()
         self._reset_btn()
-        display = err[:100] if err else "Lỗi không xác định"
+        display = err[:100] if err else t("toolbar.error.unknown")
         self._set_status(f"  {display}", T.error)
-        self._app.toast("Phân tích thất bại.", "error")
+        self._app.toast(t("toolbar.toast.failed"), "error")
         home = self._app.get_tab("home")
         if home:
             home.on_analysis_error(err)
@@ -305,7 +315,7 @@ class Toolbar(QWidget):
         self._spinner_timer.stop()
         self._stop_btn.hide()
         self._analyse_btn.setEnabled(True)
-        self._analyse_btn.setText("Phân tích")
+        self._analyse_btn.setText(t("toolbar.analyse"))
 
     # ── Spinner ───────────────────────────────────────────────────────────
 
@@ -314,7 +324,7 @@ class Toolbar(QWidget):
             self._spinner_timer.stop()
             return
         frame = _SPINNER[self._spinner_idx % len(_SPINNER)]
-        self._analyse_btn.setText(f"{frame} Đang phân tích")
+        self._analyse_btn.setText(f'{frame} {t("toolbar.analysing")}')
         self._spinner_idx += 1
 
     # ── Helpers ───────────────────────────────────────────────────────────
@@ -336,7 +346,7 @@ class Toolbar(QWidget):
         if m:
             url = m.group(0).rstrip("".join(_URL_TRAILING_JUNK))
             self._url_entry.setText(url)
-            self._set_status("Đã dán URL", T.text2)
+            self._set_status(t("toolbar.status.pasted"), T.text2)
             self._start_analyse()
 
     def _clear_url(self) -> None:

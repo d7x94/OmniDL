@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -57,8 +58,8 @@ def _fmt_eta(eta_s: int) -> str:
     if eta_s < 0:
         return ""
     if eta_s >= 60:
-        return f"còn ~{eta_s // 60} phút"
-    return f"còn ~{eta_s}s"
+        return t("status.eta_min", value=eta_s // 60)
+    return t("status.eta_sec", value=eta_s)
 
 
 class StatusBar(QStatusBar):
@@ -96,7 +97,7 @@ class StatusBar(QStatusBar):
         layout.addWidget(self._dot)
 
         # Active count / idle label
-        self._active_chip = QLabel("Không có tác vụ")
+        self._active_chip = QLabel(t("status.idle"))
         self._active_chip.setStyleSheet(_chip_style(T.surface2, T.text3, T.border))
         layout.addWidget(self._active_chip)
 
@@ -125,7 +126,7 @@ class StatusBar(QStatusBar):
         layout.addStretch()
 
         # Right: network chip
-        self._net_chip = QLabel("● Mạng OK")
+        self._net_chip = QLabel(f"● {t('status.net_ok')}")
         self._net_chip.setStyleSheet(_chip_style(T.success_bg, T.success_text, T.success))
         layout.addWidget(self._net_chip)
 
@@ -141,14 +142,14 @@ class StatusBar(QStatusBar):
 
         if active == 0:
             self._dot.setStyleSheet(f"color: {T.text3};")
-            self._active_chip.setText("◎  Không có tác vụ")
+            self._active_chip.setText(f"◎  {t('status.idle')}")
             self._active_chip.setStyleSheet(_chip_style(T.surface2, T.text3, T.border))
             self._progress_bar.hide()
             self._speed_chip.hide()
             self._eta_label.hide()
         else:
             self._dot.setStyleSheet("color: #4caf50;")
-            self._active_chip.setText(f"{active} đang tải")
+            self._active_chip.setText(t("status.downloading", count=active))
             self._active_chip.setStyleSheet(_chip_style(T.primary_dim, T.primary_text, T.primary))
             self._progress_bar.setValue(int(progress * 1000))
             self._progress_bar.show()
@@ -198,10 +199,10 @@ class StatusBar(QStatusBar):
     def _update_net(self, ok: bool) -> None:
         self._net_ok = ok
         if ok:
-            self._net_chip.setText("● Mạng OK")
+            self._net_chip.setText(f"● {t('status.net_ok')}")
             self._net_chip.setStyleSheet(_chip_style(T.success_bg, T.success_text, T.success))
         else:
-            self._net_chip.setText("● Mất kết nối")
+            self._net_chip.setText(f"● {t('status.net_down')}")
             self._net_chip.setStyleSheet(_chip_style(T.error_bg, T.error_text, T.error))
 
     def _on_theme(self) -> None:
@@ -215,6 +216,13 @@ class StatusBar(QStatusBar):
                 self._active_chip.setStyleSheet(_chip_style(T.surface2, T.text3, T.border))
         except Exception:
             self._active_chip.setStyleSheet(_chip_style(T.surface2, T.text3, T.border))
+
+    def retranslate(self) -> None:
+        # _last_status short-circuits an identical update; clear it so the
+        # freshly translated chip text is actually re-applied.
+        self._last_status = None
+        self._update_net(self._net_ok)
+        self._poll()
 
     def stop(self) -> None:
         self._poll_timer.stop()

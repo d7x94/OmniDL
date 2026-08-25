@@ -50,8 +50,10 @@ _ROOM_ID_CACHE_TTL = 5400.0  # 90 minutes (covers typical live session duration)
 # Profile URL pattern -- matches /@username but NOT /live/, /video/, /tag/, etc.
 # TikTok usernames: letters, digits, underscores, dots (1-24 chars).
 # Accepts both trailing slash and bare query string: /@user, /@user/, /@user?lang=en
+# The mobile host m.tiktok.com serves the same @user paths and is what the
+# TikTok app puts on the clipboard, so both hosts must match.
 _PROFILE_RE = re.compile(
-    r"^https?://(?:www\.)?tiktok\.com/"
+    r"^https?://(?:www\.|m\.)?tiktok\.com/"
     r"@([A-Za-z0-9_.]{1,24})"
     r"(?:/|\?[^/]*)?$",
     re.I,
@@ -64,7 +66,7 @@ _PROFILE_RE = re.compile(
 # (e.g. @user/live?lang=vi) and fragment anchors are correctly recognised as
 # live URLs instead of falling through to _PROFILE_RE which doesn't match /live.
 _LIVE_URL_RE = re.compile(
-    r"^https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live(?:/|\?|#|$)",
+    r"^https?://(?:www\.|m\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live(?:/|\?|#|$)",
     re.I,
 )
 
@@ -102,8 +104,13 @@ def _get_chrome_impersonate_target() -> "Any":
     causes 'ImpersonateTarget' object has no attribute 'encode' at request time.
 
     Strategy:
-    1. Probe CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP for any chrome key.
-    2. Return the map VALUE (curl_cffi string, e.g. "chrome131").
+    1. Probe CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP for a chrome146 key
+       (matches _CHROME_UA above) so the result is a deliberate, deterministic
+       pick rather than "whichever chrome key the map lists first" -- that
+       order shifts with every curl_cffi release (0.16 added chrome142/145/146
+       ahead of the older entries), which would otherwise silently move the
+       TLS fingerprint away from what _CHROME_UA claims.
+    2. Fall back to any chrome key if chrome146 is not listed (older curl_cffi).
     3. Fall back to "chrome" if map lookup fails or module not available.
     """
     try:
@@ -111,8 +118,10 @@ def _get_chrome_impersonate_target() -> "Any":
         from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
 
         _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
-        # Find the ImpersonateTarget key with client=='chrome'
         chrome_key = next(
+            (k for k, v in _map.items() if getattr(k, "client", None) == "chrome" and v == "chrome146"),
+            None,
+        ) or next(
             (k for k in _map if getattr(k, "client", None) == "chrome"),
             None,
         )
@@ -989,7 +998,17 @@ def _check_tiktok_live_with_room_id(
         cookie_file=cookie_file,
         share_url=share_url,
     )
-    result = _get_dispatcher().check(ctx)
+    # A hard error (429 / 404 / network) is held, not raised yet: the whole
+    # point of _ROOM_ID_CACHE is to answer during a rate-limit window via
+    # check_alive, which does not share the HTML-scraping limit. Raising here
+    # would skip that path exactly when it applies. Re-raised below if the
+    # cache cannot answer either.
+    _hard_error: "Optional[RuntimeError]" = None
+    try:
+        result = _get_dispatcher().check(ctx)
+    except RuntimeError as exc:
+        _hard_error = exc
+        result = None
 
     if result is not None:
         if _verify_room_alive(result[1], username, proxy=proxy, cookie_file=cookie_file):
@@ -1029,7 +1048,7 @@ def _check_tiktok_live_with_room_id(
                         username,
                         cached_room_id,
                     )
-                    del _ROOM_ID_CACHE[username]
+                    _ROOM_ID_CACHE.pop(username, None)
                     return None
                 logger.info(
                     "tiktok_live_checker: @%s LIVE via cached roomId=%s (detection blocked)",
@@ -1037,13 +1056,17 @@ def _check_tiktok_live_with_room_id(
                     cached_room_id,
                 )
                 return (f"https://www.tiktok.com/@{username}/live", cached_room_id)
-            # check_alive confirmed not live -- evict stale cache entry
-            del _ROOM_ID_CACHE[username]
+            # check_alive confirmed not live -- evict stale cache entry.
+            # This is authoritative, so it also settles a held rate-limit error.
+            _ROOM_ID_CACHE.pop(username, None)
+            return None
         else:
             # TTL expired: previously this fell straight through to `return None`
             # and left the entry pinned for the process lifetime.
-            del _ROOM_ID_CACHE[username]
+            _ROOM_ID_CACHE.pop(username, None)
 
+    if _hard_error is not None:
+        raise _hard_error
     return None
 
 

@@ -10,7 +10,11 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Generator
+from typing import Callable, Generator
+
+
+class _AcquireAborted(Exception):
+    """The waiter gave up on a slot (task cancelled) before one became free."""
 
 
 class _AccountSlot:
@@ -27,10 +31,13 @@ class _AccountSlot:
         self._active = 0
         self._cv = threading.Condition()
 
-    def acquire(self) -> None:
+    def acquire(self, timeout: "float | None" = None) -> bool:
+        """Take a slot. Returns False if *timeout* elapsed without one."""
         with self._cv:
-            self._cv.wait_for(lambda: self._active < self._max)
+            if not self._cv.wait_for(lambda: self._active < self._max, timeout=timeout):
+                return False
             self._active += 1
+            return True
 
     def release(self) -> None:
         with self._cv:
@@ -89,8 +96,13 @@ class TikTokAccountPool:
             return len(self._accounts)
 
     @contextmanager
-    def acquire(self) -> Generator[TikTokAccount, None, None]:
-        """Block until a slot is available on the least-loaded enabled account."""
+    def acquire(
+        self, should_abort: "Callable[[], bool] | None" = None
+    ) -> Generator[TikTokAccount, None, None]:
+        """Block until a slot is available on the least-loaded enabled account.
+
+        Raises _AcquireAborted if *should_abort* turns True while waiting.
+        """
         # Capture account + slot reference under lock to prevent KeyError race
         # with a concurrent remove_account() between pick and slot lookup.
         with self._lock:
@@ -112,12 +124,23 @@ class TikTokAccountPool:
         # slot.acquire() may block — must be outside _lock to avoid deadlock.
         # Holding a local reference to slot is safe even if remove_account()
         # runs concurrently: the slot object itself remains valid.
-        slot.acquire()
+        #
+        # A live recording holds its slot for the whole broadcast (hours), so
+        # everything queued behind it waits that long. Poll in 1 s steps and let
+        # should_abort() bail out, otherwise a cancelled task stays parked in
+        # wait_for() forever and burns a DownloadManager worker thread for the
+        # life of the process.
+        while not slot.acquire(timeout=1.0):
+            if should_abort is not None and should_abort():
+                with self._lock:
+                    self._load[account.id] = max(0, self._load.get(account.id, 1) - 1)
+                raise _AcquireAborted
         try:
             yield account
         finally:
             with self._lock:
-                self._load[account.id] = max(0, self._load.get(account.id, 1) - 1)
+                if account.id in self._slots:
+                    self._load[account.id] = max(0, self._load.get(account.id, 1) - 1)
             slot.release()
 
     def _pick_account(self) -> TikTokAccount | None:

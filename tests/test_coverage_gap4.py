@@ -26,6 +26,7 @@ from app.services.ffmpeg_convert_service import (
 from app.services.ffmpeg_trim_service import _build_cmd, _font_clause, trim_video
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.downloader.yt_dlp_engine import YtDlpEngine
+from utils.i18n import t
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,7 +178,7 @@ class TestTrimVideoWorker:
             cancel()  # cancel handle is callable
             self._wait(done)
 
-        assert errors == ["Đã huỷ"]
+        assert errors == [t("convert.cancelled")]
         assert not out.exists()
         assert not out.with_suffix(".part.mp4").exists()
 

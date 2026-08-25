@@ -32,6 +32,7 @@ from domain.models.download_task import MediaInfo
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
 from utils.helpers import is_valid_url
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -88,6 +89,7 @@ class BatchTab(QWidget):
         self._seq_queue: list[_BatchItem] = []
         self._seq_current_task_id: str | None = None
         self._seq_timer: QTimer | None = None
+        self._empty_lbl: QLabel | None = None
         self._quality_map = {
             "Best": "bestvideo+bestaudio/best",
             "1080p": "bestvideo[height<=1080]+bestaudio/best",
@@ -116,9 +118,9 @@ class BatchTab(QWidget):
         hdr.setStyleSheet("background: transparent;")
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 0)
-        title = QLabel("Tải xuống hàng loạt")
-        title.setObjectName("page_title")
-        hdr_layout.addWidget(title)
+        self._title_lbl = QLabel(t("batch.title"))
+        self._title_lbl.setObjectName("page_title")
+        hdr_layout.addWidget(self._title_lbl)
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
         hdr_layout.addWidget(self._status_lbl)
@@ -145,9 +147,9 @@ class BatchTab(QWidget):
         input_card_layout.setContentsMargins(16, 12, 16, 12)
         input_card_layout.setSpacing(6)
 
-        hint = QLabel("Dán URL vào đây — mỗi dòng một link (tối đa 500)")
-        hint.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
-        input_card_layout.addWidget(hint)
+        self._hint_lbl = QLabel(t("batch.hint", max=MAX_BATCH_URLS))
+        self._hint_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        input_card_layout.addWidget(self._hint_lbl)
 
         self._text_area = QTextEdit()
         self._text_area.setFixedHeight(130)
@@ -171,30 +173,30 @@ class BatchTab(QWidget):
         btn_row_layout.setContentsMargins(0, 0, 0, 0)
         btn_row_layout.setSpacing(8)
 
-        import_btn = QPushButton("Nhập .txt")
-        import_btn.setFixedHeight(34)
-        import_btn.setStyleSheet(
+        self._import_btn = QPushButton(t("batch.import_txt"))
+        self._import_btn.setFixedHeight(34)
+        self._import_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 12px; padding: 0 12px;"
         )
-        import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        import_btn.clicked.connect(self._import_file)
-        btn_row_layout.addWidget(import_btn)
+        self._import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._import_btn.clicked.connect(self._import_file)
+        btn_row_layout.addWidget(self._import_btn)
 
-        clear_btn = QPushButton("Xóa tất cả")
-        clear_btn.setFixedHeight(34)
-        clear_btn.setStyleSheet(
+        self._clear_btn = QPushButton(t("batch.clear_all"))
+        self._clear_btn.setFixedHeight(34)
+        self._clear_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 12px; padding: 0 12px;"
         )
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.clicked.connect(self._clear_all)
-        btn_row_layout.addWidget(clear_btn)
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.clicked.connect(self._clear_all)
+        btn_row_layout.addWidget(self._clear_btn)
 
         self._url_count_lbl = QLabel("")
         self._url_count_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         btn_row_layout.addWidget(self._url_count_lbl)
         btn_row_layout.addStretch()
 
-        self._analyse_btn = QPushButton("Phân tích")
+        self._analyse_btn = QPushButton(t("toolbar.analyse"))
         self._analyse_btn.setFixedHeight(34)
         self._analyse_btn.setEnabled(False)
         self._analyse_btn.setStyleSheet(
@@ -215,18 +217,18 @@ class BatchTab(QWidget):
         rh_layout.setContentsMargins(28, 14, 28, 4)
         rh_layout.setSpacing(8)
 
-        rl = QLabel("Kết quả phân tích")
-        rl.setObjectName("section_title")
-        rl.setStyleSheet(f"color: {T.text2}; font-size: 13px; font-weight: bold;")
-        rh_layout.addWidget(rl)
+        self._results_lbl = QLabel(t("batch.results_title"))
+        self._results_lbl.setObjectName("section_title")
+        self._results_lbl.setStyleSheet(f"color: {T.text2}; font-size: 13px; font-weight: bold;")
+        rh_layout.addWidget(self._results_lbl)
 
-        self._select_all_chk = QCheckBox("Chọn hết")
+        self._select_all_chk = QCheckBox(t("batch.select_all"))
         self._select_all_chk.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
         self._select_all_chk.setVisible(False)
         self._select_all_chk.toggled.connect(self._on_select_all_toggled)
         rh_layout.addWidget(self._select_all_chk)
 
-        self._sequential_chk = QCheckBox("Tải tuần tự")
+        self._sequential_chk = QCheckBox(t("batch.sequential"))
         self._sequential_chk.setChecked(True)
         self._sequential_chk.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
         self._sequential_chk.setVisible(False)
@@ -234,24 +236,24 @@ class BatchTab(QWidget):
 
         rh_layout.addStretch()
 
-        ql = QLabel("Chất lượng:")
-        ql.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        rh_layout.addWidget(ql)
+        self._quality_lbl = QLabel(t("batch.quality_label"))
+        self._quality_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        rh_layout.addWidget(self._quality_lbl)
         self._quality_combo = QComboBox()
         self._quality_combo.addItems(list(self._quality_map.keys()))
         self._quality_combo.setFixedSize(90, 30)
         rh_layout.addWidget(self._quality_combo)
 
-        fl = QLabel("Định dạng:")
-        fl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        rh_layout.addWidget(fl)
+        self._format_lbl = QLabel(t("archive.format_label"))
+        self._format_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        rh_layout.addWidget(self._format_lbl)
         self._format_combo = QComboBox()
         self._format_combo.addItems(["mp4", "mkv", "webm", "mp3", "m4a"])
         self._format_combo.setFixedSize(80, 30)
         self._format_combo.setCurrentText(self._app.config.default_format)
         rh_layout.addWidget(self._format_combo)
 
-        self._retry_btn = QPushButton("Thử lại lỗi")
+        self._retry_btn = QPushButton(t("batch.retry_errors"))
         self._retry_btn.setFixedHeight(36)
         self._retry_btn.setEnabled(False)
         self._retry_btn.setStyleSheet(
@@ -261,7 +263,7 @@ class BatchTab(QWidget):
         self._retry_btn.clicked.connect(self._retry_errors)
         rh_layout.addWidget(self._retry_btn)
 
-        self._queue_all_btn = QPushButton("Thêm tất cả")
+        self._queue_all_btn = QPushButton(t("batch.queue_all"))
         self._queue_all_btn.setFixedHeight(36)
         self._queue_all_btn.setEnabled(False)
         self._queue_all_btn.setStyleSheet(
@@ -294,11 +296,12 @@ class BatchTab(QWidget):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _add_empty_label(self) -> None:
-        empty = QLabel("Chưa có URL nào — dán link ở trên hoặc import file .txt")
+        empty = QLabel(t("batch.empty"))
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty.setStyleSheet(f"color: {T.text3}; font-size: 13px; background: transparent;")
         empty.setMinimumHeight(100)
         self._items_layout.addWidget(empty)
+        self._empty_lbl = empty
 
     @staticmethod
     def _short_url(url: str, max_len: int = 70) -> str:
@@ -326,10 +329,10 @@ class BatchTab(QWidget):
             self._url_count_lbl.setText("")
             self._analyse_btn.setEnabled(False)
         elif count > MAX_BATCH_URLS:
-            self._url_count_lbl.setText(f"{count} URL — chỉ lấy {MAX_BATCH_URLS} đầu tiên")
+            self._url_count_lbl.setText(t("batch.url_count_capped", count=count, max=MAX_BATCH_URLS))
             self._analyse_btn.setEnabled(True)
         else:
-            self._url_count_lbl.setText(f"{count} URL")
+            self._url_count_lbl.setText(t("batch.url_count", count=count))
             self._analyse_btn.setEnabled(True)
 
     def _parse_textarea(self) -> list[str]:
@@ -348,7 +351,7 @@ class BatchTab(QWidget):
     def _import_file(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
             self,
-            "Nhập danh sách URL",
+            t("batch.import_dialog_title"),
             "",
             "Text files (*.txt);;All files (*.*)",
         )
@@ -357,7 +360,7 @@ class BatchTab(QWidget):
         try:
             content = Path(path_str).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            self._app.toast(f"Không đọc được file: {exc}", "error")
+            self._app.toast(t("batch.import_read_error", err=exc), "error")
             return
 
         urls: list[str] = []
@@ -372,7 +375,7 @@ class BatchTab(QWidget):
                 invalid += 1
 
         if not urls:
-            self._app.toast("Không tìm thấy URL hợp lệ trong file.", "error")
+            self._app.toast(t("batch.import_no_valid"), "error")
             return
 
         total = len(urls)
@@ -383,11 +386,11 @@ class BatchTab(QWidget):
         separator = "\n" if existing else ""
         self._text_area.setPlainText(existing + separator + "\n".join(urls))
 
-        msg_parts = [f"Đã nhập {len(urls)} URL"]
+        msg_parts = [t("batch.import_done", count=len(urls))]
         if capped:
-            msg_parts.append(f"(giới hạn {MAX_BATCH_URLS}, bỏ qua {total - MAX_BATCH_URLS})")
+            msg_parts.append(t("batch.import_capped", max=MAX_BATCH_URLS, skipped=total - MAX_BATCH_URLS))
         if invalid:
-            msg_parts.append(f"· {invalid} dòng không hợp lệ bỏ qua")
+            msg_parts.append(t("batch.import_invalid", count=invalid))
         self._app.toast(" ".join(msg_parts), "success" if not capped else "info")
         self._on_text_change()
 
@@ -408,7 +411,7 @@ class BatchTab(QWidget):
         self._analysing_count = 0
 
         self._analyse_btn.setEnabled(False)
-        self._analyse_btn.setText("Đang phân tích…")
+        self._analyse_btn.setText(t("batch.analysing_dots"))
         self._queue_all_btn.setEnabled(False)
         self._status_lbl.setText("")
 
@@ -461,6 +464,12 @@ class BatchTab(QWidget):
     def _on_item_done(self, item: _BatchItem, info: MediaInfo, token: int) -> None:
         if token != self._batch_token:
             return
+        if item not in self._items:
+            # Removed mid-analysis: _remove_item already gave the slot back, so
+            # decrementing again would push the count negative and leave
+            # _tick_spinner rescheduling itself every 100 ms forever.
+            self._analyse_next(token)
+            return
         self._analysing_count -= 1
         item.state = _ItemState.READY
         item.media_info = info
@@ -470,6 +479,9 @@ class BatchTab(QWidget):
 
     def _on_item_error(self, item: _BatchItem, err: str, token: int) -> None:
         if token != self._batch_token:
+            return
+        if item not in self._items:
+            self._analyse_next(token)
             return
         self._analysing_count -= 1
         item.state = _ItemState.ERROR
@@ -486,32 +498,32 @@ class BatchTab(QWidget):
         errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
 
         self._analyse_btn.setEnabled(True)
-        self._analyse_btn.setText("Phân tích lại")
+        self._analyse_btn.setText(t("batch.analyse_again"))
 
         if errors > 0:
             self._retry_btn.setEnabled(True)
-            self._retry_btn.setText(f"Thử lại {errors} lỗi")
+            self._retry_btn.setText(t("batch.retry_count", count=errors))
         else:
             self._retry_btn.setEnabled(False)
-            self._retry_btn.setText("Thử lại lỗi")
+            self._retry_btn.setText(t("batch.retry_errors"))
 
         if ready == 0:
-            self._status_lbl.setText(f"Không có URL nào hợp lệ ({errors} lỗi)")
+            self._status_lbl.setText(t("batch.no_valid_urls", errors=errors))
             self._status_lbl.setStyleSheet(f"color: {T.error_text}; font-size: 12px;")
             self._queue_all_btn.setEnabled(False)
         else:
-            err_note = f"  ·  {errors} lỗi" if errors else ""
-            self._status_lbl.setText(f"✓  {ready}/{total} sẵn sàng{err_note}")
+            err_note = t("batch.ready_err_note", errors=errors) if errors else ""
+            self._status_lbl.setText(t("batch.ready_summary", ready=ready, total=total, err_note=err_note))
             self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
             self._queue_all_btn.setEnabled(True)
-            self._queue_all_btn.setText(f"Queue {ready} video")
+            self._queue_all_btn.setText(t("batch.queue_count", count=ready))
 
     # ── Spinner ───────────────────────────────────────────────────────────────
 
     def _tick_spinner(self, token: int) -> None:
         if token != self._batch_token:
             return
-        if self._analysing_count == 0:
+        if self._analysing_count <= 0:
             return
         self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
         frame = _SPINNER_FRAMES[self._spinner_idx]
@@ -555,7 +567,9 @@ class BatchTab(QWidget):
 
         check_box = QCheckBox()
         check_box.setChecked(item.checked)
-        check_box.stateChanged.connect(lambda state, i=item: self._on_check_change(i, bool(state)))
+        check_box.checkStateChanged.connect(
+            lambda state, i=item: self._on_check_change(i, state == Qt.CheckState.Checked)
+        )
         row_layout.addWidget(check_box)
         item.check_box = check_box
 
@@ -628,7 +642,7 @@ class BatchTab(QWidget):
             item.state_lbl.setText("✗")
             item.state_lbl.setStyleSheet(f"color: {T.error}; font-size: 14px; background: transparent;")
             short_url = self._short_url(item.url, 65)
-            err_preview = item.error_msg[:80] if item.error_msg else "Analysis failed"
+            err_preview = item.error_msg[:80] if item.error_msg else t("batch.analysis_failed")
             item.title_lbl.setText(f"{short_url}  ·  {err_preview}")
             item.title_lbl.setStyleSheet(f"color: {T.error_text}; font-size: 12px; background: transparent;")
             if item.check_box:
@@ -676,12 +690,14 @@ class BatchTab(QWidget):
         ready = sum(1 for i in self._items if i.state == _ItemState.READY and i.checked)
         if ready == 0:
             self._queue_all_btn.setEnabled(False)
-            self._queue_all_btn.setText("Thêm tất cả")
+            self._queue_all_btn.setText(t("batch.queue_all"))
         else:
             self._queue_all_btn.setEnabled(True)
-            self._queue_all_btn.setText(f"Thêm {ready} video")
+            self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))
 
     def _remove_item(self, item: _BatchItem) -> None:
+        if item.state == _ItemState.ANALYSING and self._analysing_count > 0:
+            self._analysing_count -= 1
         if item.row_frame:
             self._items_layout.removeWidget(item.row_frame)
             item.row_frame.deleteLater()
@@ -691,7 +707,7 @@ class BatchTab(QWidget):
         if not self._items:
             self._add_empty_label()
             self._queue_all_btn.setEnabled(False)
-            self._queue_all_btn.setText("Thêm tất cả")
+            self._queue_all_btn.setText(t("batch.queue_all"))
             self._status_lbl.setText("")
         self._update_queue_btn_count()
 
@@ -709,8 +725,8 @@ class BatchTab(QWidget):
         if self._sequential_chk.isChecked():
             self._seq_queue = to_submit[:]
             self._queue_all_btn.setEnabled(False)
-            self._queue_all_btn.setText("⬇  Đang tải tuần tự…")
-            self._status_lbl.setText(f"Tải tuần tự: {len(to_submit)} video")
+            self._queue_all_btn.setText(t("batch.downloading_sequential"))
+            self._status_lbl.setText(t("batch.sequential_status", count=len(to_submit)))
             self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
             self._submit_next_sequential(format_id, output_ext)
         else:
@@ -719,10 +735,10 @@ class BatchTab(QWidget):
                 if self._submit_one(item, format_id, output_ext):
                     queued += 1
             if queued:
-                self._app.toast(f"Đã thêm {queued} video vào queue.", "success")
+                self._app.toast(t("batch.queued_toast", count=queued), "success")
                 self._queue_all_btn.setEnabled(False)
-                self._queue_all_btn.setText("✓  Đã thêm vào queue")
-                self._status_lbl.setText(f"✓  {queued} video đã được thêm vào queue")
+                self._queue_all_btn.setText(t("batch.queue_added"))
+                self._status_lbl.setText(t("batch.queue_added_summary", count=queued))
                 self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
                 self._app.navigate_to("queue")
 
@@ -748,8 +764,8 @@ class BatchTab(QWidget):
     def _submit_next_sequential(self, format_id: str = "", output_ext: str = "") -> None:
         if not self._seq_queue:
             self._stop_seq_timer()
-            self._queue_all_btn.setText("✓  Đã tải xong")
-            self._status_lbl.setText("✓  Hoàn tất tải tuần tự")
+            self._queue_all_btn.setText(t("batch.sequential_done_btn"))
+            self._status_lbl.setText(t("batch.sequential_done_status"))
             self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
             return
 
@@ -763,7 +779,7 @@ class BatchTab(QWidget):
         self._seq_current_task_id = task_id
         remaining = len(self._seq_queue)
         if remaining:
-            self._app.toast(f"Đang tải tuần tự — còn {remaining} video.", "info")
+            self._app.toast(t("batch.sequential_toast", remaining=remaining), "info")
         self._app.navigate_to("queue")
         self._start_seq_timer()
 
@@ -808,11 +824,11 @@ class BatchTab(QWidget):
 
         self._analysing_count = 0
         self._retry_btn.setEnabled(False)
-        self._retry_btn.setText("Thử lại lỗi")
+        self._retry_btn.setText(t("batch.retry_errors"))
         self._analyse_btn.setEnabled(False)
-        self._analyse_btn.setText("Đang thử lại…")
+        self._analyse_btn.setText(t("batch.retrying_dots"))
         self._queue_all_btn.setEnabled(False)
-        self._status_lbl.setText(f"Đang thử lại {len(error_items)} URL lỗi…")
+        self._status_lbl.setText(t("batch.retrying_urls", count=len(error_items)))
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
 
         self._analyse_next(my_token)
@@ -834,11 +850,11 @@ class BatchTab(QWidget):
         self._items.clear()
 
         self._analyse_btn.setEnabled(False)
-        self._analyse_btn.setText("Phân tích")
+        self._analyse_btn.setText(t("toolbar.analyse"))
         self._queue_all_btn.setEnabled(False)
-        self._queue_all_btn.setText("Thêm tất cả")
+        self._queue_all_btn.setText(t("batch.queue_all"))
         self._retry_btn.setEnabled(False)
-        self._retry_btn.setText("Thử lại lỗi")
+        self._retry_btn.setText(t("batch.retry_errors"))
         self._url_count_lbl.setText("")
         self._status_lbl.setText("")
         self._select_all_chk.setVisible(False)
@@ -857,10 +873,10 @@ class BatchTab(QWidget):
         self._text_area.setPlainText("\n".join(capped))
         self._on_text_change()
 
-        label = f'"{playlist_title}"' if playlist_title else "playlist"
-        msg = f"Đã tải {len(capped)} video từ {label} vào Batch."
+        label = f'"{playlist_title}"' if playlist_title else t("batch.playlist_label_default")
+        msg = t("batch.playlist_loaded", count=len(capped), label=label)
         if truncated:
-            msg += f" (giới hạn {MAX_BATCH_URLS}, bỏ qua {len(urls) - MAX_BATCH_URLS})"
+            msg += " " + t("batch.import_capped", max=MAX_BATCH_URLS, skipped=len(urls) - MAX_BATCH_URLS)
         self._app.toast(msg, "info")
         self._start_batch_analyse()
 
@@ -868,3 +884,39 @@ class BatchTab(QWidget):
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    # ── i18n ─────────────────────────────────────────────────────────────
+
+    def retranslate(self) -> None:
+        self._title_lbl.setText(t("batch.title"))
+        self._hint_lbl.setText(t("batch.hint", max=MAX_BATCH_URLS))
+        self._import_btn.setText(t("batch.import_txt"))
+        self._clear_btn.setText(t("batch.clear_all"))
+        self._results_lbl.setText(t("batch.results_title"))
+        self._select_all_chk.setText(t("batch.select_all"))
+        self._sequential_chk.setText(t("batch.sequential"))
+        self._quality_lbl.setText(t("batch.quality_label"))
+        self._format_lbl.setText(t("archive.format_label"))
+        if self._empty_lbl is not None and not self._items:
+            self._empty_lbl.setText(t("batch.empty"))
+
+        # Buttons carry transient, state-dependent text (analysing spinner,
+        # sequential-download progress) — only safe to rewrite while idle,
+        # same guard toolbar.py uses for its Analyse button.
+        if self._analysing_count == 0:
+            has_run = bool(self._items) and all(i.state != _ItemState.PENDING for i in self._items)
+            self._analyse_btn.setText(t("batch.analyse_again") if has_run else t("toolbar.analyse"))
+
+            errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
+            self._retry_btn.setText(
+                t("batch.retry_count", count=errors) if errors else t("batch.retry_errors")
+            )
+
+        if self._seq_timer is None or not self._seq_timer.isActive():
+            ready = sum(1 for i in self._items if i.state == _ItemState.READY and i.checked)
+            self._queue_all_btn.setText(
+                t("batch.queue_add_count", count=ready) if ready else t("batch.queue_all")
+            )
+
+        for item in self._items:
+            self._refresh_item_ui(item)

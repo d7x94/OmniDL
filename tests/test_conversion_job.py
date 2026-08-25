@@ -151,6 +151,8 @@ class TestSnapshot:
         "job_id", "source_task_id", "encoder_key", "quality", "speed_preset",
         "custom_crf", "output_codec", "status", "progress", "output_filename",
         "error_msg", "created_at", "finished_at", "output_deleted",
+        "generate_subtitles", "subtitle_language", "subtitle_filename",
+        "subtitle_error", "vmaf_score", "compute_vmaf", "subtitles_only",
     }
 
     def test_snapshot_contains_all_keys(self):

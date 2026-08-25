@@ -53,6 +53,8 @@ from api.models import (
     ArchiveMemberResponse,
     ClearItemsRequest,
     ClipboardAnalyseRequest,
+    CodecOption,
+    ConvertCapabilities,
     ConvertJobResponse,
     ConvertRequest,
     DownloadRequest,
@@ -65,16 +67,24 @@ from api.models import (
     FileDeleteRequest,
     FileDeleteResponse,
     FileInfoResponse,
+    FileRenameByPathRequest,
+    FileRenameByPathResponse,
     FileRenameRequest,
+    FileSubtitleRequest,
     FileTransferRequest,
     FileTransferResponse,
     HistoryListResponse,
     HistoryStatsResponse,
+    LanguageOption,
+    LanguageRequest,
+    LanguageResponse,
     MonitorAddRequest,
     MonitorIntervalRequest,
     MonitorItemResponse,
     MonitorListResponse,
     QueueActionResponse,
+    SubtitleModelOption,
+    SubtitleRequest,
     TaskResponse,
 )
 from app.event_bus import EventBus
@@ -87,6 +97,7 @@ from app.services.archive_service import (
 )
 from domain.models.conversion_job import ConversionJob, ConversionStatus
 from domain.models.download_task import DownloadTask, MediaInfo
+from utils.helpers import sanitise_filename
 
 if TYPE_CHECKING:
     import uvicorn
@@ -326,6 +337,8 @@ def _wire_event_bus(bus: EventBus) -> None:
         # Expose only the basename so the client doesn't see server paths.
         out = snap.get("output_filename", "") or ""
         snap["output_filename"] = Path(out).name if out else ""
+        srt = snap.get("subtitle_filename", "") or ""
+        snap["subtitle_filename"] = Path(srt).name if srt else ""
         return snap
 
     def _on_convert_started(job: ConversionJob, **_kw) -> None:
@@ -480,6 +493,33 @@ def create_app(
         """Health check — no auth required when token is empty."""
         return {"status": "ok", "app": "OmniDL", "version": "1.0.0"}
 
+    # ── UI language ───────────────────────────────────────────────────────
+
+    @app.get("/api/settings/language", response_model=LanguageResponse)
+    async def get_language(_: None = Depends(_require_auth)) -> LanguageResponse:
+        """Return the saved UI language and the list of supported languages."""
+        from utils.i18n import available, normalize
+
+        return LanguageResponse(
+            language=normalize(config.get("language", "en")),
+            available=[LanguageOption(**opt) for opt in available()],
+        )
+
+    @app.post("/api/settings/language", response_model=LanguageResponse)
+    async def set_language_endpoint(
+        body: LanguageRequest, _: None = Depends(_require_auth)
+    ) -> LanguageResponse:
+        """Persist the UI language so desktop and Web UI stay in sync."""
+        from utils.i18n import available, set_language
+
+        code = set_language(body.language)
+        config.set("language", code)
+        logger.info("UI language set to %s via API", code)
+        return LanguageResponse(
+            language=code,
+            available=[LanguageOption(**opt) for opt in available()],
+        )
+
     # ── URL analysis ──────────────────────────────────────────────────────
 
     @app.post("/api/analyse", response_model=AnalyseResponse)
@@ -488,8 +528,9 @@ def create_app(
         Extract metadata for a URL.
         Bridges the callback-based DownloadService.analyse_url() to a
         synchronous HTTP response via threading.Event.
-        Timeout: 120 seconds — Kuaishou CDP strategy needs up to ~90s
-        (short-URL resolution + strategies A-D + CDP intercept).
+        Timeout: 180 seconds (see deadline below). Kuaishou extraction is the
+        long pole — kuaishou_engine._EXTRACT_BUDGET_S caps strategies A-D plus
+        the CDP fallback (strategy E) to fit inside this deadline.
         """
         result: dict = {}
         done = threading.Event()
@@ -573,8 +614,9 @@ def create_app(
         with _analyse_cache_lock:
             _analyse_cache_cleanup()
             entry = _analyse_cache.get(clean_url)
+            is_new_job = entry is None
             if entry is None:
-                # First request for this URL — create job and start extract.
+                # First request for this URL — create the job slot.
                 entry = {
                     "done": threading.Event(),
                     "result": {},
@@ -583,27 +625,35 @@ def create_app(
                     "refs": 0,
                 }
                 _analyse_cache[clean_url] = entry
-
-                def on_done(info: MediaInfo) -> None:
-                    with _analyse_cache_lock:
-                        entry["result"]["info"] = info
-                        entry["ts"] = time.monotonic()
-                    entry["done"].set()
-
-                def on_error(err: str) -> None:
-                    with _analyse_cache_lock:
-                        entry["result"]["error"] = err
-                        entry["ts"] = time.monotonic()
-                    entry["done"].set()
-
-                service.analyse_url(clean_url, on_done=on_done, on_error=on_error)
-                logger.debug("Analyse cache: new job for %s", clean_url[:80])
             else:
                 logger.debug(
                     "Analyse cache: attaching to existing job for %s (done=%s)",
                     clean_url[:80],
                     entry["done"].is_set(),
                 )
+
+        def on_done(info: MediaInfo) -> None:
+            with _analyse_cache_lock:
+                entry["result"]["info"] = info
+                entry["ts"] = time.monotonic()
+            entry["done"].set()
+
+        def on_error(err: str) -> None:
+            with _analyse_cache_lock:
+                entry["result"]["error"] = err
+                entry["ts"] = time.monotonic()
+            entry["done"].set()
+
+        if is_new_job:
+            # Started OUTSIDE _analyse_cache_lock on purpose.
+            # DownloadService.analyse_url() rejects a URL with no host by calling
+            # on_error() synchronously in this thread before it spawns its worker
+            # ("https:///x" passes AnalyseRequest's regex but fails is_valid_url).
+            # Under the lock that callback re-entered a plain threading.Lock and
+            # deadlocked the uvicorn event-loop thread, hanging every REST
+            # endpoint and every SSE stream for the life of the process.
+            service.analyse_url(clean_url, on_done=on_done, on_error=on_error)
+            logger.debug("Analyse cache: new job for %s", clean_url[:80])
 
         async def _stream():
             # refs is incremented here, not in the handler body: Starlette may
@@ -669,7 +719,15 @@ def create_app(
                 # ref drops, so the next request always starts a fresh job.
                 with _analyse_cache_lock:
                     entry["refs"] = max(0, entry["refs"] - 1)
-                    if entry["refs"] == 0 and "info" not in entry.get("result", {}):
+                    # The identity check matters: _analyse_cache_cleanup() drops
+                    # over-age / overflowing entries even while refs > 0, so this
+                    # key may already hold a *newer* in-flight job.  Popping by
+                    # key alone would evict that one and force a duplicate extract.
+                    if (
+                        entry["refs"] == 0
+                        and "info" not in entry.get("result", {})
+                        and _analyse_cache.get(clean_url) is entry
+                    ):
                         # Error or timeout — evict so next request spawns a fresh job.
                         _analyse_cache.pop(clean_url, None)
                     _analyse_cache_cleanup()
@@ -753,8 +811,11 @@ def create_app(
         # it to a canonical @user/live URL. Without this lookup, task.url stays as
         # the short URL → [vm.tiktok] extractor re-resolves it → HTTP 429.
         # Fix: look up the analyse cache for the canonical URL and tiktok_room_id.
+        # The server-side analyse cache is the preferred source for
+        # tiktok_room_id; body.tiktok_room_id is only used when that misses
+        # (see the digit check below).
         _info_url = body.url
-        _info_room_id = body.tiktok_room_id or ""
+        _info_room_id = ""
         with _analyse_cache_lock:
             _cached = _analyse_cache.get(body.url)
             if _cached is not None and _cached["done"].is_set():
@@ -762,8 +823,19 @@ def create_app(
                 if _ci is not None:
                     if _ci.url and _ci.url.startswith("http"):
                         _info_url = _ci.url
-                    if _ci.tiktok_room_id and not _info_room_id:
+                    if _ci.tiktok_room_id:
                         _info_room_id = _ci.tiktok_room_id
+
+        # Cache miss: the entry expires 30 s after analyse completes, and only
+        # /api/analyse/stream ever writes it — a client on POST /api/analyse
+        # never populates it at all. Fall back to the value the client echoed
+        # back from our own AnalyseResponse. It is still not trusted blindly:
+        # room_id only ever reaches TikTok's room/info API as a query param, so
+        # accepting it is safe once it is confirmed to be a plain room number.
+        if not _info_room_id and body.tiktok_room_id:
+            _rid = body.tiktok_room_id.strip()
+            if _rid.isdigit() and 0 < len(_rid) <= 32:
+                _info_room_id = _rid
 
         info = MediaInfo(
             url=_info_url,
@@ -775,8 +847,11 @@ def create_app(
         )
         import sys as _sys  # noqa: PLC0415
 
+        # Only a real /stories/ permalink is CDP-only.  is_facebook_story_url()
+        # also matches every fb.watch short link, which made this guard reject
+        # ordinary Facebook videos yt-dlp handles fine on a Linux server.
         from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
-            is_facebook_story_url as _is_story_url,
+            is_facebook_story_permalink as _is_story_url,
         )
 
         if _is_story_url(body.url) and _sys.platform not in ("win32", "darwin"):
@@ -1143,6 +1218,15 @@ def create_app(
 
     # ── Remote Convert ─────────────────────────────────────────────────────
 
+    _CONVERT_MEDIA_TYPES: dict[str, str] = {
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mkv": "video/x-matroska",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo",
+        ".mp3": "audio/mpeg",
+    }
+
     def _job_to_response(job: ConversionJob) -> ConvertJobResponse:
         """Serialise a ConversionJob to the API response model."""
         snap = job.snapshot()
@@ -1163,6 +1247,42 @@ def create_app(
             finished_at=snap["finished_at"],
             preview_url=f"/api/convert/{snap['job_id']}/file",
             output_deleted=snap.get("output_deleted", False),
+            subtitle_filename=Path(snap.get("subtitle_filename", "") or "").name,
+            subtitle_error=snap.get("subtitle_error", "") or "",
+            vmaf_score=snap.get("vmaf_score"),
+            subtitles_only=bool(snap.get("subtitles_only", False)),
+        )
+
+    @app.get(
+        "/api/convert/codecs",
+        response_model=ConvertCapabilities,
+        summary="List output codecs and subtitle support available on the server",
+    )
+    async def list_codecs(_: None = Depends(_require_auth)) -> ConvertCapabilities:
+        """
+        Report what the server's FFmpeg binary can actually produce.
+
+        Only codecs that pass a real one-frame test encode are listed, so a
+        client never offers an option that would fail at conversion time.  The
+        Windows release bundles a build without SVT-AV1, which is why AV1 can be
+        absent here while still being a codec OmniDL knows about.
+
+        Result is cached for 5 minutes inside detect_available_codecs().
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        # get_available_codecs() runs synchronous test-encodes on a cache miss
+        # (cold start, or every 5 min on TTL expiry) — offload so it cannot
+        # freeze the event loop for every other connected client.
+        codecs = await asyncio.to_thread(remote_convert.get_available_codecs)
+        return ConvertCapabilities(
+            codecs=[CodecOption(key=k, label=lbl) for k, lbl in codecs],
+            subtitles=remote_convert.supports_subtitles(),
+            subtitle_languages=remote_convert.get_subtitle_languages(),
+            subtitle_models=[
+                SubtitleModelOption(key=k, label=lbl, size_mb=mb)
+                for k, lbl, mb in remote_convert.get_subtitle_models()
+            ],
         )
 
     @app.get(
@@ -1180,7 +1300,9 @@ def create_app(
         """
         if remote_convert is None:
             raise HTTPException(status_code=503, detail="Convert service not available")
-        opts = remote_convert.get_available_encoders()
+        # Same reasoning as list_codecs: offload the sync probe so a cache
+        # miss doesn't stall the event loop for every connected client.
+        opts = await asyncio.to_thread(remote_convert.get_available_encoders)
         return [EncoderOption(key=k, label=lbl) for k, lbl in opts]
 
     @app.post(
@@ -1250,6 +1372,11 @@ def create_app(
                         speed_preset=body.speed_preset or "balanced",
                         custom_crf=body.custom_crf if body.custom_crf is not None else 23,
                         output_codec=body.output_codec or "h264",
+                        generate_subtitles=bool(body.generate_subtitles),
+                        subtitle_language=body.subtitle_language or "auto",
+                        subtitle_model=body.subtitle_model or "base",
+                        compute_vmaf=bool(body.compute_vmaf),
+                        target_ext=body.target_ext or "mp4",
                     )
                     jobs.append(j)
             except ValueError as exc:
@@ -1269,6 +1396,60 @@ def create_app(
                 speed_preset=body.speed_preset or "balanced",
                 custom_crf=body.custom_crf if body.custom_crf is not None else 23,
                 output_codec=body.output_codec or "h264",
+                generate_subtitles=bool(body.generate_subtitles),
+                subtitle_language=body.subtitle_language or "auto",
+                subtitle_model=body.subtitle_model or "base",
+                compute_vmaf=bool(body.compute_vmaf),
+                target_ext=body.target_ext or "mp4",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return _job_to_response(job)
+
+    @app.post(
+        "/api/queue/{task_id}/subtitles",
+        response_model=ConvertJobResponse,
+        summary="Generate subtitles (.srt) for a completed download task, without re-encoding",
+    )
+    def start_task_subtitles(
+        task_id: str,
+        body: SubtitleRequest,
+        _: None = Depends(_require_auth),
+    ) -> ConvertJobResponse:
+        """
+        Transcribe a downloaded video's audio into a sidecar .srt file.
+
+        Unlike POST /api/queue/{task_id}/convert this runs *no* video encode —
+        only FFmpeg's whisper filter — so the original file is untouched and the
+        job finishes with subtitle_filename set and output_filename empty.
+
+        • task must be COMPLETED / PARTIAL_SAVED with a file on disk
+        • multi-file (gallery-dl) downloads pick the first video in the folder
+        • fetch the result with GET /api/convert/{job_id}/file?kind=srt
+        • 422 when the server's FFmpeg has no whisper filter, or the language /
+          model is not in the allowlist
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+
+        task = _get_task_or_404(service, task_id)
+        if task.status.name not in {"COMPLETED", "PARTIAL_SAVED"}:
+            raise HTTPException(status_code=400, detail="Task is not COMPLETED")
+
+        file_path = _resolve_task_file(task)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Output file not found on disk")
+
+        if file_path.is_dir():
+            file_path = _first_video_in_dir(file_path)
+
+        try:
+            job = remote_convert.start_subtitles(
+                file_path=file_path,
+                source_task_id=task_id,
+                subtitle_language=body.subtitle_language or "auto",
+                subtitle_model=body.subtitle_model or "base",
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1317,9 +1498,17 @@ def create_app(
         "/api/convert/{job_id}/file",
         summary="Stream / preview the converted MP4 output",
     )
-    async def preview_convert_file(job_id: str, _: None = Depends(_require_auth_stream)):
+    async def preview_convert_file(
+        job_id: str,
+        kind: str = Query("video", pattern="^(video|srt)$"),
+        _: None = Depends(_require_auth_stream),
+    ):
         """
         Serve the converted MP4 inline for iOS Safari preview.
+
+        ``?kind=srt`` serves the generated subtitle sidecar instead, so a client
+        can fetch both halves of a subtitled conversion from one job id.  404s
+        when subtitles were not requested or transcription found no speech.
 
         Only available once the job status is COMPLETED.
         Same Range-request support as the download preview endpoint.
@@ -1332,7 +1521,24 @@ def create_app(
         if job.status != "COMPLETED":
             raise HTTPException(status_code=400, detail="Conversion not completed yet")
 
-        out_path = Path(job.output_filename).resolve()
+        if kind == "srt":
+            raw = job.subtitle_filename
+            if not raw:
+                raise HTTPException(status_code=404, detail="No subtitles were generated for this job")
+            media_type, disposition = "text/plain; charset=utf-8", "attachment"
+        else:
+            raw = job.output_filename
+            # A subtitles-only job has no video output: Path("").resolve() is the
+            # server's CWD, which then failed the download_dir check and came back
+            # as a misleading 403 instead of "there is nothing to preview".
+            if not raw:
+                raise HTTPException(status_code=404, detail="This job produced no video output")
+            # The output container follows target_ext, so hard-coding video/mp4
+            # made iOS Safari refuse to play .mkv / .mov / .avi and .mp3 output.
+            media_type = _CONVERT_MEDIA_TYPES.get(Path(raw).suffix.lower(), "video/mp4")
+            disposition = "inline"
+
+        out_path = Path(raw).resolve()
         allowed = config.download_dir.resolve()
         if not out_path.is_relative_to(allowed):
             raise HTTPException(status_code=403, detail="Output file is outside download directory")
@@ -1341,9 +1547,9 @@ def create_app(
 
         return FileResponse(
             path=str(out_path),
-            media_type="video/mp4",
+            media_type=media_type,
             filename=out_path.name,
-            content_disposition_type="inline",
+            content_disposition_type=disposition,
             headers={"Accept-Ranges": "bytes"},
         )
 
@@ -1562,12 +1768,57 @@ def create_app(
                 custom_crf=body.custom_crf if body.custom_crf is not None else 23,
                 target_ext=body.target_ext or "mp4",
                 output_codec=body.output_codec or "h264",
+                generate_subtitles=bool(body.generate_subtitles),
+                subtitle_language=body.subtitle_language or "auto",
+                subtitle_model=body.subtitle_model or "base",
+                compute_vmaf=bool(body.compute_vmaf),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         logger.info(
             "Remote API: started standalone convert job %s for '%s'",
+            job.job_id,
+            file_path.name,
+        )
+        return FileConvertJobResponse(job_id=job.job_id)
+
+    @app.post(
+        "/api/files/subtitles",
+        response_model=FileConvertJobResponse,
+        summary="Generate subtitles (.srt) for a local file, without re-encoding",
+    )
+    async def subtitle_file(
+        body: FileSubtitleRequest, _: None = Depends(_require_auth)
+    ) -> FileConvertJobResponse:
+        """
+        Transcribe any file inside download_dir into a sidecar .srt.
+
+        Flow from iPhone:
+          1. GET  /api/files/browse                → pick a file path
+          2. POST /api/files/subtitles { file_path, subtitle_language, ... }
+          3. GET  /api/convert/{job_id}            → track progress (or SSE)
+          4. GET  /api/convert/{job_id}/file?kind=srt → download the subtitles
+
+        Security: file_path resolved against config.download_dir (CWE-22);
+        language and model are checked against the service allowlists.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+
+        file_path = _resolve_inside_download_dir(config, body.file_path)
+
+        try:
+            job = remote_convert.start_subtitles(
+                file_path=file_path,
+                subtitle_language=body.subtitle_language or "auto",
+                subtitle_model=body.subtitle_model or "base",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        logger.info(
+            "Remote API: started subtitle job %s for '%s'",
             job.job_id,
             file_path.name,
         )
@@ -1619,6 +1870,98 @@ def create_app(
             path=body.path,
             action="deleted",
             detail=f"Deleted: {target.name}",
+        )
+
+    @app.post(
+        "/api/files/rename",
+        response_model=FileRenameByPathResponse,
+        summary="Rename a file within download_dir (file browser)",
+    )
+    def rename_file_by_path(
+        body: FileRenameByPathRequest, _: None = Depends(_require_auth)
+    ) -> FileRenameByPathResponse:
+        """
+        Rename a file on the server's disk, addressed by its full path.
+
+        Security:
+        - Resolved path MUST be within config.download_dir (CWE-22).
+        - The new file stays in the same directory (basename-only rename).
+        """
+        root = config.download_dir.resolve()
+        try:
+            old_path = Path(body.path).resolve()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid path") from None
+
+        if not old_path.is_relative_to(root):
+            raise HTTPException(
+                status_code=400,
+                detail="Path is outside the allowed download directory",
+            )
+        if not old_path.exists():
+            raise HTTPException(status_code=404, detail="Path does not exist")
+        if old_path.is_dir():
+            raise HTTPException(status_code=400, detail="Cannot rename a directory")
+
+        # A queued task or a history entry may point at this exact file.  Renaming
+        # it behind DownloadService's back leaves task.filename / the history row
+        # on the old name, so every task-scoped endpoint (preview, delete,
+        # transfer, convert, fileinfo) starts returning 404 for that download.
+        # Delegate to rename_download() when we find the owner — it performs the
+        # same disk rename and syncs both sides.
+        owner_id = ""
+        target_name = old_path.name
+        for _task in service.get_all_tasks():
+            raw = getattr(_task, "filename", "") or ""
+            if raw and Path(raw).name == target_name and Path(raw).resolve() == old_path:
+                owner_id = _task.id
+                break
+        if not owner_id:
+            for _entry in service.get_history():
+                raw = _entry.get("filename") or ""
+                if raw and Path(raw).name == target_name and Path(raw).resolve() == old_path:
+                    owner_id = _entry.get("id", "")
+                    break
+
+        if owner_id:
+            try:
+                new_name_str = service.rename_download(owner_id, body.new_name)
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except FileExistsError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=exc.strerror) from exc
+            logger.info("Remote API: renamed '%s' to '%s'", old_path.name, Path(new_name_str).name)
+            return FileRenameByPathResponse(
+                path=new_name_str,
+                action="renamed",
+                detail=f"Renamed to {Path(new_name_str).name}",
+            )
+
+        safe_name = sanitise_filename(body.new_name)
+        new_path = old_path.parent / safe_name
+        renamed = str(new_path) != str(old_path)
+        # new_path.exists() can be True for a case-only rename on case-insensitive
+        # filesystems (Windows) — it resolves back to old_path itself. Compare
+        # inodes so a genuine same-name collision still 409s, but a pure case
+        # change (e.g. video.mp4 -> Video.MP4) proceeds instead of silently no-op'ing.
+        if renamed and new_path.exists() and new_path.stat().st_ino != old_path.stat().st_ino:
+            raise HTTPException(status_code=409, detail=f"A file named '{safe_name}' already exists")
+
+        if renamed:
+            try:
+                old_path.rename(new_path)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=exc.strerror) from exc
+
+        logger.info("Remote API: renamed '%s' to '%s'", old_path.name, new_path.name)
+        return FileRenameByPathResponse(
+            path=str(new_path),
+            action="renamed",
+            detail=f"Renamed to {new_path.name}",
         )
 
     # ── Archive ──────────────────────────────────────────────────────────
@@ -1997,6 +2340,53 @@ def create_app(
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
+def _first_video_in_dir(folder: Path) -> Path:
+    """Return the first convertible video inside *folder*.
+
+    gallery-dl multi-file downloads record a directory as the task filename.
+    The convert endpoint starts one job per video; a subtitle job only makes
+    sense for one file, so the first one (sorted) is used.
+    """
+    from app.services.ffmpeg_convert_service import SUPPORTED_EXTS
+
+    videos = sorted(
+        f
+        for f in folder.rglob("*")
+        if (
+            f.is_file()
+            and f.suffix.lower().lstrip(".") in SUPPORTED_EXTS
+            and not f.name.endswith(".part.mp4")
+            and not f.stem.endswith("_iPhone")
+        )
+    )
+    if not videos:
+        raise HTTPException(status_code=400, detail="No video files found in this download folder")
+    return videos[0]
+
+
+def _resolve_inside_download_dir(config: "ConfigManager", raw_path: str) -> Path:
+    """Resolve *raw_path* and guarantee it is an existing file under download_dir.
+
+    Central CWE-22 guard for endpoints that accept a client-supplied path.
+    """
+    root = config.download_dir.resolve()
+    try:
+        resolved = Path(raw_path).resolve()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file_path") from None
+
+    if not resolved.is_relative_to(root):
+        raise HTTPException(
+            status_code=400,
+            detail="file_path is outside the allowed download directory",
+        )
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="File not found on server")
+    if not resolved.is_file():
+        raise HTTPException(status_code=400, detail="file_path is not a file")
+    return resolved
+
+
 def _get_task_or_404(service: "DownloadService", task_id: str) -> DownloadTask:
     task = service.get_task(task_id)
     if not task:
@@ -2138,10 +2528,11 @@ def start_api_server(
 
     # Headless live-stream monitor for the web client (independent of the
     # desktop LiveMonitorTab). Pushes state changes over the SSE broadcaster.
+    # Started only after being registered as _active_monitor (see below) so
+    # a concurrent stop_api_server() can never miss it and leak the thread.
     from app.services.live_monitor_service import LiveMonitorService
 
     live_monitor = LiveMonitorService(service, config, broadcast=_broadcast)
-    live_monitor.start()
 
     # Wire EventBus → SSE broadcaster before the server starts accepting
     # connections, so no events are missed.
@@ -2239,6 +2630,7 @@ def start_api_server(
         global _active_server, _active_thread, _active_monitor
         _active_server = uv_server
         _active_monitor = live_monitor
+        live_monitor.start()
         thread = threading.Thread(
             target=_run_server,
             daemon=True,  # exits automatically when the main process exits

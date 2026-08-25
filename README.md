@@ -214,20 +214,24 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 | DELETE | `/api/queue/items` | Remove tasks from the queue by id |
 | DELETE | `/api/queue/finished` | Clear completed/failed tasks from the queue |
 | POST | `/api/queue/{task_id}/transfer` | Send a file via Taildrop |
+| POST | `/api/queue/{task_id}/rename` | Rename the output file of a completed task |
 | DELETE | `/api/queue/{task_id}/file` | Delete a file from disk |
 | GET | `/api/queue/{task_id}/file` | Stream/preview a file (Range requests) |
 | GET | `/api/queue/{task_id}/fileinfo` | File metadata (name, size, existence) |
 | GET | `/api/convert/encoders` | List available GPU/CPU encoders |
+| GET | `/api/convert/codecs` | List output codecs + subtitle support this FFmpeg build has |
 | POST | `/api/queue/{task_id}/convert` | Start a convert job |
+| POST | `/api/queue/{task_id}/subtitles` | Generate subtitles (.srt) only, no re-encode |
 | GET | `/api/convert/{job_id}` | Get a convert job's status |
 | POST | `/api/convert/{job_id}/cancel` | Cancel a convert job |
-| GET | `/api/convert/{job_id}/file` | Stream a converted file (iOS Safari) |
+| GET | `/api/convert/{job_id}/file` | Stream a converted file (iOS Safari); `?kind=srt` for the subtitle sidecar |
 | DELETE | `/api/convert/{job_id}/file` | Delete a converted file |
 | GET | `/api/history/stats` | Download history stats |
 | GET | `/api/history` | Download history |
 | DELETE | `/api/history/{task_id}` | Delete one history entry |
 | GET | `/api/files/browse` | Browse files/folders on the computer |
 | POST | `/api/files/convert` | Convert an arbitrary file (outside the queue) |
+| POST | `/api/files/subtitles` | Generate subtitles (.srt) for an arbitrary file |
 | DELETE | `/api/files/delete` | Delete a file by path |
 | GET | `/api/files/serve` | Stream a file by absolute path |
 | POST | `/api/files/transfer` | Send a file by path via Taildrop |
@@ -245,6 +249,8 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 | POST | `/api/monitor/{item_id}/check-now` | Check live status immediately |
 | POST | `/api/monitor/pause` | Pause the whole live monitor |
 | POST | `/api/monitor/resume` | Resume the whole live monitor |
+| GET | `/api/settings/language` | Current UI language + supported languages |
+| POST | `/api/settings/language` | Set the UI language (`en` / `vi` / `zh`) |
 | GET | `/api/events` | SSE stream — real-time progress/status |
 | GET | `/` | PWA (iPhone web app) |
 

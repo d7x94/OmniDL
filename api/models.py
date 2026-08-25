@@ -72,7 +72,20 @@ class DownloadRequest(BaseModel):
     @field_validator("source_engine")
     @classmethod
     def _validate_engine(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"yt_dlp", "gallery_dl", "kuaishou", "instagram_live", "waaw", "facebook_story", None}
+        # "ig_cdn" is returned by /api/analyse for a pasted, pre-signed
+        # Instagram/Facebook CDN link.  Omitting it here made every client
+        # that echoes AnalyseResponse.source_engine back (the bundled web UI
+        # included) fail the download with HTTP 422.
+        allowed = {
+            "yt_dlp",
+            "gallery_dl",
+            "kuaishou",
+            "instagram_live",
+            "waaw",
+            "facebook_story",
+            "ig_cdn",
+            None,
+        }
         if v not in allowed:
             raise ValueError(f"source_engine must be one of {allowed - {None}}")
         return v
@@ -80,7 +93,9 @@ class DownloadRequest(BaseModel):
     @field_validator("output_ext")
     @classmethod
     def _validate_output_ext(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"mp4", "mkv", "webm", "mov", "mp3", "m4a", None, ""}
+        # "ts" is the container the web UI sends for every live stream
+        # (index.html doDownload) and the one the live monitor records into.
+        allowed = {"mp4", "mkv", "webm", "mov", "mp3", "m4a", "ts", None, ""}
         if v not in allowed:
             raise ValueError(f"output_ext must be one of {allowed - {None, ''}}")
         return v
@@ -168,6 +183,12 @@ class FileInfoResponse(BaseModel):
 # ── Remote Convert ────────────────────────────────────────────────────────────
 
 
+# Output containers both convert endpoints accept.  "webm" is excluded on
+# purpose: the pipeline emits H.264 + AAC and remuxes with "-c copy", which the
+# WebM muxer rejects (VP8/VP9/AV1 + Vorbis/Opus only).
+_ALLOWED_TARGET_EXTS: set = {"mp4", "mkv", "mov", "avi", "mp3", None}
+
+
 class ConvertRequest(BaseModel):
     """Start a remote conversion job for a completed download task."""
 
@@ -178,8 +199,31 @@ class ConvertRequest(BaseModel):
     speed_preset: Optional[str] = "balanced"
     # CRF value used when quality=="custom" (0–51)
     custom_crf: Optional[int] = 23
-    # "h264" | "hevc" | "av1"
+    # "h264" | "hevc" | "av1" — rejected with 422 when the server's FFmpeg
+    # build cannot encode it (GET /api/convert/codecs lists what is available)
     output_codec: Optional[str] = "h264"
+    # Transcribe the audio to a sidecar .srt with FFmpeg's whisper filter.
+    # Requires an FFmpeg build compiled with --enable-whisper; the server
+    # returns 422 when it is unavailable.
+    generate_subtitles: Optional[bool] = False
+    # ISO-639-1 code or "auto" for automatic detection
+    subtitle_language: Optional[str] = "auto"
+    # "tiny" | "base" | "small" | "medium" — GET /api/convert/codecs lists what
+    # is available. Larger models are more accurate but slower and bigger to
+    # download on first use.
+    subtitle_model: Optional[str] = "base"
+    # Score the output against the source with VMAF (roughly doubles job time)
+    compute_vmaf: Optional[bool] = False
+    # Output container. Matches FileConvertRequest so both convert entry points
+    # offer the same formats; previously this endpoint was hard-wired to MP4.
+    target_ext: Optional[str] = "mp4"
+
+    @field_validator("target_ext")
+    @classmethod
+    def _validate_ext(cls, v: Optional[str]) -> Optional[str]:
+        if v not in _ALLOWED_TARGET_EXTS:
+            raise ValueError(f"target_ext must be one of {_ALLOWED_TARGET_EXTS - {None}}")
+        return v
 
 
 class ConvertJobResponse(BaseModel):
@@ -202,6 +246,16 @@ class ConvertJobResponse(BaseModel):
     # True once the converted output file has been deleted from disk.
     # Clients use this to hide the Delete/Preview buttons without re-polling.
     output_deleted: bool = False
+    # basename of the generated .srt, empty when not requested or no speech found
+    subtitle_filename: str = ""
+    # why subtitle generation produced nothing; the conversion itself still succeeded
+    subtitle_error: str = ""
+    # mean VMAF score 0-100 of output vs source, None when not requested
+    vmaf_score: Optional[float] = None
+    # True for a transcribe-only job: there is no converted video, so a client
+    # must keep offering "Convert" for this file instead of treating the job as
+    # a finished conversion.
+    subtitles_only: bool = False
 
 
 class EncoderOption(BaseModel):
@@ -209,6 +263,33 @@ class EncoderOption(BaseModel):
 
     key: str  # e.g. "nvenc"
     label: str  # e.g. "NVIDIA NVENC"
+
+
+class CodecOption(BaseModel):
+    """One available output codec returned by GET /api/convert/codecs."""
+
+    key: str  # "h264" | "hevc" | "av1"
+    label: str  # human-readable description
+
+
+class SubtitleModelOption(BaseModel):
+    """One whisper model entry returned by GET /api/convert/codecs."""
+
+    key: str  # "tiny" | "base" | "small" | "medium"
+    label: str  # human-readable description, includes download size
+    size_mb: int  # download size of the model file
+
+
+class ConvertCapabilities(BaseModel):
+    """What the server's FFmpeg build can do, returned by GET /api/convert/codecs."""
+
+    codecs: list[CodecOption]
+    # True when the FFmpeg build has the whisper filter (auto-subtitles)
+    subtitles: bool
+    # Languages accepted by ConvertRequest.subtitle_language
+    subtitle_languages: list[str]
+    # Models accepted by ConvertRequest.subtitle_model, smallest first
+    subtitle_models: list[SubtitleModelOption]
 
 
 # ── Remote File Browse / Standalone Convert ───────────────────────────────────
@@ -242,14 +323,33 @@ class FileConvertRequest(BaseModel):
     speed_preset: Optional[str] = "balanced"
     custom_crf: Optional[int] = 23
     output_codec: Optional[str] = "h264"
+    generate_subtitles: Optional[bool] = False
+    subtitle_language: Optional[str] = "auto"
+    subtitle_model: Optional[str] = "base"
+    compute_vmaf: Optional[bool] = False
 
     @field_validator("target_ext")
     @classmethod
     def _validate_ext(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"mp4", "mkv", "mov", "avi", "webm", "mp3", None}
-        if v not in allowed:
-            raise ValueError(f"target_ext must be one of {allowed - {None}}")
+        if v not in _ALLOWED_TARGET_EXTS:
+            raise ValueError(f"target_ext must be one of {_ALLOWED_TARGET_EXTS - {None}}")
         return v
+
+
+class SubtitleRequest(BaseModel):
+    """Start a subtitle-only job on a completed download task."""
+
+    # ISO-639-1 code or "auto"; rejected with 422 when unknown
+    subtitle_language: Optional[str] = "auto"
+    # "tiny" | "base" | "small" | "medium"
+    subtitle_model: Optional[str] = "base"
+
+
+class FileSubtitleRequest(SubtitleRequest):
+    """Start a subtitle-only job on an arbitrary local file."""
+
+    # Absolute path on the server, must be within download_dir.
+    file_path: str
 
 
 class FileConvertJobResponse(BaseModel):
@@ -275,6 +375,21 @@ class FileDeleteResponse(BaseModel):
 
     path: str
     action: str  # "deleted"
+    detail: str = ""
+
+
+class FileRenameByPathRequest(BaseModel):
+    """Rename a file within download_dir, addressed by path (file browser)."""
+
+    path: str
+    new_name: str  # new basename (with extension); sanitised server-side
+
+
+class FileRenameByPathResponse(BaseModel):
+    """Result of a file-browser rename."""
+
+    path: str
+    action: str  # "renamed"
     detail: str = ""
 
 
@@ -323,6 +438,17 @@ class MonitorAddRequest(BaseModel):
     """Add a profile / live URL to the live monitor watch list."""
 
     url: str
+
+    @field_validator("url")
+    @classmethod
+    def _url_must_be_http(cls, v: str) -> str:
+        # Without this, any string was accepted: LiveMonitorService._classify()
+        # falls through to a non-profile watch and the poll loop then re-checks
+        # a value that can never resolve.  Mirrors DownloadRequest.url.
+        m = _URL_RE.search(v)
+        if not m:
+            raise ValueError("URL must start with http:// or https://")
+        return m.group(0).rstrip(".,;\"')")
 
 
 class MonitorItemResponse(BaseModel):
@@ -402,3 +528,39 @@ class ArchiveExtractResponse(BaseModel):
     dest_dir: str
     extracted_paths: list[str]
     total_bytes: int
+
+
+# ── UI language ───────────────────────────────────────────────────────────────
+
+
+class LanguageOption(BaseModel):
+    """One selectable UI language."""
+
+    code: str
+    label: str
+
+
+class LanguageResponse(BaseModel):
+    """Current UI language plus everything the client may switch to."""
+
+    language: str
+    available: list[LanguageOption]
+
+
+class LanguageRequest(BaseModel):
+    """Set the UI language.  Unsupported codes are rejected with 422."""
+
+    language: str
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, v: str) -> str:
+        from utils.i18n import LANGUAGES, normalize
+
+        code = normalize(v)
+        # normalize() falls back to the default for anything it does not know,
+        # so an unsupported code would be accepted silently.  Reject it unless
+        # the input really named the language that came back.
+        if v.strip().lower().replace("_", "-").split("-")[0] != code:
+            raise ValueError(f"language must be one of: {', '.join(LANGUAGES)}")
+        return code

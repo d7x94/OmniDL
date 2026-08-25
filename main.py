@@ -195,6 +195,11 @@ def main() -> None:
 
     # All user-mutable data lives in DATA_DIR, not next to the binary.
     config = ConfigManager(DATA_DIR / "config.json")
+    # Activate the saved UI language before any widget text is built.
+    from utils.i18n import set_language as _set_language
+
+    _set_language(config.language)
+
     history = HistoryRepository(DATA_DIR / "download_history.jsonl", config.history_limit)
     _clear_history_on_version_change(config, history)
 

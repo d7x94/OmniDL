@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from ui.signals import ui_bridge
 from ui.tabs.settings._base_panel import _BasePanel
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -190,14 +191,14 @@ class ToolsPanel(_BasePanel):
         cfg = self._app.config
 
         # -- yt-dlp engine -------------------------------------------------
-        sec_ytdlp = self._collapsible_section("YT-DLP ENGINE", "tools_ytdlp", icon="🔧")
+        sec_ytdlp = self._collapsible_section(t("settings.tools.section.ytdlp"), "tools_ytdlp", icon="🔧")
         ytdlp = self._card(container=sec_ytdlp)
 
         ver_row = QWidget()
         ver_row.setStyleSheet("background: transparent;")
         vhl = QHBoxLayout(ver_row)
         vhl.setContentsMargins(16, 12, 16, 4)
-        vhl.addWidget(QLabel("Phiên bản"))
+        vhl.addWidget(QLabel(t("settings.tools.version_label")))
         vhl.addStretch()
         self._ver_lbl = QLabel(self._get_ytdlp_version())
         self._ver_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 12px; background: transparent;")
@@ -208,7 +209,7 @@ class ToolsPanel(_BasePanel):
         upd_row.setStyleSheet("background: transparent;")
         uhl = QHBoxLayout(upd_row)
         uhl.setContentsMargins(16, 4, 16, 4)
-        self._upd_btn = QPushButton("Cập nhật yt-dlp")
+        self._upd_btn = QPushButton(t("settings.tools.update_ytdlp_btn"))
         self._upd_btn.setFixedHeight(32)
         self._upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._upd_btn.setStyleSheet(
@@ -226,7 +227,7 @@ class ToolsPanel(_BasePanel):
         keyring_row.setStyleSheet("background: transparent;")
         khl = QHBoxLayout(keyring_row)
         khl.setContentsMargins(16, 4, 16, 4)
-        self._keyring_btn = QPushButton("Cài keyring (hỗ trợ Brave/Chrome 127+)")
+        self._keyring_btn = QPushButton(t("settings.tools.keyring_btn"))
         self._keyring_btn.setFixedHeight(32)
         self._keyring_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._keyring_btn.setStyleSheet(
@@ -239,13 +240,13 @@ class ToolsPanel(_BasePanel):
         khl.addWidget(self._keyring_status)
         khl.addStretch()
         ytdlp.layout().addWidget(keyring_row)
-        self._row_label(ytdlp, "⚠  Cần thiết nếu Brave/Chrome báo lỗi DPAPI khi lấy cookies.", T.warning_text)
+        self._row_label(ytdlp, t("settings.tools.keyring_warning"), T.warning_text)
 
         extra_row = QWidget()
         extra_row.setStyleSheet("background: transparent;")
         ehl = QHBoxLayout(extra_row)
         ehl.setContentsMargins(16, 4, 16, 14)
-        ehl.addWidget(QLabel("Tham số thêm"))
+        ehl.addWidget(QLabel(t("settings.tools.extra_args_label")))
         ehl.addStretch()
         self._extra_entry = QLineEdit()
         self._extra_entry.setFixedSize(260, 32)
@@ -258,14 +259,16 @@ class ToolsPanel(_BasePanel):
         ytdlp.layout().addWidget(extra_row)
 
         # -- gallery-dl engine ---------------------------------------------
-        sec_gdl = self._collapsible_section("GALLERY-DL ENGINE", "tools_gallery_dl", icon="🖼")
+        sec_gdl = self._collapsible_section(
+            t("settings.tools.section.gallery_dl"), "tools_gallery_dl", icon="🖼"
+        )
         gdl = self._card(container=sec_gdl)
 
         gdl_ver_row = QWidget()
         gdl_ver_row.setStyleSheet("background: transparent;")
         gvhl = QHBoxLayout(gdl_ver_row)
         gvhl.setContentsMargins(16, 12, 16, 4)
-        gvhl.addWidget(QLabel("Phiên bản"))
+        gvhl.addWidget(QLabel(t("settings.tools.version_label")))
         gvhl.addStretch()
         self._gdl_ver_lbl = QLabel(self._get_gallery_dl_version())
         self._gdl_ver_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 12px; background: transparent;")
@@ -276,7 +279,7 @@ class ToolsPanel(_BasePanel):
         gdl_upd_row.setStyleSheet("background: transparent;")
         guhl = QHBoxLayout(gdl_upd_row)
         guhl.setContentsMargins(16, 4, 16, 14)
-        self._gdl_upd_btn = QPushButton("Cập nhật gallery-dl")
+        self._gdl_upd_btn = QPushButton(t("settings.tools.gallery_update_btn"))
         self._gdl_upd_btn.setFixedHeight(32)
         self._gdl_upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._gdl_upd_btn.setStyleSheet(
@@ -291,14 +294,14 @@ class ToolsPanel(_BasePanel):
         gdl.layout().addWidget(gdl_upd_row)
 
         # -- Data & Privacy ------------------------------------------------
-        sec_data = self._collapsible_section("DATA & PRIVACY", "tools_data_privacy", icon="🗑")
+        sec_data = self._collapsible_section(
+            t("settings.tools.section.data_privacy"), "tools_data_privacy", icon="🗑"
+        )
         data_card = self._card(container=sec_data)
 
         self._row_label(
             data_card,
-            "Xóa toàn bộ dữ liệu ứng dụng: lịch sử tải, thiết lập cấu hình\n"
-            "và đường dẫn cookie file. File cookie trên đĩa không bị xóa.\n"
-            "Không thể thực hiện khi đang có download/conversion đang chạy.",
+            t("settings.tools.clear_data_desc"),
             wrap=True,
         )
 
@@ -306,7 +309,7 @@ class ToolsPanel(_BasePanel):
         action_row.setStyleSheet("background: transparent;")
         ahl = QHBoxLayout(action_row)
         ahl.setContentsMargins(16, 0, 16, 14)
-        self._clear_data_btn = QPushButton("🗑  Xóa tất cả dữ liệu")
+        self._clear_data_btn = QPushButton(t("settings.tools.clear_data_btn"))
         self._clear_data_btn.setFixedHeight(34)
         self._clear_data_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_data_btn.setStyleSheet(
@@ -337,9 +340,9 @@ class ToolsPanel(_BasePanel):
         import sys
 
         self._upd_btn.setEnabled(False)
-        self._upd_status.setText("Checking for updates…")
+        self._upd_status.setText(t("settings.tools.checking_updates"))
         self._upd_status.setStyleSheet(f"color: {T.primary_text}; font-size: 11px; background: transparent;")
-        self._app.toast("Updating yt-dlp, please wait…", "info")
+        self._app.toast(t("settings.tools.updating_toast", tool="yt-dlp"), "info")
 
         def _worker():
             import importlib
@@ -371,23 +374,23 @@ class ToolsPanel(_BasePanel):
                     except Exception:
                         pass
                     ver = self._get_ytdlp_version()
-                    self._upd_status.setText(f"Updated → {ver}")
+                    self._upd_status.setText(t("settings.tools.updated_status", ver=ver))
                     self._upd_status.setStyleSheet(
                         f"color: {T.success}; font-size: 11px; background: transparent;"
                     )
                     self._ver_lbl.setText(ver)
-                    self._app.toast(f"yt-dlp updated to {ver}", "success")
+                    self._app.toast(t("settings.tools.updated_toast", tool="yt-dlp", ver=ver), "success")
 
                 ui_bridge.post(_apply_on_ui)
             except Exception as exc:
                 msg = str(exc)
                 ui_bridge.post(
                     lambda m=msg: (
-                        self._upd_status.setText(f"Error: {m[:80]}"),
+                        self._upd_status.setText(t("settings.tools.update_error_status", msg=m[:80])),
                         self._upd_status.setStyleSheet(
                             f"color: {T.error}; font-size: 11px; background: transparent;"
                         ),
-                        self._app.toast(f"Update failed: {m[:60]}", "error"),
+                        self._app.toast(t("settings.tools.update_failed_toast", msg=m[:60]), "error"),
                     )
                 )
             finally:
@@ -403,7 +406,7 @@ class ToolsPanel(_BasePanel):
             ver = getattr(_kr, "__version__", "installed")
             return f"✓ keyring {ver}"
         except ImportError:
-            return "⚠ Chưa cài — cần cho Brave/Chrome 127+"
+            return t("settings.tools.keyring_not_installed")
 
     def _install_keyring(self) -> None:
         import sys
@@ -415,23 +418,21 @@ class ToolsPanel(_BasePanel):
             try:
                 import keyring  # noqa: F401
 
-                self._keyring_status.setText(status_text + " (bundled)")
+                self._keyring_status.setText(status_text + t("settings.tools.keyring_bundled_suffix"))
                 self._keyring_status.setStyleSheet(
                     f"color: {T.success}; font-size: 11px; background: transparent;"
                 )
-                self._app.toast("keyring đã có sẵn trong bản build. Thử lại lấy cookies.", "success")
+                self._app.toast(t("settings.tools.keyring_bundled_toast"), "success")
             except ImportError:
-                self._keyring_status.setText("keyring không có — tải lại phiên bản mới hơn")
+                self._keyring_status.setText(t("settings.tools.keyring_missing_status"))
                 self._keyring_status.setStyleSheet(
                     f"color: {T.error}; font-size: 11px; background: transparent;"
                 )
-                self._app.toast(
-                    "keyring không tìm thấy trong build. Vui lòng tải phiên bản EXE mới nhất.", "error"
-                )
+                self._app.toast(t("settings.tools.keyring_missing_toast"), "error")
             self._keyring_btn.setEnabled(True)
             return
 
-        self._keyring_status.setText("Đang cài keyring…")
+        self._keyring_status.setText(t("settings.tools.installing_keyring"))
         self._keyring_status.setStyleSheet(
             f"color: {T.primary_text}; font-size: 11px; background: transparent;"
         )
@@ -452,23 +453,23 @@ class ToolsPanel(_BasePanel):
                 importlib.invalidate_caches()
                 status_text = self._keyring_installed_text()
                 ui_bridge.post(
-                    lambda t=status_text: (
-                        self._keyring_status.setText(t),
+                    lambda st=status_text: (
+                        self._keyring_status.setText(st),
                         self._keyring_status.setStyleSheet(
                             f"color: {T.success}; font-size: 11px; background: transparent;"
                         ),
-                        self._app.toast("keyring đã cài. Thử lại lấy cookies từ Brave/Chrome.", "success"),
+                        self._app.toast(t("settings.tools.keyring_installed_toast"), "success"),
                     )
                 )
             except Exception as exc:
                 msg = str(exc)[:80]
                 ui_bridge.post(
                     lambda m=msg: (
-                        self._keyring_status.setText(f"Lỗi: {m}"),
+                        self._keyring_status.setText(t("special.error_prefix", msg=m)),
                         self._keyring_status.setStyleSheet(
                             f"color: {T.error}; font-size: 11px; background: transparent;"
                         ),
-                        self._app.toast(f"Cài keyring thất bại: {m}", "error"),
+                        self._app.toast(t("settings.tools.keyring_install_failed_toast", msg=m), "error"),
                     )
                 )
             finally:
@@ -490,11 +491,11 @@ class ToolsPanel(_BasePanel):
         import sys
 
         self._gdl_upd_btn.setEnabled(False)
-        self._gdl_upd_status.setText("Checking for updates…")
+        self._gdl_upd_status.setText(t("settings.tools.checking_updates"))
         self._gdl_upd_status.setStyleSheet(
             f"color: {T.primary_text}; font-size: 11px; background: transparent;"
         )
-        self._app.toast("Updating gallery-dl, please wait…", "info")
+        self._app.toast(t("settings.tools.updating_toast", tool="gallery-dl"), "info")
 
         def _worker():
             import importlib
@@ -526,23 +527,23 @@ class ToolsPanel(_BasePanel):
                     except Exception:
                         pass
                     ver = self._get_gallery_dl_version()
-                    self._gdl_upd_status.setText(f"Updated → {ver}")
+                    self._gdl_upd_status.setText(t("settings.tools.updated_status", ver=ver))
                     self._gdl_upd_status.setStyleSheet(
                         f"color: {T.success}; font-size: 11px; background: transparent;"
                     )
                     self._gdl_ver_lbl.setText(ver)
-                    self._app.toast(f"gallery-dl updated to {ver}", "success")
+                    self._app.toast(t("settings.tools.updated_toast", tool="gallery-dl", ver=ver), "success")
 
                 ui_bridge.post(_apply_on_ui)
             except Exception as exc:
                 msg = str(exc)
                 ui_bridge.post(
                     lambda m=msg: (
-                        self._gdl_upd_status.setText(f"Error: {m[:80]}"),
+                        self._gdl_upd_status.setText(t("settings.tools.update_error_status", msg=m[:80])),
                         self._gdl_upd_status.setStyleSheet(
                             f"color: {T.error}; font-size: 11px; background: transparent;"
                         ),
-                        self._app.toast(f"Update failed: {m[:60]}", "error"),
+                        self._app.toast(t("settings.tools.update_failed_toast", msg=m[:60]), "error"),
                     )
                 )
             finally:
@@ -563,20 +564,19 @@ class ToolsPanel(_BasePanel):
         if active_tasks or active_cv:
             parts = []
             if active_tasks:
-                parts.append(f"{len(active_tasks)} download đang chạy")
+                parts.append(t("settings.tools.active_downloads", count=len(active_tasks)))
             if active_cv:
-                parts.append(f"{active_cv} conversion đang chạy")
-            self._app.toast("Không thể xóa dữ liệu khi " + " và ".join(parts) + ".", "error")
+                parts.append(t("settings.tools.active_conversions", count=active_cv))
+            self._app.toast(
+                t("settings.tools.clear_data_running", parts=t("settings.tools.and_join").join(parts)),
+                "error",
+            )
             return
 
         reply = QMessageBox.question(
             self,
-            "OmniDL — Xác nhận xóa dữ liệu",
-            "Thao tác này sẽ:\n"
-            "  • Xóa toàn bộ lịch sử tải\n"
-            "  • Đặt lại tất cả thiết lập về mặc định\n"
-            "  • Xóa đường dẫn cookie file khỏi cấu hình\n\n"
-            "File cookie và file đã tải sẽ không bị ảnh hưởng.\n\nTiếp tục?",
+            t("settings.tools.confirm_clear_title"),
+            t("settings.tools.confirm_clear_msg"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -586,26 +586,27 @@ class ToolsPanel(_BasePanel):
             self._app.service.clear_history()
             self._app.config.reset_to_defaults()
             self._app.navigate_to("home")
-            self._clear_data_status.setText("✓ Đã xóa")
+            self._clear_data_status.setText(t("settings.tools.data_cleared_status"))
             self._clear_data_status.setStyleSheet(
                 f"color: {T.success}; font-size: 11px; background: transparent;"
             )
-            QTimer.singleShot(
-                4000,
-                lambda: (
-                    self._clear_data_status.setText(""),
-                    self._clear_data_status.setStyleSheet(
-                        f"color: {T.text2}; font-size: 11px; background: transparent;"
-                    ),
-                ),
-            )
-            self._app.toast("Đã xóa toàn bộ dữ liệu. Khởi động lại app để áp dụng đầy đủ.", "success")
+            self._app.toast(t("settings.tools.data_cleared_toast"), "success")
+            # Every panel read its values at build time.  Without this the tab
+            # keeps showing the pre-reset theme/folder/toggles, and the next
+            # click writes those stale values straight back into the fresh config.
+            from utils.i18n import set_language
+
+            T.set_mode(self._app.config.theme)
+            set_language(self._app.config.language)
+            settings_tab = self._app.get_tab("settings")
+            if settings_tab is not None:
+                QTimer.singleShot(0, settings_tab, settings_tab.retranslate)
             logger.info("User cleared all app data (history + config reset)")
         except Exception as exc:
             msg = str(exc)
             logger.error("Clear all data failed: %s", msg)
-            self._clear_data_status.setText(f"Lỗi: {msg[:60]}")
+            self._clear_data_status.setText(t("special.error_prefix", msg=msg[:60]))
             self._clear_data_status.setStyleSheet(
                 f"color: {T.error}; font-size: 11px; background: transparent;"
             )
-            self._app.toast(f"Xóa dữ liệu thất bại: {msg[:60]}", "error")
+            self._app.toast(t("settings.tools.clear_failed_toast", msg=msg[:60]), "error")

@@ -23,27 +23,20 @@ from PySide6.QtWidgets import (
 from ui.components.post_download_actions import PostDownloadActions
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
+# "label" is a proper noun and stays identical across languages, so platform
+# matching by combo text (see _on_platform_change) is unaffected by retranslate().
 _PLATFORMS = {
     "facebook_story": {
         "label": "Facebook Story",
-        "placeholder": "https://www.facebook.com/stories/...",
         "needs_browser": True,
         "browsers": ["brave", "chrome"],
-        "guide": (
-            "Hướng dẫn:\n"
-            "1. Đóng hoàn toàn Brave / Chrome (kể cả System Tray / Dock)\n"
-            "2. Dán URL Story vào ô trên\n"
-            "3. Chọn trình duyệt → nhấn  Tải về\n"
-            "4. Trình duyệt sẽ tự mở, tải xong tự động\n"
-            "Story hết hạn sau 24 giờ\n"
-            "Dùng bản cài từ website — App Store không hỗ trợ"
-        ),
     },
 }
 
@@ -52,7 +45,7 @@ class SpecialDlTab(QWidget):
     def __init__(self, app: "MainWindow") -> None:
         super().__init__()
         self._app = app
-        self._config = app._config
+        self._config = app.config
         self._running = False
         self._last_dest: Path | None = None
         self._build()
@@ -79,13 +72,13 @@ class SpecialDlTab(QWidget):
         hdr_layout.setContentsMargins(28, 24, 28, 4)
         hdr_layout.setSpacing(2)
 
-        title = QLabel("Tải xuống đặc biệt")
-        title.setObjectName("page_title")
-        hdr_layout.addWidget(title)
+        self._title_lbl = QLabel(t("special.title"))
+        self._title_lbl.setObjectName("page_title")
+        hdr_layout.addWidget(self._title_lbl)
 
-        subtitle = QLabel("Tải nội dung mà yt-dlp không hỗ trợ — Facebook Story v.v.")
-        subtitle.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
-        hdr_layout.addWidget(subtitle)
+        self._subtitle_lbl = QLabel(t("special.subtitle"))
+        self._subtitle_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
+        hdr_layout.addWidget(self._subtitle_lbl)
 
         layout.addWidget(hdr)
 
@@ -115,10 +108,10 @@ class SpecialDlTab(QWidget):
         r1_layout.setContentsMargins(0, 0, 0, 0)
         r1_layout.setSpacing(12)
 
-        plat_lbl = QLabel("Nền tảng:")
-        plat_lbl.setFixedWidth(90)
-        plat_lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; font-weight: bold;")
-        r1_layout.addWidget(plat_lbl)
+        self._plat_lbl = QLabel(t("special.platform_label"))
+        self._plat_lbl.setFixedWidth(90)
+        self._plat_lbl.setStyleSheet(f"color: {T.text}; font-size: 13px; font-weight: bold;")
+        r1_layout.addWidget(self._plat_lbl)
 
         self._platform_combo = QComboBox()
         self._platform_combo.setFixedSize(200, 34)
@@ -138,7 +131,7 @@ class SpecialDlTab(QWidget):
         r2_layout.setSpacing(12)
 
         self._url_entry = QLineEdit()
-        self._url_entry.setPlaceholderText("https://www.facebook.com/stories/...")
+        self._url_entry.setPlaceholderText(t("special.url_placeholder.facebook_story"))
         self._url_entry.setFixedHeight(40)
         self._url_entry.setStyleSheet(f"""
             QLineEdit {{
@@ -153,7 +146,7 @@ class SpecialDlTab(QWidget):
         self._url_entry.returnPressed.connect(self._on_download)
         r2_layout.addWidget(self._url_entry, 1)
 
-        self._dl_btn = QPushButton("Tải về")
+        self._dl_btn = QPushButton(t("special.download_btn"))
         self._dl_btn.setFixedSize(120, 40)
         self._dl_btn.setStyleSheet(
             f"background: {T.primary}; color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: bold; padding: 0 8px;"
@@ -171,10 +164,10 @@ class SpecialDlTab(QWidget):
         r3_layout.setContentsMargins(0, 0, 0, 0)
         r3_layout.setSpacing(12)
 
-        br_lbl = QLabel("Trình duyệt:")
-        br_lbl.setFixedWidth(90)
-        br_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
-        r3_layout.addWidget(br_lbl)
+        self._br_lbl = QLabel(t("special.browser_label"))
+        self._br_lbl.setFixedWidth(90)
+        self._br_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
+        r3_layout.addWidget(self._br_lbl)
 
         self._browser_combo = QComboBox()
         self._browser_combo.addItems(["brave", "chrome"])
@@ -191,7 +184,7 @@ class SpecialDlTab(QWidget):
         card_layout.addWidget(sep)
 
         # Guide text
-        self._guide_lbl = QLabel(_PLATFORMS["facebook_story"]["guide"])
+        self._guide_lbl = QLabel(t("special.guide.facebook_story"))
         self._guide_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px;")
         self._guide_lbl.setWordWrap(True)
         card_layout.addWidget(self._guide_lbl)
@@ -230,7 +223,7 @@ class SpecialDlTab(QWidget):
         self._status_dot.setStyleSheet(f"color: {T.text3}; font-size: 14px;")
         sr_layout.addWidget(self._status_dot)
 
-        self._status_lbl = QLabel("Đang chờ...")
+        self._status_lbl = QLabel(t("special.status.waiting"))
         self._status_lbl.setStyleSheet(f"color: {T.text2}; font-size: 13px;")
         sr_layout.addWidget(self._status_lbl, 1)
 
@@ -248,23 +241,23 @@ class SpecialDlTab(QWidget):
         rr_layout.setContentsMargins(0, 0, 0, 0)
         rr_layout.setSpacing(8)
 
-        retry_btn = QPushButton("Thử lại")
-        retry_btn.setFixedHeight(28)
-        retry_btn.setStyleSheet(
+        self._retry_btn = QPushButton(t("special.retry"))
+        self._retry_btn.setFixedHeight(28)
+        self._retry_btn.setStyleSheet(
             f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 12px; padding: 0 12px;"
         )
-        retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        retry_btn.clicked.connect(self._on_download)
-        rr_layout.addWidget(retry_btn)
+        self._retry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._retry_btn.clicked.connect(self._on_download)
+        rr_layout.addWidget(self._retry_btn)
 
-        clear_btn = QPushButton("Xóa lịch sử")
-        clear_btn.setFixedHeight(28)
-        clear_btn.setStyleSheet(
+        self._clear_hist_btn = QPushButton(t("special.clear_history"))
+        self._clear_hist_btn.setFixedHeight(28)
+        self._clear_hist_btn.setStyleSheet(
             f"background: {T.surface3}; color: {T.text3}; border: none; border-radius: 6px; font-size: 12px; padding: 0 12px;"
         )
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.clicked.connect(self._clear_status)
-        rr_layout.addWidget(clear_btn)
+        self._clear_hist_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_hist_btn.clicked.connect(self._clear_status)
+        rr_layout.addWidget(self._clear_hist_btn)
         rr_layout.addStretch()
 
         self._retry_row.hide()
@@ -296,7 +289,7 @@ class SpecialDlTab(QWidget):
         br_layout.setContentsMargins(0, 0, 0, 0)
         br_layout.setSpacing(8)
 
-        self._open_btn = QPushButton("Mở thư mục")
+        self._open_btn = QPushButton(t("special.open_folder"))
         self._open_btn.setFixedHeight(32)
         self._open_btn.setStyleSheet(
             f"background: {T.surface3}; color: {T.text2}; border: none; border-radius: 6px; font-size: 12px; padding: 0 12px;"
@@ -305,7 +298,7 @@ class SpecialDlTab(QWidget):
         self._open_btn.clicked.connect(self._open_output_folder)
         br_layout.addWidget(self._open_btn)
 
-        self._preview_btn = QPushButton("Xem")
+        self._preview_btn = QPushButton(t("special.view"))
         self._preview_btn.setFixedHeight(32)
         self._preview_btn.setStyleSheet(
             f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 12px; padding: 0 12px;"
@@ -340,8 +333,8 @@ class SpecialDlTab(QWidget):
             "facebook_story",
         )
         info = _PLATFORMS.get(key, _PLATFORMS["facebook_story"])
-        self._guide_lbl.setText(info["guide"])
-        self._url_entry.setPlaceholderText(info["placeholder"])
+        self._guide_lbl.setText(t(f"special.guide.{key}"))
+        self._url_entry.setPlaceholderText(t(f"special.url_placeholder.{key}"))
         if info.get("needs_browser"):
             self._browser_row.show()
         else:
@@ -355,7 +348,7 @@ class SpecialDlTab(QWidget):
 
         url = self._url_entry.text().strip()
         if not url:
-            self._set_status("error", "Hãy dán URL vào ô trên.")
+            self._set_status("error", t("special.error.paste_url"))
             return
 
         friendly = self._platform_combo.currentText()
@@ -367,8 +360,8 @@ class SpecialDlTab(QWidget):
 
         self._running = True
         self._dl_btn.setEnabled(False)
-        self._dl_btn.setText("Đang tải...")
-        self._set_status("info", "Đang khởi động...", 0)
+        self._dl_btn.setText(t("special.downloading"))
+        self._set_status("info", t("special.status.starting"), 0)
 
         threading.Thread(
             target=self._worker,
@@ -389,26 +382,26 @@ class SpecialDlTab(QWidget):
             if results:
                 self._last_dest = results[0]
                 name = results[0].name
-                label = f"Đã tải: {name}"
+                label = t("special.downloaded", name=name)
                 dest = results[0]
                 ui_bridge.post(lambda lb=label: self._set_status("success", lb, 100))
                 ui_bridge.post(lambda: self._btn_row.show())
                 ui_bridge.post(lambda d=dest: self._post_actions.show(d))
             else:
-                ui_bridge.post(lambda: self._set_status("error", "Không có kết quả."))
+                ui_bridge.post(lambda: self._set_status("error", t("special.no_result")))
 
         except RuntimeError as exc:
             msg = str(exc)
             ui_bridge.post(lambda m=msg: self._set_status("error", m))
         except Exception as exc:
             logger.exception("SpecialDlTab worker error")
-            ui_bridge.post(lambda m=str(exc): self._set_status("error", f"Lỗi: {m}"))
+            ui_bridge.post(lambda m=str(exc): self._set_status("error", t("special.error_prefix", msg=m)))
         finally:
             self._running = False
             ui_bridge.post(
                 lambda: (
                     self._dl_btn.setEnabled(True),
-                    self._dl_btn.setText("Tải về"),
+                    self._dl_btn.setText(t("special.download_btn")),
                 )
             )
 
@@ -464,7 +457,7 @@ class SpecialDlTab(QWidget):
         self._post_actions.hide()
         self._progress.setValue(0)
         self._status_dot.setStyleSheet(f"color: {T.text3}; font-size: 14px;")
-        self._status_lbl.setText("Đang chờ...")
+        self._status_lbl.setText(t("special.status.waiting"))
         self._status_lbl.setStyleSheet(f"color: {T.text2}; font-size: 13px;")
         self._speed_lbl.setText("")
         self._last_dest = None
@@ -492,7 +485,7 @@ class SpecialDlTab(QWidget):
 
     def _on_post_convert(self, file_path: Path, target_ext: str, encode_settings=None) -> None:
         if not hasattr(self._app, "service") or not hasattr(self._app.service, "convert_to_mp4"):
-            self._post_actions.notify_convert_error("Convert service không khả dụng.")
+            self._post_actions.notify_convert_error(t("special.convert_unavailable"))
             return
         convert_svc = self._app.service.convert_to_mp4
 
@@ -502,13 +495,15 @@ class SpecialDlTab(QWidget):
         def _on_done(output_path: Path) -> None:
             self._last_dest = output_path
             ui_bridge.post(lambda op=output_path: self._post_actions.notify_convert_done(op))
-            ui_bridge.post(lambda: self._set_status("success", f"Convert xong: {output_path.name}", 100))
+            ui_bridge.post(
+                lambda: self._set_status("success", t("special.convert_done", name=output_path.name), 100)
+            )
 
         def _on_error(msg: str) -> None:
             logger.error("Convert error: %s", msg)
             ui_bridge.post(lambda m=msg: self._post_actions.notify_convert_error(m))
 
-        self._set_status("info", f"Đang chuyển đổi → .{target_ext}…", 0)
+        self._set_status("info", t("special.converting", ext=target_ext), 0)
         try:
             convert_svc(
                 file_path,
@@ -525,21 +520,23 @@ class SpecialDlTab(QWidget):
         cfg = self._config
         nodes = cfg.taildrop_target_nodes
         if not isinstance(nodes, (list, tuple)) or not nodes:
-            self._set_status("warning", "Chưa cấu hình thiết bị đích trong Settings → Taildrop")
+            self._set_status("warning", t("queue.no_target"))
             restore_btn()
             return
         if not cfg.taildrop_enabled:
-            self._set_status("warning", "Taildrop chưa được bật trong Settings")
+            self._set_status("warning", t("queue.taildrop_off"))
             restore_btn()
             return
 
         node_list_str = ", ".join(nodes)
 
         def _on_node_done(node: str) -> None:
-            ui_bridge.post(lambda n=node: self._set_status("success", f"Đã gửi → {n}"))
+            ui_bridge.post(lambda n=node: self._set_status("success", t("special.sent_to", node=n)))
 
         def _on_node_error(node: str, err: str) -> None:
-            ui_bridge.post(lambda n=node, e=err: self._set_status("error", f"Gửi thất bại → {n}: {e[:60]}"))
+            ui_bridge.post(
+                lambda n=node, e=err: self._set_status("error", t("special.send_failed", node=n, err=e[:60]))
+            )
 
         try:
             self._app.taildrop.send_file_to_nodes(
@@ -549,18 +546,38 @@ class SpecialDlTab(QWidget):
                 on_node_error=_on_node_error,
                 specific_files_override=specific_files,
             )
-            self._set_status("info", f"Đang gửi đến: {node_list_str}")
+            self._set_status("info", t("special.sending", nodes=node_list_str))
         except Exception as exc:
-            self._set_status("error", f"Lỗi gửi: {exc}")
+            self._set_status("error", t("special.send_error", err=str(exc)))
         finally:
             QTimer.singleShot(800, restore_btn)
 
     def _on_post_delete(self, file_path: Path) -> None:
         self._last_dest = None
-        self._set_status("info", "File đã được xóa.")
+        self._set_status("info", t("special.file_deleted"))
+        self._post_actions.hide()
         self._btn_row.hide()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    def retranslate(self) -> None:
+        self._title_lbl.setText(t("special.title"))
+        self._subtitle_lbl.setText(t("special.subtitle"))
+        self._plat_lbl.setText(t("special.platform_label"))
+        self._br_lbl.setText(t("special.browser_label"))
+        self._retry_btn.setText(t("special.retry"))
+        self._clear_hist_btn.setText(t("special.clear_history"))
+        self._open_btn.setText(t("special.open_folder"))
+        self._preview_btn.setText(t("special.view"))
+        if not self._running:
+            self._dl_btn.setText(t("special.download_btn"))
+
+        key = next(
+            (k for k, v in _PLATFORMS.items() if v["label"] == self._platform_combo.currentText()),
+            "facebook_story",
+        )
+        self._guide_lbl.setText(t(f"special.guide.{key}"))
+        self._url_entry.setPlaceholderText(t(f"special.url_placeholder.{key}"))

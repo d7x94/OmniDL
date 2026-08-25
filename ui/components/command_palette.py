@@ -11,15 +11,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from utils.i18n import t
+
+# (icon, label i18n key, tab key) — Editor and Archive were missing, so
+# Ctrl+K could not reach those two tabs at all.
 COMMANDS = [
-    ("↓", "Tải xuống", "home"),
-    ("≡", "Hàng đợi", "queue"),
-    ("⊞", "Hàng loạt", "batch"),
-    ("◉", "Live Monitor", "live_monitor"),
-    ("⇄", "Chuyển đổi", "convert"),
-    ("◷", "Lịch sử tải", "history"),
-    ("⊙", "Cài đặt", "settings"),
-    ("◆", "Tải đặc biệt", "special_dl"),
+    ("↓", "nav.home", "home"),
+    ("≡", "nav.queue", "queue"),
+    ("⊞", "nav.batch", "batch"),
+    ("◉", "nav.live_monitor", "live_monitor"),
+    ("⇄", "nav.convert", "convert"),
+    ("✂", "nav.editor", "editor"),
+    ("⧉", "nav.archive", "archive"),
+    ("◷", "nav.history", "history"),
+    ("⊙", "nav.settings", "settings"),
+    ("◆", "nav.special_dl", "special_dl"),
 ]
 
 
@@ -44,7 +50,7 @@ class CommandPalette(QDialog):
         layout.setSpacing(0)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Tìm kiếm lệnh...")
+        self._search.setPlaceholderText(t("palette.search"))
         self._search.setFixedHeight(44)
         self._search.textChanged.connect(self._on_search)
         layout.addWidget(self._search)
@@ -56,8 +62,8 @@ class CommandPalette(QDialog):
 
     def _populate(self, commands: list) -> None:
         self._list.clear()
-        for icon, label, key in commands:
-            item = QListWidgetItem(f"{icon}  {label}")
+        for icon, label_key, key in commands:
+            item = QListWidgetItem(f"{icon}  {t(label_key)}")
             item.setData(Qt.ItemDataRole.UserRole, key)
             self._list.addItem(item)
         if self._list.count():
@@ -68,7 +74,7 @@ class CommandPalette(QDialog):
         if not q:
             self._populate(self._all_commands)
             return
-        filtered = [c for c in self._all_commands if q in c[1].lower() or q in c[2].lower()]
+        filtered = [c for c in self._all_commands if q in t(c[1]).lower() or q in c[2].lower()]
         self._populate(filtered)
 
     def _execute_selected(self) -> None:

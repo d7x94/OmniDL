@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from domain.models.download_task import MediaInfo
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -41,15 +42,16 @@ PLATFORM_COLORS = {
     "Dailymotion": "#0066DC",
 }
 
+# (i18n label key, yt-dlp format selector, icon) — labels resolve at render time
 QUALITY_PRESETS = [
-    ("Best Quality", "bestvideo+bestaudio/best", "🏆"),
-    ("4K / 2160p", "bestvideo[height<=2160]+bestaudio/best", "4K"),
-    ("1080p Full HD", "bestvideo[height<=1080]+bestaudio/best", "HD"),
-    ("720p HD", "bestvideo[height<=720]+bestaudio/best", "720"),
-    ("480p", "bestvideo[height<=480]+bestaudio/best", "480"),
-    ("360p", "bestvideo[height<=360]+bestaudio/best", "360"),
-    ("Audio Only MP3", "bestaudio/best", "♪"),
-    ("Audio Only M4A", "bestaudio[ext=m4a]/bestaudio", "♪"),
+    ("home.quality.best", "bestvideo+bestaudio/best", "🏆"),
+    ("home.quality.4k", "bestvideo[height<=2160]+bestaudio/best", "4K"),
+    ("home.quality.1080", "bestvideo[height<=1080]+bestaudio/best", "HD"),
+    ("home.quality.720", "bestvideo[height<=720]+bestaudio/best", "720"),
+    ("home.quality.480", "bestvideo[height<=480]+bestaudio/best", "480"),
+    ("home.quality.360", "bestvideo[height<=360]+bestaudio/best", "360"),
+    ("home.quality.audio_mp3", "bestaudio/best", "♪"),
+    ("home.quality.audio_m4a", "bestaudio[ext=m4a]/bestaudio", "♪"),
 ]
 
 FORMATS = ["mp4", "mkv", "webm", "mp3", "m4a", "flac"]
@@ -124,14 +126,16 @@ class HomeTab(QWidget):
         icon.setStyleSheet(f"color: {T.primary}; font-size: 56px; font-weight: 300; background: transparent;")
         layout.addWidget(icon)
 
-        title = QLabel("Sẵn sàng tải xuống")
+        self._welcome_title_lbl = QLabel(t("home.welcome_title"))
+        title = self._welcome_title_lbl
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {T.text}; font-size: 24px; font-weight: 700; background: transparent;")
         layout.addWidget(title)
 
         layout.addSpacing(4)
 
-        sub = QLabel("Dán link video vào thanh trên và nhấn Phân tích")
+        self._welcome_sub_lbl = QLabel(t("home.welcome_sub"))
+        sub = self._welcome_sub_lbl
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setStyleSheet(f"color: {T.text2}; font-size: 14px; background: transparent;")
         layout.addWidget(sub)
@@ -148,10 +152,12 @@ class HomeTab(QWidget):
             ("Twitter/X", "#1D9BF0"),
             ("Facebook", "#1877F2"),
             ("Twitch", "#9146FF"),
-            ("+ 1000 nền tảng", None),
+            (t("home.more_platforms"), None),
         ]
+        self._platform_chips: list[QLabel] = []
         for label, color in platforms:
             chip = QLabel(label)
+            self._platform_chips.append(chip)
             chip.setStyleSheet(f"""
                 color: {color or T.text3};
                 background-color: {T.surface2};
@@ -174,12 +180,13 @@ class HomeTab(QWidget):
         layout = QVBoxLayout(w)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._loading_lbl = QLabel("⠋  Đang tải thông tin media...")
+        self._loading_lbl = QLabel(f"⠋  {t('home.loading')}")
         self._loading_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._loading_lbl.setStyleSheet(f"color: {T.text2}; font-size: 14px; background: transparent;")
         layout.addWidget(self._loading_lbl)
 
-        sub = QLabel("Có thể mất vài giây")
+        self._loading_sub_lbl = QLabel(t("home.loading_sub"))
+        sub = self._loading_sub_lbl
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setStyleSheet(f"color: {T.text3}; font-size: 12px; background: transparent;")
         layout.addWidget(sub)
@@ -257,7 +264,8 @@ class HomeTab(QWidget):
         q_layout.setContentsMargins(0, 0, 0, 0)
         q_layout.setSpacing(8)
 
-        qlbl = QLabel("CHẤT LƯỢNG")
+        self._q_section_lbl = QLabel(t("home.quality_section"))
+        qlbl = self._q_section_lbl
         qlbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; font-weight: bold; background: transparent;")
         q_layout.addWidget(qlbl)
 
@@ -277,8 +285,9 @@ class HomeTab(QWidget):
         q_cards_row.setSpacing(8)
         q_cards_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        for idx, (label, fmt_id, icon) in enumerate(QUALITY_PRESETS):
-            card_w = self._make_quality_card(label, fmt_id, icon, idx)
+        self._quality_text_labels: list[QLabel] = []
+        for idx, (label_key, fmt_id, icon) in enumerate(QUALITY_PRESETS):
+            card_w = self._make_quality_card(t(label_key), fmt_id, icon, idx)
             q_cards_row.addWidget(card_w)
 
         q_cards_row.addStretch()
@@ -296,7 +305,8 @@ class HomeTab(QWidget):
         opts = QHBoxLayout()
         opts.setSpacing(8)
 
-        opts.addWidget(QLabel("Định dạng"))
+        self._format_lbl = QLabel(t("home.format_label"))
+        opts.addWidget(self._format_lbl)
         self._format_combo = QComboBox()
         self._format_combo.addItems(FORMATS)
         self._format_combo.setFixedWidth(90)
@@ -304,19 +314,21 @@ class HomeTab(QWidget):
 
         opts.addSpacing(16)
 
-        opts.addWidget(QLabel("Thư mục"))
+        self._folder_title_lbl = QLabel(t("home.folder_label"))
+        opts.addWidget(self._folder_title_lbl)
         self._folder_lbl = QLabel(self._short_path(self._app.service.get_download_dir()))
         self._folder_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 11px; background: transparent;")
         opts.addWidget(self._folder_lbl)
 
-        browse_btn = QPushButton("Duyệt")
+        self._browse_btn = QPushButton(t("home.browse"))
+        browse_btn = self._browse_btn
         browse_btn.setFixedSize(72, 34)
         browse_btn.clicked.connect(self._browse_folder)
         opts.addWidget(browse_btn)
 
         opts.addSpacing(16)
 
-        self._download_btn = QPushButton("↓  Thêm vào hàng đợi")
+        self._download_btn = QPushButton(f"↓  {t('home.add_to_queue')}")
         self._download_btn.setObjectName("primary")
         self._download_btn.setFixedHeight(48)
         self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -367,6 +379,7 @@ class HomeTab(QWidget):
         text_lbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; background: transparent;")
         text_lbl.setWordWrap(True)
         card_layout.addWidget(text_lbl)
+        self._quality_text_labels.append(text_lbl)
 
         def on_click(_=None, fi=fmt_id, ci=idx) -> None:
             self._selected_quality = fi
@@ -411,7 +424,7 @@ class HomeTab(QWidget):
         self._welcome.hide()
         try:
             if not info or not info.title:
-                self.on_analysis_error("No media information returned.")
+                self.on_analysis_error(t("home.no_media_info"))
                 return
 
             if info.playlist_entries:
@@ -428,7 +441,7 @@ class HomeTab(QWidget):
                         ),
                     )
                 else:
-                    self.on_analysis_error("BatchTab not available.")
+                    self.on_analysis_error(t("home.batch_unavailable"))
                 return
 
             self._media_info = info
@@ -436,7 +449,7 @@ class HomeTab(QWidget):
             self._result_card.show()
         except Exception as exc:
             logger.exception("on_analysis_done crashed")
-            self._set_status(f"Display error: {exc}", T.error)
+            self._set_status(t("home.display_error", err=exc), T.error)
 
     def on_analysis_error(self, err: str) -> None:
         self._loading.hide()
@@ -483,7 +496,7 @@ class HomeTab(QWidget):
         if is_photo:
             self._selected_quality = "best"
             self._q_sec.hide()
-            self._set_status("🖼  Photo / image — downloading at best available resolution", T.text2)
+            self._set_status(f"🖼  {t('home.photo_note')}", T.text2)
         else:
             self._selected_quality = QUALITY_PRESETS[self._selected_quality_idx][1]
             self._q_sec.show()
@@ -505,7 +518,7 @@ class HomeTab(QWidget):
                 on_error=lambda _, t=token: ui_bridge.post(lambda: self._apply_thumb_error(t)),
             )
         else:
-            self._thumb_lbl.setText("Không có xem trước")
+            self._thumb_lbl.setText(t("home.no_preview"))
 
     def _apply_thumb(self, img, token: int) -> None:
         if token != self._thumb_token:
@@ -524,12 +537,12 @@ class HomeTab(QWidget):
             self._thumb_lbl.setPixmap(scaled)
             self._thumb_lbl.setText("")
         except Exception:
-            self._thumb_lbl.setText("Không có xem trước")
+            self._thumb_lbl.setText(t("home.no_preview"))
 
     def _apply_thumb_error(self, token: int) -> None:
         if token != self._thumb_token:
             return
-        self._thumb_lbl.setText("Không có xem trước")
+        self._thumb_lbl.setText(t("home.no_preview"))
 
     def _add_to_queue(self) -> None:
         if not self._media_info:
@@ -541,7 +554,7 @@ class HomeTab(QWidget):
             output_ext=self._format_combo.currentText(),
             output_dir=self._custom_output_dir,
         )
-        self._app.toast(f"Added: {self._media_info.title[:40]}", "success")
+        self._app.toast(t("home.added_toast", title=self._media_info.title[:40]), "success")
         self._app.navigate_to("queue")
         self._result_card.hide()
         self._welcome.show()
@@ -555,7 +568,7 @@ class HomeTab(QWidget):
     def _browse_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
             self,
-            "Chọn thư mục tải",
+            t("home.choose_dir"),
             str(self._app.service.get_download_dir()),
         )
         if chosen:
@@ -570,6 +583,28 @@ class HomeTab(QWidget):
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    # ── i18n ─────────────────────────────────────────────────────────────
+
+    def retranslate(self) -> None:
+        self._welcome_title_lbl.setText(t("home.welcome_title"))
+        self._welcome_sub_lbl.setText(t("home.welcome_sub"))
+        if self._platform_chips:
+            self._platform_chips[-1].setText(t("home.more_platforms"))
+        self._loading_lbl.setText(f"⠋  {t('home.loading')}")
+        self._loading_sub_lbl.setText(t("home.loading_sub"))
+        self._q_section_lbl.setText(t("home.quality_section"))
+        for lbl, (label_key, _fmt, _icon) in zip(self._quality_text_labels, QUALITY_PRESETS, strict=False):
+            lbl.setText(t(label_key))
+        self._format_lbl.setText(t("home.format_label"))
+        self._folder_title_lbl.setText(t("home.folder_label"))
+        self._browse_btn.setText(t("home.browse"))
+        self._download_btn.setText(f"↓  {t('home.add_to_queue')}")
+        # The status line carries transient, already-formatted text; only the
+        # thumbnail placeholder is safe to rewrite here.
+        if not self._thumb_lbl.pixmap() or self._thumb_lbl.pixmap().isNull():
+            if self._media_info is not None and not self._media_info.thumbnail:
+                self._thumb_lbl.setText(t("home.no_preview"))
 
     @staticmethod
     def _short_path(p: Path) -> str:

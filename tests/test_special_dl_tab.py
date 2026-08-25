@@ -16,6 +16,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from utils.i18n import t
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stubs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,7 +164,7 @@ class TestClearStatus:
         tab = _status_stub()
         tab._status_lbl.setText("something")
         self._call(tab)
-        assert tab._status_lbl.text() == "Đang chờ..."
+        assert tab._status_lbl.text() == t("special.status.waiting")
 
     def test_resets_progress(self):
         tab = _status_stub(progress=75)

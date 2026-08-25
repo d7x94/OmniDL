@@ -272,6 +272,17 @@ class ConfigManager:
         return str(self.get("theme", "violet"))
 
     @property
+    def language(self) -> str:
+        """UI language code — one of "en", "vi", "zh".
+
+        Validated through utils.i18n.normalize so a hand-edited or stale
+        config.json can never put an unsupported code into the UI.
+        """
+        from utils.i18n import normalize
+
+        return normalize(self.get("language", "en"))
+
+    @property
     def max_concurrent(self) -> int:
         # Clamp to [1, 10]: 0 would block all downloads; >10 is unnecessary
         # on a desktop machine and risks exhausting network/disk resources.

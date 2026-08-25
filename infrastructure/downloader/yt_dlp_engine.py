@@ -62,8 +62,20 @@ try:
         _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
         # First try exact match (curl_cffi < 0.15 — unversioned keys)
         if _IMPERSONATE_TARGET not in _supported_map:
-            # curl_cffi >= 0.15: scan for any chrome target in the map
+            # curl_cffi >= 0.15: pin to a specific, known-good Chrome version
+            # rather than "whichever chrome key curl_cffi lists first" — that
+            # order shifts with every curl_cffi release (0.16 starts at
+            # chrome146 instead of chrome136), which silently changes the TLS
+            # fingerprint out from under the manually-set UA strings below
+            # that were written to match an older pick.
             _chrome_target = next(
+                (
+                    k
+                    for k, v in _supported_map.items()
+                    if getattr(k, "client", None) == "chrome" and v == "chrome131"
+                ),
+                None,
+            ) or next(
                 (k for k in _supported_map if getattr(k, "client", None) == "chrome"),
                 None,
             )
@@ -112,17 +124,112 @@ from utils.ffmpeg_locator import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
-# BUG-IG-ANTIBOT: yt-dlp's InstagramBaseIE defaults to the private mobile API
-# host (i.instagram.com) while sending web app-id/headers — a host/identity
-# combination only a script produces. Point it at the web host instead, the
-# same one a real browser tab calls. Guarded: a yt-dlp upgrade that renames
-# the attribute degrades to yt-dlp's own default rather than crashing.
-try:
-    from yt_dlp.extractor.instagram import InstagramBaseIE as _InstagramBaseIE
+# BUG-IG-ANTIBOT: previously monkeypatched InstagramBaseIE._API_BASE_URL to
+# force the web API host — yt-dlp's own host was hardcoded to the private
+# mobile API host (i.instagram.com) while sending web app-id/headers, a
+# combination only a script produces. Fixed upstream (yt-dlp #17278):
+# _API_BASE_URL is now a property that already picks the web host for the
+# web app_id, so the patch is gone — assigning a plain string here would
+# override that property and force the web host for every app_id again.
 
-    _InstagramBaseIE._API_BASE_URL = "https://www.instagram.com/api/v1"
-except Exception as _ig_patch_err:
-    logger.debug("BUG-IG-ANTIBOT: InstagramBaseIE._API_BASE_URL patch skipped: %s", _ig_patch_err)
+# BUG-TT-WAF: TikTok's edge blocks the newest Chrome TLS fingerprints on the
+# video watch page (/@user/video/<id>). It answers HTTP 200 with a 537-byte
+# "Site Maintenance" page that carries neither rehydration JSON nor the JS
+# challenge, so yt-dlp fails with "Unexpected response from webpage request".
+# Older Chrome and current Safari fingerprints still get the real page.
+# Two things are needed to route around it:
+#
+# 1. yt-dlp's TikTok extractor requests impersonate=True, which becomes the
+#    wildcard ImpersonateTarget() in request.extensions. _get_request_target
+#    prefers that extension over the handler's configured target, and the
+#    wildcard resolves to the FIRST entry of the supported-target map — the
+#    newest Chrome, i.e. exactly the blocked one. opts["impersonate"] was
+#    therefore ignored for every TikTok request. Patch the wildcard case so an
+#    explicitly configured target wins; behaviour is unchanged when no target
+#    is configured, and unchanged for callers that pass a specific target.
+# 2. _TIKTOK_IMPERSONATE_TARGETS: TikTok-safe targets in preference order.
+#    The first one goes into opts; the rest are retry candidates, because the
+#    block is partly probabilistic (~1 in 6 requests is rejected even with a
+#    good fingerprint).
+_TIKTOK_IMPERSONATE_TARGETS: list[Any] = []
+if _CURL_CFFI_AVAILABLE:
+    try:
+        from yt_dlp.networking._curlcffi import CurlCFFIRH as _TTRH  # type: ignore[import]
+        from yt_dlp.networking.impersonate import (
+            ImpersonateRequestHandler as _TTImpRH,
+        )
+        from yt_dlp.networking.impersonate import (
+            ImpersonateTarget as _TTTarget,
+        )
+
+        _tt_supported = getattr(_TTRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
+        # safari-18.4 stays first (the primary opts target, unchanged).
+        # safari-26.0 and firefox-147 added (curl_cffi 0.16): a different
+        # fingerprint family from the chrome-* entries already here, so a
+        # block that catches every Chrome/Safari variant still has a retry
+        # left before falling back to the app_info attempts.
+        for _tt_cand in (
+            "safari-18.4",
+            "safari-26.0",
+            "firefox-147",
+            "chrome-131",
+            "chrome-124",
+            "chrome-110",
+        ):
+            _tt_wanted = _TTTarget.from_str(_tt_cand)
+            _tt_resolved = next((k for k in _tt_supported if _tt_wanted in k), None)
+            if _tt_resolved is not None:
+                _TIKTOK_IMPERSONATE_TARGETS.append(_tt_resolved)
+
+        _TT_WILDCARD = _TTTarget()
+        _tt_orig_get_target = _TTImpRH._get_request_target
+
+        def _get_request_target_prefer_configured(self, request):  # type: ignore[no-untyped-def]
+            if request.extensions.get("impersonate") == _TT_WILDCARD and self.impersonate:
+                return self._resolve_target(self.impersonate)
+            return _tt_orig_get_target(self, request)
+
+        _TTImpRH._get_request_target = _get_request_target_prefer_configured
+    except Exception as _tt_waf_err:
+        logger.warning(
+            "BUG-TT-WAF: impersonate override unavailable (%s) — TikTok VOD extraction may fail",
+            _tt_waf_err,
+        )
+
+# First TikTok-safe target, or the generic one when the probe found nothing.
+_TIKTOK_IMPERSONATE_TARGET = (
+    _TIKTOK_IMPERSONATE_TARGETS[0] if _TIKTOK_IMPERSONATE_TARGETS else _IMPERSONATE_TARGET
+)
+
+
+def _impersonate_target_for(url: str) -> Any:
+    """Return the impersonate target to use for `url` (BUG-TT-WAF)."""
+    if platform_for_url(url) == "tiktok":
+        return _TIKTOK_IMPERSONATE_TARGET
+    return _IMPERSONATE_TARGET
+
+
+def _tiktok_web_block_fallbacks() -> list[tuple[str, dict[str, Any]]]:
+    """yt-dlp opts overrides to retry with after TikTok blocked the web page.
+
+    Alternate TLS fingerprints come first (BUG-TT-WAF) — they are what actually
+    gets past the edge block, and one retry is needed anyway because the block
+    is partly probabilistic. The Android app_info attempts stay last: they only
+    ever helped the older 10231 status and the app API now answers with an empty
+    body unless the request is signed.
+    """
+    fallbacks: list[tuple[str, dict[str, Any]]] = [
+        (f"impersonate={_t}", {"impersonate": _t}) for _t in _TIKTOK_IMPERSONATE_TARGETS[1:]
+    ]
+    fallbacks += [
+        (f"app_info={_a}", {"extractor_args": {"tiktok": {"app_info": [_a]}}})
+        for _a in (
+            "/trill/35.1.3/2023501030/1180",
+            "/musical_ly/35.1.3/2023501030/1233",
+            "/aweme/35.1.3/2023501030/1128",
+        )
+    ]
+    return fallbacks
 
 
 class _PlatformRateLimiter:
@@ -893,8 +1000,9 @@ def _tt29_cookie_sources(
     """Return (cookie_path, label) pairs for BUG-TT-29 rotation.
 
     Sequence: pool → global-tiktok → anon → pool → global-tiktok.
-    Consecutive duplicates are removed so identical cookie files don't
-    burn retries (e.g. when pool override == per-platform cookie).
+    Duplicates (by cookie value, anywhere in the list) are removed so
+    identical cookie files don't burn retries (e.g. when pool override
+    == per-platform cookie).
     """
     pool = _resolve_cookie(task_url, config, override) or ""
     global_tt = _resolve_cookie(task_url, config, None) or ""
@@ -906,12 +1014,12 @@ def _tt29_cookie_sources(
         (global_tt, "global"),
     ]
     out: list[tuple[str, str]] = []
-    last: object = object()
+    seen: set[str] = set()
     for c, lbl in raw:
-        if c == last:
+        if c in seen:
             continue
+        seen.add(c)
         out.append((c, lbl))
-        last = c
     return out
 
 
@@ -963,21 +1071,24 @@ class YtDlpEngine:
         # has_cookies allows Stories and Live URLs through when cookies are
         # configured by the user (intent check).  Security validation of the
         # actual cookie path happens in _validate_cookie_path() below.
+        # Per-platform: any(platform_cookies.values()) let a YouTube-only cookie
+        # unlock Instagram Stories / Facebook Live, which then failed deep inside
+        # yt-dlp with a raw error instead of the actionable message below.
         has_cookies = bool(
             self._config.cookie_file.strip()
             or self._config.use_cookies
-            or any(self._config.platform_cookies.values())
+            or self._config.get_cookie_for_platform(platform_for_url(url) or "").strip()
         )
         early_msg = _check_unsupported_url(url, has_cookies=has_cookies)
         if early_msg:
             raise RuntimeError(early_msg)
 
-        # BUG-CC FIX: Pre-resolve Kuaishou short URLs before passing to yt-dlp.
-        # yt-dlp's Generic extractor fails with TLS WRONG_VERSION_NUMBER when
-        # following v.kuaishou.com redirect chains.  Resolving the final URL
-        # here via curl_cffi bypasses the problematic CDN hop entirely.
-        if _KUAISHOU_SHORT_RE.search(url):
-            url = _resolve_kuaishou_url(url)
+        # NOTE: _KUAISHOU_SHORT_RE ⊆ is_kuaishou_url's own regex, so any URL
+        # that would match it already returned via extract_info_kuaishou()
+        # above — a pre-resolve call here was unreachable dead code. See
+        # _resolve_kuaishou_url / _KUAISHOU_SHORT_RE below (still exercised
+        # directly by tests) if that ever needs reviving for a URL shape
+        # is_kuaishou_url doesn't cover.
 
         # BUG-FB FIX: Resolve Facebook /share/{v,r,p}/ links to their canonical
         # story.php / reel URL.  yt-dlp's FacebookIE does not match the /share/
@@ -1021,8 +1132,9 @@ class YtDlpEngine:
             "logger": _ig_cookie_logger,
         }
         # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
+        # BUG-TT-WAF: TikTok URLs need a fingerprint its edge does not block.
         if _CURL_CFFI_AVAILABLE:
-            opts["impersonate"] = _IMPERSONATE_TARGET
+            opts["impersonate"] = _impersonate_target_for(url)
         # Deno PATH is injected once at startup (main.py) — not per-call.
         # os.environ.update() from worker threads is not thread-safe on CPython.
         _ffmpeg_dir = get_ffmpeg_path()
@@ -1104,14 +1216,23 @@ class YtDlpEngine:
                 # We intercept both and return synthetic MediaInfo(formats=[],
                 # duration=0) so BUG Z photo detection in home_tab activates.
                 # The download() call then uses format="best" to fetch the image.
+                # BUG-FB-PHOTO-ANALYSE: the same two errors are raised for a
+                # Facebook photo-only post, and gallery-dl handles facebook.com
+                # (see gallery_dl_engine._SUPPORTED_RE).  Keying this branch on
+                # the Instagram post regex alone made analyse hard-fail for every
+                # Facebook photo post, so the task could never be enqueued and
+                # DownloadManager's gallery-dl fallback was unreachable.
                 _is_photo_error = "no video in this post" in msg_l or "no video formats found" in msg_l
-                if _is_photo_error and _ig_photo_re.search(url):
+                _photo_platform = platform_for_url(url)
+                if _is_photo_error and _photo_platform in ("instagram", "facebook"):
                     m = _ig_photo_re.search(url)
                     shortcode = m.group(1) if m else ""
+                    _photo_label = "Instagram" if _photo_platform == "instagram" else "Facebook"
                     logger.info(
-                        "Instagram photo detected (no video stream) — "
+                        "%s photo detected (no video stream) — "
                         "returning synthetic MediaInfo for photo path: %s",
-                        shortcode,
+                        _photo_label,
+                        shortcode or url,
                     )
                     # Clean temp cookie before early return (photo path)
                     if _cookie_temp_ei:
@@ -1121,11 +1242,11 @@ class YtDlpEngine:
                             pass
                     return MediaInfo(
                         url=url,
-                        title=shortcode or "Instagram Photo",
+                        title=shortcode or f"{_photo_label} Photo",
                         uploader="",
                         duration=0,
                         thumbnail="",
-                        platform="Instagram",
+                        platform=_photo_label,
                         formats=[],
                         is_live=False,
                         was_live=False,
@@ -1178,13 +1299,13 @@ class YtDlpEngine:
                     time.sleep(2**attempt)
         if info is None:
             # BUG-TT-10231: TikTok web extraction returns status 10231 for some videos.
-            # BUG-TT-CHALLENGE: TikTok also serves an anti-bot JS challenge page that
-            # yt-dlp cannot solve, raising "Unexpected response from webpage request".
-            # Both are bypassed by routing to the Android mobile API via app_info.
+            # BUG-TT-CHALLENGE: TikTok also serves a block/challenge page that yt-dlp
+            # cannot parse, raising "Unexpected response from webpage request".
+            # Retry with the fallbacks from _tiktok_web_block_fallbacks(): alternate
+            # TLS fingerprints (BUG-TT-WAF) first, then the Android mobile API via
+            # app_info (app_name alone is ignored by TikTokIE when app_info is absent:
+            # _KNOWN_APP_INFO stays [] → yt-dlp skips the app API → web extraction).
             # Use _saw_10231 (not just last_exc) — last retry may have been a 429.
-            # Fix: use app_info (not app_name) to trigger _extract_aweme_app() (Android
-            # mobile API). app_name alone is ignored by TikTokIE when app_info is absent:
-            # _KNOWN_APP_INFO stays [] → yt-dlp skips app API → web extraction → 10231.
             _tt_web_blocked_ei = _saw_10231 or (
                 last_exc
                 and (
@@ -1195,20 +1316,15 @@ class YtDlpEngine:
                 )
             )
             if _tt_web_blocked_ei:
-                for _fb_app_info in (
-                    "/trill/35.1.3/2023501030/1180",
-                    "/musical_ly/35.1.3/2023501030/1233",
-                    "/aweme/35.1.3/2023501030/1128",
-                ):
-                    _tt_opts = dict(opts)
-                    _tt_opts["extractor_args"] = {"tiktok": {"app_info": [_fb_app_info]}}
+                for _fb_label, _fb_override in _tiktok_web_block_fallbacks():
+                    _tt_opts = {**opts, **_fb_override}
                     try:
                         with yt_dlp.YoutubeDL(_tt_opts) as ydl:
                             info = ydl.extract_info(url, download=False)
-                        logger.debug("BUG-TT-10231: %s retry succeeded for %s", _fb_app_info, url)
+                        logger.debug("BUG-TT-10231: %s retry succeeded for %s", _fb_label, url)
                         break
                     except Exception as _tt_exc:
-                        logger.debug("BUG-TT-10231: %s retry failed: %s", _fb_app_info, _tt_exc)
+                        logger.debug("BUG-TT-10231: %s retry failed: %s", _fb_label, _tt_exc)
                         last_exc = _tt_exc
 
         if info is None:
@@ -1717,7 +1833,8 @@ class YtDlpEngine:
             "no_warnings": True,
             # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
             # Required for sites that reject Python's default TLS fingerprint (e.g. Kuaishou).
-            **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
+            # BUG-TT-WAF: TikTok URLs need a fingerprint its edge does not block.
+            **({"impersonate": _impersonate_target_for(task.url)} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
             # Also enable for TikTok live to log which protocol/format is selected.
             # BUG-IG-COOKIE: also enable for Instagram to catch cookie-invalidation.
@@ -2825,11 +2942,12 @@ class YtDlpEngine:
                         raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
                 else:
                     # BUG-TT-10231-DL: 10231 during download — yt-dlp re-runs extract_info
-                    # internally in ydl.download(). Use app_info to trigger the Android
-                    # mobile API (_extract_aweme_app) which bypasses the web path that
-                    # returns 10231. app_name alone has no effect (see BUG-TT-10231).
-                    # BUG-TT-CHALLENGE: same Android API fallback for the anti-bot JS
-                    # challenge ("Unexpected response from webpage request").
+                    # internally in ydl.download(), so the web block hits here too.
+                    # Retry with the same fallbacks as the extract path: alternate TLS
+                    # fingerprints (BUG-TT-WAF) first, then the Android mobile API via
+                    # app_info (app_name alone has no effect — see BUG-TT-10231).
+                    # BUG-TT-CHALLENGE: same fallbacks for the anti-bot challenge page
+                    # ("Unexpected response from webpage request").
                     # BUG-TT-REHYDRATE: TikTok sometimes serves a bot/challenge webpage
                     # with no rehydration JSON ("Unable to extract universal data for
                     # rehydration"). It is transient (re-adding the same link succeeds);
@@ -2841,19 +2959,14 @@ class YtDlpEngine:
                     )
                     if _tt_web_blocked and _is_tiktok_vod and not is_live:
                         _10231_dl_ok = False
-                        for _fb_app_info in (
-                            "/trill/35.1.3/2023501030/1180",
-                            "/musical_ly/35.1.3/2023501030/1233",
-                            "/aweme/35.1.3/2023501030/1128",
-                        ):
-                            _fb_opts = dict(opts)
-                            _fb_opts["extractor_args"] = {"tiktok": {"app_info": [_fb_app_info]}}
+                        for _fb_label, _fb_override in _tiktok_web_block_fallbacks():
+                            _fb_opts = {**opts, **_fb_override}
                             try:
                                 with yt_dlp.YoutubeDL(_fb_opts) as ydl:
                                     ydl.download([task.url])
                                 logger.debug(
                                     "BUG-TT-10231-DL: %s retry succeeded for %s",
-                                    _fb_app_info,
+                                    _fb_label,
                                     task.url,
                                 )
                                 _10231_dl_ok = True
@@ -2861,7 +2974,7 @@ class YtDlpEngine:
                             except Exception as _fb_exc:
                                 logger.debug(
                                     "BUG-TT-10231-DL: %s retry failed: %s",
-                                    _fb_app_info,
+                                    _fb_label,
                                     _fb_exc,
                                 )
                         if not _10231_dl_ok:
@@ -3730,7 +3843,11 @@ class YtDlpEngine:
         """
         from urllib.parse import urljoin
 
-        from utils.tiktok_live_checker import _get_impersonate_session, _load_cookie_jar  # noqa: PLC0415
+        from utils.tiktok_live_checker import (  # noqa: PLC0415
+            _CHROME_UA,
+            _get_impersonate_session,
+            _load_cookie_jar,
+        )
 
         _STALL_TIMEOUT_S = 20
         _POLL_INTERVAL_S = 2
@@ -3750,11 +3867,11 @@ class YtDlpEngine:
 
         session = _get_impersonate_session(jar)
         _curl_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
+            # Matches the TLS fingerprint _get_impersonate_session() actually
+            # sends (see tiktok_live_checker._get_chrome_impersonate_target());
+            # a hardcoded UA of a different Chrome version here would disagree
+            # with the impersonated TLS ClientHello.
+            "User-Agent": _CHROME_UA,
             "Referer": "https://www.tiktok.com/",
             "Origin": "https://www.tiktok.com",
         }
