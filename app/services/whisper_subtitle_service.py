@@ -236,7 +236,8 @@ def _download(
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310  (fixed https URL)
+        # url is always built from the https literals _HF_BASE / _VAD_URL
+        with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310  # nosec B310
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             with open(tmp, "wb") as fh:

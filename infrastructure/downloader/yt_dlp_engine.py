@@ -891,7 +891,10 @@ _FB_MPD_DYNAMIC_RE = re.compile(r'<MPD\b[^>]*\btype\s*=\s*["\']dynamic["\']', re
 
 def _fb_fetch_manifest(url: str) -> "str | None":
     """Fetch a manifest from Facebook's CDN; None for a foreign host or any failure."""
-    if not _FB_CDN_HOST_RE.search(_urlparse(url).hostname or ""):
+    _parsed = _urlparse(url)
+    if _parsed.scheme not in ("http", "https"):
+        return None
+    if not _FB_CDN_HOST_RE.search(_parsed.hostname or ""):
         return None
     try:
         if _CURL_CFFI_AVAILABLE:
@@ -907,7 +910,8 @@ def _fb_fetch_manifest(url: str) -> "str | None":
             )
         import urllib.request  # noqa: PLC0415
 
-        with urllib.request.urlopen(url, timeout=15) as _resp:  # noqa: S310
+        # only http/https reach here: the scheme is checked at the top
+        with urllib.request.urlopen(url, timeout=15) as _resp:  # noqa: S310  # nosec B310
             return _resp.read().decode("utf-8", "replace")
     except Exception as exc:
         logger.debug("BUG-FB-LIVE: manifest probe failed (%s)", exc)

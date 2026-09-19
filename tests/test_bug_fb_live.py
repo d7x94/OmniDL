@@ -67,6 +67,12 @@ def _fake_curl(body: str):
 
 
 class TestFacebookLiveProbe:
+    def test_a_non_http_scheme_is_never_fetched(self):
+        # A file:// URL whose host looks like Facebook's CDN must not reach
+        # urlopen, which would read a local file instead of a manifest.
+        with patch.object(mod, "_CURL_CFFI_AVAILABLE", False):
+            assert mod._fb_fetch_manifest("file://www.facebook.com/etc/passwd") is None
+
     def test_live_playlist_without_endlist_is_live(self):
         import curl_cffi
 

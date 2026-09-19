@@ -104,7 +104,7 @@ jobs:
         run: |
           uv tool run bandit \
             -r . \
-            -x tests/,build/,venv_build/ \
+            -x ./tests,./build,./venv_build \
             -ll \
             --format txt \
             --output bandit_report.txt \
