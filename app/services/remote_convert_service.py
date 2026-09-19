@@ -219,6 +219,13 @@ class RemoteConvertService:
                 f"speed_preset '{speed_preset}' is not allowed. Valid values: {sorted(_VALID_SPEEDS)}"
             )
         custom_crf = max(_CRF_MIN, min(_CRF_MAX, int(custom_crf)))
+        if target_ext not in _VALID_EXTS:
+            raise ValueError(f"target_ext '{target_ext}' is not allowed. Valid values: {sorted(_VALID_EXTS)}")
+        if output_codec in _EXT_REJECTED_CODECS.get(target_ext, frozenset()):
+            raise ValueError(
+                f"output_codec '{output_codec}' cannot be stored in a .{target_ext} file. "
+                f"Use target_ext 'mp4' or 'mkv' instead."
+            )
         allowed_codecs = _allowed_codecs()
         if output_codec not in allowed_codecs:
             if output_codec in _KNOWN_CODECS:
@@ -243,13 +250,6 @@ class RemoteConvertService:
             raise ValueError("subtitles_only requires generate_subtitles=True")
         if generate_subtitles and not is_whisper_supported():
             raise ValueError("Subtitle generation is unavailable: this FFmpeg build has no whisper filter.")
-        if target_ext not in _VALID_EXTS:
-            raise ValueError(f"target_ext '{target_ext}' is not allowed. Valid values: {sorted(_VALID_EXTS)}")
-        if output_codec in _EXT_REJECTED_CODECS.get(target_ext, frozenset()):
-            raise ValueError(
-                f"output_codec '{output_codec}' cannot be stored in a .{target_ext} file. "
-                f"Use target_ext 'mp4' or 'mkv' instead."
-            )
         if not subtitles_only:
             _src_ext = file_path.suffix.lower().lstrip(".")
             _allowed_src = SUPPORTED_EXTS | _AUDIO_SOURCE_EXTS if target_ext == "mp3" else SUPPORTED_EXTS
