@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from typing import Any, Optional
+
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,48 @@ _REQUEST_TIMEOUT = 15  # seconds
 # that isn't affected by the same HTML-scraping rate limit.
 _ROOM_ID_CACHE: dict[str, tuple[str, float]] = {}  # username -> (room_id, ts)
 _ROOM_ID_CACHE_TTL = 5400.0  # 90 minutes (covers typical live session duration)
+
+# BUG-TT-ENDEDROOM FIX: rooms webcast/room/info reported as finished.
+# After a broadcast ends TikTok keeps serving the old roomId in the live
+# page's SIGI_STATE, and check_alive keeps answering alive=True for it, so
+# pass-1/pass-2 announced "LIVE" on every poll and the caller then paid two
+# more webcast calls to reject it -- @tomluoc211 room 7679856087437429522 ran
+# that loop for 9.5 hours after the stream finished.  Remembering the verdict
+# lets those passes bail out before check_alive.
+# A restarted broadcast can reuse the same roomId, so the mark is TTL-bounded
+# and is cleared the moment room/info reports status=2 again.  Pass-4 does not
+# consult this set, so a genuine restart is still detected immediately.
+_ENDED_ROOM_IDS: dict[str, float] = {}  # room_id -> ts
+_ENDED_ROOM_TTL = 1800.0  # 30 minutes
+_ENDED_ROOM_LOCK = threading.Lock()
+
+
+def _mark_room_ended(room_id: str) -> None:
+    if not room_id:
+        return
+    now = time.monotonic()
+    with _ENDED_ROOM_LOCK:
+        for rid, ts in list(_ENDED_ROOM_IDS.items()):
+            if now - ts >= _ENDED_ROOM_TTL:
+                del _ENDED_ROOM_IDS[rid]
+        _ENDED_ROOM_IDS[room_id] = now
+
+
+def _clear_room_ended(room_id: str) -> None:
+    with _ENDED_ROOM_LOCK:
+        _ENDED_ROOM_IDS.pop(room_id, None)
+
+
+def _room_recently_ended(room_id: str) -> bool:
+    with _ENDED_ROOM_LOCK:
+        ts = _ENDED_ROOM_IDS.get(room_id)
+        if ts is None:
+            return False
+        if time.monotonic() - ts >= _ENDED_ROOM_TTL:
+            del _ENDED_ROOM_IDS[room_id]
+            return False
+        return True
+
 
 # Profile URL pattern -- matches /@username but NOT /live/, /video/, /tag/, etc.
 # TikTok usernames: letters, digits, underscores, dots (1-24 chars).
@@ -378,10 +423,10 @@ def _fetch_tiktok_profile_page(username: str, proxy: str = "", cookie_file: str 
     except Exception as exc:
         exc_s = str(exc)
         if "connection" in exc_s.lower() or "connect" in exc_s.lower():
-            raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
+            raise RuntimeError(t("err.network", err=exc)) from exc
         if "timeout" in exc_s.lower():
-            raise RuntimeError("TikTok API hết thời gian chờ. Thử lại sau.") from None
-        raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
+            raise RuntimeError(t("err.tiktok_api_timeout")) from None
+        raise RuntimeError(t("err.http", err=exc)) from exc
     finally:
         # Each unclosed curl_cffi Session pins a libcurl easy handle whose
         # native memory CPython's GC thresholds cannot see. The response body
@@ -761,6 +806,7 @@ def _fetch_hls_from_webcast_room_info(
         status = room_data.get("status")
         if status != 2:
             if status in (4, 5):
+                _mark_room_ended(room_id)
                 logger.debug(
                     "BUG-TT-25: room/info status=%s (ended) for room %s",
                     status,
@@ -773,6 +819,9 @@ def _fetch_hls_from_webcast_room_info(
                     room_id,
                 )
             return None
+        # status=2: the room is broadcasting again -- a restarted stream may
+        # reuse the roomId that was marked ended earlier.
+        _clear_room_ended(room_id)
         stream_url = room_data.get("stream_url") or {}
         # Collect all CDN variants: primary first, then hls_pull_url_map entries.
         # Different quality variants (HD/SD/LD) may be on different CDN nodes —
@@ -1020,10 +1069,10 @@ def _check_tiktok_live_with_room_id(
             )
             if hls_check is None:
                 logger.debug(
-                    "tiktok_live_checker: @%s roomId=%s alive but room/info status!=2"
-                    " -- scheduled stream, not live yet",
+                    "tiktok_live_checker: @%s roomId=%s alive but room/info status!=2 -- %s",
                     username,
                     result[1],
+                    "stream ended" if _room_recently_ended(result[1]) else "scheduled, not live yet",
                 )
                 return None
             _ROOM_ID_CACHE[username] = (result[1], time.monotonic())

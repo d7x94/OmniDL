@@ -300,7 +300,8 @@ class RemoteApiPanel(_BasePanel):
 
         st = self._api_token_status
         st.setText(t("settings.api.new_token_saved"))
-        QTimer.singleShot(3000, lambda: st.setText(""))
+        # `st` as context: Qt drops the call if a panel rebuild deleted the label.
+        QTimer.singleShot(3000, st, lambda: st.setText(""))
 
         was_running = False
         try:
@@ -417,7 +418,7 @@ class RemoteApiPanel(_BasePanel):
                             from api.server import restart_api_server
                             from app.event_bus import bus as _bus
 
-                            svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                            svc = getattr(self._app, "_service", None)
                             if svc:
                                 restart_api_server(service=svc, config=cfg, bus=_bus)
                         except Exception as exc:
@@ -433,7 +434,7 @@ class RemoteApiPanel(_BasePanel):
                         from api.server import restart_api_server
                         from app.event_bus import bus as _bus
 
-                        svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                        svc = getattr(self._app, "_service", None)
                         if svc:
                             restart_api_server(service=svc, config=cfg, bus=_bus)
                     except Exception as exc:
@@ -481,7 +482,7 @@ class RemoteApiPanel(_BasePanel):
                         from api.server import restart_api_server
                         from app.event_bus import bus as _bus
 
-                        svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                        svc = getattr(self._app, "_service", None)
                         if svc:
                             restart_api_server(service=svc, config=cfg, bus=_bus)
                     except Exception as exc:
@@ -544,7 +545,7 @@ class RemoteApiPanel(_BasePanel):
                         from api.server import restart_api_server
                         from app.event_bus import bus as _bus
 
-                        svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                        svc = getattr(self._app, "_service", None)
                         if svc:
                             restart_api_server(service=svc, config=cfg, bus=_bus)
                     except Exception as exc:
@@ -563,7 +564,7 @@ class RemoteApiPanel(_BasePanel):
                     from api.server import restart_api_server
                     from app.event_bus import bus as _bus
 
-                    svc = getattr(self._app, "service", None) or getattr(self._app, "_service", None)
+                    svc = getattr(self._app, "_service", None)
                     if svc:
                         restart_api_server(service=svc, config=cfg, bus=_bus)
                 except Exception as exc:

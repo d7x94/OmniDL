@@ -18,18 +18,14 @@ class Pass1ProfilePage(LiveDetectionStrategy):
     name = "pass1_profile_page"
 
     def check(self, ctx: LiveCheckContext) -> Optional[LiveCheckResult]:
-        from utils.tiktok_live_checker import (
-            _fetch_tiktok_profile_page,
-            _room_id_from_profile_page,
-            _verify_room_alive,
-        )
+        from utils import tiktok_live_checker as tlc
 
-        page_text = _fetch_tiktok_profile_page(ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file)
+        page_text = tlc._fetch_tiktok_profile_page(ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file)
         if page_text is None:
             logger.debug("tiktok_detection: @%s pass-1 profile page fetch failed", ctx.username)
             return None
 
-        room_id, status_ended = _room_id_from_profile_page(page_text, ctx.username)
+        room_id, status_ended = tlc._room_id_from_profile_page(page_text, ctx.username)
 
         # Signal the dispatcher to cancel all other passes - stream is confirmed ended.
         if status_ended:
@@ -42,7 +38,17 @@ class Pass1ProfilePage(LiveDetectionStrategy):
             )
             return None
 
-        if not _verify_room_alive(room_id, ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file):
+        # BUG-TT-ENDEDROOM FIX: see pass2_live_page — a finished broadcast's
+        # roomId lingers in the page and check_alive still answers alive=True.
+        if tlc._room_recently_ended(room_id):
+            logger.debug(
+                "tiktok_detection: @%s pass-1 roomId=%s already reported ended by room/info",
+                ctx.username,
+                room_id,
+            )
+            return None
+
+        if not tlc._verify_room_alive(room_id, ctx.username, proxy=ctx.proxy, cookie_file=ctx.cookie_file):
             logger.debug(
                 "tiktok_detection: @%s pass-1 roomId=%s check_alive=false",
                 ctx.username,

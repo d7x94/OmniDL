@@ -98,16 +98,29 @@ class DownloadManager:
         }
         self._tiktok_pool: Optional[TikTokAccountPool] = self._build_tiktok_pool()
 
-    def _build_tiktok_pool(self) -> "Optional[TikTokAccountPool]":
+    def _build_tiktok_pool(
+        self, previous: "Optional[TikTokAccountPool]" = None
+    ) -> "Optional[TikTokAccountPool]":
         entries = self._config.tiktok_account_pool
         if not entries:
             return None
         accounts = [TikTokAccount.from_dict(d) for d in entries]
-        return TikTokAccountPool(accounts) if accounts else None
+        if not accounts:
+            return None
+        pool = TikTokAccountPool(accounts)
+        if previous is not None:
+            pool.adopt_state(previous)
+        return pool
 
     def rebuild_tiktok_pool(self) -> None:
-        """Rebuild the pool from current config — call after UI adds/removes accounts."""
-        self._tiktok_pool = self._build_tiktok_pool()
+        """Rebuild the pool from current config — call after UI adds/removes accounts.
+
+        Swapped under _lock because enqueue() reads _tiktok_pool under the same
+        lock, and the live slot counters are carried over so downloads already
+        running keep counting against their account's max_slots.
+        """
+        with self._lock:
+            self._tiktok_pool = self._build_tiktok_pool(self._tiktok_pool)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -146,30 +159,33 @@ class DownloadManager:
         with self._lock:
             if not self._running or not self._executor:
                 raise RuntimeError("DownloadManager is not running.")
-            self._purge_old_tasks()
+            purged = self._purge_old_tasks()
             self._tasks[task.id] = task
             _platform = platform_for_url(task.url)
             _tiktok_pool = self._tiktok_pool
-            if _platform == "tiktok" and _tiktok_pool and len(_tiktok_pool) > 0:
+            if _platform == "tiktok" and _tiktok_pool and _tiktok_pool.has_usable_account():
                 future = self._executor.submit(self._gated_run_tiktok, task, _tiktok_pool)
             else:
                 _sem = self._platform_sems.get(_platform or "")
                 future = self._executor.submit(self._gated_run, task, _sem)
             self._futures[task.id] = future
         future.add_done_callback(lambda f: self._on_future_done(task.id, f))
+        self._publish_removed(purged)
         logger.info("Enqueued task %s — %s", task.id, task.title)
 
-    def pause(self, task_id: str) -> None:
+    def pause(self, task_id: str) -> bool:
         task = self._get_task(task_id)
-        if task:
-            task.pause()
-            self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+        if not task or not task.pause():
+            return False
+        self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+        return True
 
-    def resume(self, task_id: str) -> None:
+    def resume(self, task_id: str) -> bool:
         task = self._get_task(task_id)
-        if task:
-            task.resume()
-            self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+        if not task or not task.resume():
+            return False
+        self._bus.publish(EventBus.DOWNLOAD_PROGRESS, task=task)
+        return True
 
     def cancel(self, task_id: str) -> None:
         task = self._get_task(task_id)
@@ -183,11 +199,13 @@ class DownloadManager:
         with self._lock:
             return list(self._tasks.values())
 
-    def clear_terminal(self, exclude_ids: "frozenset[str] | None" = None) -> None:
+    def clear_terminal(self, exclude_ids: "frozenset[str] | None" = None) -> list[str]:
         """Remove completed / failed / cancelled tasks from tracking.
 
         *exclude_ids* — task IDs that must not be removed even if terminal
         (e.g. tasks that still have an active convert job running on them).
+
+        Returns the IDs actually removed.
         """
         with self._lock:
             terminal = DownloadStatus.terminal_states()
@@ -199,8 +217,12 @@ class DownloadManager:
             for tid in to_del:
                 del self._tasks[tid]
                 self._futures.pop(tid, None)
+        self._publish_removed(to_del)
+        return to_del
 
-    def clear_specific(self, ids: list[str]) -> None:
+    def clear_specific(self, ids: list[str]) -> list[str]:
+        """Remove the given tasks if terminal.  Returns the IDs actually removed."""
+        removed: list[str] = []
         with self._lock:
             terminal = DownloadStatus.terminal_states()
             for tid in ids:
@@ -208,16 +230,31 @@ class DownloadManager:
                 if t and t.status in terminal:
                     del self._tasks[tid]
                     self._futures.pop(tid, None)
+                    removed.append(tid)
+        self._publish_removed(removed)
+        return removed
+
+    def _publish_removed(self, ids: list[str]) -> None:
+        """Announce dropped tasks so remote clients can forget them too.
+
+        Without this a web client keeps rendering cards for tasks the server
+        no longer knows about — every file action on them 404s — until the
+        page is reloaded and the SSE snapshot rebuilds the list.
+        Published outside self._lock: handlers run on the caller's thread.
+        """
+        if ids:
+            self._bus.publish(EventBus.DOWNLOAD_REMOVED, ids=list(ids))
 
     # ── Internal ──────────────────────────────────────────────────────────
 
-    def _purge_old_tasks(self) -> None:
+    def _purge_old_tasks(self) -> list[str]:
         """
         Remove oldest terminal tasks when registry exceeds MAX_TASKS.
-        Must be called with self._lock held.
+        Must be called with self._lock held.  Returns the IDs removed so the
+        caller can announce them once the lock is released.
         """
         if len(self._tasks) < MAX_TASKS:
-            return
+            return []
         terminal_states = DownloadStatus.terminal_states()
         terminal = [t for t in self._tasks.values() if t.status in terminal_states]
         terminal.sort(key=lambda t: t.finished_at)
@@ -225,6 +262,7 @@ class DownloadManager:
         for t in to_remove:
             del self._tasks[t.id]
             self._futures.pop(t.id, None)
+        return [t.id for t in to_remove]
 
     def _get_task(self, task_id: str) -> Optional[DownloadTask]:
         with self._lock:
@@ -247,6 +285,15 @@ class DownloadManager:
         except _AcquireAborted:
             logger.info("Task %s cancelled while waiting for a TikTok pool slot", task.id)
             task.cancel()
+        except RuntimeError:
+            # Every account was paused (or lost its cookie file) between the
+            # enqueue check and here.  Falling back to the shared TikTok cookie
+            # beats failing the download with an internal error message.
+            logger.info(
+                "Task %s: no usable TikTok pool account — falling back to the shared cookie",
+                task.id,
+            )
+            self._gated_run(task, self._platform_sems.get("tiktok"))
 
     def _tt29_live_recheck(self, task: DownloadTask, room_id: str) -> bool:
         m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)/live", task.url, re.I)
@@ -321,14 +368,8 @@ class DownloadManager:
         # Instagram-specific — account/auth issues that retrying cannot fix
         "checkpoint",  # account checkpoint verification required
         "challenge_required",  # two-factor / bot challenge
-        "cookie instagram hết hạn",  # yt-dlp flagged the IG session cookie invalid (_IGCookieLogger)
         "no video in this post",  # photo-only post — retry cannot add video
         "no video formats found",  # photo-only post (with cookies, yt-dlp >= 2024)
-        # Vietnamese translations of the two photo-only yt-dlp messages above.
-        # _friendly_error() in yt_dlp_engine translates them before raising, so
-        # the raw English strings above never appear in the exception message.
-        # Without these entries the task retries 4× unnecessarily.
-        "bài đăng này chỉ có ảnh",  # "This post only has photos, no video"
         # Facebook-specific
         "content not available",  # post removed or region-blocked
         "this content isn",  # "This content isn't available"
@@ -344,9 +385,46 @@ class DownloadManager:
         # yt-dlp internal bugs — retrying the same broken extractor path
         # never helps; user must update yt-dlp to fix these.
         "extractor error",  # yt-dlp extractor crash (e.g. KeyError on shortcode)
+        # gallery-dl extractor crash — same reasoning, different wording.
+        # "[facebook][error] An unexpected error occurred: KeyError - 'set_id'"
+        # is deterministic: the second attempt burned 7 s for the same crash
+        # (log 2026-09-09 15:18:12 / 15:18:21, task 7f2b7e61).
+        "an unexpected error occurred:",
         # Live stream offline — retrying cannot start a stream that is offline.
         "not currently live",  # TikTok: The channel is not currently live
         "channel is not currently live",  # normalised by _friendly_error
+    )
+
+    # Language-independent counterpart of _HARD_ERROR_KEYWORDS.  yt_dlp_engine
+    # attaches ``.error_key`` to every error it raises; the keyword list above
+    # only matches when the UI language happens to be the one the message was
+    # written in, so the key is checked first and the keywords are the fallback
+    # for engines that do not set one (gallery-dl, kuaishou, waaw, ...).
+    _HARD_ERROR_KEYS: frozenset[str] = frozenset(
+        {
+            "err.private",
+            "err.not_found",
+            "err.unsupported_platform",
+            "err.ig_photo_only",
+            "err.ytdlp_internal",
+            "err.ig_checkpoint",
+            "err.ig_cookie_expired",
+            "err.fb_unavailable",
+            "err.geo_restricted",
+            "err.copyright",
+            "err.blocked",
+            "err.account_suspended",
+            "err.members_only",
+            "err.video_deleted",
+            "err.not_currently_live",
+            "err.tiktok_audio_only",
+            "err.tiktok_ec_blocked",
+            "err.threads_unsupported",
+            "err.ig_stories_cookies",
+            "err.ig_live_cookies",
+            "err.fb_live_cookies",
+            "err.fb_stories_manual",
+        }
     )
 
     def _run_task(self, task: DownloadTask) -> None:
@@ -391,6 +469,12 @@ class DownloadManager:
             # the very first one, in case cancel() was called while queued).
             if task.is_cancellation_requested:
                 break
+
+            # Tell the engine whether a further attempt follows, so it can log
+            # yt-dlp's own errors at DEBUG on a non-final attempt.  A Facebook
+            # "Cannot parse data" that attempt 2 recovered from was reported at
+            # ERROR (log 2026-09-09 15:23:56, task c6e5e53b completed 15:24:40).
+            task.has_retry_remaining = attempt < max_attempts - 1
 
             if attempt > 0:
                 # Respect Retry-After header from 429 responses; otherwise use
@@ -487,6 +571,10 @@ class DownloadManager:
                                 browser=getattr(self._config, "cookies_browser", "brave"),
                                 on_progress=_story_progress,
                                 timeout=90.0,
+                                # Same per-task folder every other engine honours:
+                                # without it a Story queued with a custom output
+                                # folder still landed in the default download dir.
+                                output_dir=Path(task.output_dir) if task.output_dir else None,
                             )
                         except Exception as _story_exc:
                             # A real /stories/ permalink has no other engine that
@@ -596,10 +684,20 @@ class DownloadManager:
 
                 # Route to gallery-dl engine when MediaInfo carries the hint.
                 # Falls back to yt-dlp if gallery engine is not wired (e.g. tests).
-                use_gallery = (
-                    self._gallery_engine is not None
-                    and task.media_info is not None
-                    and getattr(task.media_info, "source_engine", "yt_dlp") == "gallery_dl"
+                # A Facebook photo/album URL is forced onto gallery-dl even when
+                # the client sent the default source_engine="yt_dlp" (the Remote
+                # API does): yt-dlp cannot parse those URLs at all, so the
+                # photo-error fallback further down never fires for them.
+                from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                    is_facebook_photo_url,
+                )
+
+                use_gallery = self._gallery_engine is not None and (
+                    (
+                        task.media_info is not None
+                        and getattr(task.media_info, "source_engine", "yt_dlp") == "gallery_dl"
+                    )
+                    or is_facebook_photo_url(task.url)
                 )
                 active_engine = self._gallery_engine if use_gallery else self._engine
 
@@ -616,15 +714,21 @@ class DownloadManager:
 
                 # BUG-BU: yt-dlp photo-only error on a task submitted via the
                 # Remote API without source_engine="gallery_dl" forwarded from
-                # /api/analyse.  Detect both the raw English yt-dlp keywords AND
-                # the Vietnamese _friendly_error translation (the actual string
-                # raised by yt_dlp_engine.download).  Stop yt-dlp retries
+                # /api/analyse.  Matched on the engine's error key (language
+                # independent) with the raw yt-dlp keywords as a fallback for
+                # engines that do not set one.  Stop yt-dlp retries
                 # immediately and flag a single gallery-dl attempt after the loop
                 # — avoids 3 pointless yt-dlp retries before the final FAILED.
+                _err_key = getattr(exc, "error_key", "") or ""
                 _is_photo_error = (
-                    "no video in this post" in msg
+                    _err_key == "err.ig_photo_only"
+                    or "no video in this post" in msg
                     or "no video formats found" in msg
-                    or "bài đăng này chỉ có ảnh" in msg
+                    # BUG-FB-PARSE: FacebookIE's own wording for a photo-only
+                    # post is "Cannot parse data" — see the matching branch in
+                    # yt_dlp_engine.extract_info.  Without it a Remote API task
+                    # that did not forward source_engine never reached gallery-dl.
+                    or ("cannot parse data" in msg and "facebook.com" in task.url.lower())
                 )
                 if (
                     _is_photo_error
@@ -668,7 +772,11 @@ class DownloadManager:
                 # yt-dlp re-checks at download time and gets a stale response.
                 # Allow retries, but cap at 3 consecutive hits: after that the
                 # stream has genuinely ended and further retries only cause 429s.
-                _is_not_live_err = "not currently live" in msg or "channel is not currently live" in msg
+                _is_not_live_err = (
+                    _err_key == "err.not_currently_live"
+                    or "not currently live" in msg
+                    or "channel is not currently live" in msg
+                )
                 if _is_not_live_err and _is_live_task:
                     if getattr(task.media_info, "source_engine", "") == "instagram_live":
                         # InstagramLiveEngine already spent the full CDP window
@@ -701,7 +809,7 @@ class DownloadManager:
                         break
                     continue  # transient TikTok API race — retry
                 _consecutive_not_live = 0
-                if any(k in msg for k in self._HARD_ERROR_KEYWORDS):
+                if _err_key in self._HARD_ERROR_KEYS or any(k in msg for k in self._HARD_ERROR_KEYWORDS):
                     logger.warning("Hard error for task %s (no retry): %s", task.id, exc)
                     last_exc = exc
                     break

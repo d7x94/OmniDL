@@ -300,7 +300,7 @@ class HistoryTab(QWidget):
             open_btn.setStyleSheet(f"background: {T.success_bg}; color: {T.success}; {_btn_ss}")
             open_btn.setToolTip(t("history.folder_tip"))
             open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_btn.clicked.connect(lambda _=False, f=fname: self._open_file(f))
+            open_btn.clicked.connect(lambda _=False, tid=task_id: self._open_file(tid))
             bot.addWidget(open_btn)
 
             if not Path(fname).is_dir():
@@ -323,8 +323,30 @@ class HistoryTab(QWidget):
         card_layout.addLayout(bot)
         return card
 
-    def _open_file(self, path_str: str) -> None:
-        p = Path(path_str).resolve()
+    def _entry_path(self, task_id: str) -> Path | None:
+        """Current on-disk path of *task_id*, or None if the entry has no file.
+
+        Resolved at click time rather than captured when the card was built —
+        _rename_entry() rewrites entry["filename"] in place, and a lambda
+        holding the old name would send Folder to a path that no longer exists.
+        A relative filename is joined onto output_dir; Path.resolve() alone
+        would anchor it to the process CWD.
+        """
+        entry = next((e for e in self._entries if e.get("id") == task_id), None)
+        raw = (entry or {}).get("filename") or ""
+        if not raw:
+            return None
+        p = Path(raw)
+        if not p.is_absolute():
+            out_dir = entry.get("output_dir") or ""
+            if out_dir:
+                p = Path(out_dir) / p
+        return p.resolve()
+
+    def _open_file(self, task_id: str) -> None:
+        p = self._entry_path(task_id)
+        if p is None:
+            return
         if p.is_file():
             if not reveal_in_explorer(p):
                 open_folder(p.parent)
@@ -344,6 +366,10 @@ class HistoryTab(QWidget):
         self._rendered -= before - len(self._entries)
         card.setParent(None)
         card.deleteLater()
+        if not self._entries:
+            # Nothing left to show — re-render so the "no history" / "no
+            # results" placeholder appears instead of an empty scroll area.
+            self.refresh()
 
     def _rename_entry(self, task_id: str, card: QFrame) -> None:
         entry = next((e for e in self._entries if e.get("id") == task_id), None)

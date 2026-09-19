@@ -250,7 +250,7 @@ class ToolsPanel(_BasePanel):
         ehl.addStretch()
         self._extra_entry = QLineEdit()
         self._extra_entry.setFixedSize(260, 32)
-        self._extra_entry.setPlaceholderText("e.g. --no-playlist")
+        self._extra_entry.setPlaceholderText(t("settings.tools.extra_args_placeholder"))
         self._extra_entry.setText(cfg.extra_args)
         self._extra_entry.editingFinished.connect(
             lambda: cfg.set("extra_args", self._extra_entry.text().strip())

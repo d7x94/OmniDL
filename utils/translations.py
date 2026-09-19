@@ -15,7 +15,7 @@ VI: dict[str, str] = {
     "nav.batch": "Hàng loạt",
     "nav.live_monitor": "Trực tiếp",
     "nav.convert": "Chuyển đổi",
-    "nav.editor": "Editor",
+    "nav.editor": "Chỉnh sửa",
     "nav.archive": "Nén/Giải nén",
     "nav.history": "Lịch sử",
     "nav.settings": "Cài đặt",
@@ -106,7 +106,7 @@ VI: dict[str, str] = {
     "history.empty_no_history": "Chưa có lịch sử tải xuống",
     "history.redownload": "Tải lại",
     "history.redownload_tip": "Tải xuống lại",
-    "history.copy_url": "Copy URL",
+    "history.copy_url": "Sao chép URL",
     "history.copy_url_tip": "Sao chép URL",
     "history.folder": "Thư mục",
     "history.folder_tip": "Mở thư mục chứa file",
@@ -139,6 +139,11 @@ VI: dict[str, str] = {
     "special.open_folder": "Mở thư mục",
     "special.view": "Xem",
     "special.error.paste_url": "Hãy dán URL vào ô trên.",
+    "special.error.not_story_url": (
+        "Link này không phải Facebook Story.\n"
+        "Story có dạng facebook.com/stories/... — link fb.watch hoặc video thường "
+        "hãy tải ở tab Tải xuống."
+    ),
     "special.downloaded": "Đã tải: {name}",
     "special.no_result": "Không có kết quả.",
     "special.error_prefix": "Lỗi: {msg}",
@@ -240,18 +245,22 @@ VI: dict[str, str] = {
     "batch.sequential_done_status": "✓  Hoàn tất tải tuần tự",
     "batch.playlist_label_default": "danh sách phát",
     "batch.playlist_loaded": "Đã tải {count} video từ {label} vào Batch.",
+    "batch.queue_all_failed": "Không thêm được video nào vào queue ({count} lỗi)",
+    "batch.cancel_analyse": "Dừng phân tích",
+    "batch.analyse_stopped": "Đã dừng phân tích",
+    "batch.analysing_progress": "Đang phân tích {done}/{total}…",
     # ── Editor tab ────────────────────────────────────────────────────────
-    "editor.empty": "Chưa có video. Mở file hoặc nhấn 'Chỉnh sửa' từ lịch sử tải xuống.",
+    "editor.empty": "Chưa có video. Mở file hoặc nhấn 'Chỉnh sửa' từ tab Hàng đợi.",
     "editor.hide_panel": "⊡ Ẩn bảng",
     "editor.show_panel": "⊞ Hiện bảng",
     "editor.open_file": "📂  Mở file",
     "editor.close_file": "✕  Đóng file",
     "editor.close_file_tip": "Đóng file hiện tại",
-    "editor.set_in": "[ Set In",
-    "editor.set_out": "Set Out ]",
-    "editor.in_label": "In: {time}",
-    "editor.out_label": "Out: {time}",
-    "editor.out_placeholder": "Out: --:--",
+    "editor.set_in": "[ Đặt điểm vào",
+    "editor.set_out": "Đặt điểm ra ]",
+    "editor.in_label": "Điểm vào: {time}",
+    "editor.out_label": "Điểm ra: {time}",
+    "editor.out_placeholder": "Điểm ra: --:--",
     "editor.rotate_label": "Xoay:",
     "editor.rotate.none": "Không xoay",
     "editor.rotate.cw90": "90° thuận chiều kim đồng hồ",
@@ -284,8 +293,8 @@ VI: dict[str, str] = {
     "editor.saturation": "Bão hòa:",
     "editor.hue": "Màu (hue):",
     "editor.blur": "Mờ (blur):",
-    "editor.fade_in": "Fade in:",
-    "editor.fade_out": "Fade out:",
+    "editor.fade_in": "Mờ dần vào:",
+    "editor.fade_out": "Mờ dần ra:",
     "editor.creating_preview_btn": "⏳ Đang tạo...",
     "editor.creating_preview_status": "Đang tạo xem thử...",
     "editor.back_to_original": "← Gốc",
@@ -322,7 +331,7 @@ VI: dict[str, str] = {
         "Profile watcher cần cookie file Instagram.\nCấu hình trong Settings → Network → Cookie file."
     ),
     "live.watching_toast": "Đang theo dõi {label} — sẽ tự ghi khi live bắt đầu.",
-    "live.profile_watch_suffix": "(profile watch)",
+    "live.profile_watch_suffix": "(theo dõi profile)",
     "live.paused_status": "Đã tạm ngưng",
     "live.rate_limited": "Rate limited — thử lại sau {wait}s",
     "live.fail_hint": "  (lỗi {failed}/{max})",
@@ -367,11 +376,16 @@ VI: dict[str, str] = {
     "convert.card.reading": "Đang đọc…",
     "convert.card.reading_info": "Đang đọc thông tin…",
     "convert.clear_done": "Xóa xong/lỗi",
+    "convert.select_all": "Chọn tất cả",
+    "convert.select_all_tip": "Chọn / bỏ chọn mọi file đang chờ.",
+    "convert.select_file_tip": "Chọn file này để chuyển đổi.",
+    "convert.parallel_label": "Chạy song song:",
+    "convert.parallel_tip": "Số file được chuyển đổi cùng lúc (1-8). Càng cao càng nhanh nhưng tốn CPU hơn.",
     "convert.settings_toggle_up": "⚙ Thông số  ▲",
     "convert.settings_toggle_down": "⚙ Thông số  ▼",
     "convert.quality_label": "Chất lượng",
     "convert.custom_value_label": "Gia tri (16-35):",
-    "convert.encoder_label": "Encoder",
+    "convert.encoder_label": "Bộ mã hoá",
     "convert.speed_label": "Tốc độ",
     "convert.codec_label": "Codec",
     "convert.subtitle_label": "Phụ đề",
@@ -456,9 +470,9 @@ VI: dict[str, str] = {
     ),
     "settings.taildrop.devices_found": "✅  Tìm thấy {count} thiết bị. Tích chọn máy muốn gửi.",
     # ── Settings: Tools panel ────────────────────────────────────────────
-    "settings.tools.section.ytdlp": "YT-DLP ENGINE",
-    "settings.tools.section.gallery_dl": "GALLERY-DL ENGINE",
-    "settings.tools.section.data_privacy": "DATA & PRIVACY",
+    "settings.tools.section.ytdlp": "ENGINE YT-DLP",
+    "settings.tools.section.gallery_dl": "ENGINE GALLERY-DL",
+    "settings.tools.section.data_privacy": "DỮ LIỆU & QUYỀN RIÊNG TƯ",
     "settings.tools.version_label": "Phiên bản",
     "settings.tools.update_ytdlp_btn": "Cập nhật yt-dlp",
     "settings.tools.checking_updates": "Đang kiểm tra cập nhật…",
@@ -471,6 +485,7 @@ VI: dict[str, str] = {
     "settings.tools.keyring_not_installed": "⚠ Chưa cài — cần cho Brave/Chrome 127+",
     "settings.tools.keyring_warning": "⚠  Cần thiết nếu Brave/Chrome báo lỗi DPAPI khi lấy cookies.",
     "settings.tools.extra_args_label": "Tham số thêm",
+    "settings.tools.extra_args_placeholder": "ví dụ: --no-playlist",
     "settings.tools.gallery_update_btn": "Cập nhật gallery-dl",
     "settings.tools.clear_data_desc": (
         "Xóa toàn bộ dữ liệu ứng dụng: lịch sử tải, thiết lập cấu hình\n"
@@ -503,8 +518,8 @@ VI: dict[str, str] = {
     "settings.tools.data_cleared_toast": "Đã xóa toàn bộ dữ liệu. Khởi động lại app để áp dụng đầy đủ.",
     "settings.tools.clear_failed_toast": "Xóa dữ liệu thất bại: {msg}",
     # ── Settings: Remote API panel ───────────────────────────────────────
-    "settings.api.section.remote": "REMOTE API",
-    "settings.api.section.tailscale": "TAILSCALE HTTPS PROFILE",
+    "settings.api.section.remote": "API TỪ XA",
+    "settings.api.section.tailscale": "HỒ SƠ HTTPS TAILSCALE",
     "settings.api.description": (
         "Bật để điều khiển OmniDL từ xa qua mạng LAN (iPhone, Android).\n"
         "Server chạy trong luồng riêng, không ảnh hưởng download hiện tại.\n"
@@ -512,7 +527,7 @@ VI: dict[str, str] = {
     ),
     "settings.api.enable": "Bật Remote API",
     "settings.api.token_header": "🔑  Bearer Token",
-    "settings.api.copy_btn": "📋 Copy",
+    "settings.api.copy_btn": "📋 Sao chép",
     "settings.api.rotate_btn": "🔄  Tạo token mới",
     "settings.api.ts_description": (
         "Truy cập Remote API qua HTTPS trên mạng Tailscale.\n"
@@ -520,7 +535,7 @@ VI: dict[str, str] = {
         "Yêu cầu: Tailscale đã cài và đang nhập trên máy này."
     ),
     "settings.api.ts_enable": "Bật Tailscale HTTPS Profile",
-    "settings.api.reset_profile_btn": "Reset Profile",
+    "settings.api.reset_profile_btn": "Đặt lại hồ sơ",
     "settings.api.no_token": "(chưa có token — bật API để tạo tự động)",
     "settings.api.running": "🟢  Đang chạy  —  http://<IP LAN>:{port}",
     "settings.api.enabled_not_started": "⚠️  Đã bật nhưng chưa khởi động (thiếu fastapi/uvicorn?)",
@@ -574,7 +589,7 @@ VI: dict[str, str] = {
     "settings.api.reset_success": "Profile đã reset. Token mới đã tạo - cập nhật trên thiết bị.",
     "settings.api.reset_error": "Lỗi reset Profile: {err}",
     # ── Settings: Network panel ──────────────────────────────────────────
-    "settings.network.section.auth": "NETWORK & AUTHENTICATION",
+    "settings.network.section.auth": "MẠNG & XÁC THỰC",
     "settings.network.proxy_label": "Proxy URL",
     "settings.network.browser_label": "Trình duyệt nguồn",
     "settings.network.use_cookies_label": "Dùng cookies",
@@ -594,9 +609,9 @@ VI: dict[str, str] = {
         "⚠  File này chứa toàn bộ cookies của trình duyệt (Google, email, banking...).\n"
         "   Ưu tiên dùng bảng Per-Platform bên dưới để bảo mật hơn."
     ),
-    "settings.network.browse_btn": "Browse…",
-    "settings.network.clear_btn": "🗑 Clear",
-    "settings.network.section.per_platform": "PER-PLATFORM COOKIES",
+    "settings.network.browse_btn": "Duyệt…",
+    "settings.network.clear_btn": "🗑 Xoá",
+    "settings.network.section.per_platform": "COOKIE THEO NỀN TẢNG",
     "settings.network.recommended_badge": "KHUYẾN NGHỊ",
     "settings.network.per_platform_desc": (
         "✅ Ưu tiên dùng bảng này — mỗi file chỉ chứa cookies của đúng nền tảng đó.\n"
@@ -613,8 +628,8 @@ VI: dict[str, str] = {
     "settings.network.extract_footer_hint": (
         "🔄 = yt-dlp (Firefox/Opera).  🦁 = CDP (Brave/Chrome 127+, không cần đóng trình duyệt)."
     ),
-    "settings.network.section.tiktok_accounts": "TIKTOK ACCOUNTS",
-    "settings.network.pool_badge": "POOL",
+    "settings.network.section.tiktok_accounts": "TÀI KHOẢN TIKTOK",
+    "settings.network.pool_badge": "KHO",
     "settings.network.tiktok_desc": (
         "Mỗi account được gán tối đa N slot tải đồng thời.\n"
         "Khi pool trống, app dùng 'Per-Platform TikTok cookie' ở trên."
@@ -622,13 +637,13 @@ VI: dict[str, str] = {
     "settings.network.no_accounts": "Chưa có account nào. Nhấn '+ Thêm account' để thêm.",
     "settings.network.add_account_btn": "+ Thêm account",
     "settings.network.name_label": "Tên:",
-    "settings.network.name_placeholder": "Account 1",
+    "settings.network.name_placeholder": "Tài khoản 1",
     "settings.network.no_cookie_chosen": "Chưa chọn cookie",
     "settings.network.save_btn": "Lưu",
     "settings.network.slots_tip": "So download toi da cung luc cho account nay",
-    "settings.network.resume_btn": "Resume",
-    "settings.network.pause_btn": "Pause",
-    "settings.network.default_account_name": "Account",
+    "settings.network.resume_btn": "Tiếp tục",
+    "settings.network.pause_btn": "Tạm dừng",
+    "settings.network.default_account_name": "Tài khoản",
     "settings.network.select_tiktok_cookie_title": "Chọn cookie file TikTok (Netscape format)",
     "settings.network.not_netscape_format": "File khong phai dinh dang Netscape cookie.",
     "settings.network.copy_failed": "Khong the sao chep file: {err}",
@@ -640,6 +655,50 @@ VI: dict[str, str] = {
     "settings.network.extract_failed": "That bai: {err}",
     "settings.network.got_tiktok_cookies": "Da lay {count} cookies TikTok.",
     "settings.network.account_added": "Da them account '{name}'.",
+    "settings.network.profile_label": "Hồ sơ:",
+    "settings.network.profile_default": "Mặc định",
+    "settings.network.profile_tip": (
+        "Mỗi hồ sơ trình duyệt giữ một phiên đăng nhập riêng.\n"
+        "Đăng nhập mỗi tài khoản TikTok vào một hồ sơ khác nhau, rồi thêm từng hồ sơ vào đây."
+    ),
+    "settings.network.slots_label": "Slot:",
+    "settings.network.source_manual": "File thủ công",
+    "settings.network.cookie_ready": "Đã sẵn sàng — {count} cookie, đã đăng nhập.",
+    "settings.network.reject_missing": "Không tìm thấy file cookie vừa lấy.",
+    "settings.network.reject_unreadable": "Không đọc được file cookie.",
+    "settings.network.reject_not_logged_in": (
+        "Hồ sơ này chưa đăng nhập TikTok. Hãy đăng nhập trên đúng hồ sơ đó rồi bấm lấy lại."
+    ),
+    "settings.network.reject_expired": (
+        "Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại trên trình duyệt rồi lấy lại cookie."
+    ),
+    "settings.network.duplicate_account": (
+        "Đúng tài khoản TikTok này đã có trong pool ('{name}'). Hãy chọn hồ sơ trình duyệt khác."
+    ),
+    "settings.network.name_in_use": "Tên '{name}' đã được dùng.",
+    "settings.network.rename_tip": "Bấm để đổi tên account",
+    "settings.network.refresh_btn": "↻",
+    "settings.network.refresh_tip": "Lấy lại cookie cho account này (dùng đúng trình duyệt/hồ sơ đã lưu)",
+    "settings.network.refresh_no_source": (
+        "Account này được thêm bằng file thủ công — hãy xóa rồi thêm lại bằng file mới."
+    ),
+    "settings.network.refreshing": "Đang làm mới cookie cho '{name}'...",
+    "settings.network.account_refreshed": "Đã làm mới cookie cho '{name}'.",
+    "settings.network.status_ok": "Hoạt động — còn khoảng {days} ngày",
+    "settings.network.status_ok_session": "Hoạt động",
+    "settings.network.status_paused": "Đang tạm dừng",
+    "settings.network.status_missing": "Thiếu file cookie",
+    "settings.network.status_unreadable": "Không đọc được cookie",
+    "settings.network.status_not_logged_in": "Cookie chưa đăng nhập TikTok",
+    "settings.network.status_expired": "Cookie đã hết hạn — bấm ↻ để lấy lại",
+    "settings.network.pool_hint": (
+        "Mẹo: mỗi tài khoản TikTok = một hồ sơ trình duyệt riêng. "
+        "Tạo hồ sơ mới trong Brave/Chrome/Edge, đăng nhập tài khoản thứ hai ở đó, "
+        "rồi quay lại đây chọn đúng hồ sơ — không cần đăng xuất tài khoản nào."
+    ),
+    "settings.network.account_rejected": (
+        "Khong the them account — file cookie phai nam trong thu muc cookies cua ung dung."
+    ),
     "settings.network.proxy_invalid": (
         "Proxy không hợp lệ — phải bắt đầu bằng http://, https://, socks4://, hoặc socks5://"
     ),
@@ -776,7 +835,7 @@ VI: dict[str, str] = {
     "pda.delete_failed": "Không xoá được: {err}",
     "pda.target_format": "Chọn định dạng đích:",
     "pda.fmt.custom": "Tuỳ chỉnh (chất lượng + encoder)...",
-    "pda.encoder": "Encoder:",
+    "pda.encoder": "Bộ mã hoá:",
     "pda.quality": "Chất lượng:",
     "pda.crf": "CRF:",
     "pda.speed": "Tốc độ:",
@@ -827,6 +886,513 @@ VI: dict[str, str] = {
     "subs.err.incomplete_download": "Tải model không đầy đủ ({got}/{total} bytes)",
     "subs.err.failed": "Tạo phụ đề thất bại: {err}",
     "subs.err.no_speech": "Không nhận diện được lời nói nào trong video.",
+    # ── Engine / service messages ─────────────────────────────────────────
+    # Errors and progress text raised outside the UI layer (download engines,
+    # cookie extraction, live checkers).  Retry logic keys off the catalogue
+    # KEY, never this text — see yt_dlp_engine._error_key().
+    "err.private": "Nội dung ở chế độ riêng tư. Hãy bật cookie trong Cài đặt.",
+    "err.not_found": "Không tìm thấy URL hoặc nội dung đã bị xóa.",
+    "err.unsupported_platform": "yt-dlp chưa hỗ trợ nền tảng này.",
+    "err.live_not_started": "Livestream chưa bắt đầu.",
+    "err.not_currently_live": "Kênh hiện không phát trực tiếp.",
+    "err.live_ended": "Livestream đã kết thúc.",
+    "err.ig_photo_only": (
+        "Bài đăng này chỉ có ảnh, không có video.\n"
+        "OmniDL sẽ thử tải ảnh với format='best'.\n"
+        "Nếu vẫn lỗi, hãy đảm bảo đang dùng cookie Instagram (không phải Facebook) và yt-dlp phiên bản mới "
+        "nhất."
+    ),
+    "err.ytdlp_internal": (
+        "yt-dlp gặp lỗi nội bộ khi phân tích URL này.\n"
+        "Hãy cập nhật yt-dlp lên phiên bản mới nhất:\n"
+        "Settings → Cập nhật yt-dlp, hoặc chạy: pip install -U yt-dlp"
+    ),
+    "err.ig_checkpoint": (
+        "Instagram yêu cầu xác minh tài khoản.\n"
+        "1. Mở Instagram trên trình duyệt, hoàn tất xác minh.\n"
+        "2. Export cookies mới (dùng tiện ích 'Get cookies.txt LOCALLY').\n"
+        "3. Cập nhật cookie file trong Settings → Network → Cookie file.\n"
+        "Lưu ý: Cookie Instagram thường hết hạn sau 1–2 tuần."
+    ),
+    "err.rate_limit": (
+        "Đã chạm giới hạn tần suất — quá nhiều yêu cầu trong thời gian ngắn.\n"
+        "Chờ 5–10 phút rồi thử lại. Bật cookie trình duyệt trong Cài đặt có thể giúp ích."
+    ),
+    "err.tls_fingerprint": (
+        "Lỗi kết nối TLS — máy chủ từ chối TLS fingerprint mặc định.\n"
+        "OmniDL dùng curl_cffi (giả lập Chrome) để vượt qua lỗi này.\n"
+        "Nếu lỗi vẫn xảy ra:\n"
+        "  1. Kiểm tra antivirus/proxy không chặn HTTPS\n"
+        "  2. Thử bật proxy trong Settings → Network → Proxy URL\n"
+        "  3. Chạy: pip install -U curl-cffi"
+    ),
+    "err.fb_unavailable": (
+        "Nội dung Facebook này không khả dụng. Có thể cần đăng nhập hoặc bị giới hạn theo khu vực."
+    ),
+    "err.geo_restricted": (
+        "Nội dung này bị giới hạn theo khu vực và không khả dụng ở vùng của bạn.\n"
+        "Thử bật VPN hoặc proxy trong Settings → Network → Proxy URL."
+    ),
+    "err.ffmpeg_livestream": (
+        "Không thể ghi livestream — ffmpeg báo lỗi.\n"
+        "Nguyên nhân thường gặp:\n"
+        "  • Link livestream đã hết hạn (URL TikTok expire sau ~1–2 phút)\n"
+        "    → Sao chép lại link và thử tải ngay lập tức\n"
+        "  • Livestream đã kết thúc hoặc bị tạm dừng\n"
+        "  • Kết nối mạng không ổn định trong quá trình ghi\n"
+        "Nếu lỗi vẫn xảy ra: thử tải lại link hoặc đợi livestream ổn định."
+    ),
+    "err.ip_blocked": (
+        "IP của bạn bị TikTok/nền tảng chặn truy cập bài đăng này.\n"
+        "Nguyên nhân thường gặp:\n"
+        "  • IP bị đưa vào danh sách đen do quá nhiều request (rate-limit tạm thời)\n"
+        "  • ISP/VPS/datacenter IP bị chặn theo chính sách địa lý\n"
+        "Giải pháp:\n"
+        "  1. Bật proxy/VPN trong Settings → Network → Proxy URL\n"
+        "     (ví dụ: socks5://127.0.0.1:1080 nếu dùng local proxy)\n"
+        "  2. Chờ 5–15 phút rồi thử lại (nếu là rate-limit tạm thời)\n"
+        "  3. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
+    ),
+    "err.tiktok_login_required": (
+        "TikTok yêu cầu đăng nhập để tải video này.\n"
+        "Cookie pool có thể đã hết hạn hoặc dùng tài khoản khác.\n"
+        "Giải pháp: Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
+    ),
+    "err.copyright": "Nội dung này bị chặn do khiếu nại bản quyền.",
+    "err.blocked": (
+        "Nội dung này bị chặn hoặc truy cập bị từ chối.\n"
+        "Thử bật VPN hoặc proxy trong Settings → Network → Proxy URL."
+    ),
+    "err.account_suspended": "Tài khoản đăng nội dung này đã bị đình chỉ.",
+    "err.members_only": (
+        "Nội dung này chỉ dành cho thành viên/người đăng ký.\n"
+        "Hãy chắc chắn bạn đã đăng nhập bằng cookie trong Cài đặt."
+    ),
+    "err.tiktok_10231": (
+        "TikTok API từ chối request (status 10231) dù video vẫn xem được.\n"
+        "Thử:\n"
+        "  1. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok\n"
+        "  2. Bật proxy/VPN trong Settings → Network → Proxy URL"
+    ),
+    "err.video_deleted": (
+        "Video này không còn tồn tại hoặc đã bị xóa.\n"
+        "Kiểm tra lại URL — nếu link rút gọn (vt.tiktok.com), thử mở trong trình duyệt để lấy link đầy đủ."
+    ),
+    "err.threads_unsupported": (
+        "Threads posts chưa được yt-dlp hỗ trợ.\n"
+        "\n"
+        "Cách tải video Threads:\n"
+        "• Mở post trong trình duyệt → nhấn ... → Lưu\n"
+        "• Hoặc dùng tiện ích 'Video Downloader' trên trình duyệt."
+    ),
+    "err.ig_stories_cookies": (
+        "Instagram Stories cần cookie đăng nhập.\n"
+        "Hãy thiết lập cookie file trong Settings → Network → Cookie file."
+    ),
+    "err.ig_live_cookies": (
+        "Instagram Live cần cookie đăng nhập.\n"
+        "Hãy thiết lập cookie file trong Settings → Network → Cookie file."
+    ),
+    "err.fb_live_cookies": (
+        "Facebook Live cần cookie.\n"
+        "Hãy thiết lập cookie file trong Settings → Network → Cookie file."
+    ),
+    "err.fb_stories_manual": (
+        "Facebook Stories không thể tải tự động.\n"
+        "\n"
+        "Cách tải Story Facebook:\n"
+        "• Mở Story trong trình duyệt → nhấn ... → Lưu video\n"
+        "• Hoặc dùng tiện ích 'Video Downloader' trên trình duyệt."
+    ),
+    "err.ig_cookie_expired": "Cookie Instagram hết hạn — làm mới cookie trong Cài đặt.",
+    "err.playlist_failed": "Không thể lấy danh sách từ URL này: {err}",
+    "err.no_data": "Không nhận được dữ liệu từ URL. Kiểm tra lại URL hoặc thêm cookie file trong Cài đặt.",
+    "err.playlist_empty": (
+        "Playlist/profile không có video nào khả dụng.\n"
+        "Có thể tài khoản private hoặc cần cookie file."
+    ),
+    "err.ffmpeg_not_found": "Không tìm thấy FFmpeg. Kiểm tra cài đặt FFmpeg.",
+    "err.ffmpeg_stall": "FFmpeg stall watchdog: không có dữ liệu trong 120 giây — stream có thể đã kết thúc.",
+    "err.no_error_detail": "Không có thông tin lỗi.",
+    "err.hls_stall": (
+        "Stall watchdog: curl_cffi HLS không có segment mới trong {seconds}s — stream có thể đã kết thúc."
+    ),
+    "err.livestream_ended_relink": (
+        "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\n"
+        "Thêm lại link để theo dõi lần phát tiếp theo."
+    ),
+    "err.tiktok_audio_only": (
+        "Video này chỉ có âm thanh — không có video track.\n"
+        "TikTok product/showcase và \"template effect\" / AR effect videos không cung cấp video track qua API"
+        " "
+        "(chỉ expose audio stream).\n"
+        "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
+    ),
+    "err.tiktok_ec_blocked": (
+        "Video này không thể tải — TikTok chặn hoàn toàn URL video.\n"
+        "Đây là video E-Commerce/sản phẩm (isECVideo=1): TikTok không cung cấp video URL cho bất kỳ API "
+        "client nào.\n"
+        "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
+    ),
+    "err.no_username_from_url": "Không thể lấy username từ URL.",
+    "err.no_username_from_tiktok_url": "Không thể lấy username từ URL TikTok.",
+    "err.invalid_url_scheme": "URL không hợp lệ — phải bắt đầu bằng http:// hoặc https://",
+    "err.monitor_limit": "Đã đạt giới hạn {count} URL.",
+    "err.already_monitored": "URL này đang được theo dõi.",
+    "err.profile_watch_needs_ig_cookie": (
+        "Profile watcher cần cookie file Instagram. Cấu hình trong Settings → Network → Cookie file."
+    ),
+    "err.check_stuck": "Kiểm tra bị treo. Thử lại hoặc kiểm tra kết nối mạng.",
+    "err.attempts_failed": "Đã thử {count} lần thất bại. Lỗi cuối: {err}",
+    "err.download_failed": "Tải xuống thất bại",
+    "err.network": "Lỗi kết nối mạng: {err}",
+    "err.http": "Lỗi HTTP: {err}",
+    "err.cookie_unreadable": "Không đọc được cookie file: {err}",
+    "err.ig_cookie_required": (
+        "Cần cookie file Instagram để kiểm tra live status.\n"
+        "Cấu hình trong Settings → Network → Cookie file."
+    ),
+    "err.ig_cookie_no_sessionid": (
+        "Cookie file không có sessionid Instagram.\n"
+        "Export lại cookie file sau khi đăng nhập Instagram."
+    ),
+    "err.ig_cookie_invalid": (
+        "Cookie Instagram đã hết hạn hoặc không hợp lệ.\n"
+        "Refresh cookie file trong Settings → Network."
+    ),
+    "err.ig_account_not_found": "Tài khoản @{username} không tìm thấy.",
+    "err.ig_rate_limited": "Rate limit — Instagram đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại.",
+    "err.ig_forbidden": "Truy cập bị từ chối (403). Cookie có thể đã hết hạn.",
+    "err.ig_api_timeout": "Instagram API hết thời gian chờ. Thử lại sau.",
+    "err.ig_bad_response": "Instagram trả về phản hồi không hợp lệ. Thử lại sau hoặc kiểm tra cookie file.",
+    "err.tiktok_api_timeout": "TikTok API hết thời gian chờ. Thử lại sau.",
+    "err.no_username_from_facebook_url": "Không thể lấy username từ URL Facebook.",
+    "err.profile_watch_needs_fb_cookie": (
+        "Theo dõi trang Facebook cần cookie file Facebook. Cấu hình trong Settings → Network → Cookie file."
+    ),
+    "err.fb_cookie_required": (
+        "Cần cookie file Facebook để kiểm tra live status.\n"
+        "Cấu hình trong Settings → Network → Cookie file."
+    ),
+    "err.fb_cookie_no_session": (
+        "Cookie file không có phiên đăng nhập Facebook (thiếu c_user/xs).\n"
+        "Export lại cookie file sau khi đăng nhập Facebook."
+    ),
+    "err.fb_cookie_invalid": (
+        "Cookie Facebook đã hết hạn hoặc không hợp lệ.\n"
+        "Refresh cookie file trong Settings → Network."
+    ),
+    "err.fb_page_not_found": "Không tìm thấy trang Facebook {username}.",
+    "err.fb_rate_limited": "Rate limit — Facebook đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại.",
+    "err.fb_api_timeout": "Facebook hết thời gian chờ. Thử lại sau.",
+    "progress.recorded": "⏺ {size} đã ghi",
+    "cookie.err.app_bound_encryption": (
+        "Brave/Chrome 127+ dùng App-Bound Encryption — không thể đọc cookie\n"
+        "từ bên ngoài. Đây là giới hạn bảo mật của Windows/Chrome, không phải lỗi.\n"
+        "\n"
+        "✅ Cách nhanh nhất: Dùng Firefox\n"
+        "   1. Mở Firefox, đăng nhập TikTok/Instagram/...\n"
+        "   2. Đổi dropdown → firefox → bấm 🔄\n"
+        "\n"
+        "📁 Hoặc export thủ công từ Brave:\n"
+        "   Cài tiện ích Cookie-Editor → Export → Netscape format\n"
+        "   → Settings → Browse… → chọn file .txt vừa export"
+    ),
+    "cookie.err.brave_locked": (
+        "Brave đang mở — database cookie bị khóa.\n"
+        "⚠ Hãy đóng hoàn toàn Brave (kể cả background process trong System Tray)\n"
+        "rồi bấm 🔄 lại. Sau khi lấy xong cookies có thể mở Brave lại."
+    ),
+    "cookie.err.db_missing_detected": (
+        "Không tìm thấy database cookie của '{browser}'.\n"
+        "⚠ Hãy chọn đúng trình duyệt bạn đang dùng trong dropdown\n"
+        "'Cookie source browser' rồi bấm 🔄 lại."
+    ),
+    "cookie.err.db_missing": (
+        "Không tìm thấy database cookie của trình duyệt đã chọn.\n"
+        "⚠ Hãy chọn đúng trình duyệt bạn đang dùng trong dropdown\n"
+        "'Cookie source browser' rồi bấm 🔄 lại."
+    ),
+    "cookie.err.db_locked": (
+        "Không thể đọc cookies — trình duyệt đang mở và khóa database.\n"
+        "Hãy đóng hoàn toàn trình duyệt (kể cả background process) rồi thử lại."
+    ),
+    "cookie.err.decrypt_failed": (
+        "Không thể giải mã cookies từ trình duyệt.\n"
+        "Thử chạy OmniDL với quyền Administrator, hoặc chọn trình duyệt khác."
+    ),
+    "cookie.err.profile_missing": (
+        "Không tìm thấy profile của trình duyệt đã chọn.\n"
+        "⚠ Kiểm tra lại dropdown 'Cookie source browser' — chọn đúng trình duyệt\n"
+        "bạn đang dùng (ví dụ: Brave ≠ Chrome)."
+    ),
+    "cookie.err.permission_denied": (
+        "Bị từ chối truy cập file cookie của trình duyệt.\n"
+        "Thử chạy OmniDL với quyền Administrator."
+    ),
+    "cookie.err.browser_unsupported": (
+        "Trình duyệt này chưa được yt-dlp hỗ trợ.\n"
+        "Hãy thử Chrome, Firefox hoặc Edge."
+    ),
+    "cookie.err.cdp_no_connection": (
+        "Không kết nối được vào trình duyệt.\n"
+        "Thử lại — lần đầu có thể cần vài giây để khởi động."
+    ),
+    "cookie.err.cdp_websocket": (
+        "Lỗi kết nối WebSocket với trình duyệt.\n"
+        "Hãy thử lại hoặc khởi động lại OmniDL."
+    ),
+    "cookie.err.cdp_no_cookies": (
+        "Không nhận được cookies từ trình duyệt. Hãy đăng nhập vào các trang rồi thử lại."
+    ),
+    "cookie.err.read_failed": (
+        "Không thể đọc cookies — trình duyệt có thể chưa đăng nhập hoặc cơ sở dữ liệu bị khóa. Hãy thử đóng "
+        "trình duyệt hoàn toàn."
+    ),
+    "cookie.err.browser_empty": (
+        "Trình duyệt không có cookie nào. Hãy đăng nhập vào các trang bạn muốn tải trước."
+    ),
+    "cookie.err.platform_empty": (
+        "Không tìm thấy cookie nào cho {platform} trong trình duyệt.\n"
+        "Hãy đảm bảo đã đăng nhập vào {platform} trên trình duyệt đó."
+    ),
+    "cookie.err.platform_empty_browser": (
+        "Không tìm thấy cookie {platform} trong {browser}.\n"
+        "Hãy đảm bảo đã đăng nhập {platform} trên {browser}."
+    ),
+    "cookie.err.cdp_windows_only": (
+        "Chế độ CDP (🦁) hiện chỉ hỗ trợ Windows.\n"
+        "Trên macOS/Linux hãy dùng nút 🔄 (yt-dlp) hoặc chọn file cookie thủ công."
+    ),
+    "cookie.err.browser_not_installed": (
+        "Không tìm thấy {browser} trên máy.\n"
+        "Kiểm tra Brave/Chrome đã cài đặt chưa."
+    ),
+    "cookie.err.cdp_zero_cookies": (
+        "Trình duyệt trả về 0 cookies.\n"
+        "Hãy đăng nhập vào các trang trước khi lấy cookies."
+    ),
+    "cookie.err.cdp_timeout": (
+        "Không kết nối được vào {browser} sau 20 giây.\n"
+        "Hãy thử lại — lần đầu có thể cần chờ thêm."
+    ),
+    "cookie.err.browser_running": (
+        "{browser} đang chạy — cần đóng tạm để đọc cookies.\n"
+        "\n"
+        "⚠ Hãy đóng hoàn toàn {browser} (kể cả System Tray),\n"
+        "rồi bấm 🦁 lại. Sau khi lấy xong cookies có thể mở lại bình thường.\n"
+        "\n"
+        "Lý do: CDP cần đọc từ profile thật — profile đang bị {browser} giữ lock."
+    ),
+    "cookie.err.profile_dir_missing": (
+        "Không tìm thấy thư mục profile của {browser}.\n"
+        "Kiểm tra Brave/Chrome đã được cài và đăng nhập ít nhất 1 lần."
+    ),
+    "err.gdl_login_required": (
+        "gallery-dl yêu cầu đăng nhập.\n"
+        "Kiểm tra cookie file trong Settings → Network → Cookie file.\n"
+        "Đảm bảo dùng cookie Instagram (không phải Facebook)."
+    ),
+    "err.gdl_rate_limited": (
+        "gallery-dl bị rate limit — Instagram đang chặn tạm thời.\n"
+        "Chờ 5–10 phút rồi thử lại."
+    ),
+    "err.gdl_not_installed_short": "gallery-dl chưa được cài đặt.\nChạy: pip install gallery-dl",
+    "err.gdl_private": "Nội dung này ở chế độ riêng tư —\ncần cookie tài khoản có quyền xem.",
+    "err.gdl_unknown": "gallery-dl thất bại không rõ nguyên nhân.",
+    "err.gdl_not_installed": (
+        "gallery-dl chưa được cài đặt.\n"
+        "Chạy: pip install gallery-dl\n"
+        "Sau đó khởi động lại OmniDL."
+    ),
+    "err.gdl_no_content": (
+        "gallery-dl không tìm thấy nội dung tại URL này.\n"
+        "Kiểm tra URL hoặc thử refresh cookie."
+    ),
+    "err.gdl_timeout": "gallery-dl hết thời gian khi lấy thông tin URL.",
+    "err.gdl_missing_binary": "Không tìm thấy gallery-dl.\nCài đặt: pip install gallery-dl",
+    "gdl.photo_count": "{count} ảnh",
+    "progress.gdl_preparing": "⬇ Đang chuẩn bị tải ảnh…",
+    "progress.gdl_video_audio": "⬇ Đang tải video có âm thanh…",
+    "progress.gdl_downloaded": "⬇ {count} file đã tải",
+    "err.cdn_file_too_small": "File tải về quá nhỏ — CDN link có thể đã hết hạn.",
+    "err.cdn_link_expired": "CDN link đã hết hạn (chữ ký oe= hết hạn). Dán link mới từ trình duyệt.",
+    "err.cdn_forbidden": "CDN link bị từ chối truy cập (403).",
+    "err.ks_strategy_e_platform": (
+        "Kuaishou: phương thức dự phòng cuối cùng (Strategy E) chỉ hỗ trợ Windows và macOS.\n"
+        "\n"
+        "Thử cấu hình cookie Kuaishou trong Settings → Network để kích hoạt các phương thức trích xuất khác."
+    ),
+    "err.ks_all_strategies_failed": (
+        "Kuaishou: tất cả phương thức trích xuất đều thất bại.\n"
+        "\n"
+        "Nguyên nhân có thể:\n"
+        "• Video đã bị xóa hoặc là private\n"
+        "• Kuaishou chặn request từ IP hiện tại\n"
+        "• Cấu trúc trang Kuaishou đã thay đổi\n"
+        "\n"
+        "Thử cấu hình cookie Kuaishou trong Settings → Network để kích hoạt thêm phương thức trích xuất."
+    ),
+    "err.ks_no_video_url": (
+        "Kuaishou: không tìm thấy URL video trong dữ liệu trang.\n"
+        "Video có thể bị giới hạn khu vực hoặc API đã thay đổi."
+    ),
+    "err.ks_bad_file": (
+        "File tải về không hợp lệ (không phải MP4 hoặc quá nhỏ). URL CDN có thể đã hết hạn — thử lại."
+    ),
+    "err.ks_no_photo_id": "Không tách được photo_id từ URL: {url}\nKiểm tra lại URL Kuaishou.",
+    "err.ks_cancelled": "Kuaishou: đã huỷ.",
+    "err.ks_no_browser": (
+        "Kuaishou: không tìm thấy Brave hoặc Chrome trên máy.\n"
+        "\n"
+        "Phương thức dự phòng cuối cùng (Strategy E) cần một trong hai trình duyệt này để mở trang Kuaishou "
+        "và chặn link CDN thật.\n"
+        "\n"
+        "Hãy cài Brave (https://brave.com) hoặc Google Chrome rồi thử lại.\n"
+        "Sau khi cài xong, không cần cấu hình gì thêm — OmniDL tự tìm."
+    ),
+    "err.ks_cdn_http": "Kuaishou CDN trả về HTTP {code}. URL CDN có thể đã hết hạn — thử lại.",
+    "err.ks_cdn_http_after_reextract": (
+        "Kuaishou CDN trả về HTTP {code} sau re-extract. URL CDN có thể đã hết hạn — thử lại."
+    ),
+    "err.ks_cdn_html_after_reextract": (
+        "Kuaishou CDN vẫn trả về HTML sau re-extract — IP bị chặn hoặc video không còn khả dụng."
+    ),
+    "err.ks_cdn_html_no_page_url": (
+        "Kuaishou CDN trả về HTML nhưng không thể xác định page URL để re-extract.\n"
+        "Remote API cần truyền page URL Kuaishou, không phải CDN URL."
+    ),
+    "err.ks_no_page_url": (
+        "Kuaishou: không thể xác định page URL để re-extract.\n"
+        "task.url trông như CDN URL (video_id={video_id}) — Remote API cần truyền page URL, không phải CDN "
+        "URL."
+    ),
+    "err.waaw_cdn_expired": (
+        "Link CDN đã hết hạn hoặc bị khoá theo IP - hãy mở lại trang waaw.ac/f/... để lấy link mới"
+    ),
+    "err.waaw_platform": "waaw.ac engine yêu cầu Windows hoặc macOS.",
+    "err.waaw_platform_linux": "waaw.ac engine yêu cầu Windows hoặc macOS.\nLinux chưa được hỗ trợ.",
+    "err.waaw_file_too_small": "File tải về quá nhỏ (< 10 KB) — CDN có thể đã chặn.",
+    "err.waaw_not_mp4": "File tải về không phải MP4 — CDN URL có thể đã hết hạn.",
+    "err.waaw_hls_no_fallback": "Không tải được HLS stream và không có URL MP4 thay thế.",
+    "err.waaw_hls_failed": "Không tải được HLS stream (ffmpeg: {tail}; fallback MP4: {err})",
+    "err.waaw_captcha_timeout": (
+        "Không giải captcha kịp thời gian.\n"
+        "Thử lại và giải captcha trong cửa sổ trình duyệt vừa mở, hoặc dán link CDN mới lấy từ công cụ khác "
+        "(vd: cf*cdn.com .m3u8)."
+    ),
+    "err.waaw_no_cdn_url": (
+        "Không tìm thấy CDN URL sau {seconds} giây.\n"
+        "waaw.ac có thể đã thay đổi cơ chế bảo vệ."
+    ),
+    "err.generic_error_word": "lỗi",
+    "err.cancelled_by_user": "Đã hủy bởi người dùng.",
+    "err.playwright_missing": "Thiếu thư viện Playwright.\nChạy: pip install playwright",
+    "err.cdp_connect_failed": (
+        "Không kết nối được CDP.\n"
+        "Đóng trình duyệt hoàn toàn rồi thử lại.\n"
+        "(chi tiết: {err})"
+    ),
+    "err.cdp_connect_failed_hard": (
+        "Không kết nối được CDP.\n"
+        "\n"
+        "Đóng HOÀN TOÀN trình duyệt (kể cả System Tray) rồi thử lại.\n"
+        "(chi tiết: {err})"
+    ),
+    "err.browser_not_found_cdp": (
+        "Không tìm thấy {browser}.  Hãy cài đặt trình duyệt trước.\n"
+        "Lưu ý: bản tải từ App Store không hỗ trợ CDP — cần bản từ website chính thức."
+    ),
+    "err.fb_not_story_url": "URL không phải Facebook Story.\nHãy dán URL dạng facebook.com/stories/...",
+    "err.no_download_dir": "Thư mục tải về chưa được thiết lập",
+    "err.fb_story_platform": "Facebook Story chỉ hỗ trợ Windows và macOS.\nLinux chưa được hỗ trợ.",
+    "err.fb_story_browser_running": (
+        "{browser} đang mở. Hãy đóng hẳn {browser} rồi bấm Tải lại.\n"
+        "Lý do: trình duyệt chỉ chạy một bản cho mỗi hồ sơ, nên OmniDL không mở được "
+        "cổng gỡ lỗi khi {browser} đã chạy."
+    ),
+    "err.fb_story_no_video_url": (
+        "Không bắt được URL video của Story.\n"
+        "\n"
+        "Có thể do:\n"
+        "• Story đã hết hạn (Stories tồn tại 24 giờ)\n"
+        "• Bạn chưa đăng nhập Facebook trong Brave/Chrome\n"
+        "• Story này chỉ có ảnh (không có video)\n"
+        "\n"
+        "Mở Story trong trình duyệt kiểm tra trước."
+    ),
+    "err.fb_story_incomplete_download": (
+        "Bắt được URL video nhưng không tải được file hoàn chỉnh.\n"
+        "\n"
+        "Nguyên nhân thường gặp:\n"
+        "• CDN URL đã hết hạn (load quá lâu)\n"
+        "• Kết nối mạng không ổn định\n"
+        "\n"
+        "Hãy thử lại ngay sau khi mở Story trong trình duyệt."
+    ),
+    "progress.browser_start": "Đang khởi động trình duyệt...",
+    "progress.browser_start_named": "Đang khởi động {browser}...",
+    "progress.cdp_connect": "Đang kết nối CDP...",
+    "progress.waaw_open_page": "Đang mở trang waaw.ac...",
+    "progress.waaw_wait_cdn": "Đang chờ CDN URL...",
+    "progress.waaw_captcha": "Trang yêu cầu captcha — hãy giải captcha trong cửa sổ trình duyệt vừa mở...",
+    "progress.ffmpeg_hls": "ffmpeg đang tải HLS stream...",
+    "progress.ffmpeg_dash": "ffmpeg đang xử lý DASH stream...",
+    "progress.ffmpeg_dash_fetch": "FFmpeg đang tải video+audio từ DASH...",
+    "progress.ffmpeg_merge": "FFmpeg đang ghép video + audio...",
+    "progress.ks_browser_start": "Kuaishou: đang khởi động trình duyệt...",
+    "progress.ks_cdp_connect": "Kuaishou: đang kết nối CDP...",
+    "progress.ks_open_page": "Kuaishou: đang mở trang video...",
+    "progress.fb_open_story": "Đang mở Story trong trình duyệt...",
+    "progress.wait_video": "Đang chờ video load...",
+    "progress.url_captured": "Đã bắt được URL — đang tải...",
+    "progress.downloading_video": "Đang tải video...",
+    "progress.downloading_kb": "Đang tải... {kb} KB",
+    "progress.done_named": "✅ Hoàn thành! {name}",
+    # ── Document convert (Markdown / HTML / Office <-> PDF) ───────────────
+    "nav.docs": "Tài liệu",
+    "docs.title": "Chuyển đổi tài liệu",
+    "docs.subtitle": "Markdown ↔ PDF · HTML ↔ PDF · Office ↔ PDF",
+    "docs.add_file": "Thêm tài liệu",
+    "docs.remove_selected": "Xóa mục chọn",
+    "docs.clear": "Xóa tất cả",
+    "docs.source_label": "Tài liệu nguồn:",
+    "docs.target_label": "Định dạng đích:",
+    "docs.save_dir_label": "Thư mục lưu:",
+    "docs.choose": "Chọn...",
+    "docs.convert": "Chuyển đổi",
+    "docs.cancel": "Hủy",
+    "docs.page_n": "Trang {n}",
+    "docs.file_filter": "Tài liệu ({exts});;Tất cả file (*)",
+    "docs.no_file_title": "Chưa chọn tài liệu",
+    "docs.no_file_msg": "Hãy thêm ít nhất một tài liệu để chuyển đổi.",
+    "docs.no_target_title": "Không có định dạng đích",
+    "docs.no_target_msg": (
+        "Các tài liệu đang chọn không có định dạng đích chung. "
+        "Hãy chuyển đổi chúng theo từng nhóm."
+    ),
+    "docs.status.converting": "Đang chuyển đổi {name}... ({i}/{total})",
+    "docs.status.done": "Xong: {ok}/{total} tài liệu → {dir}",
+    "docs.status.failed": "Chuyển đổi thất bại",
+    "docs.status.cancelled": "Đã hủy chuyển đổi",
+    "docs.done_title": "Hoàn thành",
+    "docs.done_msg": "Đã chuyển đổi {ok}/{total} tài liệu.\nMở thư mục lưu?",
+    "docs.error_title": "Lỗi chuyển đổi",
+    "docs.caps_title": "Khả năng của máy này",
+    "docs.cap.markdown": "Markdown → HTML (gói markdown)",
+    "docs.cap.weasyprint": "HTML → PDF (WeasyPrint)",
+    "docs.cap.pypdf": "PDF → văn bản (pypdf)",
+    "docs.cap.libreoffice": "Office ↔ PDF (LibreOffice)",
+    "docs.cap_ok": "Sẵn sàng",
+    "docs.cap_missing": "Chưa cài",
+    "docs.libreoffice_hint": (
+        "Cài LibreOffice để bật chuyển đổi Office ↔ PDF (.docx, .xlsx, .pptx, .odt...)."
+    ),
+    "docs.recheck": "Kiểm tra lại",
+    "docs.weasyprint_hint": (
+        "Không tìm thấy thư viện vẽ PDF (Pango/GTK). Trên Windows hãy cài "
+        "GTK for Windows Runtime để bật Markdown/HTML → PDF."
+    ),
 }
 
 EN: dict[str, str] = {
@@ -953,6 +1519,11 @@ EN: dict[str, str] = {
     "special.open_folder": "Open folder",
     "special.view": "View",
     "special.error.paste_url": "Paste a URL in the box above.",
+    "special.error.not_story_url": (
+        "This is not a Facebook Story link.\n"
+        "A Story looks like facebook.com/stories/... — use the Download tab for "
+        "fb.watch links and ordinary videos."
+    ),
     "special.downloaded": "Downloaded: {name}",
     "special.no_result": "No result.",
     "special.error_prefix": "Error: {msg}",
@@ -1052,7 +1623,11 @@ EN: dict[str, str] = {
     "batch.sequential_done_status": "✓  Sequential download complete",
     "batch.playlist_label_default": "playlist",
     "batch.playlist_loaded": "Loaded {count} video(s) from {label} into Batch.",
-    "editor.empty": "No video loaded. Open a file or click 'Edit' from download history.",
+    "batch.queue_all_failed": "Could not queue any video ({count} error(s))",
+    "batch.cancel_analyse": "Stop analysing",
+    "batch.analyse_stopped": "Analysis stopped",
+    "batch.analysing_progress": "Analysing {done}/{total}…",
+    "editor.empty": "No video loaded. Open a file or click 'Edit' from the Queue tab.",
     "editor.hide_panel": "⊡ Hide panel",
     "editor.show_panel": "⊞ Show panel",
     "editor.open_file": "📂  Open file",
@@ -1176,6 +1751,14 @@ EN: dict[str, str] = {
     "convert.card.reading": "Reading…",
     "convert.card.reading_info": "Reading info…",
     "convert.clear_done": "Clear done/failed",
+    "convert.select_all": "Select all",
+    "convert.select_all_tip": "Select / deselect every pending file.",
+    "convert.select_file_tip": "Include this file in the conversion.",
+    "convert.parallel_label": "Parallel:",
+    "convert.parallel_tip": (
+        "How many files convert at the same time (1-8). "
+        "Higher is faster but uses more CPU."
+    ),
     "convert.settings_toggle_up": "⚙ Settings  ▲",
     "convert.settings_toggle_down": "⚙ Settings  ▼",
     "convert.quality_label": "Quality",
@@ -1286,6 +1869,7 @@ EN: dict[str, str] = {
         "⚠  Needed if Brave/Chrome reports a DPAPI error when fetching cookies."
     ),
     "settings.tools.extra_args_label": "Extra arguments",
+    "settings.tools.extra_args_placeholder": "e.g. --no-playlist",
     "settings.tools.gallery_update_btn": "Update gallery-dl",
     "settings.tools.clear_data_desc": (
         "Clears all app data: download history, configuration settings,\n"
@@ -1460,6 +2044,50 @@ EN: dict[str, str] = {
     "settings.network.extract_failed": "Failed: {err}",
     "settings.network.got_tiktok_cookies": "Got {count} TikTok cookies.",
     "settings.network.account_added": "Added account '{name}'.",
+    "settings.network.profile_label": "Profile:",
+    "settings.network.profile_default": "Default",
+    "settings.network.profile_tip": (
+        "Each browser profile keeps its own login session.\n"
+        "Sign each TikTok account into a different profile, then add each profile here."
+    ),
+    "settings.network.slots_label": "Slots:",
+    "settings.network.source_manual": "Manual file",
+    "settings.network.cookie_ready": "Ready — {count} cookies, signed in.",
+    "settings.network.reject_missing": "The extracted cookie file is missing.",
+    "settings.network.reject_unreadable": "Could not read the cookie file.",
+    "settings.network.reject_not_logged_in": (
+        "This profile is not signed in to TikTok. Sign in on that profile, then extract again."
+    ),
+    "settings.network.reject_expired": (
+        "The login session has expired. Sign in again in the browser, then extract again."
+    ),
+    "settings.network.duplicate_account": (
+        "This exact TikTok account is already in the pool ('{name}'). Pick a different browser profile."
+    ),
+    "settings.network.name_in_use": "The name '{name}' is already used.",
+    "settings.network.rename_tip": "Click to rename this account",
+    "settings.network.refresh_btn": "↻",
+    "settings.network.refresh_tip": "Re-extract cookies for this account (same browser/profile)",
+    "settings.network.refresh_no_source": (
+        "This account was added from a manual file — delete it and add a fresh file."
+    ),
+    "settings.network.refreshing": "Refreshing cookies for '{name}'...",
+    "settings.network.account_refreshed": "Refreshed cookies for '{name}'.",
+    "settings.network.status_ok": "Active — about {days} days left",
+    "settings.network.status_ok_session": "Active",
+    "settings.network.status_paused": "Paused",
+    "settings.network.status_missing": "Cookie file missing",
+    "settings.network.status_unreadable": "Cookie file unreadable",
+    "settings.network.status_not_logged_in": "Cookie is not signed in to TikTok",
+    "settings.network.status_expired": "Cookie expired — click ↻ to re-extract",
+    "settings.network.pool_hint": (
+        "Tip: one TikTok account = one browser profile. "
+        "Create a new profile in Brave/Chrome/Edge, sign the second account in there, "
+        "then come back and pick that profile — no need to sign anyone out."
+    ),
+    "settings.network.account_rejected": (
+        "Could not add the account — the cookie file must live inside the app's cookies folder."
+    ),
     "settings.network.proxy_invalid": (
         "Invalid proxy — must start with http://, https://, socks4://, or socks5://"
     ),
@@ -1649,6 +2277,522 @@ EN: dict[str, str] = {
     "subs.err.incomplete_download": "Incomplete model download ({got}/{total} bytes)",
     "subs.err.failed": "Subtitle generation failed: {err}",
     "subs.err.no_speech": "No speech was detected in the video.",
+    # ── Engine / service messages ─────────────────────────────────────────
+    # Errors and progress text raised outside the UI layer (download engines,
+    # cookie extraction, live checkers).  Retry logic keys off the catalogue
+    # KEY, never this text — see yt_dlp_engine._error_key().
+    "err.private": "Content is private. Try enabling cookies in Settings.",
+    "err.not_found": "URL not found or content was removed.",
+    "err.unsupported_platform": "This platform is not supported by yt-dlp.",
+    "err.live_not_started": "Live stream has not started yet.",
+    "err.not_currently_live": "The channel is not currently live.",
+    "err.live_ended": "Live stream has ended.",
+    "err.ig_photo_only": (
+        "This post only has photos, no video.\n"
+        "OmniDL will retry the images with format='best'.\n"
+        "If it still fails, make sure you are using Instagram cookies (not Facebook) and the latest yt-dlp."
+    ),
+    "err.ytdlp_internal": (
+        "yt-dlp hit an internal error while parsing this URL.\n"
+        "Update yt-dlp to the latest version:\n"
+        "Settings → Update yt-dlp, or run: pip install -U yt-dlp"
+    ),
+    "err.ig_checkpoint": (
+        "Instagram requires account verification.\n"
+        "1. Open Instagram in a browser and finish the verification.\n"
+        "2. Export fresh cookies (use the 'Get cookies.txt LOCALLY' extension).\n"
+        "3. Update the cookie file in Settings → Network → Cookie file.\n"
+        "Note: Instagram cookies usually expire after 1–2 weeks."
+    ),
+    "err.rate_limit": (
+        "Rate limit reached — too many requests in a short time.\n"
+        "Wait 5–10 minutes and try again. Enabling browser cookies in Settings may help."
+    ),
+    "err.tls_fingerprint": (
+        "TLS connection error — the server rejected the default TLS fingerprint.\n"
+        "OmniDL uses curl_cffi (Chrome impersonation) to work around this.\n"
+        "If the error persists:\n"
+        "  1. Check that no antivirus/proxy intercepts HTTPS\n"
+        "  2. Try a proxy in Settings → Network → Proxy URL\n"
+        "  3. Run: pip install -U curl-cffi"
+    ),
+    "err.fb_unavailable": (
+        "This Facebook content is not available. It may require login or be restricted to a specific region."
+    ),
+    "err.geo_restricted": (
+        "This content is geo-restricted and not available in your region.\n"
+        "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
+    ),
+    "err.ffmpeg_livestream": (
+        "Could not record the live stream — ffmpeg reported an error.\n"
+        "Common causes:\n"
+        "  • The live URL expired (TikTok URLs expire after ~1–2 minutes)\n"
+        "    → Copy the link again and start the download immediately\n"
+        "  • The stream ended or was paused\n"
+        "  • The network connection dropped while recording\n"
+        "If the error persists: re-copy the link or wait for the stream to stabilise."
+    ),
+    "err.ip_blocked": (
+        "Your IP is blocked by TikTok/the platform for this post.\n"
+        "Common causes:\n"
+        "  • The IP was blacklisted after too many requests (temporary rate limit)\n"
+        "  • An ISP/VPS/datacenter IP blocked by a geo policy\n"
+        "Fixes:\n"
+        "  1. Enable a proxy/VPN in Settings → Network → Proxy URL\n"
+        "     (e.g. socks5://127.0.0.1:1080 for a local proxy)\n"
+        "  2. Wait 5–15 minutes and try again (if it is a temporary rate limit)\n"
+        "  3. Refresh the TikTok cookie: Settings → Per-Platform Cookies → TikTok"
+    ),
+    "err.tiktok_login_required": (
+        "TikTok requires a login to download this video.\n"
+        "The cookie pool may have expired or belongs to a different account.\n"
+        "Fix: refresh the TikTok cookie in Settings → Per-Platform Cookies → TikTok"
+    ),
+    "err.copyright": "This content has been blocked due to a copyright claim.",
+    "err.blocked": (
+        "This content is blocked or access was denied.\n"
+        "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
+    ),
+    "err.account_suspended": "The account that posted this content has been suspended.",
+    "err.members_only": (
+        "This content is for members/subscribers only.\n"
+        "Make sure you are logged in via cookies in Settings."
+    ),
+    "err.tiktok_10231": (
+        "The TikTok API rejected the request (status 10231) even though the video is viewable.\n"
+        "Try:\n"
+        "  1. Refresh the TikTok cookie: Settings → Per-Platform Cookies → TikTok\n"
+        "  2. Enable a proxy/VPN in Settings → Network → Proxy URL"
+    ),
+    "err.video_deleted": (
+        "This video no longer exists or was removed.\n"
+        "Check the URL — for a short link (vt.tiktok.com), open it in a browser to get the full URL."
+    ),
+    "err.threads_unsupported": (
+        "Threads posts are not supported by yt-dlp yet.\n"
+        "\n"
+        "How to save a Threads video:\n"
+        "• Open the post in a browser → tap ... → Save\n"
+        "• Or use a 'Video Downloader' browser extension."
+    ),
+    "err.ig_stories_cookies": (
+        "Instagram Stories require login cookies.\n"
+        "Set up a cookie file in Settings → Network → Cookie file."
+    ),
+    "err.ig_live_cookies": (
+        "Instagram Live streams require login cookies.\n"
+        "Set up a cookie file in Settings → Network → Cookie file."
+    ),
+    "err.fb_live_cookies": (
+        "Facebook Live streams require cookies.\n"
+        "Set up a cookie file in Settings → Network → Cookie file."
+    ),
+    "err.fb_stories_manual": (
+        "Facebook Stories cannot be downloaded automatically.\n"
+        "\n"
+        "How to save a Facebook Story:\n"
+        "• Open the Story in a browser → tap ... → Save video\n"
+        "• Or use a 'Video Downloader' browser extension."
+    ),
+    "err.ig_cookie_expired": "Instagram cookie expired — refresh the cookie in Settings.",
+    "err.playlist_failed": "Could not read the list from this URL: {err}",
+    "err.no_data": "No data returned for this URL. Check the URL or add a cookie file in Settings.",
+    "err.playlist_empty": (
+        "This playlist/profile has no available videos.\n"
+        "The account may be private, or a cookie file may be required."
+    ),
+    "err.ffmpeg_not_found": "FFmpeg not found. Check your FFmpeg installation.",
+    "err.ffmpeg_stall": "FFmpeg stall watchdog: no data for 120 seconds — the stream may have ended.",
+    "err.no_error_detail": "No error details available.",
+    "err.hls_stall": (
+        "Stall watchdog: curl_cffi HLS received no new segment for {seconds}s — the stream may have ended."
+    ),
+    "err.livestream_ended_relink": (
+        "The live stream ended or the HLS URL is no longer valid.\n"
+        "Add the link again to watch for the next broadcast."
+    ),
+    "err.tiktok_audio_only": (
+        "This item has audio only — there is no video track.\n"
+        "TikTok product/showcase and \"template effect\" / AR effect videos expose no video track through the"
+        " "
+        "API (audio stream only).\n"
+        "How to save it: open the video in the TikTok app → Share → Save video."
+    ),
+    "err.tiktok_ec_blocked": (
+        "This video cannot be downloaded — TikTok blocks the video URL entirely.\n"
+        "It is an e-commerce/product video (isECVideo=1): TikTok exposes no video URL to any API client.\n"
+        "How to save it: open the video in the TikTok app → Share → Save video."
+    ),
+    "err.no_username_from_url": "Could not read a username from the URL.",
+    "err.no_username_from_tiktok_url": "Could not read a username from the TikTok URL.",
+    "err.invalid_url_scheme": "Invalid URL — it must start with http:// or https://",
+    "err.monitor_limit": "The limit of {count} URLs has been reached.",
+    "err.already_monitored": "This URL is already being monitored.",
+    "err.profile_watch_needs_ig_cookie": (
+        "The profile watcher needs an Instagram cookie file. Set one up in Settings → Network → Cookie file."
+    ),
+    "err.check_stuck": "The check hung. Retry, or check your network connection.",
+    "err.attempts_failed": "{count} attempts failed. Last error: {err}",
+    "err.download_failed": "Download failed",
+    "err.network": "Network error: {err}",
+    "err.http": "HTTP error: {err}",
+    "err.cookie_unreadable": "Could not read the cookie file: {err}",
+    "err.ig_cookie_required": (
+        "An Instagram cookie file is required to check live status.\n"
+        "Set one up in Settings → Network → Cookie file."
+    ),
+    "err.ig_cookie_no_sessionid": (
+        "The cookie file has no Instagram sessionid.\n"
+        "Export the cookie file again after logging in to Instagram."
+    ),
+    "err.ig_cookie_invalid": (
+        "The Instagram cookie expired or is invalid.\n"
+        "Refresh the cookie file in Settings → Network."
+    ),
+    "err.ig_account_not_found": "Account @{username} was not found.",
+    "err.ig_rate_limited": (
+        "Rate limited — Instagram is blocking temporarily.\n"
+        "Wait 5–10 minutes and try again."
+    ),
+    "err.ig_forbidden": "Access denied (403). The cookie may have expired.",
+    "err.ig_api_timeout": "The Instagram API timed out. Try again later.",
+    "err.ig_bad_response": (
+        "Instagram returned an invalid response. Try again later, or check the cookie file."
+    ),
+    "err.tiktok_api_timeout": "The TikTok API timed out. Try again later.",
+    "err.no_username_from_facebook_url": "Could not read a username from the Facebook URL.",
+    "err.profile_watch_needs_fb_cookie": (
+        "Watching a Facebook page needs a Facebook cookie file. "
+        "Set one up in Settings → Network → Cookie file."
+    ),
+    "err.fb_cookie_required": (
+        "A Facebook cookie file is required to check live status.\n"
+        "Set one up in Settings → Network → Cookie file."
+    ),
+    "err.fb_cookie_no_session": (
+        "The cookie file has no Facebook session (c_user/xs missing).\n"
+        "Export the cookie file again after logging in to Facebook."
+    ),
+    "err.fb_cookie_invalid": (
+        "The Facebook cookie expired or is invalid.\n"
+        "Refresh the cookie file in Settings → Network."
+    ),
+    "err.fb_page_not_found": "Facebook page {username} was not found.",
+    "err.fb_rate_limited": (
+        "Rate limited — Facebook is blocking temporarily.\n"
+        "Wait 5–10 minutes and try again."
+    ),
+    "err.fb_api_timeout": "Facebook timed out. Try again later.",
+    "progress.recorded": "⏺ {size} recorded",
+    "cookie.err.app_bound_encryption": (
+        "Brave/Chrome 127+ use App-Bound Encryption — cookies cannot be read\n"
+        "from outside the browser. This is a Windows/Chrome security limit, not a bug.\n"
+        "\n"
+        "✅ Fastest route: use Firefox\n"
+        "   1. Open Firefox and log in to TikTok/Instagram/...\n"
+        "   2. Switch the dropdown to firefox → click 🔄\n"
+        "\n"
+        "📁 Or export manually from Brave:\n"
+        "   Install the Cookie-Editor extension → Export → Netscape format\n"
+        "   → Settings → Browse… → pick the exported .txt file"
+    ),
+    "cookie.err.brave_locked": (
+        "Brave is open — the cookie database is locked.\n"
+        "⚠ Close Brave completely (including the background process in the System Tray),\n"
+        "then click 🔄 again. You can reopen Brave once the cookies are extracted."
+    ),
+    "cookie.err.db_missing_detected": (
+        "No cookie database found for '{browser}'.\n"
+        "⚠ Pick the browser you actually use in the\n"
+        "'Cookie source browser' dropdown, then click 🔄 again."
+    ),
+    "cookie.err.db_missing": (
+        "No cookie database found for the selected browser.\n"
+        "⚠ Pick the browser you actually use in the\n"
+        "'Cookie source browser' dropdown, then click 🔄 again."
+    ),
+    "cookie.err.db_locked": (
+        "Cannot read cookies — the browser is open and holds the database lock.\n"
+        "Close the browser completely (including background processes) and try again."
+    ),
+    "cookie.err.decrypt_failed": (
+        "Could not decrypt the browser cookies.\n"
+        "Try running OmniDL as Administrator, or pick a different browser."
+    ),
+    "cookie.err.profile_missing": (
+        "No profile found for the selected browser.\n"
+        "⚠ Re-check the 'Cookie source browser' dropdown — pick the browser\n"
+        "you actually use (e.g. Brave ≠ Chrome)."
+    ),
+    "cookie.err.permission_denied": (
+        "Access to the browser cookie file was denied.\n"
+        "Try running OmniDL as Administrator."
+    ),
+    "cookie.err.browser_unsupported": (
+        "This browser is not supported by yt-dlp.\n"
+        "Try Chrome, Firefox or Edge."
+    ),
+    "cookie.err.cdp_no_connection": (
+        "Could not connect to the browser.\n"
+        "Try again — the first launch can take a few seconds."
+    ),
+    "cookie.err.cdp_websocket": "WebSocket connection to the browser failed.\nTry again, or restart OmniDL.",
+    "cookie.err.cdp_no_cookies": (
+        "No cookies came back from the browser. Log in to the sites, then try again."
+    ),
+    "cookie.err.read_failed": (
+        "Could not read cookies — the browser may not be logged in, or the database is locked. Try closing "
+        "the browser completely."
+    ),
+    "cookie.err.browser_empty": (
+        "The browser has no cookies. Log in to the sites you want to download from first."
+    ),
+    "cookie.err.platform_empty": (
+        "No {platform} cookies found in the browser.\n"
+        "Make sure you are logged in to {platform} in that browser."
+    ),
+    "cookie.err.platform_empty_browser": (
+        "No {platform} cookies found in {browser}.\n"
+        "Make sure you are logged in to {platform} in {browser}."
+    ),
+    "cookie.err.cdp_windows_only": (
+        "CDP mode (🦁) currently supports Windows only.\n"
+        "On macOS/Linux use the 🔄 button (yt-dlp) or pick a cookie file manually."
+    ),
+    "cookie.err.browser_not_installed": (
+        "{browser} was not found on this machine.\n"
+        "Check that Brave/Chrome is installed."
+    ),
+    "cookie.err.cdp_zero_cookies": (
+        "The browser returned 0 cookies.\n"
+        "Log in to the sites before extracting cookies."
+    ),
+    "cookie.err.cdp_timeout": (
+        "Could not connect to {browser} within 20 seconds.\n"
+        "Try again — the first launch can take longer."
+    ),
+    "cookie.err.browser_running": (
+        "{browser} is running — it must be closed briefly to read the cookies.\n"
+        "\n"
+        "⚠ Close {browser} completely (including the System Tray),\n"
+        "then click 🦁 again. You can reopen it once the cookies are extracted.\n"
+        "\n"
+        "Why: CDP reads the real profile, and {browser} currently holds its lock."
+    ),
+    "cookie.err.profile_dir_missing": (
+        "No profile directory found for {browser}.\n"
+        "Check that Brave/Chrome is installed and has been logged in at least once."
+    ),
+    "err.gdl_login_required": (
+        "gallery-dl requires a login.\n"
+        "Check the cookie file in Settings → Network → Cookie file.\n"
+        "Make sure it is an Instagram cookie (not Facebook)."
+    ),
+    "err.gdl_rate_limited": (
+        "gallery-dl was rate limited — Instagram is blocking temporarily.\n"
+        "Wait 5–10 minutes and try again."
+    ),
+    "err.gdl_not_installed_short": "gallery-dl is not installed.\nRun: pip install gallery-dl",
+    "err.gdl_private": "This content is private —\na cookie for an account that can view it is required.",
+    "err.gdl_unknown": "gallery-dl failed for an unknown reason.",
+    "err.gdl_not_installed": (
+        "gallery-dl is not installed.\n"
+        "Run: pip install gallery-dl\n"
+        "Then restart OmniDL."
+    ),
+    "err.gdl_no_content": "gallery-dl found no content at this URL.\nCheck the URL, or refresh the cookie.",
+    "err.gdl_timeout": "gallery-dl timed out while reading the URL info.",
+    "err.gdl_missing_binary": "gallery-dl was not found.\nInstall it with: pip install gallery-dl",
+    "gdl.photo_count": "{count} photos",
+    "progress.gdl_preparing": "⬇ Preparing the image download…",
+    "progress.gdl_video_audio": "⬇ Downloading the video with audio…",
+    "progress.gdl_downloaded": "⬇ {count} files downloaded",
+    "err.cdn_file_too_small": "The downloaded file is too small — the CDN link may have expired.",
+    "err.cdn_link_expired": (
+        "The CDN link expired (the oe= signature is stale). Paste a fresh link from the browser."
+    ),
+    "err.cdn_forbidden": "Access to the CDN link was denied (403).",
+    "err.ks_strategy_e_platform": (
+        "Kuaishou: the last-resort fallback (Strategy E) supports Windows and macOS only.\n"
+        "\n"
+        "Set up a Kuaishou cookie in Settings → Network to enable the other extraction strategies."
+    ),
+    "err.ks_all_strategies_failed": (
+        "Kuaishou: every extraction strategy failed.\n"
+        "\n"
+        "Possible causes:\n"
+        "• The video was deleted or is private\n"
+        "• Kuaishou blocks requests from your current IP\n"
+        "• The Kuaishou page structure changed\n"
+        "\n"
+        "Set up a Kuaishou cookie in Settings → Network to enable more extraction strategies."
+    ),
+    "err.ks_no_video_url": (
+        "Kuaishou: no video URL found in the page data.\n"
+        "The video may be region-restricted, or the API changed."
+    ),
+    "err.ks_bad_file": (
+        "The downloaded file is invalid (not MP4, or too small). The CDN URL may have expired — try again."
+    ),
+    "err.ks_no_photo_id": "Could not extract photo_id from the URL: {url}\nCheck the Kuaishou URL.",
+    "err.ks_cancelled": "Kuaishou: cancelled.",
+    "err.ks_no_browser": (
+        "Kuaishou: neither Brave nor Chrome was found on this machine.\n"
+        "\n"
+        "The last-resort fallback (Strategy E) needs one of them to open the Kuaishou page and intercept the "
+        "real CDN link.\n"
+        "\n"
+        "Install Brave (https://brave.com) or Google Chrome, then try again.\n"
+        "No further configuration is needed — OmniDL finds it automatically."
+    ),
+    "err.ks_cdn_http": "The Kuaishou CDN returned HTTP {code}. The CDN URL may have expired — try again.",
+    "err.ks_cdn_http_after_reextract": (
+        "The Kuaishou CDN returned HTTP {code} after re-extraction. The CDN URL may have expired — try again."
+    ),
+    "err.ks_cdn_html_after_reextract": (
+        "The Kuaishou CDN still returns HTML after re-extraction — the IP is blocked, or the video is gone."
+    ),
+    "err.ks_cdn_html_no_page_url": (
+        "The Kuaishou CDN returned HTML but the page URL for re-extraction could not be determined.\n"
+        "The Remote API must send the Kuaishou page URL, not the CDN URL."
+    ),
+    "err.ks_no_page_url": (
+        "Kuaishou: could not determine the page URL for re-extraction.\n"
+        "task.url looks like a CDN URL (video_id={video_id}) — the Remote API must send the page URL, not the"
+        " "
+        "CDN URL."
+    ),
+    "err.waaw_cdn_expired": (
+        "The CDN link expired or is IP-locked - reopen the waaw.ac/f/... page to get a fresh link"
+    ),
+    "err.waaw_platform": "The waaw.ac engine requires Windows or macOS.",
+    "err.waaw_platform_linux": "The waaw.ac engine requires Windows or macOS.\nLinux is not supported yet.",
+    "err.waaw_file_too_small": "The downloaded file is too small (< 10 KB) — the CDN may have blocked it.",
+    "err.waaw_not_mp4": "The downloaded file is not an MP4 — the CDN URL may have expired.",
+    "err.waaw_hls_no_fallback": "The HLS stream could not be downloaded and there is no MP4 fallback URL.",
+    "err.waaw_hls_failed": "Could not download the HLS stream (ffmpeg: {tail}; MP4 fallback: {err})",
+    "err.waaw_captcha_timeout": (
+        "The captcha was not solved in time.\n"
+        "Try again and solve the captcha in the browser window that opens, or paste a fresh CDN link obtained"
+        " "
+        "elsewhere (e.g. cf*cdn.com .m3u8)."
+    ),
+    "err.waaw_no_cdn_url": (
+        "No CDN URL found after {seconds} seconds.\n"
+        "waaw.ac may have changed its protection scheme."
+    ),
+    "err.generic_error_word": "error",
+    "err.cancelled_by_user": "Cancelled by user.",
+    "err.playwright_missing": "The Playwright library is missing.\nRun: pip install playwright",
+    "err.cdp_connect_failed": (
+        "Could not connect over CDP.\n"
+        "Close the browser completely and try again.\n"
+        "(details: {err})"
+    ),
+    "err.cdp_connect_failed_hard": (
+        "Could not connect over CDP.\n"
+        "\n"
+        "Close the browser COMPLETELY (including the System Tray) and try again.\n"
+        "(details: {err})"
+    ),
+    "err.browser_not_found_cdp": (
+        "{browser} was not found.  Install the browser first.\n"
+        "Note: App Store builds do not support CDP — use the build from the official website."
+    ),
+    "err.fb_not_story_url": (
+        "This is not a Facebook Story URL.\n"
+        "Paste a URL of the form facebook.com/stories/..."
+    ),
+    "err.no_download_dir": "The download folder has not been set",
+    "err.fb_story_platform": "Facebook Story supports Windows and macOS only.\nLinux is not supported yet.",
+    "err.fb_story_browser_running": (
+        "{browser} is already running. Close {browser} completely, then press Download again.\n"
+        "Why: the browser only runs one instance per profile, so OmniDL cannot open "
+        "its debugging port while {browser} is up."
+    ),
+    "err.fb_story_no_video_url": (
+        "The Story's video URL could not be captured.\n"
+        "\n"
+        "Possible causes:\n"
+        "• The Story expired (Stories last 24 hours)\n"
+        "• You are not logged in to Facebook in Brave/Chrome\n"
+        "• This Story is photo-only (no video)\n"
+        "\n"
+        "Open the Story in a browser to check first."
+    ),
+    "err.fb_story_incomplete_download": (
+        "The video URL was captured but the file did not download completely.\n"
+        "\n"
+        "Common causes:\n"
+        "• The CDN URL expired (the page took too long to load)\n"
+        "• An unstable network connection\n"
+        "\n"
+        "Try again right after opening the Story in a browser."
+    ),
+    "progress.browser_start": "Starting the browser...",
+    "progress.browser_start_named": "Starting {browser}...",
+    "progress.cdp_connect": "Connecting over CDP...",
+    "progress.waaw_open_page": "Opening the waaw.ac page...",
+    "progress.waaw_wait_cdn": "Waiting for the CDN URL...",
+    "progress.waaw_captcha": (
+        "The page asks for a captcha — solve it in the browser window that just opened..."
+    ),
+    "progress.ffmpeg_hls": "ffmpeg is downloading the HLS stream...",
+    "progress.ffmpeg_dash": "ffmpeg is processing the DASH stream...",
+    "progress.ffmpeg_dash_fetch": "FFmpeg is fetching video+audio from DASH...",
+    "progress.ffmpeg_merge": "FFmpeg is merging video + audio...",
+    "progress.ks_browser_start": "Kuaishou: starting the browser...",
+    "progress.ks_cdp_connect": "Kuaishou: connecting over CDP...",
+    "progress.ks_open_page": "Kuaishou: opening the video page...",
+    "progress.fb_open_story": "Opening the Story in the browser...",
+    "progress.wait_video": "Waiting for the video to load...",
+    "progress.url_captured": "URL captured — downloading...",
+    "progress.downloading_video": "Downloading the video...",
+    "progress.downloading_kb": "Downloading... {kb} KB",
+    "progress.done_named": "✅ Done! {name}",
+    "nav.docs": "Documents",
+    "docs.title": "Document Convert",
+    "docs.subtitle": "Markdown ↔ PDF · HTML ↔ PDF · Office ↔ PDF",
+    "docs.add_file": "Add document",
+    "docs.remove_selected": "Remove selected",
+    "docs.clear": "Clear all",
+    "docs.source_label": "Source documents:",
+    "docs.target_label": "Target format:",
+    "docs.save_dir_label": "Save to:",
+    "docs.choose": "Choose...",
+    "docs.convert": "Convert",
+    "docs.cancel": "Cancel",
+    "docs.page_n": "Page {n}",
+    "docs.file_filter": "Documents ({exts});;All files (*)",
+    "docs.no_file_title": "No document selected",
+    "docs.no_file_msg": "Add at least one document to convert.",
+    "docs.no_target_title": "No shared target format",
+    "docs.no_target_msg": (
+        "The selected documents have no target format in common. "
+        "Convert them in separate batches."
+    ),
+    "docs.status.converting": "Converting {name}... ({i}/{total})",
+    "docs.status.done": "Done: {ok}/{total} document(s) → {dir}",
+    "docs.status.failed": "Conversion failed",
+    "docs.status.cancelled": "Conversion cancelled",
+    "docs.done_title": "Finished",
+    "docs.done_msg": "Converted {ok}/{total} document(s).\nOpen the output folder?",
+    "docs.error_title": "Conversion error",
+    "docs.caps_title": "What this machine can do",
+    "docs.cap.markdown": "Markdown → HTML (markdown package)",
+    "docs.cap.weasyprint": "HTML → PDF (WeasyPrint)",
+    "docs.cap.pypdf": "PDF → text (pypdf)",
+    "docs.cap.libreoffice": "Office ↔ PDF (LibreOffice)",
+    "docs.cap_ok": "Ready",
+    "docs.cap_missing": "Not installed",
+    "docs.libreoffice_hint": (
+        "Install LibreOffice to enable Office ↔ PDF conversion (.docx, .xlsx, .pptx, .odt...)."
+    ),
+    "docs.recheck": "Re-check",
+    "docs.weasyprint_hint": (
+        "The PDF rendering libraries (Pango/GTK) were not found. On Windows, install "
+        "the GTK for Windows Runtime to enable Markdown/HTML → PDF."
+    ),
 }
 
 ZH: dict[str, str] = {
@@ -1773,6 +2917,10 @@ ZH: dict[str, str] = {
     "special.open_folder": "打开文件夹",
     "special.view": "查看",
     "special.error.paste_url": "请在上方粘贴网址。",
+    "special.error.not_story_url": (
+        "这不是 Facebook Story 链接。\n"
+        "Story 形如 facebook.com/stories/…… — fb.watch 链接和普通视频请在“下载”标签页下载。"
+    ),
     "special.downloaded": "已下载：{name}",
     "special.no_result": "没有结果。",
     "special.error_prefix": "错误：{msg}",
@@ -1870,7 +3018,11 @@ ZH: dict[str, str] = {
     "batch.sequential_done_status": "✓  顺序下载完成",
     "batch.playlist_label_default": "播放列表",
     "batch.playlist_loaded": "已将 {label} 中的 {count} 个视频加载到批量下载。",
-    "editor.empty": "尚无视频。打开文件，或从下载历史中点击“编辑”。",
+    "batch.queue_all_failed": "未能加入任何视频（{count} 个错误）",
+    "batch.cancel_analyse": "停止解析",
+    "batch.analyse_stopped": "已停止解析",
+    "batch.analysing_progress": "正在解析 {done}/{total}…",
+    "editor.empty": "尚无视频。打开文件，或从队列标签页点击“编辑”。",
     "editor.hide_panel": "⊡ 隐藏面板",
     "editor.show_panel": "⊞ 显示面板",
     "editor.open_file": "📂  打开文件",
@@ -1991,6 +3143,11 @@ ZH: dict[str, str] = {
     "convert.card.reading": "读取中…",
     "convert.card.reading_info": "正在读取信息…",
     "convert.clear_done": "清除已完成/失败",
+    "convert.select_all": "全选",
+    "convert.select_all_tip": "选择/取消选择所有待处理文件。",
+    "convert.select_file_tip": "将此文件加入转换。",
+    "convert.parallel_label": "并行数：",
+    "convert.parallel_tip": "同时转换的文件数（1-8）。数值越大越快，但占用更多 CPU。",
     "convert.settings_toggle_up": "⚙ 参数  ▲",
     "convert.settings_toggle_down": "⚙ 参数  ▼",
     "convert.quality_label": "画质",
@@ -2085,6 +3242,7 @@ ZH: dict[str, str] = {
     "settings.tools.keyring_not_installed": "⚠ 未安装——Brave/Chrome 127+ 需要",
     "settings.tools.keyring_warning": "⚠  如果 Brave/Chrome 在获取 Cookie 时报 DPAPI 错误，则需要此项。",
     "settings.tools.extra_args_label": "附加参数",
+    "settings.tools.extra_args_placeholder": "例如：--no-playlist",
     "settings.tools.gallery_update_btn": "更新 gallery-dl",
     "settings.tools.clear_data_desc": (
         "清除所有应用数据：下载历史、配置设置\n"
@@ -2238,6 +3396,43 @@ ZH: dict[str, str] = {
     "settings.network.extract_failed": "失败：{err}",
     "settings.network.got_tiktok_cookies": "已获取 {count} 个 TikTok Cookie。",
     "settings.network.account_added": "已添加账号 '{name}'。",
+    "settings.network.profile_label": "配置文件：",
+    "settings.network.profile_default": "默认",
+    "settings.network.profile_tip": (
+        "每个浏览器配置文件都保存各自的登录会话。\n将每个 TikTok 账号登录到不同的配置文件，然后在此逐个添加。"
+    ),
+    "settings.network.slots_label": "槽位：",
+    "settings.network.source_manual": "手动文件",
+    "settings.network.cookie_ready": "已就绪——{count} 个 Cookie，已登录。",
+    "settings.network.reject_missing": "找不到刚提取的 Cookie 文件。",
+    "settings.network.reject_unreadable": "无法读取 Cookie 文件。",
+    "settings.network.reject_not_logged_in": (
+        "该配置文件尚未登录 TikTok。请先在该配置文件登录，然后重新提取。"
+    ),
+    "settings.network.reject_expired": "登录会话已过期。请在浏览器中重新登录，然后重新提取。",
+    "settings.network.duplicate_account": (
+        "该 TikTok 账号已在账号池中（'{name}'）。请选择其他浏览器配置文件。"
+    ),
+    "settings.network.name_in_use": "名称 '{name}' 已被使用。",
+    "settings.network.rename_tip": "点击以重命名该账号",
+    "settings.network.refresh_btn": "↻",
+    "settings.network.refresh_tip": "重新提取该账号的 Cookie（使用已保存的浏览器/配置文件）",
+    "settings.network.refresh_no_source": "该账号是通过手动文件添加的——请删除后重新添加新文件。",
+    "settings.network.refreshing": "正在刷新 '{name}' 的 Cookie...",
+    "settings.network.account_refreshed": "已刷新 '{name}' 的 Cookie。",
+    "settings.network.status_ok": "正常——约剩 {days} 天",
+    "settings.network.status_ok_session": "正常",
+    "settings.network.status_paused": "已暂停",
+    "settings.network.status_missing": "缺少 Cookie 文件",
+    "settings.network.status_unreadable": "无法读取 Cookie 文件",
+    "settings.network.status_not_logged_in": "Cookie 未登录 TikTok",
+    "settings.network.status_expired": "Cookie 已过期——点击 ↻ 重新提取",
+    "settings.network.pool_hint": (
+        "提示：一个 TikTok 账号对应一个浏览器配置文件。"
+        "在 Brave/Chrome/Edge 中新建配置文件，在其中登录第二个账号，"
+        "然后回到这里选择该配置文件——无需退出任何账号。"
+    ),
+    "settings.network.account_rejected": "无法添加账号 —— cookie 文件必须位于应用的 cookies 目录内。",
     "settings.network.proxy_invalid": ("Proxy 无效——必须以 http://、https://、socks4:// 或 socks5:// 开头"),
     "settings.network.select_cookies_title": "选择 cookies.txt（Netscape 格式）",
     "settings.network.file_not_found": "未找到文件。",
@@ -2419,6 +3614,412 @@ ZH: dict[str, str] = {
     "subs.err.incomplete_download": "模型下载不完整（{got}/{total} 字节）",
     "subs.err.failed": "字幕生成失败：{err}",
     "subs.err.no_speech": "未在视频中检测到语音。",
+    # ── Engine / service messages ─────────────────────────────────────────
+    # Errors and progress text raised outside the UI layer (download engines,
+    # cookie extraction, live checkers).  Retry logic keys off the catalogue
+    # KEY, never this text — see yt_dlp_engine._error_key().
+    "err.private": "内容为私密。请在设置中启用 Cookie。",
+    "err.not_found": "找不到该 URL，或内容已被删除。",
+    "err.unsupported_platform": "yt-dlp 不支持该平台。",
+    "err.live_not_started": "直播尚未开始。",
+    "err.not_currently_live": "该频道当前未在直播。",
+    "err.live_ended": "直播已结束。",
+    "err.ig_photo_only": (
+        "此帖子只有图片，没有视频。\n"
+        "OmniDL 将以 format='best' 重试下载图片。\n"
+        "若仍失败，请确认使用的是 Instagram Cookie（不是 Facebook）且 yt-dlp 为最新版本。"
+    ),
+    "err.ytdlp_internal": (
+        "yt-dlp 解析此 URL 时发生内部错误。\n"
+        "请将 yt-dlp 更新到最新版本：\n"
+        "设置 → 更新 yt-dlp，或运行：pip install -U yt-dlp"
+    ),
+    "err.ig_checkpoint": (
+        "Instagram 要求验证账号。\n"
+        "1. 在浏览器中打开 Instagram 并完成验证。\n"
+        "2. 重新导出 Cookie（可用 'Get cookies.txt LOCALLY' 扩展）。\n"
+        "3. 在 设置 → 网络 → Cookie 文件 中更新该文件。\n"
+        "注意：Instagram Cookie 通常 1–2 周后过期。"
+    ),
+    "err.rate_limit": (
+        "已达到频率限制——短时间内请求过多。\n"
+        "请等待 5–10 分钟后重试。在设置中启用浏览器 Cookie 可能有帮助。"
+    ),
+    "err.tls_fingerprint": (
+        "TLS 连接错误——服务器拒绝了默认的 TLS 指纹。\n"
+        "OmniDL 使用 curl_cffi（模拟 Chrome）来规避此问题。\n"
+        "若错误仍然出现：\n"
+        "  1. 检查杀毒软件/代理是否拦截 HTTPS\n"
+        "  2. 在 设置 → 网络 → Proxy URL 中尝试使用代理\n"
+        "  3. 运行：pip install -U curl-cffi"
+    ),
+    "err.fb_unavailable": "该 Facebook 内容不可用。可能需要登录，或仅限特定地区访问。",
+    "err.geo_restricted": (
+        "该内容有地区限制，在你所在区域不可用。\n"
+        "可在 设置 → 网络 → Proxy URL 中启用 VPN 或代理。"
+    ),
+    "err.ffmpeg_livestream": (
+        "无法录制直播——ffmpeg 报错。\n"
+        "常见原因：\n"
+        "  • 直播链接已过期（TikTok 链接约 1–2 分钟后失效）\n"
+        "    → 请重新复制链接并立即开始下载\n"
+        "  • 直播已结束或已暂停\n"
+        "  • 录制过程中网络中断\n"
+        "若错误仍然出现：请重新复制链接，或等待直播稳定后重试。"
+    ),
+    "err.ip_blocked": (
+        "你的 IP 被 TikTok/该平台阻止访问此帖子。\n"
+        "常见原因：\n"
+        "  • 请求过多导致 IP 被临时拉黑（临时频率限制）\n"
+        "  • ISP/VPS/机房 IP 因地区策略被封锁\n"
+        "解决办法：\n"
+        "  1. 在 设置 → 网络 → Proxy URL 中启用代理/VPN\n"
+        "     （例如本地代理 socks5://127.0.0.1:1080）\n"
+        "  2. 等待 5–15 分钟后重试（若为临时频率限制）\n"
+        "  3. 刷新 TikTok Cookie：设置 → 各平台 Cookie → TikTok"
+    ),
+    "err.tiktok_login_required": (
+        "TikTok 要求登录后才能下载此视频。\n"
+        "Cookie 池可能已过期，或属于其他账号。\n"
+        "解决办法：在 设置 → 各平台 Cookie → TikTok 中刷新 TikTok Cookie"
+    ),
+    "err.copyright": "该内容因版权投诉被屏蔽。",
+    "err.blocked": "该内容被屏蔽或访问被拒绝。\n可在 设置 → 网络 → Proxy URL 中启用 VPN 或代理。",
+    "err.account_suspended": "发布该内容的账号已被封禁。",
+    "err.members_only": "该内容仅面向会员/订阅者。\n请确认已在设置中通过 Cookie 登录。",
+    "err.tiktok_10231": (
+        "TikTok API 拒绝了该请求（状态 10231），尽管视频仍可观看。\n"
+        "可尝试：\n"
+        "  1. 刷新 TikTok Cookie：设置 → 各平台 Cookie → TikTok\n"
+        "  2. 在 设置 → 网络 → Proxy URL 中启用代理/VPN"
+    ),
+    "err.video_deleted": (
+        "该视频已不存在或已被删除。\n"
+        "请检查 URL——若为短链接（vt.tiktok.com），可在浏览器中打开以获取完整链接。"
+    ),
+    "err.threads_unsupported": (
+        "yt-dlp 暂不支持 Threads 帖子。\n"
+        "\n"
+        "保存 Threads 视频的方法：\n"
+        "• 在浏览器中打开帖子 → 点击 ... → 保存\n"
+        "• 或使用浏览器的 “Video Downloader” 扩展。"
+    ),
+    "err.ig_stories_cookies": "Instagram Stories 需要登录 Cookie。\n请在 设置 → 网络 → Cookie 文件 中配置。",
+    "err.ig_live_cookies": "Instagram Live 需要登录 Cookie。\n请在 设置 → 网络 → Cookie 文件 中配置。",
+    "err.fb_live_cookies": "Facebook Live 需要 Cookie。\n请在 设置 → 网络 → Cookie 文件 中配置。",
+    "err.fb_stories_manual": (
+        "Facebook Stories 无法自动下载。\n"
+        "\n"
+        "保存 Facebook Story 的方法：\n"
+        "• 在浏览器中打开 Story → 点击 ... → 保存视频\n"
+        "• 或使用浏览器的 “Video Downloader” 扩展。"
+    ),
+    "err.ig_cookie_expired": "Instagram Cookie 已过期——请在设置中刷新 Cookie。",
+    "err.playlist_failed": "无法从该 URL 读取列表：{err}",
+    "err.no_data": "该 URL 未返回数据。请检查 URL，或在设置中添加 Cookie 文件。",
+    "err.playlist_empty": "该播放列表/主页没有可用视频。\n账号可能为私密，或需要 Cookie 文件。",
+    "err.ffmpeg_not_found": "找不到 FFmpeg。请检查 FFmpeg 安装。",
+    "err.ffmpeg_stall": "FFmpeg 停滞监控：120 秒无数据——直播可能已结束。",
+    "err.no_error_detail": "没有可用的错误信息。",
+    "err.hls_stall": "停滞监控：curl_cffi HLS 已 {seconds} 秒未收到新分片——直播可能已结束。",
+    "err.livestream_ended_relink": "直播已结束，或 HLS 链接已失效。\n可重新添加链接以监控下一次直播。",
+    "err.tiktok_audio_only": (
+        "该内容只有音频——没有视频轨。\n"
+        "TikTok 商品/橱窗以及 “模板特效” / AR 特效视频不通过 API 提供视频轨（仅提供音频流）。\n"
+        "保存方法：在 TikTok App 中打开视频 → 分享 → 保存视频。"
+    ),
+    "err.tiktok_ec_blocked": (
+        "该视频无法下载——TikTok 完全屏蔽了视频 URL。\n"
+        "这是电商/商品视频（isECVideo=1）：TikTok 不向任何 API 客户端提供视频 URL。\n"
+        "保存方法：在 TikTok App 中打开视频 → 分享 → 保存视频。"
+    ),
+    "err.no_username_from_url": "无法从该 URL 中解析出用户名。",
+    "err.no_username_from_tiktok_url": "无法从该 TikTok URL 中解析出用户名。",
+    "err.invalid_url_scheme": "URL 无效——必须以 http:// 或 https:// 开头",
+    "err.monitor_limit": "已达到 {count} 个 URL 的上限。",
+    "err.already_monitored": "该 URL 已在监控中。",
+    "err.profile_watch_needs_ig_cookie": (
+        "主页监控需要 Instagram Cookie 文件。请在 设置 → 网络 → Cookie 文件 中配置。"
+    ),
+    "err.check_stuck": "检查过程卡住。请重试，或检查网络连接。",
+    "err.attempts_failed": "已失败 {count} 次。最后一次错误：{err}",
+    "err.download_failed": "下载失败",
+    "err.network": "网络错误：{err}",
+    "err.http": "HTTP 错误：{err}",
+    "err.cookie_unreadable": "无法读取 Cookie 文件：{err}",
+    "err.ig_cookie_required": (
+        "检查直播状态需要 Instagram Cookie 文件。\n"
+        "请在 设置 → 网络 → Cookie 文件 中配置。"
+    ),
+    "err.ig_cookie_no_sessionid": (
+        "Cookie 文件中没有 Instagram 的 sessionid。\n"
+        "请登录 Instagram 后重新导出 Cookie 文件。"
+    ),
+    "err.ig_cookie_invalid": "Instagram Cookie 已过期或无效。\n请在 设置 → 网络 中刷新 Cookie 文件。",
+    "err.ig_account_not_found": "找不到账号 @{username}。",
+    "err.ig_rate_limited": "触发频率限制——Instagram 暂时拦截。\n请等待 5–10 分钟后重试。",
+    "err.ig_forbidden": "访问被拒绝（403）。Cookie 可能已过期。",
+    "err.ig_api_timeout": "Instagram API 超时。请稍后重试。",
+    "err.ig_bad_response": "Instagram 返回了无效响应。请稍后重试，或检查 Cookie 文件。",
+    "err.tiktok_api_timeout": "TikTok API 超时。请稍后重试。",
+    "err.no_username_from_facebook_url": "无法从该 Facebook URL 中解析出用户名。",
+    "err.profile_watch_needs_fb_cookie": (
+        "监控 Facebook 主页需要 Facebook Cookie 文件。请在 设置 → 网络 → Cookie 文件 中配置。"
+    ),
+    "err.fb_cookie_required": (
+        "检查直播状态需要 Facebook Cookie 文件。\n"
+        "请在 设置 → 网络 → Cookie 文件 中配置。"
+    ),
+    "err.fb_cookie_no_session": (
+        "Cookie 文件中没有 Facebook 登录会话（缺少 c_user/xs）。\n"
+        "请登录 Facebook 后重新导出 Cookie 文件。"
+    ),
+    "err.fb_cookie_invalid": "Facebook Cookie 已过期或无效。\n请在 设置 → 网络 中刷新 Cookie 文件。",
+    "err.fb_page_not_found": "找不到 Facebook 主页 {username}。",
+    "err.fb_rate_limited": "触发频率限制——Facebook 暂时拦截。\n请等待 5–10 分钟后重试。",
+    "err.fb_api_timeout": "Facebook 超时。请稍后重试。",
+    "progress.recorded": "⏺ 已录制 {size}",
+    "cookie.err.app_bound_encryption": (
+        "Brave/Chrome 127+ 使用 App-Bound Encryption——无法从浏览器外部读取 Cookie。\n"
+        "这是 Windows/Chrome 的安全限制，并非程序错误。\n"
+        "\n"
+        "✅ 最快的方法：使用 Firefox\n"
+        "   1. 打开 Firefox 并登录 TikTok/Instagram/...\n"
+        "   2. 将下拉框切换到 firefox → 点击 🔄\n"
+        "\n"
+        "📁 或从 Brave 手动导出：\n"
+        "   安装 Cookie-Editor 扩展 → 导出 → Netscape 格式\n"
+        "   → 设置 → 浏览… → 选择导出的 .txt 文件"
+    ),
+    "cookie.err.brave_locked": (
+        "Brave 正在运行——Cookie 数据库被锁定。\n"
+        "⚠ 请完全关闭 Brave（包括系统托盘中的后台进程），\n"
+        "然后再次点击 🔄。提取完成后即可重新打开 Brave。"
+    ),
+    "cookie.err.db_missing_detected": (
+        "找不到 “{browser}” 的 Cookie 数据库。\n"
+        "⚠ 请在 “Cookie source browser” 下拉框中选择你实际使用的浏览器，\n"
+        "然后再次点击 🔄。"
+    ),
+    "cookie.err.db_missing": (
+        "找不到所选浏览器的 Cookie 数据库。\n"
+        "⚠ 请在 “Cookie source browser” 下拉框中选择你实际使用的浏览器，\n"
+        "然后再次点击 🔄。"
+    ),
+    "cookie.err.db_locked": (
+        "无法读取 Cookie——浏览器正在运行并锁定了数据库。\n"
+        "请完全关闭浏览器（包括后台进程）后重试。"
+    ),
+    "cookie.err.decrypt_failed": "无法解密浏览器 Cookie。\n请尝试以管理员身份运行 OmniDL，或改选其他浏览器。",
+    "cookie.err.profile_missing": (
+        "找不到所选浏览器的配置文件。\n"
+        "⚠ 请重新检查 “Cookie source browser” 下拉框——选择你实际使用的浏览器\n"
+        "（例如 Brave ≠ Chrome）。"
+    ),
+    "cookie.err.permission_denied": "访问浏览器 Cookie 文件被拒绝。\n请尝试以管理员身份运行 OmniDL。",
+    "cookie.err.browser_unsupported": "yt-dlp 不支持该浏览器。\n请尝试 Chrome、Firefox 或 Edge。",
+    "cookie.err.cdp_no_connection": "无法连接到浏览器。\n请重试——首次启动可能需要几秒钟。",
+    "cookie.err.cdp_websocket": "与浏览器的 WebSocket 连接失败。\n请重试，或重启 OmniDL。",
+    "cookie.err.cdp_no_cookies": "浏览器未返回任何 Cookie。请先登录相关网站后再试。",
+    "cookie.err.read_failed": "无法读取 Cookie——浏览器可能未登录，或数据库被锁定。请尝试完全关闭浏览器。",
+    "cookie.err.browser_empty": "该浏览器中没有任何 Cookie。请先登录你要下载的网站。",
+    "cookie.err.platform_empty": (
+        "在浏览器中找不到 {platform} 的 Cookie。\n"
+        "请确认已在该浏览器中登录 {platform}。"
+    ),
+    "cookie.err.platform_empty_browser": (
+        "在 {browser} 中找不到 {platform} 的 Cookie。\n"
+        "请确认已在 {browser} 中登录 {platform}。"
+    ),
+    "cookie.err.cdp_windows_only": (
+        "CDP 模式（🦁）目前仅支持 Windows。\n"
+        "在 macOS/Linux 上请使用 🔄 按钮（yt-dlp），或手动选择 Cookie 文件。"
+    ),
+    "cookie.err.browser_not_installed": "在本机上找不到 {browser}。\n请检查是否已安装 Brave/Chrome。",
+    "cookie.err.cdp_zero_cookies": "浏览器返回了 0 个 Cookie。\n请先登录相关网站再提取 Cookie。",
+    "cookie.err.cdp_timeout": "20 秒内无法连接到 {browser}。\n请重试——首次启动可能需要更久。",
+    "cookie.err.browser_running": (
+        "{browser} 正在运行——需要暂时关闭才能读取 Cookie。\n"
+        "\n"
+        "⚠ 请完全关闭 {browser}（包括系统托盘），\n"
+        "然后再次点击 🦁。提取完成后即可重新打开。\n"
+        "\n"
+        "原因：CDP 需要读取真实的配置文件，而该文件当前被 {browser} 锁定。"
+    ),
+    "cookie.err.profile_dir_missing": (
+        "找不到 {browser} 的配置文件目录。\n"
+        "请检查 Brave/Chrome 是否已安装并至少登录过一次。"
+    ),
+    "err.gdl_login_required": (
+        "gallery-dl 需要登录。\n"
+        "请检查 设置 → 网络 → Cookie 文件。\n"
+        "请确认使用的是 Instagram Cookie（不是 Facebook）。"
+    ),
+    "err.gdl_rate_limited": "gallery-dl 触发频率限制——Instagram 暂时拦截。\n请等待 5–10 分钟后重试。",
+    "err.gdl_not_installed_short": "尚未安装 gallery-dl。\n请运行：pip install gallery-dl",
+    "err.gdl_private": "该内容为私密——\n需要有权查看该内容的账号 Cookie。",
+    "err.gdl_unknown": "gallery-dl 失败，原因未知。",
+    "err.gdl_not_installed": "尚未安装 gallery-dl。\n请运行：pip install gallery-dl\n然后重启 OmniDL。",
+    "err.gdl_no_content": "gallery-dl 在该 URL 未找到任何内容。\n请检查 URL，或刷新 Cookie。",
+    "err.gdl_timeout": "gallery-dl 读取 URL 信息时超时。",
+    "err.gdl_missing_binary": "找不到 gallery-dl。\n请安装：pip install gallery-dl",
+    "gdl.photo_count": "{count} 张图片",
+    "progress.gdl_preparing": "⬇ 正在准备下载图片…",
+    "progress.gdl_video_audio": "⬇ 正在下载带音频的视频…",
+    "progress.gdl_downloaded": "⬇ 已下载 {count} 个文件",
+    "err.cdn_file_too_small": "下载的文件过小——CDN 链接可能已过期。",
+    "err.cdn_link_expired": "CDN 链接已过期（oe= 签名失效）。请从浏览器复制新的链接。",
+    "err.cdn_forbidden": "CDN 链接访问被拒绝（403）。",
+    "err.ks_strategy_e_platform": (
+        "Kuaishou：最后的兜底方案（Strategy E）仅支持 Windows 和 macOS。\n"
+        "\n"
+        "可在 设置 → 网络 中配置 Kuaishou Cookie，以启用其他提取方式。"
+    ),
+    "err.ks_all_strategies_failed": (
+        "Kuaishou：所有提取方式均失败。\n"
+        "\n"
+        "可能原因：\n"
+        "• 视频已删除或为私密\n"
+        "• Kuaishou 屏蔽了当前 IP 的请求\n"
+        "• Kuaishou 页面结构已变更\n"
+        "\n"
+        "可在 设置 → 网络 中配置 Kuaishou Cookie，以启用更多提取方式。"
+    ),
+    "err.ks_no_video_url": "Kuaishou：页面数据中未找到视频 URL。\n视频可能有地区限制，或 API 已变更。",
+    "err.ks_bad_file": "下载的文件无效（不是 MP4 或过小）。CDN 链接可能已过期——请重试。",
+    "err.ks_no_photo_id": "无法从该 URL 解析 photo_id：{url}\n请检查 Kuaishou 链接。",
+    "err.ks_cancelled": "Kuaishou：已取消。",
+    "err.ks_no_browser": (
+        "Kuaishou：本机未找到 Brave 或 Chrome。\n"
+        "\n"
+        "最后的兜底方案（Strategy E）需要其中之一来打开 Kuaishou 页面并拦截真实 CDN 链接。\n"
+        "\n"
+        "请安装 Brave（https://brave.com）或 Google Chrome 后重试。\n"
+        "安装后无需额外配置——OmniDL 会自动查找。"
+    ),
+    "err.ks_cdn_http": "Kuaishou CDN 返回 HTTP {code}。CDN 链接可能已过期——请重试。",
+    "err.ks_cdn_http_after_reextract": (
+        "重新提取后 Kuaishou CDN 仍返回 HTTP {code}。CDN 链接可能已过期——请重试。"
+    ),
+    "err.ks_cdn_html_after_reextract": "重新提取后 Kuaishou CDN 仍返回 HTML——IP 被封锁，或视频已不可用。",
+    "err.ks_cdn_html_no_page_url": (
+        "Kuaishou CDN 返回了 HTML，但无法确定用于重新提取的页面 URL。\n"
+        "Remote API 需要传入 Kuaishou 页面 URL，而不是 CDN URL。"
+    ),
+    "err.ks_no_page_url": (
+        "Kuaishou：无法确定用于重新提取的页面 URL。\n"
+        "task.url 看起来像 CDN URL（video_id={video_id}）——Remote API 需要传入页面 URL，而不是 CDN URL。"
+    ),
+    "err.waaw_cdn_expired": "CDN 链接已过期或被 IP 锁定 - 请重新打开 waaw.ac/f/... 页面以获取新链接",
+    "err.waaw_platform": "waaw.ac 引擎需要 Windows 或 macOS。",
+    "err.waaw_platform_linux": "waaw.ac 引擎需要 Windows 或 macOS。\n暂不支持 Linux。",
+    "err.waaw_file_too_small": "下载的文件过小（< 10 KB）——CDN 可能已拦截。",
+    "err.waaw_not_mp4": "下载的文件不是 MP4——CDN 链接可能已过期。",
+    "err.waaw_hls_no_fallback": "无法下载 HLS 流，且没有备用的 MP4 链接。",
+    "err.waaw_hls_failed": "无法下载 HLS 流（ffmpeg：{tail}；MP4 备用：{err}）",
+    "err.waaw_captcha_timeout": (
+        "未在规定时间内完成验证码。\n"
+        "请重试，并在弹出的浏览器窗口中完成验证码，或粘贴从其他渠道获取的新 CDN 链接（例如 cf*cdn.com 的 "
+        ".m3u8）。"
+    ),
+    "err.waaw_no_cdn_url": "{seconds} 秒后仍未找到 CDN 链接。\nwaaw.ac 的防护机制可能已变更。",
+    "err.generic_error_word": "错误",
+    "err.cancelled_by_user": "用户已取消。",
+    "err.playwright_missing": "缺少 Playwright 库。\n请运行：pip install playwright",
+    "err.cdp_connect_failed": "无法通过 CDP 连接。\n请完全关闭浏览器后重试。\n（详情：{err}）",
+    "err.cdp_connect_failed_hard": (
+        "无法通过 CDP 连接。\n"
+        "\n"
+        "请完全关闭浏览器（包括系统托盘）后重试。\n"
+        "（详情：{err}）"
+    ),
+    "err.browser_not_found_cdp": (
+        "找不到 {browser}。请先安装该浏览器。\n"
+        "注意：App Store 版本不支持 CDP——请使用官网版本。"
+    ),
+    "err.fb_not_story_url": "这不是 Facebook Story 链接。\n请粘贴形如 facebook.com/stories/... 的链接。",
+    "err.no_download_dir": "尚未设置下载目录",
+    "err.fb_story_platform": "Facebook Story 仅支持 Windows 和 macOS。\n暂不支持 Linux。",
+    "err.fb_story_browser_running": (
+        "{browser} 正在运行。请完全关闭 {browser} 后再次点击下载。\n"
+        "原因：每个配置文件只能运行一个浏览器实例，{browser} 打开时 OmniDL 无法开启调试端口。"
+    ),
+    "err.fb_story_no_video_url": (
+        "未能捕获 Story 的视频链接。\n"
+        "\n"
+        "可能原因：\n"
+        "• Story 已过期（Stories 仅保留 24 小时）\n"
+        "• 你未在 Brave/Chrome 中登录 Facebook\n"
+        "• 该 Story 只有图片（没有视频）\n"
+        "\n"
+        "请先在浏览器中打开 Story 确认。"
+    ),
+    "err.fb_story_incomplete_download": (
+        "已捕获视频链接，但文件未能完整下载。\n"
+        "\n"
+        "常见原因：\n"
+        "• CDN 链接已过期（加载时间过长）\n"
+        "• 网络连接不稳定\n"
+        "\n"
+        "请在浏览器中打开 Story 后立即重试。"
+    ),
+    "progress.browser_start": "正在启动浏览器…",
+    "progress.browser_start_named": "正在启动 {browser}…",
+    "progress.cdp_connect": "正在通过 CDP 连接…",
+    "progress.waaw_open_page": "正在打开 waaw.ac 页面…",
+    "progress.waaw_wait_cdn": "正在等待 CDN 链接…",
+    "progress.waaw_captcha": "页面要求验证码——请在刚打开的浏览器窗口中完成验证…",
+    "progress.ffmpeg_hls": "ffmpeg 正在下载 HLS 流…",
+    "progress.ffmpeg_dash": "ffmpeg 正在处理 DASH 流…",
+    "progress.ffmpeg_dash_fetch": "FFmpeg 正在从 DASH 获取视频+音频…",
+    "progress.ffmpeg_merge": "FFmpeg 正在合并视频 + 音频…",
+    "progress.ks_browser_start": "Kuaishou：正在启动浏览器…",
+    "progress.ks_cdp_connect": "Kuaishou：正在通过 CDP 连接…",
+    "progress.ks_open_page": "Kuaishou：正在打开视频页面…",
+    "progress.fb_open_story": "正在浏览器中打开 Story…",
+    "progress.wait_video": "正在等待视频加载…",
+    "progress.url_captured": "已捕获链接——正在下载…",
+    "progress.downloading_video": "正在下载视频…",
+    "progress.downloading_kb": "正在下载… {kb} KB",
+    "progress.done_named": "✅ 已完成！{name}",
+    "nav.docs": "文档",
+    "docs.title": "文档转换",
+    "docs.subtitle": "Markdown ↔ PDF · HTML ↔ PDF · Office ↔ PDF",
+    "docs.add_file": "添加文档",
+    "docs.remove_selected": "移除所选",
+    "docs.clear": "全部清除",
+    "docs.source_label": "源文档：",
+    "docs.target_label": "目标格式：",
+    "docs.save_dir_label": "保存到：",
+    "docs.choose": "选择…",
+    "docs.convert": "转换",
+    "docs.cancel": "取消",
+    "docs.page_n": "第 {n} 页",
+    "docs.file_filter": "文档 ({exts});;所有文件 (*)",
+    "docs.no_file_title": "未选择文档",
+    "docs.no_file_msg": "请至少添加一个待转换的文档。",
+    "docs.no_target_title": "没有共同的目标格式",
+    "docs.no_target_msg": "所选文档没有共同的目标格式，请分批转换。",
+    "docs.status.converting": "正在转换 {name}…（{i}/{total}）",
+    "docs.status.done": "完成：{ok}/{total} 个文档 → {dir}",
+    "docs.status.failed": "转换失败",
+    "docs.status.cancelled": "已取消转换",
+    "docs.done_title": "已完成",
+    "docs.done_msg": "已转换 {ok}/{total} 个文档。\n是否打开输出文件夹？",
+    "docs.error_title": "转换错误",
+    "docs.caps_title": "本机可用功能",
+    "docs.cap.markdown": "Markdown → HTML（markdown 包）",
+    "docs.cap.weasyprint": "HTML → PDF（WeasyPrint）",
+    "docs.cap.pypdf": "PDF → 文本（pypdf）",
+    "docs.cap.libreoffice": "Office ↔ PDF（LibreOffice）",
+    "docs.cap_ok": "可用",
+    "docs.cap_missing": "未安装",
+    "docs.libreoffice_hint": "安装 LibreOffice 以启用 Office ↔ PDF 转换（.docx、.xlsx、.pptx、.odt…）。",
+    "docs.recheck": "重新检测",
+    "docs.weasyprint_hint": (
+        "未找到 PDF 渲染库（Pango/GTK）。在 Windows 上请安装 "
+        "GTK for Windows Runtime 以启用 Markdown/HTML → PDF。"
+    ),
 }
 
 CATALOG: dict[str, dict[str, str]] = {"en": EN, "vi": VI, "zh": ZH}

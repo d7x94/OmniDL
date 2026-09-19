@@ -69,6 +69,7 @@ from typing import Any, Callable, Optional
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -848,12 +849,7 @@ def _strategy_cdp_locked(
     # telling a Linux user to install Brave/Chrome would never fix anything,
     # since strategy E's CDP profile handling only supports win32/darwin.
     if sys.platform not in ("win32", "darwin"):
-        raise RuntimeError(
-            "Kuaishou: phương thức dự phòng cuối cùng (Strategy E) chỉ hỗ trợ "
-            "Windows và macOS.\n\n"
-            "Thử cấu hình cookie Kuaishou trong Settings → Network để kích hoạt "
-            "các phương thức trích xuất khác."
-        )
+        raise RuntimeError(t("err.ks_strategy_e_platform"))
 
     # ── Locate browser + real profile dir ────────────────────────────────────
     try:
@@ -877,13 +873,7 @@ def _strategy_cdp_locked(
             # generic "all methods failed" message with no hint about installing
             # a browser. Raise RuntimeError so the caller can display it.
             logger.debug("Kuaishou strategy E: no browser found (%s)", exc)
-            raise RuntimeError(
-                "Kuaishou: không tìm thấy Brave hoặc Chrome trên máy.\n\n"
-                "Phương thức dự phòng cuối cùng (Strategy E) cần một trong hai trình duyệt này "
-                "để mở trang Kuaishou và chặn link CDN thật.\n\n"
-                "Hãy cài Brave (https://brave.com) hoặc Google Chrome rồi thử lại.\n"
-                "Sau khi cài xong, không cần cấu hình gì thêm — OmniDL tự tìm."
-            ) from exc
+            raise RuntimeError(t("err.ks_no_browser")) from exc
 
     # ── Resolve real profile base dir ─────────────────────────────────────────
     # sys.platform is guaranteed win32/darwin here (checked above).
@@ -934,7 +924,7 @@ def _strategy_cdp_locked(
     if profile_base.exists():
         cmd.append(f"--user-data-dir={profile_base}")
 
-    _prog(5, "Kuaishou: đang khởi động trình duyệt...")
+    _prog(5, t("progress.ks_browser_start"))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -947,7 +937,7 @@ def _strategy_cdp_locked(
 
     try:
         with sync_playwright() as pw:
-            _prog(8, "Kuaishou: đang kết nối CDP...")
+            _prog(8, t("progress.ks_cdp_connect"))
             cdp_browser = None
             # Allow up to 30s for CDP connect but never past the absolute deadline
             # minus 20s buffer for navigation + intercept (was 30s — too tight
@@ -1080,7 +1070,7 @@ def _strategy_cdp_locked(
             # Pre-page JS: intercept fetch/XHR before Kuaishou JS loads
             page.add_init_script(_KS_PRE_PAGE_JS)
 
-            _prog(12, "Kuaishou: đang mở trang video...")
+            _prog(12, t("progress.ks_open_page"))
 
             # Build canonical URL for navigation.
             # BUG-KS-06 FIX: When server-side short URL resolution fails (non-CN IP
@@ -1431,37 +1421,37 @@ def extract_info_kuaishou(
         resolved = _resolve_short_url(url, session)
         photo_id = _extract_photo_id(resolved)
         if not photo_id:
-            raise RuntimeError(f"Không tách được photo_id từ URL: {resolved}\nKiểm tra lại URL Kuaishou.")
+            raise RuntimeError(t("err.ks_no_photo_id", url=resolved))
         logger.debug("Kuaishou: photo_id=%s (resolved from %s)", photo_id, url)
 
         result: tuple | None = None
 
         if _cancelled():
-            raise RuntimeError("Kuaishou: đã huỷ.")
+            raise RuntimeError(t("err.ks_cancelled"))
         logger.debug("Kuaishou: trying strategy A (HTML __NEXT_DATA__)")
         result = _strategy_html(session, photo_id, cookie_str)
 
         if result is None:
             if _cancelled():
-                raise RuntimeError("Kuaishou: đã huỷ.")
+                raise RuntimeError(t("err.ks_cancelled"))
             logger.debug("Kuaishou: trying strategy B (GraphQL + cookie)")
             result = _strategy_gql(session, photo_id, cookie_str)
 
         if result is None:
             if _cancelled():
-                raise RuntimeError("Kuaishou: đã huỷ.")
+                raise RuntimeError(t("err.ks_cancelled"))
             logger.debug("Kuaishou: trying strategy C (kwai.com API)")
             result = _strategy_kwai(session, photo_id, cookie_str)
 
         if result is None:
             if _cancelled():
-                raise RuntimeError("Kuaishou: đã huỷ.")
+                raise RuntimeError(t("err.ks_cancelled"))
             logger.debug("Kuaishou: trying strategy D (m.kuaishou.com mobile API)")
             result = _strategy_mobile(session, photo_id, cookie_str)
 
         if result is None:
             if _cancelled():
-                raise RuntimeError("Kuaishou: đã huỷ.")
+                raise RuntimeError(t("err.ks_cancelled"))
             logger.debug("Kuaishou: trying strategy E (CDP browser intercept)")
             # BUG-KS-BUDGET FIX: strategies A-D plus short-URL resolution can
             # burn well over 100s before strategy E even starts. A fixed 150s
@@ -1473,15 +1463,7 @@ def extract_info_kuaishou(
             result = _strategy_cdp(resolved, config, timeout=_cdp_timeout, cancel_event=cancel_event)
 
         if result is None:
-            raise RuntimeError(
-                "Kuaishou: tất cả phương thức trích xuất đều thất bại.\n\n"
-                "Nguyên nhân có thể:\n"
-                "• Video đã bị xóa hoặc là private\n"
-                "• Kuaishou chặn request từ IP hiện tại\n"
-                "• Cấu trúc trang Kuaishou đã thay đổi\n\n"
-                "Thử cấu hình cookie Kuaishou trong Settings → Network để "
-                "kích hoạt thêm phương thức trích xuất."
-            )
+            raise RuntimeError(t("err.ks_all_strategies_failed"))
 
         photo, author = result
 
@@ -1491,10 +1473,7 @@ def extract_info_kuaishou(
 
         video_url = _pick_best_video_url(photo)
         if not video_url:
-            raise RuntimeError(
-                "Kuaishou: không tìm thấy URL video trong dữ liệu trang.\n"
-                "Video có thể bị giới hạn khu vực hoặc API đã thay đổi."
-            )
+            raise RuntimeError(t("err.ks_no_video_url"))
 
         # Prefer the real photo_id returned by the strategy (e.g. CDP real_pid)
         # over the short code that was used for navigation. When server-side
@@ -1554,12 +1533,12 @@ def _build_output_path(output_dir: Path, media_info: MediaInfo) -> tuple[Path, P
     """Return (filename, part_path) for media_info.
 
     BUG-KS-09: filename pattern unified with yt-dlp platforms:
-      <title> [<photo_id[:12]>].mp4
+      <title> [<photo_id[:30]>].mp4
     ID bracket makes every file uniquely identifiable regardless of CDN host,
-    matching the [%(id).12B] convention yt-dlp uses for TikTok, YouTube, etc.
+    matching the [%(id).30B] convention yt-dlp uses for TikTok, YouTube, etc.
     """
     photo_id = media_info.video_id or ""
-    id_bracket = f" [{photo_id[:12]}]" if photo_id else ""
+    id_bracket = f" [{photo_id[:30]}]" if photo_id else ""
     title_part = _sanitise_filename(media_info.title or "kuaishou")
     # Mirror yt-dlp trim_file_name=180: cap stem so total path < MAX_PATH.
     title_part = title_part[: 180 - len(id_bracket)]
@@ -1819,11 +1798,7 @@ class KuaishouEngine:
                             _salvage_id,
                         )
                     else:
-                        raise RuntimeError(
-                            "Kuaishou: không thể xác định page URL để re-extract.\n"
-                            f"task.url trông như CDN URL (video_id={_vid_id!r}) — "
-                            "Remote API cần truyền page URL, không phải CDN URL."
-                        )
+                        raise RuntimeError(t("err.ks_no_page_url", video_id=_vid_id))
             logger.info(
                 "Kuaishou: re-extracting fresh CDN URL for task %s via %s",
                 task.id,
@@ -1871,9 +1846,7 @@ class KuaishouEngine:
                     ct,
                     cdn_url[:100],
                 )
-                raise RuntimeError(
-                    f"Kuaishou CDN trả về HTTP {resp.status_code}. URL CDN có thể đã hết hạn — thử lại."
-                )
+                raise RuntimeError(t("err.ks_cdn_http", code=resp.status_code))
 
             # Early content-type check: if CDN returns text/html the URL has
             # expired (signed URL invalidated). Re-extract immediately and
@@ -1906,10 +1879,7 @@ class KuaishouEngine:
                     # task.url is a CDN URL (Remote API) — cannot navigate to it.
                     # Raise so download_manager shows a clear error instead of
                     # running 150s CDP on a CDN URL that will never yield a page.
-                    raise RuntimeError(
-                        "Kuaishou CDN trả về HTML nhưng không thể xác định page URL để re-extract.\n"
-                        "Remote API cần truyền page URL Kuaishou, không phải CDN URL."
-                    )
+                    raise RuntimeError(t("err.ks_cdn_html_no_page_url"))
                 logger.info("Kuaishou: inline re-extract via %s", _reextract_inline_url[:80])
                 media_info = extract_info_kuaishou(
                     _reextract_inline_url, self._config, cancel_event=cancel_event
@@ -1937,16 +1907,10 @@ class KuaishouEngine:
                     timeout=_DL_TIMEOUT,
                 )
                 if resp.status_code != 200:
-                    raise RuntimeError(
-                        f"Kuaishou CDN trả về HTTP {resp.status_code} sau re-extract. "
-                        "URL CDN có thể đã hết hạn — thử lại."
-                    )
+                    raise RuntimeError(t("err.ks_cdn_http_after_reextract", code=resp.status_code))
                 _resp_ct = resp.headers.get("content-type", "").lower()
                 if "text/html" in _resp_ct or "application/xhtml" in _resp_ct:
-                    raise RuntimeError(
-                        "Kuaishou CDN vẫn trả về HTML sau re-extract — "
-                        "IP bị chặn hoặc video không còn khả dụng."
-                    )
+                    raise RuntimeError(t("err.ks_cdn_html_after_reextract"))
 
             try:
                 _stream_to_part_file(resp, part_path, task, on_progress)
@@ -2045,9 +2009,7 @@ class KuaishouEngine:
                     logger.debug("Kuaishou: re-extract retry failed: %s", exc)
                     part_path.unlink(missing_ok=True)
 
-            raise RuntimeError(
-                "File tải về không hợp lệ (không phải MP4 hoặc quá nhỏ). URL CDN có thể đã hết hạn — thử lại."
-            )
+            raise RuntimeError(t("err.ks_bad_file"))
 
         part_path.rename(filename)
 

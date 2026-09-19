@@ -438,7 +438,7 @@ class _Btn:
 
 
 def _tab_self(jobs):
-    return SimpleNamespace(
+    ns = SimpleNamespace(
         _jobs=jobs,
         _quality="standard",
         _subtitle_language="vi",
@@ -450,6 +450,11 @@ def _tab_self(jobs):
         _submit_job=MagicMock(),
         _refresh_ui=MagicMock(),
     )
+    # Bind the real selection filter rather than stubbing it: these tests are
+    # about which files _start_subtitles_only picks up, which is exactly what
+    # _selected_pending() decides.
+    ns._selected_pending = lambda: ct.ConvertTab._selected_pending(ns)
+    return ns
 
 
 class TestDesktopButton:

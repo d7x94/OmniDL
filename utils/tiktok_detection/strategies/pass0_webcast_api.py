@@ -33,13 +33,33 @@ class Pass0WebcastApi(LiveDetectionStrategy):
 
     # BUG-TT-PASS0-COOLDOWN FIX: TikTok now requires signing for all param
     # combos (unique_id, sec_user_id, user_id all return 10013).  After all
-    # combos fail with 10013, skip API calls for 120s to avoid waste.
-    _all_10013_until: dict[str, float] = {}
+    # combos fail with 10013, back off before calling the API again.
+    #
+    # BUG-TT-PASS0-GLOBAL FIX: the cooldown used to be keyed per username and
+    # expire after a flat 120 s, while the live monitor polls every ~70 s — so
+    # a condition that is a property of the *endpoint*, not of any account,
+    # was re-probed for every watched user on almost every cycle: 1,395 calls
+    # and zero successes over 33 hours on 2026-08-30/31.  One shared deadline
+    # with exponential backoff (2 min → 30 min) stops that.
+    _COOLDOWN_START_S = 120.0
+    _COOLDOWN_MAX_S = 1800.0
+    _all_10013_until: float = 0.0
+    _all_10013_backoff: float = _COOLDOWN_START_S
     _all_10013_until_lock = threading.Lock()
+
+    @classmethod
+    def _reset_cooldown(cls) -> None:
+        with cls._all_10013_until_lock:
+            cls._all_10013_until = 0.0
+            cls._all_10013_backoff = cls._COOLDOWN_START_S
 
     def check(self, ctx: LiveCheckContext) -> Optional[LiveCheckResult]:
         with Pass0WebcastApi._all_10013_until_lock:
-            if time.monotonic() < Pass0WebcastApi._all_10013_until.get(ctx.username, 0.0):
+            if time.monotonic() < Pass0WebcastApi._all_10013_until:
+                # The endpoint is in 10013 backoff — no call was made, so this
+                # is not a "not live" answer.  Reporting it as a healthy probe
+                # reset the failure counter of a known-blocked endpoint.
+                ctx.unavailable = True
                 return None
         from utils.tiktok_live_checker import _CHROME_UA, _get_impersonate_session, _load_cookie_jar
 
@@ -98,6 +118,8 @@ class Pass0WebcastApi(LiveDetectionStrategy):
                     )
                     continue
 
+                # A non-10013 answer means the endpoint works again.
+                Pass0WebcastApi._reset_cooldown()
                 room_list = data.get("data", {}).get("room_list") or []
                 for room in room_list:
                     r_id = _valid_room_id(room.get("id_str") or room.get("id"))
@@ -124,15 +146,16 @@ class Pass0WebcastApi(LiveDetectionStrategy):
             # cannot account for.
             session.close()
 
-        logger.debug(
-            "tiktok_detection: @%s pass-0 all combos returned 10013 body=%.200s",
-            ctx.username,
-            last_body,
-        )
+        ctx.unavailable = True
         now = time.monotonic()
         with Pass0WebcastApi._all_10013_until_lock:
-            Pass0WebcastApi._all_10013_until = {
-                u: t for u, t in Pass0WebcastApi._all_10013_until.items() if t > now
-            }
-            Pass0WebcastApi._all_10013_until[ctx.username] = now + 120.0
+            backoff = Pass0WebcastApi._all_10013_backoff
+            Pass0WebcastApi._all_10013_until = now + backoff
+            Pass0WebcastApi._all_10013_backoff = min(backoff * 2, Pass0WebcastApi._COOLDOWN_MAX_S)
+        logger.debug(
+            "tiktok_detection: @%s pass-0 all combos returned 10013, backing off %.0fs body=%.200s",
+            ctx.username,
+            backoff,
+            last_body,
+        )
         return None

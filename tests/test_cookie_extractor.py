@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from utils.i18n import t
 
 from infrastructure.downloader.cookie_extractor import (
     _PLATFORM_DOMAINS,
@@ -118,7 +119,9 @@ class TestFriendlyExtractError:
 
     def test_locked_database(self):
         msg = _friendly_extract_error("database is locked: unable to open cookie db")
-        assert "đóng" in msg.lower() or "locked" in msg.lower() or "khóa" in msg.lower()
+        # The text is translated, so compare against the catalogue entry rather
+        # than a word that only exists in one language.
+        assert msg == t("cookie.err.db_locked")
 
     def test_decrypt_error(self):
         msg = _friendly_extract_error("failed to decrypt cookie: DPAPI error")

@@ -81,11 +81,12 @@ class TestControlsPresent:
 
 
 class TestSubmitSendsFlags:
-    def test_w3_both_convert_paths_send_all_three_flags(self):
+    def test_w3_all_convert_paths_send_all_three_flags(self):
         body = _fn_body(_html(), "submitConvert")
-        # One occurrence for /api/files/convert, one for /api/queue/{id}/convert.
+        # One occurrence each for /api/files/convert/batch, /api/files/convert
+        # and /api/queue/{id}/convert.
         for field in ("generate_subtitles:", "subtitle_language:", "compute_vmaf:"):
-            assert body.count(field) == 2, f"{field} sent on {body.count(field)}/2 convert paths"
+            assert body.count(field) == 3, f"{field} sent on {body.count(field)}/3 convert paths"
 
     def test_w3_flags_read_from_the_controls(self):
         body = _fn_body(_html(), "submitConvert")

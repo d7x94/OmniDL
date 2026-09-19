@@ -653,3 +653,93 @@ class TestRenameDownload:
 
         assert Path(new_path) == old_file
         assert old_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# clear_file_record — the delete-side counterpart to rename_download()
+#
+# Deleting a file straight off disk (the web Files tab) used to leave
+# task.filename and the history row pointing at a path that no longer existed,
+# so the Queue / History cards kept offering Preview / Send / Convert / Rename
+# and every one of them 404'd.
+# ---------------------------------------------------------------------------
+
+
+class TestClearFileRecord:
+    def _service_with(self, tmp_path, tasks, history_entries):
+        service, mocks = make_service(download_dir=tmp_path)
+        mocks["manager"].get_all_tasks.return_value = tasks
+        mocks["history"].all.return_value = history_entries
+        return service, mocks
+
+    def test_clears_the_task_pointing_at_the_deleted_file(self, tmp_path):
+        victim = tmp_path / "clip.mp4"
+        victim.write_bytes(b"x")
+        task = DownloadTask(url="https://x/1", output_dir=str(tmp_path))
+        task.filename = str(victim)
+
+        service, _ = self._service_with(tmp_path, [task], [])
+        cleared = service.clear_file_record(victim.resolve())
+
+        assert cleared == 1
+        assert task.filename == ""
+
+    def test_leaves_unrelated_tasks_alone(self, tmp_path):
+        victim = tmp_path / "clip.mp4"
+        keeper = tmp_path / "other.mp4"
+        victim.write_bytes(b"x")
+        keeper.write_bytes(b"y")
+        task = DownloadTask(url="https://x/1", output_dir=str(tmp_path))
+        task.filename = str(keeper)
+
+        service, _ = self._service_with(tmp_path, [task], [])
+        cleared = service.clear_file_record(victim.resolve())
+
+        assert cleared == 0
+        assert task.filename == str(keeper)
+
+    def test_clears_the_history_entry(self, tmp_path):
+        victim = tmp_path / "clip.mp4"
+        victim.write_bytes(b"x")
+        entry = {"id": "H1", "filename": str(victim)}
+
+        service, mocks = self._service_with(tmp_path, [], [entry])
+        cleared = service.clear_file_record(victim.resolve())
+
+        assert cleared == 1
+        mocks["history"].update_filename.assert_called_once_with("H1", "")
+
+    def test_directory_delete_clears_records_underneath(self, tmp_path):
+        folder = tmp_path / "album"
+        folder.mkdir()
+        inner = folder / "a.mp4"
+        inner.write_bytes(b"x")
+        task = DownloadTask(url="https://x/1", output_dir=str(folder))
+        task.filename = str(inner)
+        entry = {"id": "H1", "filename": str(inner)}
+
+        service, mocks = self._service_with(tmp_path, [task], [entry])
+        cleared = service.clear_file_record(folder.resolve())
+
+        assert cleared == 2
+        assert task.filename == ""
+        mocks["history"].update_filename.assert_called_once_with("H1", "")
+
+    def test_records_with_no_filename_are_skipped(self, tmp_path):
+        task = DownloadTask(url="https://x/1", output_dir=str(tmp_path))
+        task.filename = ""
+
+        service, mocks = self._service_with(tmp_path, [task], [{"id": "H1", "filename": None}])
+        cleared = service.clear_file_record((tmp_path / "clip.mp4").resolve())
+
+        assert cleared == 0
+        mocks["history"].update_filename.assert_not_called()
+
+    def test_unresolvable_path_does_not_raise(self, tmp_path):
+        """A record holding a bogus path must be ignored, not crash the delete."""
+        task = DownloadTask(url="https://x/1", output_dir=str(tmp_path))
+        task.filename = "some/relative/leftover.mp4"
+
+        service, _ = self._service_with(tmp_path, [task], [])
+
+        assert service.clear_file_record((tmp_path / "clip.mp4").resolve()) == 0

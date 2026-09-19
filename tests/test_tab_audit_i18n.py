@@ -149,6 +149,8 @@ def _batch_tab_stub():
     tab._batch_token = 1
     tab._analysing_count = 0
     tab._spinner_idx = 0
+    tab._spinner_token = None
+    tab._seq_queue = []
     tab._refresh_item_ui = lambda _item: None
     tab._analyse_next = lambda _token: None
     return tab

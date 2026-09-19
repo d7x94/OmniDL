@@ -47,6 +47,8 @@ _DEFAULTS: dict[str, Any] = {
     "theme": "violet",
     "language": "en",
     "max_concurrent": 3,
+    # Parallel FFmpeg conversions (Convert tab + Remote API batch convert).
+    "convert_max_concurrent": 2,
     "max_retries": 3,
     "proxy": "",
     "use_cookies": False,
@@ -287,6 +289,19 @@ class ConfigManager:
         # Clamp to [1, 10]: 0 would block all downloads; >10 is unnecessary
         # on a desktop machine and risks exhausting network/disk resources.
         return max(1, min(10, int(self.get("max_concurrent", 3))))
+
+    @property
+    def convert_max_concurrent(self) -> int:
+        """Parallel FFmpeg conversions allowed by the Convert tab / Remote API.
+
+        Clamped to [1, 8]: 0 would stall every conversion, and past ~8 the
+        FFmpeg processes only contend for the same CPU and disk.
+        """
+        try:
+            raw = int(self.get("convert_max_concurrent", 2))
+        except (TypeError, ValueError):
+            raw = 2
+        return max(1, min(8, raw))
 
     @property
     def max_retries(self) -> int:

@@ -739,7 +739,9 @@ class InstagramLiveEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         bid_match = _BROADCAST_ID_FROM_URL_RE.search(url)
-        broadcast_id = bid_match.group(1)[:12] if bid_match else "live"
+        # 30 bytes, same cap as the yt-dlp [%(id).30B] template: Instagram
+        # broadcast IDs are 17 digits and 12 truncated them into nonsense.
+        broadcast_id = bid_match.group(1)[:30] if bid_match else "live"
         rec_ts = time.strftime("%Y-%m-%d %H-%M")
         is_dash = bool(hls_url and ".mpd" in hls_url.lower())
         ext = ".mkv" if is_dash else ".ts"

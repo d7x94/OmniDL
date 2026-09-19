@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
-from utils.naming import build_filename_from_task, sanitise_for_filesystem
+from utils.naming import build_filename_from_task, sanitise_for_filesystem, to_ascii_filename
 
 if TYPE_CHECKING:
     from app.event_bus import EventBus
@@ -51,6 +51,32 @@ _SUBPROCESS_EXTRA: dict = (
     if sys.platform == "win32"
     else {}
 )
+
+# ── tailscale CLI stderr sanitiser ───────────────────────────────────────
+# `tailscale file cp` draws a progress bar, so its stderr carries ANSI escapes
+# and CR overwrites, and it prefixes a "# warning: <peer> is reportedly
+# offline; trying anyway" advisory before the real error.  Logged raw that
+# split one record across several physical lines of omnidl_debug.log and left
+# the advisory as the whole user-visible error while the actual cause sat on an
+# untimestamped line below it (2026-09-17 11:06:41: the real failure was
+# "502 Bad Gateway").
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def _clean_cli_error(raw: str) -> str:
+    """Collapse tailscale CLI output into one log-safe line.
+
+    Drops the "# warning:" advisory unless it is all tailscale printed.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    for chunk in _ANSI_RE.sub("", raw).replace("\r", "\n").splitlines():
+        line = chunk.strip()
+        if not line:
+            continue
+        (warnings if line.startswith("#") else errors).append(line)
+    return " | ".join(errors or warnings)
+
 
 # ── Security: allowlist for Tailscale node names / IPs ───────────────────
 # Accepts:
@@ -70,6 +96,8 @@ class TransferResult:
     success: bool
     dest_node: str
     error: str = ""
+    # Name the peer actually received.  Empty when the send failed.
+    sent_name: str = ""
 
 
 class TaildropService:
@@ -331,7 +359,9 @@ class TaildropService:
         def _send_one(node: str) -> None:
             result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
             if result.success:
-                logger.info("send_file_to_nodes: ✓ '%s' → %s", file_path.name, node)
+                logger.info(
+                    "send_file_to_nodes: ✓ '%s' → %s", result.sent_name or file_path.name, node
+                )
                 if on_node_done:
                     try:
                         on_node_done(node)
@@ -514,7 +544,7 @@ class TaildropService:
         safe_display = build_filename_from_task(task, ext=file_path.suffix.lstrip("."))
         result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
         if result.success:
-            logger.info("Taildrop: ✅ sent '%s' → %s", file_path.name, node)
+            logger.info("Taildrop: ✅ sent '%s' → %s", result.sent_name or file_path.name, node)
             self._bus.publish_taildrop_completed(task=task, dest_node=node)
         else:
             logger.warning(
@@ -534,7 +564,9 @@ class TaildropService:
         """
         result = self._do_send(out_path, node, display_name=sanitise_for_filesystem(out_path.name))
         if result.success:
-            logger.info("Taildrop convert: ✅ sent '%s' → %s", out_path.name, node)
+            logger.info(
+                "Taildrop convert: ✅ sent '%s' → %s", result.sent_name or out_path.name, node
+            )
             self._bus.publish_convert_taildrop_completed(out_path=out_path, dest_node=node)
         else:
             logger.warning(
@@ -605,7 +637,9 @@ class TaildropService:
 
         try:
             if file_path.is_dir():
-                safe_stem = sanitise_for_filesystem(file_path.name)
+                # Use display_name (already defaulted to file_path.name above) so a
+                # descriptive name built from the task survives the zipping step.
+                safe_stem = sanitise_for_filesystem(display_name)
                 display_name = safe_stem if safe_stem.endswith(".zip") else safe_stem + ".zip"
                 logger.debug(
                     "Taildrop: '%s' is a directory — zipping as '%s'",
@@ -644,59 +678,80 @@ class TaildropService:
                 send_path = tmp_zip
                 logger.debug("Taildrop: zip ready — %d byte(s)", tmp_zip.stat().st_size)
 
-            # 5. Execute: tailscale file cp [--name <safe_name>] <send_path> <node>:
+            # 5. Execute: tailscale file cp [--name <name>] <send_path> <node>:
             #
-            # Tailscale's peer-side (iOS / macOS) returns "400 Bad Request:
-            # invalid filename" when the filename contains emoji, non-ASCII
-            # characters, or certain special characters (#, @, diacritics, ...).
-            # The --name flag passes an ASCII-safe alias without altering the
-            # file on disk.
+            # Filename policy (BUG-TD-NAME):
+            # Older Taildrop receivers (iOS / macOS) answered "400 Bad Request:
+            # invalid filename" for non-ASCII names, so this used to force an
+            # ASCII name for every send.  That flattening was lossy — it deleted
+            # Vietnamese diacritics, CJK and emoji outright, so the iPhone got
+            # "YUSUKI cu y tht ng yu" or a name starting with a bare " - ".
+            #
+            # Now the full Unicode name is attempted first and the transliterated
+            # ASCII name is used only as a retry, so a modern receiver keeps the
+            # complete name and an old one still gets a readable fallback.
             safe_name = sanitise_for_filesystem(display_name)
-            # Tailscale rejects non-ASCII filenames on iOS/macOS receivers.
-            if not safe_name.isascii():
-                from pathlib import Path as _Path
+            ascii_name = to_ascii_filename(safe_name)
 
-                _stem = _Path(safe_name).stem.encode("ascii", "ignore").decode().strip() or "file"
-                _suffix = _Path(safe_name).suffix
-                safe_name = _stem + _suffix
-            cmd = [tailscale, "file", "cp"]
-            # Always supply --name for zipped dirs (send_path is a tempfile with
-            # an opaque name); also supply it for regular files when sanitisation
-            # changed the name.
+            # Candidate names in preference order. ``None`` = no --name flag, the
+            # peer then uses send_path's own name (only valid for real files).
+            attempts: list[Optional[str]] = []
             if tmp_zip is not None or safe_name != file_path.name:
-                if safe_name != display_name:
-                    logger.debug(
-                        "Taildrop: adjusted filename %r -> %r (using --name flag)",
-                        display_name,
-                        safe_name,
-                    )
-                cmd += ["--name", safe_name]
-            cmd += [str(send_path), node + _NODE_SUFFIX]
+                attempts.append(safe_name)
+            else:
+                attempts.append(None)
+            if not safe_name.isascii() and ascii_name and ascii_name != safe_name:
+                attempts.append(ascii_name)
 
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,  # 5-min timeout for large files / multi-image zips
-                    **_SUBPROCESS_EXTRA,
-                )
+            last: Optional[TransferResult] = None
+            for index, name in enumerate(attempts):
+                cmd = [tailscale, "file", "cp"]
+                if name is not None:
+                    cmd += ["--name", name]
+                cmd += [str(send_path), node + _NODE_SUFFIX]
+
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,  # 5-min timeout for large files / multi-image zips
+                        **_SUBPROCESS_EXTRA,
+                    )
+                except subprocess.TimeoutExpired:
+                    # A timeout says nothing about the filename — do not retry.
+                    return TransferResult(
+                        success=False,
+                        dest_node=node,
+                        error="Transfer timed out after 300 s — file may be too large",
+                    )
+                except Exception as exc:
+                    return TransferResult(success=False, dest_node=node, error=str(exc))
+
                 if result.returncode == 0:
-                    return TransferResult(success=True, dest_node=node)
-                stderr = (result.stderr or result.stdout or "").strip()
-                return TransferResult(
+                    return TransferResult(
+                        success=True,
+                        dest_node=node,
+                        sent_name=name if name is not None else send_path.name,
+                    )
+
+                stderr = _clean_cli_error(result.stderr or result.stdout or "")
+                last = TransferResult(
                     success=False,
                     dest_node=node,
                     error=f"tailscale exit {result.returncode}: {stderr}",
                 )
-            except subprocess.TimeoutExpired:
-                return TransferResult(
-                    success=False,
-                    dest_node=node,
-                    error="Transfer timed out after 300 s — file may be too large",
-                )
-            except Exception as exc:
-                return TransferResult(success=False, dest_node=node, error=str(exc))
+                if index + 1 < len(attempts):
+                    logger.info(
+                        "Taildrop: peer rejected %r (%s) — retrying as %r",
+                        name if name is not None else send_path.name,
+                        stderr or f"exit {result.returncode}",
+                        attempts[index + 1],
+                    )
+
+            return last or TransferResult(
+                success=False, dest_node=node, error="no transfer attempt was made"
+            )
 
         finally:
             if tmp_zip is not None and tmp_zip.exists():

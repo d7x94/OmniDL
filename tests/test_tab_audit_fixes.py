@@ -220,6 +220,7 @@ def test_batch_remove_item_releases_analysing_slot():
     tab._items = [item]
     tab._analysing_count = 1
     tab._items_layout = None
+    tab._seq_queue = []
     tab._add_empty_label = lambda: None
     tab._update_queue_btn_count = lambda: None
 
@@ -247,6 +248,7 @@ def test_batch_remove_item_never_goes_negative():
     tab._items = [item]
     tab._analysing_count = 0  # already released by a late callback
     tab._items_layout = None
+    tab._seq_queue = []
     tab._add_empty_label = lambda: None
     tab._update_queue_btn_count = lambda: None
 

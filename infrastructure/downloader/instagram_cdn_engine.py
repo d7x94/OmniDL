@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
+from utils.i18n import t
 from utils.instagram_http import is_ig_cdn_host
 
 logger = logging.getLogger(__name__)
@@ -87,11 +88,9 @@ def download_ig_cdn_url(
 
     with requests.get(url, headers=headers, stream=True, timeout=30) as resp:
         if resp.status_code == 404:
-            raise RuntimeError(
-                "not found: CDN link đã hết hạn (chữ ký oe= hết hạn). Dán link mới từ trình duyệt."
-            )
+            raise RuntimeError("not found: " + t("err.cdn_link_expired"))
         if resp.status_code == 403:
-            raise RuntimeError("blocked: CDN link bị từ chối truy cập (403).")
+            raise RuntimeError("blocked: " + t("err.cdn_forbidden"))
         resp.raise_for_status()
 
         total = int(resp.headers.get("content-length", 0))
@@ -126,7 +125,7 @@ def download_ig_cdn_url(
 
     if part.stat().st_size < 1024:
         part.unlink(missing_ok=True)
-        raise RuntimeError("not found: File tải về quá nhỏ -- CDN link có thể đã hết hạn.")
+        raise RuntimeError("not found: " + t("err.cdn_file_too_small"))
 
     part.rename(dest)
     logger.info("ig_cdn: download complete -- %s", dest.name)

@@ -140,6 +140,14 @@ class StatusBar(QStatusBar):
             return
         self._last_status = state
 
+        # Drive the Queue pill badge from the same poll — this is the only
+        # place that already counts active tasks app-wide, and the badge was
+        # never updated by anything (the web UI has had the equivalent).
+        try:
+            self._app.update_tab_badge("queue", active)
+        except Exception:  # a tab badge must never break the status bar
+            pass
+
         if active == 0:
             self._dot.setStyleSheet(f"color: {T.text3};")
             self._active_chip.setText(f"◎  {t('status.idle')}")

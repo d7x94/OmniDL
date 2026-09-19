@@ -249,7 +249,7 @@ def _call_pass0(ctx, session):
     strategy = Pass0WebcastApi()
     with patch(
         "utils.tiktok_detection.strategies.pass0_webcast_api.Pass0WebcastApi._all_10013_until",
-        {},
+        0.0,
     ):
         with patch(
             "utils.tiktok_live_checker._get_impersonate_session",
@@ -265,13 +265,16 @@ def _call_pass0(ctx, session):
 def test_pass0_cooldown_returns_none():
     import time
 
+    # The cooldown is one shared deadline, not a per-username entry: 10013
+    # ("signing required") is a property of the endpoint, not of an account.
     strategy = Pass0WebcastApi()
-    username = "cooldown_user_x"
-    Pass0WebcastApi._all_10013_until[username] = time.monotonic() + 999.0
-    ctx = _pass0_ctx(username=username)
-    result = strategy.check(ctx)
-    assert result is None
-    del Pass0WebcastApi._all_10013_until[username]
+    Pass0WebcastApi._all_10013_until = time.monotonic() + 999.0
+    try:
+        assert strategy.check(_pass0_ctx(username="cooldown_user_x")) is None
+        # A different account is suppressed by the same deadline.
+        assert strategy.check(_pass0_ctx(username="someone_else")) is None
+    finally:
+        Pass0WebcastApi._reset_cooldown()
 
 
 def test_pass0_http_non_200_returns_none():
@@ -286,7 +289,7 @@ def test_pass0_status_code_10013_all_combos_sets_cooldown():
     body = json.dumps({"status_code": 10013})
     session = _mock_session(body=body)
     strategy = Pass0WebcastApi()
-    Pass0WebcastApi._all_10013_until.pop("testuser", None)
+    Pass0WebcastApi._reset_cooldown()
     with patch(
         "utils.tiktok_live_checker._get_impersonate_session",
         return_value=session,
@@ -299,8 +302,8 @@ def test_pass0_status_code_10013_all_combos_sets_cooldown():
     assert result is None
     import time
 
-    assert Pass0WebcastApi._all_10013_until.get("testuser", 0) > time.monotonic()
-    del Pass0WebcastApi._all_10013_until["testuser"]
+    assert Pass0WebcastApi._all_10013_until > time.monotonic()
+    Pass0WebcastApi._reset_cooldown()
 
 
 def test_pass0_no_rooms_returns_none():

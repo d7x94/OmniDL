@@ -455,7 +455,7 @@ class TestNetworkErrors:
         ):
             from utils.tiktok_live_checker import check_tiktok_live
 
-            with pytest.raises(RuntimeError, match="timeout|hết thời gian"):
+            with pytest.raises(RuntimeError, match="timeout|timed out|hết thời gian"):
                 check_tiktok_live("user")
 
     def test_request_exception_raises_runtime_error(self):

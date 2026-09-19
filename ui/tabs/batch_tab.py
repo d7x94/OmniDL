@@ -8,7 +8,7 @@ import time as _time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QTimer
@@ -86,10 +86,12 @@ class BatchTab(QWidget):
         self._batch_token: int = 0
         self._analysing_count: int = 0
         self._spinner_idx: int = 0
+        self._spinner_token: int | None = None
         self._seq_queue: list[_BatchItem] = []
         self._seq_current_task_id: str | None = None
         self._seq_timer: QTimer | None = None
         self._empty_lbl: QLabel | None = None
+        self._status_fn: "Callable[[], tuple[str, str]] | None" = None
         self._quality_map = {
             "Best": "bestvideo+bestaudio/best",
             "1080p": "bestvideo[height<=1080]+bestaudio/best",
@@ -206,6 +208,16 @@ class BatchTab(QWidget):
         self._analyse_btn.clicked.connect(self._start_batch_analyse)
         btn_row_layout.addWidget(self._analyse_btn)
 
+        self._cancel_btn = QPushButton(t("batch.cancel_analyse"))
+        self._cancel_btn.setFixedHeight(34)
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error_text}; border: none; border-radius: 8px; font-size: 12px; padding: 0 12px;"
+        )
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.clicked.connect(self._cancel_analyse)
+        btn_row_layout.addWidget(self._cancel_btn)
+
         input_card_layout.addWidget(btn_row)
         input_wrap_layout.addWidget(input_card)
         layout.addWidget(input_wrap)
@@ -303,6 +315,25 @@ class BatchTab(QWidget):
         self._items_layout.addWidget(empty)
         self._empty_lbl = empty
 
+    def _set_status(self, fn: "Callable[[], tuple[str, str]] | None") -> None:
+        """Set the header status line from a (text, colour) builder.
+
+        The builder is kept rather than the finished string so retranslate()
+        can replay it: the status text comes from t(...), and nothing else ever
+        rewrites the label, so switching language mid-session used to leave it
+        frozen in the previous language.
+        """
+        self._status_fn = fn
+        self._render_status()
+
+    def _render_status(self) -> None:
+        if self._status_fn is None:
+            self._status_lbl.setText("")
+            return
+        text, color = self._status_fn()
+        self._status_lbl.setText(text)
+        self._status_lbl.setStyleSheet(f"color: {color}; font-size: 12px;")
+
     @staticmethod
     def _short_url(url: str, max_len: int = 70) -> str:
         if len(url) <= max_len:
@@ -327,13 +358,14 @@ class BatchTab(QWidget):
         count = len(urls)
         if count == 0:
             self._url_count_lbl.setText("")
-            self._analyse_btn.setEnabled(False)
         elif count > MAX_BATCH_URLS:
             self._url_count_lbl.setText(t("batch.url_count_capped", count=count, max=MAX_BATCH_URLS))
-            self._analyse_btn.setEnabled(True)
         else:
             self._url_count_lbl.setText(t("batch.url_count", count=count))
-            self._analyse_btn.setEnabled(True)
+        # Typing while a pass runs must not re-enable Analyse: the button still
+        # reads "Analysing…", and clicking it threw away every finished row.
+        if self._analysing_count == 0:
+            self._analyse_btn.setEnabled(count > 0)
 
     def _parse_textarea(self) -> list[str]:
         raw = self._text_area.toPlainText()
@@ -412,12 +444,12 @@ class BatchTab(QWidget):
 
         self._analyse_btn.setEnabled(False)
         self._analyse_btn.setText(t("batch.analysing_dots"))
+        self._cancel_btn.setVisible(True)
         self._queue_all_btn.setEnabled(False)
-        self._status_lbl.setText("")
+        self._set_status(None)
 
         self._rebuild_results_ui()
         self._analyse_next(my_token)
-        self._tick_spinner(my_token)
 
     def _analyse_next(self, token: int) -> None:
         if token != self._batch_token:
@@ -434,6 +466,25 @@ class BatchTab(QWidget):
         pending.state = _ItemState.ANALYSING
         self._refresh_item_ui(pending)
         self._analysing_count += 1
+        _done = sum(
+            1 for i in self._items if i.state not in (_ItemState.PENDING, _ItemState.ANALYSING)
+        )
+        _total = len(self._items)
+        self._set_status(
+            lambda d=_done, tot=_total: (
+                t("batch.analysing_progress", done=d, total=tot),
+                T.text3,
+            )
+        )
+        # Kick the spinner here rather than at the call sites: removing the row
+        # that was being analysed drops the count to 0 and _tick_spinner exits,
+        # so without this restart every later row sits on a frozen "…" for the
+        # rest of the batch.  _spinner_token records which batch already owns a
+        # running chain: restarting on every item spawned one QTimer chain per
+        # URL, so a 500-URL batch ended up with 500 overlapping 100 ms timers
+        # and a spinner that span faster and faster.
+        if self._spinner_token != token:
+            self._tick_spinner(token)
 
         url = pending.url
 
@@ -497,6 +548,7 @@ class BatchTab(QWidget):
         total = len(self._items)
         errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
 
+        self._cancel_btn.setVisible(False)
         self._analyse_btn.setEnabled(True)
         self._analyse_btn.setText(t("batch.analyse_again"))
 
@@ -508,23 +560,33 @@ class BatchTab(QWidget):
             self._retry_btn.setText(t("batch.retry_errors"))
 
         if ready == 0:
-            self._status_lbl.setText(t("batch.no_valid_urls", errors=errors))
-            self._status_lbl.setStyleSheet(f"color: {T.error_text}; font-size: 12px;")
+            self._set_status(lambda: (t("batch.no_valid_urls", errors=errors), T.error_text))
             self._queue_all_btn.setEnabled(False)
         else:
-            err_note = t("batch.ready_err_note", errors=errors) if errors else ""
-            self._status_lbl.setText(t("batch.ready_summary", ready=ready, total=total, err_note=err_note))
-            self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
+            self._set_status(
+                lambda: (
+                    t(
+                        "batch.ready_summary",
+                        ready=ready,
+                        total=total,
+                        err_note=t("batch.ready_err_note", errors=errors) if errors else "",
+                    ),
+                    T.success_text,
+                )
+            )
             self._queue_all_btn.setEnabled(True)
             self._queue_all_btn.setText(t("batch.queue_count", count=ready))
 
     # ── Spinner ───────────────────────────────────────────────────────────────
 
     def _tick_spinner(self, token: int) -> None:
-        if token != self._batch_token:
+        if token != self._batch_token or self._analysing_count <= 0:
+            # Only the chain that owns the flag may clear it, otherwise a stale
+            # chain from a cancelled batch would switch off the live one.
+            if self._spinner_token == token:
+                self._spinner_token = None
             return
-        if self._analysing_count <= 0:
-            return
+        self._spinner_token = token
         self._spinner_idx = (self._spinner_idx + 1) % len(_SPINNER_FRAMES)
         frame = _SPINNER_FRAMES[self._spinner_idx]
         for item in self._items:
@@ -662,9 +724,16 @@ class BatchTab(QWidget):
             item.title_lbl.setStyleSheet(
                 f"color: {T.primary_text}; font-size: 12px; background: transparent;"
             )
+            if item.check_box:
+                item.check_box.setEnabled(False)
 
     def _on_select_all_toggled(self, checked: bool) -> None:
+        # READY rows only.  ERROR rows have a disabled checkbox, so ticking
+        # them drew a checked-but-greyed box for a URL that can never be
+        # queued, and left checked=True hidden in the model afterwards.
         for item in self._items:
+            if item.state != _ItemState.READY:
+                continue
             item.checked = checked
             if item.check_box is not None:
                 item.check_box.blockSignals(True)
@@ -704,11 +773,15 @@ class BatchTab(QWidget):
             item.row_frame = None
         if item in self._items:
             self._items.remove(item)
+        # Also drop it from a running sequential download, otherwise a row the
+        # user deleted still got submitted when its turn came.
+        if item in self._seq_queue:
+            self._seq_queue.remove(item)
         if not self._items:
             self._add_empty_label()
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.queue_all"))
-            self._status_lbl.setText("")
+            self._set_status(None)
         self._update_queue_btn_count()
 
     # ── Queue All ─────────────────────────────────────────────────────────────
@@ -726,9 +799,12 @@ class BatchTab(QWidget):
             self._seq_queue = to_submit[:]
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.downloading_sequential"))
-            self._status_lbl.setText(t("batch.sequential_status", count=len(to_submit)))
-            self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
+            _n = len(to_submit)
+            self._set_status(lambda: (t("batch.sequential_status", count=_n), T.text3))
             self._submit_next_sequential(format_id, output_ext)
+            # Once, on the first video.  Doing it per item yanked the user off
+            # whatever tab they were on every couple of seconds for the whole run.
+            self._app.navigate_to("queue")
         else:
             queued = 0
             for item in to_submit:
@@ -738,9 +814,16 @@ class BatchTab(QWidget):
                 self._app.toast(t("batch.queued_toast", count=queued), "success")
                 self._queue_all_btn.setEnabled(False)
                 self._queue_all_btn.setText(t("batch.queue_added"))
-                self._status_lbl.setText(t("batch.queue_added_summary", count=queued))
-                self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
+                self._set_status(lambda: (t("batch.queue_added_summary", count=queued), T.success_text))
                 self._app.navigate_to("queue")
+            else:
+                # Every submission raised.  Without this the button stayed on
+                # "Add N videos" and the status line still claimed N were ready,
+                # so the click looked like it had simply done nothing.
+                failed = len(to_submit)
+                self._app.toast(t("batch.queue_all_failed", count=failed), "error")
+                self._set_status(lambda: (t("batch.queue_all_failed", count=failed), T.error_text))
+                self._update_queue_btn_count()
 
     def _submit_one(self, item: _BatchItem, format_id: str, output_ext: str) -> str | None:
         try:
@@ -765,8 +848,7 @@ class BatchTab(QWidget):
         if not self._seq_queue:
             self._stop_seq_timer()
             self._queue_all_btn.setText(t("batch.sequential_done_btn"))
-            self._status_lbl.setText(t("batch.sequential_done_status"))
-            self._status_lbl.setStyleSheet(f"color: {T.success_text}; font-size: 12px;")
+            self._set_status(lambda: (t("batch.sequential_done_status"), T.success_text))
             return
 
         if not format_id:
@@ -780,7 +862,6 @@ class BatchTab(QWidget):
         remaining = len(self._seq_queue)
         if remaining:
             self._app.toast(t("batch.sequential_toast", remaining=remaining), "info")
-        self._app.navigate_to("queue")
         self._start_seq_timer()
 
     def _start_seq_timer(self) -> None:
@@ -827,12 +908,46 @@ class BatchTab(QWidget):
         self._retry_btn.setText(t("batch.retry_errors"))
         self._analyse_btn.setEnabled(False)
         self._analyse_btn.setText(t("batch.retrying_dots"))
+        self._cancel_btn.setVisible(True)
         self._queue_all_btn.setEnabled(False)
-        self._status_lbl.setText(t("batch.retrying_urls", count=len(error_items)))
-        self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px;")
+        _n = len(error_items)
+        self._set_status(lambda: (t("batch.retrying_urls", count=_n), T.text3))
 
         self._analyse_next(my_token)
-        self._tick_spinner(my_token)
+
+    # ── Cancel analysis ───────────────────────────────────────────────────────
+
+    def _cancel_analyse(self) -> None:
+        """Stop an in-flight analysis pass and keep the rows already finished.
+
+        The worker threads are not interruptible, so the pass is abandoned by
+        bumping the token: every callback still in flight sees a stale token and
+        returns without touching the UI.
+        """
+        if self._analysing_count == 0:
+            return
+
+        self._batch_token += 1
+        self._analysing_count = 0
+        self._spinner_token = None
+
+        for item in self._items:
+            if item.state == _ItemState.ANALYSING:
+                item.state = _ItemState.PENDING
+                self._refresh_item_ui(item)
+
+        self._cancel_btn.setVisible(False)
+        self._analyse_btn.setEnabled(bool(self._parse_textarea()))
+        self._analyse_btn.setText(t("toolbar.analyse"))
+
+        errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
+        self._retry_btn.setEnabled(errors > 0)
+        self._retry_btn.setText(
+            t("batch.retry_count", count=errors) if errors else t("batch.retry_errors")
+        )
+
+        self._set_status(lambda: (t("batch.analyse_stopped"), T.text3))
+        self._update_queue_btn_count()
 
     # ── Clear all ─────────────────────────────────────────────────────────────
 
@@ -849,6 +964,7 @@ class BatchTab(QWidget):
                 item_w.widget().deleteLater()
         self._items.clear()
 
+        self._cancel_btn.setVisible(False)
         self._analyse_btn.setEnabled(False)
         self._analyse_btn.setText(t("toolbar.analyse"))
         self._queue_all_btn.setEnabled(False)
@@ -856,7 +972,7 @@ class BatchTab(QWidget):
         self._retry_btn.setEnabled(False)
         self._retry_btn.setText(t("batch.retry_errors"))
         self._url_count_lbl.setText("")
-        self._status_lbl.setText("")
+        self._set_status(None)
         self._select_all_chk.setVisible(False)
         self._sequential_chk.setVisible(False)
         self._add_empty_label()
@@ -892,6 +1008,7 @@ class BatchTab(QWidget):
         self._hint_lbl.setText(t("batch.hint", max=MAX_BATCH_URLS))
         self._import_btn.setText(t("batch.import_txt"))
         self._clear_btn.setText(t("batch.clear_all"))
+        self._cancel_btn.setText(t("batch.cancel_analyse"))
         self._results_lbl.setText(t("batch.results_title"))
         self._select_all_chk.setText(t("batch.select_all"))
         self._sequential_chk.setText(t("batch.sequential"))
@@ -899,6 +1016,7 @@ class BatchTab(QWidget):
         self._format_lbl.setText(t("archive.format_label"))
         if self._empty_lbl is not None and not self._items:
             self._empty_lbl.setText(t("batch.empty"))
+        self._render_status()
 
         # Buttons carry transient, state-dependent text (analysing spinner,
         # sequential-download progress) — only safe to rewrite while idle,

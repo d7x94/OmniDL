@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING, Optional
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import MediaInfo
+from utils.facebook_live_checker import (
+    extract_facebook_username,
+    is_facebook_profile_url,
+)
 from utils.helpers import is_valid_url
+from utils.i18n import t
 from utils.instagram_live_checker import (
     extract_instagram_username,
     is_instagram_profile_url,
@@ -191,11 +196,11 @@ class LiveMonitorService:
     def add_url(self, url: str) -> dict:
         url = (url or "").strip()
         if not is_valid_url(url):
-            raise ValueError("URL không hợp lệ — phải bắt đầu bằng http:// hoặc https://")
+            raise ValueError(t("err.invalid_url_scheme"))
 
         with self._lock:
-            if len(self._items) >= MAX_MONITOR_URLS:
-                raise ValueError(f"Đã đạt giới hạn {MAX_MONITOR_URLS} URL.")
+            if self._active_count() >= MAX_MONITOR_URLS:
+                raise ValueError(t("err.monitor_limit", count=MAX_MONITOR_URLS))
 
             url, is_profile, profile_platform, username = self._classify(url)
 
@@ -209,16 +214,18 @@ class LiveMonitorService:
                     and i.username == username
                 )
                 if i.url == url or same_profile:
-                    raise ValueError("URL này đang được theo dõi.")
+                    raise ValueError(t("err.already_monitored"))
 
             if profile_platform == "instagram":
                 from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
 
                 if not _resolve_cookie("https://www.instagram.com/", self._config):
-                    raise ValueError(
-                        "Profile watcher cần cookie file Instagram. "
-                        "Cấu hình trong Settings → Network → Cookie file."
-                    )
+                    raise ValueError(t("err.profile_watch_needs_ig_cookie"))
+            elif profile_platform == "facebook":
+                from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+
+                if not _resolve_cookie("https://www.facebook.com/", self._config):
+                    raise ValueError(t("err.profile_watch_needs_fb_cookie"))
 
             item = MonitorItem(
                 url=url,
@@ -263,7 +270,10 @@ class LiveMonitorService:
                     logger.warning("LiveMonitor: cancel failed: %s", exc)
             item.task_id = None
             item.state = WAITING
-            item.last_check = 0.0
+            # Wait a full interval before re-checking: zeroing this made the
+            # next poll (<=5s) re-detect the still-running stream and restart
+            # the recording the user just stopped.
+            item.last_check = time.time()
             self._emit(item)
             return True
 
@@ -298,12 +308,19 @@ class LiveMonitorService:
                 item.consecutive_failures = 0
                 self._emit(item)
             elif item.state in (CHECKING, LIVE):
-                item.last_check = 0.0
+                # A check is already in flight -- only lift the rate-limit gate.
+                # Zeroing last_check here made _recover_stuck_checks see an
+                # elapsed of ~now seconds and kill the live check immediately.
                 item.rate_limited_until = 0.0
             # RECORDING: noop — stream is already being captured
             return True
 
     # ── Helpers ────────────────────────────────────────────────────────────
+    def _active_count(self) -> int:
+        # ENDED / ERROR rows are history, not watches -- counting them against
+        # the cap silently killed respawned profile watches after ~20 records.
+        return sum(1 for i in self._items if i.state in _ACTIVE_STATES)
+
     def _find(self, item_id: str) -> Optional[MonitorItem]:
         return next((i for i in self._items if i.id == item_id), None)
 
@@ -333,6 +350,11 @@ class LiveMonitorService:
             if not username and not is_short_link:
                 username = extract_tiktok_username(url) or ""
             return url, True, "tiktok", username
+        if is_facebook_profile_url(url):
+            username = extract_facebook_username(url) or ""
+            # Normalise the /live tab back to the plain page URL so the same
+            # page added twice (with and without /live) is caught as duplicate.
+            return f"https://www.facebook.com/{username}", True, "facebook", username
         return url, False, "", ""
 
     # ── Poll loop ──────────────────────────────────────────────────────────
@@ -356,6 +378,15 @@ class LiveMonitorService:
                 continue
             snap = task.snapshot()
             status = snap.get("status")
+            if status not in (
+                DownloadStatus.COMPLETED,
+                DownloadStatus.FAILED,
+                DownloadStatus.CANCELLED,
+            ):
+                # Still downloading -- nothing in to_dict() has changed, and the
+                # payload carries no progress, so an emit here is pure SSE noise
+                # (one full re-render per client every _POLL_S per item).
+                continue
             if status == DownloadStatus.COMPLETED:
                 item.state = ENDED
                 item.filename = snap.get("filename", "") or ""
@@ -367,18 +398,18 @@ class LiveMonitorService:
                 item.consecutive_failures += 1
                 if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     item.state = ERROR
-                    item.error_msg = snap.get("error_msg", "Tải xuống thất bại")
+                    item.error_msg = snap.get("error_msg") or t("err.download_failed")
                 else:
                     item.state = WAITING
                     item.last_check = time.time()
                     item.error_msg = ""
             elif status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED):
                 item.state = ERROR
-                item.error_msg = snap.get("error_msg", "Tải xuống thất bại")
+                item.error_msg = snap.get("error_msg") or t("err.download_failed")
             self._emit(item)
 
     def _respawn_watch(self, finished: MonitorItem) -> None:
-        if not finished.watch_url or len(self._items) >= MAX_MONITOR_URLS:
+        if not finished.watch_url or self._active_count() >= MAX_MONITOR_URLS:
             return
         for i in self._items:
             if (
@@ -413,7 +444,7 @@ class LiveMonitorService:
             item.consecutive_failures += 1
             if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 item.state = ERROR
-                item.error_msg = "Kiểm tra bị treo. Thử lại hoặc kiểm tra kết nối mạng."
+                item.error_msg = t("err.check_stuck")
             else:
                 item.state = WAITING
             self._emit(item)
@@ -458,6 +489,10 @@ class LiveMonitorService:
 
             if item.profile_platform == "tiktok":
                 self._service.check_tiktok_profile_live(
+                    url=item.url, on_done=on_profile_done, on_error=on_err
+                )
+            elif item.profile_platform == "facebook":
+                self._service.check_facebook_profile_live(
                     url=item.url, on_done=on_profile_done, on_error=on_err
                 )
             else:
@@ -600,7 +635,7 @@ class LiveMonitorService:
                 item.consecutive_failures += 1
                 if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     item.state = ERROR
-                    item.error_msg = f"Đã thử {item.consecutive_failures} lần thất bại. Lỗi cuối: {err[:80]}"
+                    item.error_msg = t("err.attempts_failed", count=item.consecutive_failures, err=err[:80])
                 else:
                     item.state = WAITING
                     item.error_msg = ""

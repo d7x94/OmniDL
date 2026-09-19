@@ -23,6 +23,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from utils.i18n import t
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -389,12 +390,14 @@ class TestNetworkErrors:
     def test_connection_error(self):
         # curl_cffi exceptions are not requests.exceptions subclasses — the
         # checker matches by message substring instead.
-        with pytest.raises(RuntimeError, match="kết nối"):
+        with pytest.raises(RuntimeError) as excinfo:
             self._run_with_session_error(Exception("Connection refused"))
+        assert str(excinfo.value) == t("err.network", err="Connection refused")
 
     def test_timeout_error(self):
-        with pytest.raises(RuntimeError, match="thời gian"):
+        with pytest.raises(RuntimeError) as excinfo:
             self._run_with_session_error(Exception("Request timeout"))
+        assert str(excinfo.value) == t("err.ig_api_timeout")
 
     def test_generic_request_error(self):
         with pytest.raises(RuntimeError, match="HTTP"):

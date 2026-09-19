@@ -95,9 +95,7 @@ _EXT_REJECTED_CODECS: dict[str, frozenset[str]] = {
 # Extensions that may be used as a *source* for an audio-only (mp3) job.
 # Video sources come from SUPPORTED_EXTS; these are the audio containers a
 # user can reasonably ask to re-encode as MP3 from the file browser.
-_AUDIO_SOURCE_EXTS: frozenset[str] = frozenset(
-    {"mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma"}
-)
+_AUDIO_SOURCE_EXTS: frozenset[str] = frozenset({"mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma"})
 _CRF_MIN, _CRF_MAX = 0, 51
 
 # Maximum number of jobs kept in memory (oldest terminal jobs purged first)
@@ -164,9 +162,15 @@ class RemoteConvertService:
         # callers (tests, older startup paths) are not broken.
         self._taildrop = taildrop
         # Dedicated queue — completely separate from desktop ConvertQueue.
-        # max_workers=2: allows two simultaneous remote conversions without
-        # overwhelming CPU on a typical laptop.
-        self._queue = ConvertQueue(max_concurrent=2)
+        # Seeded from config so the desktop Convert tab's "Parallel" setting
+        # and the Remote API agree on how many FFmpeg processes may run.
+        try:
+            _parallel = int(config.convert_max_concurrent)
+        except (AttributeError, TypeError, ValueError):
+            _parallel = 2
+        self._queue = ConvertQueue(
+            max_concurrent=max(1, min(ConvertQueue.MAX_CONCURRENT_LIMIT, _parallel))
+        )
         self._jobs: dict[str, ConversionJob] = {}
         self._lock = threading.RLock()
 
@@ -248,9 +252,7 @@ class RemoteConvertService:
             )
         if not subtitles_only:
             _src_ext = file_path.suffix.lower().lstrip(".")
-            _allowed_src = (
-                SUPPORTED_EXTS | _AUDIO_SOURCE_EXTS if target_ext == "mp3" else SUPPORTED_EXTS
-            )
+            _allowed_src = SUPPORTED_EXTS | _AUDIO_SOURCE_EXTS if target_ext == "mp3" else SUPPORTED_EXTS
             if _src_ext not in _allowed_src:
                 # Without this an image, archive or subtitle file picked from
                 # the file browser queued a job that always died on a raw
@@ -407,6 +409,13 @@ class RemoteConvertService:
         # call it.  We also wire the job's own cancel_event to it so the
         # watchdog in FfmpegConvertService sees the signal immediately.
         job._cancel_fn = _cancel_fn  # type: ignore[attr-defined]
+        # The job is reachable through get_job() from the moment it lands in
+        # _jobs, which is before submit() returns.  A cancel arriving in that
+        # window found _cancel_fn still None, so it set only the job's own flag
+        # and the ConvertQueue worker never saw it: FFmpeg ran to completion and
+        # the job then reported CANCELLED with a finished file on disk.
+        if job.is_cancel_requested:
+            _cancel_fn()
 
         return job
 
@@ -544,6 +553,18 @@ class RemoteConvertService:
             except FileNotFoundError:
                 job.output_deleted = True
                 return True, ""
+            except PermissionError as exc:
+                # Windows refuses to unlink while another process still holds
+                # the file open — most often this app's own Taildrop transfer,
+                # which is queued the instant the conversion completes and can
+                # take a minute for a 400 MB recording. The lock clears on its
+                # own, so this is a retry-shortly condition, not an error.
+                logger.warning(
+                    "delete_convert_file: '%s' is locked by another process: %s",
+                    out_path.name,
+                    exc,
+                )
+                return False, f"File is in use by another process: {out_path.name}"
             except OSError as exc:
                 logger.error("delete_convert_file: failed to delete '%s': %s", out_path, exc)
                 return False, str(exc)
@@ -581,6 +602,17 @@ class RemoteConvertService:
     def get_all_jobs(self) -> list[ConversionJob]:
         with self._lock:
             return list(self._jobs.values())
+
+    @property
+    def max_concurrent(self) -> int:
+        """How many conversions this service runs in parallel."""
+        return self._queue.max_concurrent
+
+    def set_max_concurrent(self, value: int) -> int:
+        """Change the parallel limit and persist it; returns the applied value."""
+        applied = self._queue.set_max_concurrent(value)
+        self._config.set("convert_max_concurrent", applied)
+        return applied
 
     def get_available_encoders(self) -> list[tuple[str, str]]:
         """

@@ -1,4 +1,4 @@
-# OmniDL v19.0.0
+# OmniDL v20.3.2
 
 A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
 
@@ -6,11 +6,15 @@ A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, 
 
 - **Download** video, audio, and images from 1000+ platforms via yt-dlp and gallery-dl
 - **Batch download** — paste multiple URLs; per-platform delays avoid rate-limiting
-- **Special downloads** — Facebook Story, Instagram Live via CDP (Chrome DevTools Protocol)
-- **Live stream monitor** — auto-record when a stream goes live; watch Instagram profiles (needs cookie) or TikTok profiles (no cookie needed)
+- **Special downloads** — Facebook Story, Instagram Live via CDP (Chrome DevTools Protocol); a Story queued from the Download tab is saved into that task's own output folder
+- **Facebook photos, albums and feed posts** — photo posts, `/photo/?fbid=`, `/share/p/` links and full albums (`/media/set/?set=`) download through gallery-dl; each post lands in its own folder. A feed post (`story.php`, `permalink.php`, `/<user>/posts/<id>`) runs both engines: gallery-dl saves the images, then a yt-dlp pass picks up any video or photo-with-music item in the same post
+- **Live stream monitor** — auto-record when a stream goes live; watch Instagram profiles (needs cookie), TikTok profiles (no cookie needed), or Facebook pages / profiles (needs cookie)
 - **Convert** downloaded files to MP4, MP3, MKV, AVI with FFmpeg (GPU-accelerated where available)
 - **Video editor** — preview, trim, rotate, mute downloaded files
 - **Archive** — compress files to 7z/ZIP (optional password), extract existing archives
+- **Documents** — convert Markdown ↔ PDF, HTML ↔ PDF and Office ↔ PDF (desktop tab + Remote API); see [Document conversion](#document-conversion)
+- **TikTok account pool** — add several TikTok cookies, one per browser profile; each is health-checked (signed in / expired / duplicate) before it is accepted, and can be renamed or refreshed in place
+- **Multi-language UI** — English, Vietnamese and Chinese, in both the desktop app and the PWA; engine and download errors are translated too
 - **Cookie management** per platform — browser import, yt-dlp extraction, or CDP extraction (Brave/Chrome 127+); encrypted at rest; orphan cleanup on method switch
 - **Taildrop file transfer** — send files to iPhone or any Tailscale node, multi-device
 - **Post-download actions** — convert, send via Taildrop, or delete directly from the queue
@@ -23,8 +27,9 @@ domain/          Pure business models (DownloadTask, MediaInfo, enums). No exter
 app/             Use-cases, EventBus, DownloadService. Orchestration only.
 infrastructure/  yt-dlp engine, download manager, account_pool, config, history. Side effects here.
 ui/              PySide6 tabs and widgets. Consumes app/service layer only.
-utils/           Pure helpers — ffmpeg_locator, helpers, logger,
-                 tiktok_live_checker, tiktok_detection/. No omnidl imports.
+utils/           Pure helpers — ffmpeg_locator, helpers, logger, tiktok_live_checker,
+                 instagram_live_checker, facebook_live_checker, tiktok_detection/.
+                 No omnidl imports.
 tests/           pytest unit tests. Mock-only — no real network or subprocess.
 ```
 
@@ -108,7 +113,7 @@ Create a shortcut to `OmniDL.exe`, press `Win + R`, type `shell:startup`, and dr
 | Safari can't load `http://my-laptop:8765` | Tailscale off, or devices on different accounts | Check the Tailscale app, confirm same tailnet |
 | "Unauthorized" in the Remote App | Wrong or missing token | Settings → Remote API → copy token, re-enter it |
 | iPhone missing from Detect nodes | iPhone's Tailscale is off or offline | Open Tailscale on iPhone, confirm connected |
-| Taildrop fails with `400 Bad Request` | Unusual characters in filename | OmniDL sanitizes names automatically; if it still fails, update Tailscale on iPhone |
+| Taildrop fails with `400 Bad Request` | Unusual characters in filename | OmniDL sends the full Unicode name first and retries once with an ASCII transliteration; if it still fails, update Tailscale on iPhone |
 | File sent but no notification | iOS notifications disabled for Tailscale | iPhone Settings → Notifications → Tailscale → allow |
 | Remote App slow / SSE drops | Unstable Tailscale connection | Switch to relay mode in Tailscale settings |
 
@@ -160,7 +165,7 @@ Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 |---|---|---|
 | pyside6 | >=6.7 | GUI framework |
 | yt-dlp | >=2025.1.1 | Download engine (video / live) |
-| gallery-dl | >=1.32.1 | Image/gallery download engine (Instagram photos, Twitter images) |
+| gallery-dl | >=1.32.1 | Image/gallery download engine (Instagram photos, Facebook photos/albums, Twitter images) |
 | requests | >=2.31.0 | HTTP client |
 | packaging | >=23.0 | Version utilities |
 | playwright | >=1.40 | Facebook Story + Instagram Live CDP via `connect_over_cdp()` |
@@ -174,6 +179,9 @@ Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 | ffmpeg-python | >=0.2.0 | FFmpeg command construction |
 | py7zr | >=0.21.0 | 7z archive compression/extraction |
 | pyzipper | >=0.3.6 | Password-protected ZIP compression/extraction |
+| weasyprint | >=69.0 | HTML → PDF rendering for the Documents tab |
+| markdown | >=3.6 | Markdown → HTML for the Documents tab |
+| pypdf | >=4.2.0 | PDF text extraction (PDF → Markdown/HTML) |
 
 **Optional — Remote API** (needed only when `api_enabled=True`, via `uv sync --extra api`):
 
@@ -184,6 +192,44 @@ Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 
 Dev/build deps live in the `dev` and `build` optional groups in `pyproject.toml` (`uv sync --extra dev`).
 
+## Document conversion
+
+The **Documents** tab (and `POST /api/docs/convert`) converts between document
+formats. Seven routes are supported:
+
+| From | To | Back-end |
+|---|---|---|
+| Markdown (`.md`, `.markdown`, …) | PDF | `markdown` + WeasyPrint |
+| Markdown | HTML | `markdown` |
+| HTML (`.html`, `.htm`, `.xhtml`) | PDF | WeasyPrint |
+| PDF | Markdown | `pypdf` |
+| PDF | HTML | `pypdf` |
+| PDF | DOCX | LibreOffice |
+| Office (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.rtf`, `.csv`, …) | PDF | LibreOffice |
+
+Two back-ends are **optional**, and OmniDL degrades gracefully without them —
+`GET /api/docs/capabilities` reports what the host can do, the desktop tab greys
+out the rest, and the API answers `503` with a plain-language reason:
+
+- **LibreOffice** — required for every Office route. Not bundled (it is a ~700 MB
+  suite); install it from [libreoffice.org](https://www.libreoffice.org/) and the
+  tab's **Re-check** button picks it up without restarting OmniDL.
+- **Pango / GTK** — WeasyPrint loads Pango, HarfBuzz and fontconfig at import time.
+  Linux and macOS package managers ship these; on **Windows** install the
+  [GTK for Windows Runtime](https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer)
+  to enable Markdown/HTML → PDF.
+
+**Scanned PDFs are not supported.** PDF → Markdown/HTML extracts the text layer;
+a PDF with no selectable text fails with a clear message rather than producing an
+empty file. There is no OCR.
+
+**Security.** A document can reference remote or arbitrary local resources through
+`<img>`, `<link>`, `@import` or a CSS `url()`. The renderer allows only `data:`
+URIs and files inside the source document's own folder; anything else is refused,
+logged, and skipped (the page still renders without it). Over the Remote API both
+`source_path` and `out_dir` are confined to `download_dir`, sources over 200 MiB
+are rejected, and concurrency is bounded to 2.
+
 ## Data Directory
 
 | OS | Path |
@@ -193,7 +239,12 @@ Dev/build deps live in the `dev` and `build` optional groups in `pyproject.toml`
 | Linux | `~/.local/share/OmniDL/` |
 
 Cookie files live in `<data_dir>/cookies/` and are encrypted at rest (DPAPI on Windows, Fernet on macOS).
-Logs go to `<data_dir>/logs/omnidl_run.log`, rotated at 5 MB with 3 backups kept.
+Logs go to the platform log directory (`%LOCALAPPDATA%\OmniDL\Logs\` on Windows,
+`~/Library/Logs/OmniDL/` on macOS, `~/.local/state/OmniDL/log/` on Linux):
+`omnidl.log` at INFO always, plus `omnidl_debug.log` at DEBUG when *Verbose logging*
+is on in Settings. Both rotate at 5 MB with 3 files kept. `omnidl.log` is reserved for
+events worth keeping (tasks, transfers, errors); per-poll chatter such as cookie
+resolution only goes to `omnidl_debug.log`, so the rotation budget is not spent on it.
 
 ## Remote API Endpoints
 
@@ -201,11 +252,12 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/ping` | Health check |
+| GET | `/api/ping` | Health check — returns the app version and the `facebook_story` capability flag (Story capture needs a local Brave/Chrome, so it is `true` only on Windows and macOS) |
 | POST | `/api/analyse` | Analyze a URL, return MediaInfo |
 | GET | `/api/analyse/stream` | Analyze a URL over SSE (live progress) |
 | POST | `/api/clipboard/analyse` | Analyze the URL currently on the clipboard |
 | POST | `/api/download` | Start a download |
+| POST | `/api/download/batch` | Enqueue up to 500 downloads in one call (Batch tab) |
 | GET | `/api/queue` | List all tasks |
 | GET | `/api/queue/{task_id}` | Get one task's status |
 | POST | `/api/queue/{task_id}/pause` | Pause a task |
@@ -220,6 +272,8 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 | GET | `/api/queue/{task_id}/fileinfo` | File metadata (name, size, existence) |
 | GET | `/api/convert/encoders` | List available GPU/CPU encoders |
 | GET | `/api/convert/codecs` | List output codecs + subtitle support this FFmpeg build has |
+| GET | `/api/convert/concurrency` | Current parallel-conversion limit and the server maximum |
+| POST | `/api/convert/concurrency` | Set how many conversions run at once (1-8, persisted) |
 | POST | `/api/queue/{task_id}/convert` | Start a convert job |
 | POST | `/api/queue/{task_id}/subtitles` | Generate subtitles (.srt) only, no re-encode |
 | GET | `/api/convert/{job_id}` | Get a convert job's status |
@@ -231,6 +285,7 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 | DELETE | `/api/history/{task_id}` | Delete one history entry |
 | GET | `/api/files/browse` | Browse files/folders on the computer |
 | POST | `/api/files/convert` | Convert an arbitrary file (outside the queue) |
+| POST | `/api/files/convert/batch` | Queue up to 100 files with one set of settings |
 | POST | `/api/files/subtitles` | Generate subtitles (.srt) for an arbitrary file |
 | DELETE | `/api/files/delete` | Delete a file by path |
 | GET | `/api/files/serve` | Stream a file by absolute path |
@@ -239,8 +294,10 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 | POST | `/api/archive/compress` | Compress files to 7z/ZIP (optional password) |
 | POST | `/api/archive/extract` | Extract an archive |
 | POST | `/api/archive/contents` | Preview an archive's contents before extracting |
+| GET | `/api/docs/capabilities` | Report which document-conversion back-ends the host has |
+| POST | `/api/docs/convert` | Convert a document (Markdown/HTML/Office ↔ PDF) |
 | GET | `/api/monitor` | List watched live streams |
-| POST | `/api/monitor` | Add a profile/URL to the live monitor |
+| POST | `/api/monitor` | Add a profile/URL to the live monitor (TikTok, Instagram, Facebook page/profile, or a direct live URL) |
 | POST | `/api/monitor/interval` | Set the live-check interval |
 | DELETE | `/api/monitor/{item_id}` | Stop watching |
 | POST | `/api/monitor/{item_id}/cancel` | Stop recording, keep watching |

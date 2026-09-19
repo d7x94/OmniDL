@@ -61,6 +61,7 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
                 timeout=10,
             )
         except Exception as exc:  # noqa: BLE001
+            ctx.network_error = True
             logger.debug("tiktok_detection: @%s pass-4 network error: %s", ctx.username, exc)
             return None
         finally:
@@ -76,6 +77,7 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
             data = json.loads(resp.text)
         except ValueError:
             if not resp.text.strip():
+                ctx.unavailable = True
                 logger.debug("tiktok_detection: @%s pass-4 empty body (bot-detection)", ctx.username)
             return None
 
@@ -89,6 +91,28 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
         if status is None:
             status = room.get("liveRoom", {}).get("status")
         if status != 2:
+            # BUG-TT-PASS4-ENDED FIX: this endpoint is the canonical live
+            # status, but its verdict stayed local to pass-4.  Pass-1/pass-2
+            # kept reading the finished broadcast's roomId out of the page and
+            # check_alive kept answering alive=True for it, so the dispatcher
+            # announced "LIVE" every poll for an account pass-4 had already
+            # reported as ended (@tiktok room 7679022730909469458, every 5 min
+            # for the whole 10:55-11:26 window of omnidl_debug.log).  Publish
+            # the verdict to the shared ended-room set the page passes consult.
+            if status in (4, 5):
+                stale_room = _valid_room_id(user.get("roomId")) or _valid_room_id(
+                    room.get("liveRoom", {}).get("id_str") or room.get("liveRoom", {}).get("id")
+                )
+                if stale_room:
+                    from utils.tiktok_live_checker import _mark_room_ended
+
+                    _mark_room_ended(stale_room)
+                    logger.debug(
+                        "tiktok_detection: @%s pass-4 status=%s — marked room %s ended",
+                        ctx.username,
+                        status,
+                        stale_room,
+                    )
             logger.debug("tiktok_detection: @%s pass-4 status=%s (not live)", ctx.username, status)
             return None
 

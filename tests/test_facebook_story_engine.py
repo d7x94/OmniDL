@@ -22,6 +22,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from utils.i18n import t
 
 from infrastructure.downloader.facebook_story_engine import (
     _full_video_url,
@@ -552,8 +553,9 @@ class TestFindBrowserExe:
         from infrastructure.downloader import facebook_story_engine as eng
 
         monkeypatch.setattr(eng.Path, "exists", lambda self: False)
-        with pytest.raises(RuntimeError, match="Không tìm thấy"):
+        with pytest.raises(RuntimeError) as excinfo:
             eng._find_browser_exe("brave")
+        assert str(excinfo.value) == t("err.browser_not_found_cdp", browser="Brave")
 
     def test_macos_not_found_raises(self, monkeypatch):
         import sys
@@ -562,8 +564,9 @@ class TestFindBrowserExe:
         from infrastructure.downloader import facebook_story_engine as eng
 
         monkeypatch.setattr(eng.Path, "exists", lambda self: False)
-        with pytest.raises(RuntimeError, match="Không tìm thấy"):
+        with pytest.raises(RuntimeError) as excinfo:
             eng._find_browser_exe("chrome")
+        assert str(excinfo.value) == t("err.browser_not_found_cdp", browser="Chrome")
 
     def test_linux_raises_not_supported(self, monkeypatch):
         import sys

@@ -140,7 +140,24 @@
       -webkit-tap-highlight-color: transparent;
       position: relative;
     }
-    .tab-btn svg { width: 20px; height: 20px; }
+    .tab-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+    /* Six tabs leave ~55px per button on a narrow phone — without this
+       "Live Monitor" spills over its neighbours. */
+    .tab-btn span:not(#queue-badge) {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .doc-caps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .doc-cap { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    .doc-cap.ok   { color: var(--success); border-color: var(--success); }
+    .doc-cap.miss { color: var(--text3); }
+    .doc-hint { font-size: 11px; color: var(--text3); margin-top: 8px; }
+    .doc-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+    .doc-actions select { flex: 1 1 120px; min-width: 110px; }
+    .doc-result { margin-top: 6px; font-size: 12px; color: var(--success); word-break: break-all; }
+    .doc-error  { margin-top: 6px; font-size: 12px; color: var(--danger); word-break: break-all; }
     .tab-btn.active { color: var(--accent); }
     .tab-btn.active::after {
       content: "";
@@ -787,6 +804,15 @@
       text-overflow: ellipsis;
     }
     #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    /* Error toasts carry a server message that is often longer than one line —
+       drop the nowrap/ellipsis so it is readable instead of silently cut. */
+    #toast.error {
+      background: rgba(239, 68, 68, .16);
+      border-color: var(--danger);
+      color: var(--danger);
+      white-space: normal;
+      text-overflow: clip;
+    }
 
     /* ── Spinner ──────────────────────────────────────────────────────── */
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -819,6 +845,22 @@
       gap: 8px;
       padding: 6px 0 10px;
       align-items: center;
+    }
+    .fb-batchbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface2);
+    }
+    .fb-batchcount { flex: 1; font-size: 13px; color: var(--text2); }
+    .fb-selcheck {
+      width: 20px; height: 20px; accent-color: var(--accent);
+      flex-shrink: 0; margin-right: 4px;
     }
     .fb-toolbar input[type="search"] {
       flex: 1;
@@ -884,6 +926,64 @@
       display: flex;
       justify-content: space-between;
     }
+
+    /* ── Batch tab ────────────────────────────────────────────────────── */
+    textarea {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 13px;
+      font-family: inherit;
+      line-height: 1.45;
+      outline: none;
+      resize: vertical;
+      min-height: 120px;
+      -webkit-appearance: none;
+    }
+    textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+    .bt-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .bt-count { font-size: 12px; color: var(--text3); }
+    .bt-spacer { flex: 1; }
+    .bt-opts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .bt-opts label {
+      margin: 0; text-transform: none; letter-spacing: 0; font-size: 12px;
+      font-weight: 500; color: var(--text2);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .bt-opts select {
+      width: auto; padding: 6px 30px 6px 10px; font-size: 13px;
+      background-position: right 10px center;
+    }
+    .bt-status { font-size: 12px; margin-top: 10px; min-height: 16px; }
+    .bt-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+    }
+    .bt-item.ready  { border-color: var(--success); }
+    .bt-item.error  { border-color: var(--danger); }
+    .bt-item.queued { border-color: var(--accent); }
+    .bt-state { width: 18px; flex-shrink: 0; text-align: center; font-size: 13px; }
+    .bt-item.ready  .bt-state { color: var(--success); }
+    .bt-item.error  .bt-state { color: var(--danger); }
+    .bt-item.queued .bt-state { color: var(--accent); }
+    .bt-body { flex: 1; min-width: 0; }
+    .bt-title { font-size: 13px; line-height: 1.3; word-break: break-all; }
+    .bt-sub { font-size: 11px; color: var(--text3); margin-top: 2px; word-break: break-all; }
+    .bt-item.error .bt-sub { color: var(--danger); }
+    .bt-del {
+      background: transparent; border: none; color: var(--text3);
+      font-size: 17px; line-height: 1; cursor: pointer;
+      padding: 4px 6px; flex-shrink: 0; font-family: inherit;
+    }
+    .bt-spin { display: inline-block; animation: bt-spin 1s linear infinite; }
+    @keyframes bt-spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -912,6 +1012,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
       <span data-i18n="nav.queue">Hàng đợi</span>
     </button>
+    <button class="tab-btn" onclick="switchTab('batch',this)" id="tab-batch">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      <span data-i18n="nav.batch">Batch</span>
+    </button>
     <button class="tab-btn" onclick="switchTab('monitor',this)" id="tab-monitor">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
       <span data-i18n="nav.monitor">Live Monitor</span>
@@ -919,6 +1023,10 @@
     <button class="tab-btn" onclick="switchTab('files',this)" id="tab-files">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
       <span data-i18n="nav.files">Tệp tin</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('docs',this)" id="tab-docs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      <span data-i18n="nav.docs">Tài liệu</span>
     </button>
   </nav>
 
@@ -980,12 +1088,70 @@
           <span data-i18n="common.cancel_x">✕ Huỷ</span>
         </button>
         <div id="analyse-status"></div>
+        <button class="btn btn-secondary btn-sm" id="playlist-batch-btn" onclick="sendPlaylistToBatch()"
+                style="margin-top:8px; display:none" data-i18n="dl.send_to_batch">Send to Batch</button>
 
         <button class="btn btn-primary" id="dl-btn" onclick="doDownload()" style="margin-top:12px;" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           <span data-i18n="dl.enqueue">Thêm vào hàng đợi</span>
         </button>
       </div>
+    </div>
+
+    <!-- ── Batch tab ─────────────────────────────────────────────────── -->
+    <div class="tab-panel" id="panel-batch">
+      <div class="card">
+        <label data-i18n="batch.title">Batch download</label>
+        <textarea id="batch-input" oninput="onBatchTextChange()"
+                  autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                  data-i18n-ph="batch.hint" placeholder=""></textarea>
+        <input type="file" id="batch-file" accept=".txt,text/plain" style="display:none"
+               onchange="importBatchFile(this)" />
+        <div class="bt-row">
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('batch-file').click()"
+                  data-i18n="batch.import_txt">Import .txt</button>
+          <button class="btn btn-secondary btn-sm" onclick="clearBatch()"
+                  data-i18n="batch.clear_all">Clear all</button>
+          <span class="bt-count" id="batch-count"></span>
+          <span class="bt-spacer"></span>
+          <button class="btn btn-secondary btn-sm" id="batch-analyse-btn" onclick="startBatchAnalyse()" disabled></button>
+          <button class="btn btn-danger btn-sm" id="batch-cancel-btn" onclick="cancelBatchAnalyse()"
+                  style="display:none" data-i18n="batch.cancel_analyse">Stop analysing</button>
+        </div>
+        <div class="bt-status" id="batch-status"></div>
+      </div>
+
+      <div class="card">
+        <label data-i18n="batch.results_title">Analysis results</label>
+        <div class="bt-opts" id="batch-opts" style="display:none">
+          <label><input type="checkbox" id="batch-select-all" checked onchange="onBatchSelectAll(this.checked)" />
+            <span data-i18n="batch.select_all">Select all</span></label>
+          <label><input type="checkbox" id="batch-sequential" checked />
+            <span data-i18n="batch.sequential">Download sequentially</span></label>
+        </div>
+        <div class="bt-opts">
+          <label><span data-i18n="batch.quality_label">Quality:</span>
+            <select id="batch-quality">
+              <option value="bestvideo+bestaudio/best" data-i18n="dl.q.best">Best</option>
+              <option value="bestvideo[height&lt;=1080]+bestaudio/best[height&lt;=1080]">1080p</option>
+              <option value="bestvideo[height&lt;=720]+bestaudio/best[height&lt;=720]">720p</option>
+              <option value="bestvideo[height&lt;=480]+bestaudio/best[height&lt;=480]">480p</option>
+            </select></label>
+          <label><span data-i18n="batch.format_label">Format:</span>
+            <select id="batch-format">
+              <option value="mp4">MP4</option>
+              <option value="mkv">MKV</option>
+              <option value="webm">WebM</option>
+              <option value="mp3">MP3</option>
+              <option value="m4a">M4A</option>
+            </select></label>
+          <span class="bt-spacer"></span>
+          <button class="btn btn-secondary btn-sm" id="batch-retry-btn" onclick="retryBatchErrors()" disabled></button>
+        </div>
+        <button class="btn btn-primary" id="batch-queue-btn" onclick="queueBatchAll()" disabled></button>
+      </div>
+
+      <div id="batch-list"></div>
     </div>
 
     <!-- ── Queue tab ─────────────────────────────────────────────────── -->
@@ -1010,11 +1176,10 @@
         <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <label for="monitor-interval" style="font-size:12px; color:var(--text3);" data-i18n="mon.interval">Kiểm tra mỗi (giây):</label>
           <select id="monitor-interval" onchange="setMonitorInterval(this.value)" style="font-size:12px;">
-            <option value="15">15</option>
-            <option value="30" selected>30</option>
             <option value="60">60</option>
-            <option value="120">120</option>
+            <option value="180" selected>180</option>
             <option value="300">300</option>
+            <option value="600">600</option>
           </select>
           <button id="monitor-add-btn" class="btn btn-secondary btn-sm" onclick="addMonitorUrl()" style="margin-left:8px;" data-i18n="mon.add">Theo dõi</button>
           <button id="monitor-pause-btn" class="btn btn-secondary btn-sm" onclick="toggleMonitorPause()" style="margin-left:4px;" data-i18n="mon.pause">Tạm ngưng</button>
@@ -1037,8 +1202,32 @@
           <option value="date-desc" data-i18n="fb.sort.date_desc">Mới nhất</option>
           <option value="date-asc" data-i18n="fb.sort.date_asc">Cũ nhất</option>
         </select>
+        <button class="btn btn-secondary btn-sm" id="fb-selmode-btn"
+                onclick="toggleFbSelectMode()" data-i18n="fb.select_mode">☑ Chọn nhiều</button>
+      </div>
+      <div class="fb-batchbar" id="fb-batchbar" style="display:none">
+        <button class="btn btn-secondary btn-sm" onclick="fbSelectAll()" data-i18n="fb.select_all">Chọn tất cả</button>
+        <button class="btn btn-secondary btn-sm" onclick="fbSelectNone()" data-i18n="fb.select_none">Bỏ chọn</button>
+        <span class="fb-batchcount" id="fb-batchcount"></span>
+        <button class="btn btn-primary btn-sm" id="fb-batch-convert-btn"
+                onclick="openBatchConvertSheet()" data-i18n="fb.convert_selected">🎬 Convert đã chọn</button>
       </div>
       <div id="fb-list"></div>
+    </div>
+
+    <!-- ── Documents tab (Markdown / HTML / Office <-> PDF) ───────────── -->
+    <div class="tab-panel" id="panel-docs">
+      <div class="card">
+        <label data-i18n="doc.caps_title">Khả năng của máy chủ</label>
+        <div id="doc-caps" class="doc-caps"></div>
+        <div id="doc-wp-hint" class="doc-hint" data-i18n="doc.weasyprint_hint"></div>
+        <div id="doc-caps-hint" class="doc-hint" data-i18n="doc.libreoffice_hint"></div>
+      </div>
+      <div class="fb-nav" id="doc-nav">
+        <button class="btn btn-secondary btn-sm" id="doc-up-btn" onclick="docBrowseUp()" style="display:none" data-i18n="fb.up">⬆ Lên</button>
+        <div class="fb-path" id="doc-path"></div>
+      </div>
+      <div id="doc-list"></div>
     </div>
 
   </main>
@@ -1127,6 +1316,14 @@
       <div class="cv-hint" data-i18n="cv.vmaf_hint">Điểm 0–100, càng cao càng giống bản gốc. Bật sẽ làm convert lâu gần gấp đôi.</div>
     </div>
 
+    <div class="convert-section" id="cvpar-row" style="display:none">
+      <label data-i18n="cv.parallel">Chạy song song</label>
+      <input type="number" id="cvpar-input" min="1" max="8" step="1" value="2"
+             onchange="onConvertConcurrencyChanged()"
+             style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:14px">
+      <div class="cv-hint" data-i18n="cv.parallel_hint">Số file chuyển đổi cùng lúc. Cao hơn thì nhanh hơn nhưng tốn CPU hơn.</div>
+    </div>
+
     <button class="btn btn-primary" onclick="submitConvert()" style="margin-top:4px" data-i18n="cv.start">
       🎬 Bắt đầu Convert
     </button>
@@ -1211,7 +1408,7 @@
 </div>
 
 <!-- Settings bottom sheet -->
-<div id="settings-overlay" onclick="e => { if(e.target===this) closeSettings(); }">
+<div id="settings-overlay">
   <div id="settings-sheet">
     <div class="sheet-handle"></div>
     <h2 data-i18n="set.title">⚙ Kết nối</h2>
@@ -1243,6 +1440,7 @@
 let cfg  = { host: '', token: '' };
 let tasks = {};          // task_id → task object
 let analysedInfo = null;       // last analyse result
+let analysedUrl  = '';         // URL analysedInfo belongs to — see doDownload()
 let evtSrc = null;             // EventSource instance
 let connected = false;
 let _analyseAbortCtrl = null;  // AbortController for the in-flight analyse fetch
@@ -1252,7 +1450,11 @@ let monitorPaused = false;     // global pause state for live monitor
 let _pendingConvertTaskId = null; // task_id being configured in the convert sheet
 let _pendingFilePath = null;   // absolute file path being configured in convert sheet (Files tab)
 let _fileJobMap = {};          // absolute filePath → job_id (file-based convert jobs)
+let _pendingBatchPaths = null; // absolute paths being configured for a batch convert
+let _fbSelectMode = false;     // Files tab: show the per-file selection checkboxes
+const _fbSelected = new Set(); // absolute paths ticked in select mode
 let _browseData = null;        // last /api/files/browse response (for re-render without re-fetch)
+let _browseSeq = 0;            // request counter — stale browse responses are discarded
 let _availableNodes = [];      // cached from GET /api/nodes
 let _transferFilePath = null;  // path being sent via node picker
 
@@ -1275,6 +1477,64 @@ const I18N = {
     'nav.queue': 'Hàng đợi',
     'nav.monitor': 'Live Monitor',
     'nav.files': 'Tệp tin',
+    'nav.docs': 'Tài liệu',
+    'nav.batch': 'Hàng loạt',
+    'dl.send_to_batch': '⊞ Gửi sang Hàng loạt',
+    'batch.playlist_label_default': 'danh sách phát',
+    'batch.playlist_loaded': 'Đã tải {count} video từ {label} vào Batch.',
+    'batch.title': 'Tải xuống hàng loạt',
+    'batch.hint': 'Dán URL vào đây — mỗi dòng một link (tối đa {max})',
+    'batch.import_txt': 'Nhập .txt',
+    'batch.clear_all': 'Xóa tất cả',
+    'batch.results_title': 'Kết quả phân tích',
+    'batch.select_all': 'Chọn hết',
+    'batch.sequential': 'Tải tuần tự',
+    'batch.quality_label': 'Chất lượng:',
+    'batch.format_label': 'Định dạng:',
+    'batch.retry_errors': 'Thử lại lỗi',
+    'batch.retry_count': 'Thử lại {count} lỗi',
+    'batch.queue_all': 'Thêm tất cả',
+    'batch.queue_add_count': 'Thêm {count} video',
+    'batch.empty': 'Chưa có URL nào — dán link ở trên hoặc import file .txt',
+    'batch.analysing_dots': 'Đang phân tích…',
+    'batch.analysing_progress': 'Đang phân tích {done}/{total}…',
+    'batch.analyse_again': 'Phân tích lại',
+    'batch.retrying_dots': 'Đang thử lại…',
+    'batch.no_valid_urls': 'Không có URL nào hợp lệ ({errors} lỗi)',
+    'batch.ready_summary': '✓  {ready}/{total} sẵn sàng{err_note}',
+    'batch.ready_err_note': '  ·  {errors} lỗi',
+    'batch.retrying_urls': 'Đang thử lại {count} URL lỗi…',
+    'batch.analysis_failed': 'Phân tích thất bại',
+    'batch.import_read_error': 'Không đọc được file: {err}',
+    'batch.import_no_valid': 'Không tìm thấy URL hợp lệ trong file.',
+    'batch.import_done': 'Đã nhập {count} URL',
+    'batch.import_capped': '(giới hạn {max}, bỏ qua {skipped})',
+    'batch.import_invalid': '· {count} dòng không hợp lệ bỏ qua',
+    'batch.url_count': '{count} URL',
+    'batch.url_count_capped': '{count} URL — chỉ lấy {max} đầu tiên',
+    'batch.queued_toast': 'Đã thêm {count} video vào queue.',
+    'batch.queue_added': '✓  Đã thêm vào queue',
+    'batch.queue_added_summary': '✓  {count} video đã được thêm vào queue',
+    'batch.downloading_sequential': '⬇  Đang tải tuần tự…',
+    'batch.sequential_status': 'Tải tuần tự: {count} video',
+    'batch.sequential_toast': 'Đang tải tuần tự — còn {remaining} video.',
+    'batch.sequential_done_btn': '✓  Đã tải xong',
+    'batch.sequential_done_status': '✓  Hoàn tất tải tuần tự',
+    'batch.queue_all_failed': 'Không thêm được video nào vào queue ({count} lỗi)',
+    'batch.cancel_analyse': 'Dừng phân tích',
+    'batch.analyse_stopped': 'Đã dừng phân tích',
+    'doc.caps_title': 'Khả năng của máy chủ',
+    'doc.caps_unknown': 'Chưa xác định',
+    'doc.cap.markdown': 'Markdown → HTML',
+    'doc.cap.weasyprint': 'HTML → PDF',
+    'doc.cap.pypdf': 'PDF → văn bản',
+    'doc.cap.libreoffice': 'Office ↔ PDF',
+    'doc.libreoffice_hint': 'Máy chủ chưa cài LibreOffice — tạm thời không chuyển đổi được Office ↔ PDF.',
+    'doc.weasyprint_hint': 'Máy chủ thiếu thư viện vẽ PDF (Pango/GTK) — tạm thời không chuyển được Markdown/HTML → PDF.',
+    'doc.convert': 'Chuyển đổi',
+    'doc.converting': 'Đang chuyển…',
+    'doc.open': 'Mở',
+    'doc.empty_dir': 'Không có tài liệu nào chuyển đổi được trong thư mục này.',
     'common.cancel': 'Huỷ',
     'common.cancel_x': '✕ Huỷ',
     'common.close_x': '✕ Đóng',
@@ -1287,6 +1547,15 @@ const I18N = {
     'dl.live_banner': '⏺ <strong>Phát trực tiếp được phát hiện</strong> — bộ chọn định dạng &amp; chất lượng bị vô hiệu hóa. Luồng sẽ được ghi lại dưới dạng <code>.ts</code> (MPEG-TS) từ thời điểm này trở đi.',
     'dl.analyse': 'Phân tích',
     'dl.enqueue': 'Thêm vào hàng đợi',
+    'dl.analysing': 'Đang phân tích…',
+    'dl.reconnecting': 'Đang kết nối lại…',
+    'dl.ready': '✓ Sẵn sàng tải xuống',
+    'dl.playlist_detected': 'Đã phát hiện playlist ({n} mục) — sẽ thêm vào hàng đợi thành một tác vụ',
+    'dl.analyse_cancelled': 'Đã huỷ phân tích',
+    'dl.analyse_timeout': 'Phân tích quá thời gian',
+    'dl.analyse_failed': 'Phân tích thất bại',
+    'dl.analyse_bad_response': 'Máy chủ trả về dữ liệu không hợp lệ',
+    'dl.load_failed': 'Tải thất bại',
     'q.select': 'Chọn',
     'q.clear_finished': 'Xóa đã xong',
     'q.clear_selected': 'Xóa đã chọn ({n})',
@@ -1301,12 +1570,27 @@ const I18N = {
     'q.convert': '🎬 Convert',
     'q.cancel_convert': '✕ Huỷ convert',
     'q.adding': 'Đang thêm…',
+    'q.cancelling': 'Đang huỷ…',
+    'q.cleared_finished': 'Đã xoá các tác vụ đã xong',
+    'q.cleared_kept': 'Đã xoá các tác vụ đã xong ({n} giữ lại — đang convert)',
+    'q.sending': '⏳ Đang gửi…',
+    'q.transfer_queued': 'Đã xếp hàng chuyển file',
+    'q.transfer_pending': '📡 Đang chờ…',
+    'q.st.QUEUED': 'Chờ',
+    'q.st.DOWNLOADING': 'Đang tải',
+    'q.st.PROCESSING': 'Đang xử lý',
+    'q.st.PAUSED': 'Tạm dừng',
+    'q.st.COMPLETED': 'Hoàn tất',
+    'q.st.FAILED': 'Thất bại',
+    'q.st.CANCELLED': 'Đã huỷ',
+    'q.st.PARTIAL_SAVED': 'Lưu một phần',
     'mon.label': 'Theo dõi profile / live URL (TikTok, Instagram)',
     'mon.hint': 'Tự động ghi lại dưới dạng <code>.ts</code> khi stream bắt đầu.',
     'mon.interval': 'Kiểm tra mỗi (giây):',
     'mon.add': 'Theo dõi',
     'mon.pause': 'Tạm ngưng',
     'mon.resume': 'Tiếp tục',
+    'mon.paused_tag': 'Đã tạm ngưng',
     'mon.empty': 'Chưa theo dõi stream nào',
     'mon.recording_dots': 'Đang ghi…',
     'mon.saved': 'Đã lưu:',
@@ -1423,6 +1707,8 @@ const I18N = {
     'cv.download_srt': '📝 Tải phụ đề .srt',
     'cv.model_base_default': 'Base (141 MB, cân bằng)',
     'preview.no_video': 'Trình duyệt không hỗ trợ phát video.',
+    'preview.no_audio': 'Trình duyệt không hỗ trợ phát âm thanh.',
+    'preview.title_default': 'Xem trước',
     'fb.no_match': 'Không tìm thấy',
     'fb.empty_dir': 'Thư mục trống',
     'fb.compress': '📦 Nén',
@@ -1430,6 +1716,18 @@ const I18N = {
     'fb.delete_icon': '🗑',
     'fb.preview': '▶ Xem trước',
     'fb.convert': '🎬 Convert',
+    'fb.select_mode': '☑ Chọn nhiều',
+    'fb.select_mode_off': '✕ Thoát chọn',
+    'fb.select_all': 'Chọn tất cả',
+    'fb.select_none': 'Bỏ chọn',
+    'fb.selected_count': 'Đã chọn {n} file',
+    'fb.convert_selected': '🎬 Convert đã chọn',
+    'cv.batch_none': 'Chưa chọn file nào.',
+    'cv.batch_subtitle': '{n} file đã chọn',
+    'cv.batch_queued': '✅ Đã xếp hàng {n} file',
+    'cv.batch_partial': '⚠️ Đã xếp hàng {ok} file, {bad} file lỗi',
+    'cv.parallel': 'Chạy song song',
+    'cv.parallel_hint': 'Số file chuyển đổi cùng lúc. Cao hơn thì nhanh hơn nhưng tốn CPU hơn.',
     'fb.send': '📲 Gửi',
     'fb.rename': '✎ Đổi tên',
     'fb.extract': '📂 Giải nén',
@@ -1442,6 +1740,64 @@ const I18N = {
     'nav.queue': 'Queue',
     'nav.monitor': 'Live Monitor',
     'nav.files': 'Files',
+    'nav.docs': 'Documents',
+    'nav.batch': 'Batch',
+    'dl.send_to_batch': '⊞ Send to Batch',
+    'batch.playlist_label_default': 'playlist',
+    'batch.playlist_loaded': 'Loaded {count} video(s) from {label} into Batch.',
+    'batch.title': 'Batch download',
+    'batch.hint': 'Paste URLs here — one per line (up to {max})',
+    'batch.import_txt': 'Import .txt',
+    'batch.clear_all': 'Clear all',
+    'batch.results_title': 'Analysis results',
+    'batch.select_all': 'Select all',
+    'batch.sequential': 'Download sequentially',
+    'batch.quality_label': 'Quality:',
+    'batch.format_label': 'Format:',
+    'batch.retry_errors': 'Retry errors',
+    'batch.retry_count': 'Retry {count} error(s)',
+    'batch.queue_all': 'Add all',
+    'batch.queue_add_count': 'Add {count} video(s)',
+    'batch.empty': 'No URLs yet — paste links above or import a .txt file',
+    'batch.analysing_dots': 'Analysing…',
+    'batch.analysing_progress': 'Analysing {done}/{total}…',
+    'batch.analyse_again': 'Analyse again',
+    'batch.retrying_dots': 'Retrying…',
+    'batch.no_valid_urls': 'No valid URLs ({errors} error(s))',
+    'batch.ready_summary': '✓  {ready}/{total} ready{err_note}',
+    'batch.ready_err_note': '  ·  {errors} error(s)',
+    'batch.retrying_urls': 'Retrying {count} failed URL(s)…',
+    'batch.analysis_failed': 'Analysis failed',
+    'batch.import_read_error': 'Could not read file: {err}',
+    'batch.import_no_valid': 'No valid URLs found in the file.',
+    'batch.import_done': 'Imported {count} URL(s)',
+    'batch.import_capped': '(capped at {max}, skipped {skipped})',
+    'batch.import_invalid': '· {count} invalid line(s) skipped',
+    'batch.url_count': '{count} URL(s)',
+    'batch.url_count_capped': '{count} URLs — only the first {max} are used',
+    'batch.queued_toast': 'Added {count} video(s) to the queue.',
+    'batch.queue_added': '✓  Added to queue',
+    'batch.queue_added_summary': '✓  {count} video(s) added to the queue',
+    'batch.downloading_sequential': '⬇  Downloading sequentially…',
+    'batch.sequential_status': 'Sequential download: {count} video(s)',
+    'batch.sequential_toast': 'Downloading sequentially — {remaining} video(s) left.',
+    'batch.sequential_done_btn': '✓  Download complete',
+    'batch.sequential_done_status': '✓  Sequential download complete',
+    'batch.queue_all_failed': 'Could not queue any video ({count} error(s))',
+    'batch.cancel_analyse': 'Stop analysing',
+    'batch.analyse_stopped': 'Analysis stopped',
+    'doc.caps_title': 'Server capabilities',
+    'doc.caps_unknown': 'Unknown',
+    'doc.cap.markdown': 'Markdown → HTML',
+    'doc.cap.weasyprint': 'HTML → PDF',
+    'doc.cap.pypdf': 'PDF → text',
+    'doc.cap.libreoffice': 'Office ↔ PDF',
+    'doc.libreoffice_hint': 'LibreOffice is not installed on the server — Office ↔ PDF is unavailable.',
+    'doc.weasyprint_hint': 'The server is missing the PDF rendering libraries (Pango/GTK) — Markdown/HTML → PDF is unavailable.',
+    'doc.convert': 'Convert',
+    'doc.converting': 'Converting…',
+    'doc.open': 'Open',
+    'doc.empty_dir': 'No convertible documents in this folder.',
     'common.cancel': 'Cancel',
     'common.cancel_x': '✕ Cancel',
     'common.close_x': '✕ Close',
@@ -1454,6 +1810,15 @@ const I18N = {
     'dl.live_banner': '⏺ <strong>Live stream detected</strong> — the format &amp; quality pickers are disabled. The stream is recorded as <code>.ts</code> (MPEG-TS) from now on.',
     'dl.analyse': 'Analyse',
     'dl.enqueue': 'Add to queue',
+    'dl.analysing': 'Analysing…',
+    'dl.reconnecting': 'Reconnecting…',
+    'dl.ready': '✓ Ready to download',
+    'dl.playlist_detected': 'Playlist detected ({n} items) — will be queued as a single job',
+    'dl.analyse_cancelled': 'Analysis cancelled',
+    'dl.analyse_timeout': 'Analysis timed out',
+    'dl.analyse_failed': 'Analysis failed',
+    'dl.analyse_bad_response': 'Invalid response from server',
+    'dl.load_failed': 'Load failed',
     'q.select': 'Select',
     'q.clear_finished': 'Clear finished',
     'q.clear_selected': 'Clear selected ({n})',
@@ -1468,12 +1833,27 @@ const I18N = {
     'q.convert': '🎬 Convert',
     'q.cancel_convert': '✕ Cancel convert',
     'q.adding': 'Adding…',
+    'q.cancelling': 'Cancelling…',
+    'q.cleared_finished': 'Cleared finished tasks',
+    'q.cleared_kept': 'Cleared finished tasks ({n} kept — convert in progress)',
+    'q.sending': '⏳ Sending…',
+    'q.transfer_queued': 'Transfer queued',
+    'q.transfer_pending': '📡 Queued…',
+    'q.st.QUEUED': 'Queued',
+    'q.st.DOWNLOADING': 'Downloading',
+    'q.st.PROCESSING': 'Processing',
+    'q.st.PAUSED': 'Paused',
+    'q.st.COMPLETED': 'Completed',
+    'q.st.FAILED': 'Failed',
+    'q.st.CANCELLED': 'Cancelled',
+    'q.st.PARTIAL_SAVED': 'Partially saved',
     'mon.label': 'Watch a profile / live URL (TikTok, Instagram)',
     'mon.hint': 'Records automatically as <code>.ts</code> when the stream starts.',
     'mon.interval': 'Check every (seconds):',
     'mon.add': 'Watch',
     'mon.pause': 'Pause',
     'mon.resume': 'Resume',
+    'mon.paused_tag': 'Paused',
     'mon.empty': 'No streams watched yet',
     'mon.recording_dots': 'Recording…',
     'mon.saved': 'Saved:',
@@ -1590,6 +1970,8 @@ const I18N = {
     'cv.download_srt': '📝 Download .srt subtitles',
     'cv.model_base_default': 'Base (141 MB, balanced)',
     'preview.no_video': 'Your browser cannot play this video.',
+    'preview.no_audio': 'Your browser cannot play this audio.',
+    'preview.title_default': 'Preview',
     'fb.no_match': 'No matches',
     'fb.empty_dir': 'Folder is empty',
     'fb.compress': '📦 Compress',
@@ -1597,6 +1979,18 @@ const I18N = {
     'fb.delete_icon': '🗑',
     'fb.preview': '▶ Preview',
     'fb.convert': '🎬 Convert',
+    'fb.select_mode': '☑ Select many',
+    'fb.select_mode_off': '✕ Exit select',
+    'fb.select_all': 'Select all',
+    'fb.select_none': 'Clear',
+    'fb.selected_count': '{n} file(s) selected',
+    'fb.convert_selected': '🎬 Convert selected',
+    'cv.batch_none': 'No file selected.',
+    'cv.batch_subtitle': '{n} selected file(s)',
+    'cv.batch_queued': '✅ Queued {n} file(s)',
+    'cv.batch_partial': '⚠️ Queued {ok} file(s), {bad} failed',
+    'cv.parallel': 'Parallel conversions',
+    'cv.parallel_hint': 'How many files convert at the same time. Higher is faster but uses more CPU.',
     'fb.send': '📲 Send',
     'fb.rename': '✎ Rename',
     'fb.extract': '📂 Extract',
@@ -1609,6 +2003,64 @@ const I18N = {
     'nav.queue': '队列',
     'nav.monitor': '直播监控',
     'nav.files': '文件',
+    'nav.docs': '文档',
+    'nav.batch': '批量',
+    'dl.send_to_batch': '⊞ 发送到批量下载',
+    'batch.playlist_label_default': '播放列表',
+    'batch.playlist_loaded': '已将 {label} 中的 {count} 个视频加载到批量下载。',
+    'batch.title': '批量下载',
+    'batch.hint': '在此粘贴网址——每行一个（最多 {max} 个）',
+    'batch.import_txt': '导入 .txt',
+    'batch.clear_all': '全部清除',
+    'batch.results_title': '解析结果',
+    'batch.select_all': '全选',
+    'batch.sequential': '顺序下载',
+    'batch.quality_label': '画质：',
+    'batch.format_label': '格式：',
+    'batch.retry_errors': '重试失败项',
+    'batch.retry_count': '重试 {count} 个失败项',
+    'batch.queue_all': '全部添加',
+    'batch.queue_add_count': '添加 {count} 个视频',
+    'batch.empty': '暂无网址——请在上方粘贴链接或导入 .txt 文件',
+    'batch.analysing_dots': '正在解析…',
+    'batch.analysing_progress': '正在解析 {done}/{total}…',
+    'batch.analyse_again': '重新解析',
+    'batch.retrying_dots': '重试中…',
+    'batch.no_valid_urls': '没有有效网址（{errors} 个错误）',
+    'batch.ready_summary': '✓  {ready}/{total} 就绪{err_note}',
+    'batch.ready_err_note': '  ·  {errors} 个错误',
+    'batch.retrying_urls': '正在重试 {count} 个失败的网址…',
+    'batch.analysis_failed': '解析失败',
+    'batch.import_read_error': '无法读取文件：{err}',
+    'batch.import_no_valid': '文件中未找到有效网址。',
+    'batch.import_done': '已导入 {count} 个网址',
+    'batch.import_capped': '（上限 {max}，跳过 {skipped}）',
+    'batch.import_invalid': '· 跳过 {count} 行无效内容',
+    'batch.url_count': '{count} 个网址',
+    'batch.url_count_capped': '{count} 个网址——仅使用前 {max} 个',
+    'batch.queued_toast': '已将 {count} 个视频加入队列。',
+    'batch.queue_added': '✓  已加入队列',
+    'batch.queue_added_summary': '✓  已将 {count} 个视频加入队列',
+    'batch.downloading_sequential': '⬇  正在顺序下载…',
+    'batch.sequential_status': '顺序下载：{count} 个视频',
+    'batch.sequential_toast': '正在顺序下载——还剩 {remaining} 个视频。',
+    'batch.sequential_done_btn': '✓  下载完成',
+    'batch.sequential_done_status': '✓  顺序下载完成',
+    'batch.queue_all_failed': '未能加入任何视频（{count} 个错误）',
+    'batch.cancel_analyse': '停止解析',
+    'batch.analyse_stopped': '已停止解析',
+    'doc.caps_title': '服务器能力',
+    'doc.caps_unknown': '未知',
+    'doc.cap.markdown': 'Markdown → HTML',
+    'doc.cap.weasyprint': 'HTML → PDF',
+    'doc.cap.pypdf': 'PDF → 文本',
+    'doc.cap.libreoffice': 'Office ↔ PDF',
+    'doc.libreoffice_hint': '服务器未安装 LibreOffice —— 暂时无法进行 Office ↔ PDF 转换。',
+    'doc.weasyprint_hint': '服务器缺少 PDF 渲染库（Pango/GTK）—— 暂时无法进行 Markdown/HTML → PDF 转换。',
+    'doc.convert': '转换',
+    'doc.converting': '正在转换…',
+    'doc.open': '打开',
+    'doc.empty_dir': '此文件夹中没有可转换的文档。',
     'common.cancel': '取消',
     'common.cancel_x': '✕ 取消',
     'common.close_x': '✕ 关闭',
@@ -1621,6 +2073,15 @@ const I18N = {
     'dl.live_banner': '⏺ <strong>检测到直播</strong> — 格式与画质选择器已停用。从现在起将以 <code>.ts</code> (MPEG-TS) 格式录制。',
     'dl.analyse': '解析',
     'dl.enqueue': '加入队列',
+    'dl.analysing': '正在分析…',
+    'dl.reconnecting': '正在重新连接…',
+    'dl.ready': '✓ 可以下载',
+    'dl.playlist_detected': '检测到播放列表（{n} 项）— 将作为单个任务加入队列',
+    'dl.analyse_cancelled': '已取消分析',
+    'dl.analyse_timeout': '分析超时',
+    'dl.analyse_failed': '分析失败',
+    'dl.analyse_bad_response': '服务器返回了无效数据',
+    'dl.load_failed': '加载失败',
     'q.select': '选择',
     'q.clear_finished': '清除已完成',
     'q.clear_selected': '清除已选 ({n})',
@@ -1635,12 +2096,27 @@ const I18N = {
     'q.convert': '🎬 转换',
     'q.cancel_convert': '✕ 取消转换',
     'q.adding': '正在添加…',
+    'q.cancelling': '正在取消…',
+    'q.cleared_finished': '已清除完成的任务',
+    'q.cleared_kept': '已清除完成的任务（保留 {n} 个 — 正在转换）',
+    'q.sending': '⏳ 正在发送…',
+    'q.transfer_queued': '传输已排队',
+    'q.transfer_pending': '📡 排队中…',
+    'q.st.QUEUED': '排队中',
+    'q.st.DOWNLOADING': '下载中',
+    'q.st.PROCESSING': '处理中',
+    'q.st.PAUSED': '已暂停',
+    'q.st.COMPLETED': '已完成',
+    'q.st.FAILED': '失败',
+    'q.st.CANCELLED': '已取消',
+    'q.st.PARTIAL_SAVED': '已保存部分',
     'mon.label': '监控主页 / 直播网址 (TikTok, Instagram)',
     'mon.hint': '直播开始时自动以 <code>.ts</code> 格式录制。',
     'mon.interval': '检查间隔（秒）：',
     'mon.add': '监控',
     'mon.pause': '暂停',
     'mon.resume': '继续',
+    'mon.paused_tag': '已暂停',
     'mon.empty': '尚未监控任何直播',
     'mon.recording_dots': '录制中…',
     'mon.saved': '已保存：',
@@ -1757,6 +2233,8 @@ const I18N = {
     'cv.download_srt': '📝 下载 .srt 字幕',
     'cv.model_base_default': 'Base（141 MB，均衡）',
     'preview.no_video': '您的浏览器不支持播放此视频。',
+    'preview.no_audio': '您的浏览器不支持播放此音频。',
+    'preview.title_default': '预览',
     'fb.no_match': '未找到匹配项',
     'fb.empty_dir': '文件夹为空',
     'fb.compress': '📦 压缩',
@@ -1764,6 +2242,18 @@ const I18N = {
     'fb.delete_icon': '🗑',
     'fb.preview': '▶ 预览',
     'fb.convert': '🎬 转换',
+    'fb.select_mode': '☑ 多选',
+    'fb.select_mode_off': '✕ 退出多选',
+    'fb.select_all': '全选',
+    'fb.select_none': '取消选择',
+    'fb.selected_count': '已选择 {n} 个文件',
+    'fb.convert_selected': '🎬 转换所选',
+    'cv.batch_none': '尚未选择文件。',
+    'cv.batch_subtitle': '已选择 {n} 个文件',
+    'cv.batch_queued': '✅ 已加入队列 {n} 个文件',
+    'cv.batch_partial': '⚠️ 已加入 {ok} 个文件，{bad} 个失败',
+    'cv.parallel': '并行转换数',
+    'cv.parallel_hint': '同时转换的文件数。数值越大越快，但占用更多 CPU。',
     'fb.send': '📲 发送',
     'fb.rename': '✎ 重命名',
     'fb.extract': '📂 解压',
@@ -1805,7 +2295,8 @@ function applyI18n() {
   // Re-render the lists whose rows are built in JS so their labels follow.
   // Guarded: a throwing renderer must not abort the switch half-way and leave
   // the page in two languages.
-  [renderQueue, renderMonitor, renderFileBrowser, updateClearBtnLabel].forEach(fn => {
+  [renderQueue, renderMonitor, renderFileBrowser, renderDocCaps, renderDocBrowser, updateClearBtnLabel,
+   renderBatchList, renderBatchControls, _renderBatchStatus].forEach(fn => {
     try { if (typeof fn === 'function') fn(); }
     catch (e) { console.warn('applyI18n: re-render failed', e); }
   });
@@ -1933,7 +2424,7 @@ function connectSSE() {
     setConnected(true);
   });
 
-  const liveEvents = ['started','progress','completed','failed','cancelled'];
+  const liveEvents = ['started','completed','failed','cancelled'];
   liveEvents.forEach(evt => {
     evtSrc.addEventListener(evt, e => {
       const t = JSON.parse(e.data);
@@ -1942,6 +2433,42 @@ function connectSSE() {
       updateQueueBadge();
       renderMonitor();  // reflect recording progress in the monitor list
     });
+  });
+
+  // 'progress' fires several times per second per active download.  Running a
+  // full renderQueue() on each one rebuilds the entire list's innerHTML, which
+  // is slow on a phone and throws away the in-flight Taildrop button that
+  // _restoreTransferBtn later looks up by data-transfer-id.  Patch the bar and
+  // the meta line in place instead, and only fall back to a full render when
+  // something that changes the card's *shape* moved (status, output file) or
+  // the card is not on screen yet.  Same trick 'convert_progress' already uses.
+  evtSrc.addEventListener('progress', e => {
+    const t    = JSON.parse(e.data);
+    const prev = tasks[t.id];
+    tasks[t.id] = t;
+    if (!prev || prev.status !== t.status || prev.filename !== t.filename
+        || !_patchQueueItem(t)) {
+      renderQueue();
+      updateQueueBadge();
+    }
+    renderMonitor();
+  });
+
+  // Tasks the server dropped (clear finished / clear selected on any client,
+  // or the MAX_TASKS purge).  Without this the browser keeps rendering cards
+  // for tasks that no longer exist and every file action on them 404s.
+  evtSrc.addEventListener('removed', e => {
+    const ids = (JSON.parse(e.data) || {}).ids || [];
+    let hit = false;
+    ids.forEach(id => {
+      if (tasks[id]) { delete tasks[id]; hit = true; }
+      selectedIds.delete(id);
+    });
+    if (hit) {
+      updateClearBtnLabel();
+      renderQueue();
+      updateQueueBadge();
+    }
   });
 
   // ── Taildrop transfer results ────────────────────────────────────────
@@ -2085,6 +2612,7 @@ function switchTab(name, btn) {
   document.getElementById('panel-' + name).classList.add('active');
   if (name === 'monitor') loadMonitor();
   if (name === 'files')   browseFiles();
+  if (name === 'docs')    openDocsTab();
 }
 
 /* ── Download flow ──────────────────────────────────────────────────── */
@@ -2108,6 +2636,107 @@ function cancelAnalyse() {
   }
 }
 
+/* ── Shared SSE analyse ─────────────────────────────────────────────────
+ * Resolves with the analyse result for `url`, or rejects with an Error
+ * (AbortError when `signal` fires).  The server sends ": keepalive" comments
+ * every 10 s while the extract runs, then a single "result" / "error_result"
+ * event.  If the browser drops the EventSource (iOS background suspend, a
+ * network blip) we reconnect: the server keeps the job running and the
+ * analyse cache hands the same result to the new connection.
+ */
+function analyseViaSSE(url, signal, onReconnect) {
+  const base = cfg.host.replace(/\/+$/, '');
+  const tok  = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+  const streamUrl = base + '/api/analyse/stream?url=' + encodeURIComponent(url) + tok;
+  // Hard deadline: server times out at 180 s, add 15 s margin.
+  const hardDeadline = Date.now() + 195_000;
+
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) { reject(new DOMException('', 'AbortError')); return; }
+
+    let _es = null;
+    let _reconnectTimer = null;
+    let _done = false;
+
+    function _cleanup() {
+      if (_es) { try { _es.close(); } catch(_) {} _es = null; }
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      if (signal) signal.removeEventListener('abort', _onAbort);
+    }
+
+    function _fail(msg) {
+      if (_done) return;
+      _done = true;
+      _cleanup();
+      reject(new Error(msg));
+    }
+
+    function _succeed(data) {
+      if (_done) return;
+      _done = true;
+      _cleanup();
+      resolve(data);
+    }
+
+    function _onAbort() {
+      if (_done) return;
+      _done = true;
+      _cleanup();
+      reject(new DOMException('', 'AbortError'));
+    }
+
+    function _connect() {
+      if (_done || (signal && signal.aborted)) return;
+      if (Date.now() > hardDeadline) { _fail(T('dl.analyse_timeout')); return; }
+
+      _es = new EventSource(streamUrl);
+
+      _es.addEventListener('result', e => {
+        try { _succeed(JSON.parse(e.data)); }
+        catch(_) { _fail(T('dl.analyse_bad_response')); }
+      });
+
+      _es.addEventListener('error_result', e => {
+        try { _fail(JSON.parse(e.data).detail || T('dl.analyse_failed')); }
+        catch(_) { _fail(T('dl.analyse_failed')); }
+      });
+
+      // onerror fires on any connection drop.  Reconnect after 2 s while the
+      // deadline has not passed.
+      _es.onerror = () => {
+        if (_done) return;
+        _cleanup();
+        if (signal && signal.aborted) { _onAbort(); return; }
+        if (Date.now() > hardDeadline) { _fail(T('dl.analyse_timeout')); return; }
+        if (onReconnect) onReconnect();
+        _reconnectTimer = setTimeout(_connect, 2_000);
+      };
+    }
+
+    if (signal) signal.addEventListener('abort', _onAbort);
+    _connect();
+  });
+}
+
+/* Build the POST /api/download body for an analysed item. */
+function buildDownloadBody(url, info, formatId, outputExt) {
+  const isLive = info?.is_live ?? false;
+  // For Kuaishou (and other engines that bypass yt-dlp), send the CDN URL from
+  // info.url — not the page URL — so KuaishouEngine.download() skips re-extract.
+  // For all other platforms info.url equals the page URL anyway.
+  const dlUrl = (info?.source_engine === 'kuaishou' && info?.url) ? info.url : url;
+  return {
+    url:            dlUrl,
+    format_id:      isLive ? 'best' : formatId,
+    output_ext:     isLive ? 'ts'   : outputExt,
+    title:          info?.title          || null,
+    platform:       info?.platform       || null,
+    source_engine:  info?.source_engine  || null,
+    is_live:        isLive,
+    tiktok_room_id: info?.tiktok_room_id || null,
+  };
+}
+
 async function doAnalyse() {
   const url = document.getElementById('url-input').value.trim();
   if (!url) { toast(T('dl.enter_url_first')); return; }
@@ -2122,97 +2751,28 @@ async function doAnalyse() {
   const stat     = document.getElementById('analyse-status');
 
   btn.disabled = true;
-  btn.innerHTML = '<div class="spinner"></div> Analysing…';
+  btn.innerHTML = '<div class="spinner"></div> ' + T('dl.analysing');
   cancelBt.style.display = 'inline-flex';
   stat.textContent = '';
   stat.style.color = '';
   document.getElementById('meta-card').style.display = 'none';
+  document.getElementById('playlist-batch-btn').style.display = 'none';
   analysedInfo = null;
+  analysedUrl  = '';
 
   // Use SSE streaming endpoint so iOS background suspend does not kill the
-  // request. The server sends ": keepalive" comments every 10 s while the
-  // Kuaishou CDP engine runs (~120 s max), then a single "result" or
-  // "error_result" event. If iOS drops the EventSource (background suspend),
-  // we reconnect transparently and wait for the same server job to finish —
-  // the server continues running regardless of client connectivity.
+  // request. See analyseViaSSE() for the reconnect / deadline handling.
   const _cancelled = _analyseAbortCtrl.signal;
 
-  function _buildStreamUrl() {
-    const base = cfg.host.replace(/\/+$/, '');
-    const tok  = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
-    return base + '/api/analyse/stream?url=' + encodeURIComponent(url) + tok;
-  }
-
-  // Hard deadline: server times out at 180 s, add 15 s margin.
-  const _hardDeadline = Date.now() + 195_000;
-
   try {
-    const info = await new Promise((resolve, reject) => {
-      if (_cancelled.aborted) { reject(new DOMException('', 'AbortError')); return; }
-
-      let _es = null;
-      let _reconnectTimer = null;
-      let _done = false;
-
-      function _cleanup() {
-        if (_es) { try { _es.close(); } catch(_) {} _es = null; }
-        if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-      }
-
-      function _fail(msg) {
-        if (_done) return;
-        _done = true;
-        _cleanup();
-        reject(new Error(msg));
-      }
-
-      function _succeed(data) {
-        if (_done) return;
-        _done = true;
-        _cleanup();
-        resolve(data);
-      }
-
-      function _connect() {
-        if (_done || _cancelled.aborted) return;
-        if (Date.now() > _hardDeadline) { _fail('Analysis timed out'); return; }
-
-        _es = new EventSource(_buildStreamUrl());
-
-        _es.addEventListener('result', e => {
-          try { _succeed(JSON.parse(e.data)); }
-          catch(_) { _fail('Invalid response from server'); }
-        });
-
-        _es.addEventListener('error_result', e => {
-          try { _fail(JSON.parse(e.data).detail || 'Analysis failed'); }
-          catch(_) { _fail('Analysis failed'); }
-        });
-
-        // EventSource onerror fires on any connection drop (iOS background,
-        // network blip, etc.). Reconnect after 2 s while deadline not passed.
-        _es.onerror = () => {
-          if (_done) return;
-          _cleanup();
-          if (_cancelled.aborted) { reject(new DOMException('', 'AbortError')); return; }
-          if (Date.now() > _hardDeadline) { _fail('Analysis timed out'); return; }
-          stat.textContent = 'Reconnecting…';
-          stat.style.color = 'var(--text-sub, #888)';
-          _reconnectTimer = setTimeout(_connect, 2_000);
-        };
-      }
-
-      _cancelled.addEventListener('abort', () => {
-        _done = true;
-        _cleanup();
-        reject(new DOMException('', 'AbortError'));
-      });
-
-      _connect();
+    const info = await analyseViaSSE(url, _cancelled, () => {
+      stat.textContent = T('dl.reconnecting');
+      stat.style.color = 'var(--text3)';
     });
 
     // Promise resolved — display result
     analysedInfo = info;
+    analysedUrl  = url;
 
     document.getElementById('meta-title').textContent = info.title;
     document.getElementById('meta-sub').textContent =
@@ -2238,21 +2798,26 @@ async function doAnalyse() {
       liveBanner.style.display = 'none';
     }
 
+    const plBtn = document.getElementById('playlist-batch-btn');
     if (info.playlist_count > 0) {
-      stat.textContent = `Playlist detected (${info.playlist_count} items) — will queue as single job`;
+      stat.textContent = T('dl.playlist_detected', { n: info.playlist_count });
       stat.style.color = 'var(--warn)';
+      // Matches the desktop app, where a playlist analyse hands its member
+      // URLs to the Batch tab instead of queueing the whole list as one task.
+      plBtn.style.display = (info.playlist_entries || []).length ? 'inline-flex' : 'none';
     } else {
-      stat.textContent = info.is_live ? '' : '✓ Ready to download';
+      stat.textContent = info.is_live ? '' : T('dl.ready');
       stat.style.color = 'var(--success)';
+      plBtn.style.display = 'none';
     }
     document.getElementById('dl-btn').disabled = false;
 
   } catch(err) {
     if (err.name === 'AbortError') {
-      stat.textContent = 'Analysis cancelled';
-      stat.style.color = 'var(--text-sub, #888)';
+      stat.textContent = T('dl.analyse_cancelled');
+      stat.style.color = 'var(--text3)';
     } else {
-      stat.textContent = '✗ ' + (err.message || 'Load failed');
+      stat.textContent = '✗ ' + (err.message || T('dl.load_failed'));
       stat.style.color = 'var(--danger)';
     }
   } finally {
@@ -2274,26 +2839,17 @@ async function doDownload() {
   if (!url) { toast(T('dl.enter_url_first')); return; }
   if (!connected) { toast(T('conn.not_connected')); return; }
 
-  const isLive     = analysedInfo?.is_live ?? false;
-  const format_id  = isLive ? 'best' : document.getElementById('format-sel').value;
-  const output_ext = isLive ? 'ts'   : document.getElementById('ext-sel').value;
-  // For Kuaishou (and other engines that bypass yt-dlp), send the CDN URL
-  // from analysedInfo.url — not the page URL — so KuaishouEngine.download()
-  // skips re-extract and uses the already-captured CDN URL directly.
-  // For all other platforms analysedInfo.url equals the page URL anyway.
-  const dlUrl = (analysedInfo?.source_engine === 'kuaishou' && analysedInfo?.url)
-    ? analysedInfo.url
-    : url;
-  const body = {
-    url:            dlUrl,
-    format_id,
-    output_ext,
-    title:          analysedInfo?.title          || null,
-    platform:       analysedInfo?.platform       || null,
-    source_engine:  analysedInfo?.source_engine  || null,
-    is_live:        isLive,
-    tiktok_room_id: analysedInfo?.tiktok_room_id || null,
-  };
+  // Only trust the analyse result when it belongs to the URL currently in the
+  // box.  Editing the field after an analyse used to send the previous URL's
+  // title / platform / is_live / room id — and for Kuaishou, whose branch below
+  // swaps in analysedInfo.url, it downloaded the previously analysed video.
+  const info = (analysedUrl && analysedUrl === url) ? analysedInfo : null;
+
+  const body = buildDownloadBody(
+    url, info,
+    document.getElementById('format-sel').value,
+    document.getElementById('ext-sel').value,
+  );
 
   const btn = document.getElementById('dl-btn');
   btn.disabled = true;
@@ -2311,16 +2867,513 @@ async function doDownload() {
     // Reset form
     document.getElementById('url-input').value = '';
     document.getElementById('meta-card').style.display = 'none';
+    document.getElementById('playlist-batch-btn').style.display = 'none';
     document.getElementById('analyse-status').textContent = '';
     document.getElementById('format-row').style.display  = '';
     document.getElementById('live-banner').style.display = 'none';
     analysedInfo = null;
+    analysedUrl  = '';
   } catch(err) {
     toast(T('common.error_prefix') + err.message);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> ' + T('dl.enqueue');
   }
+}
+
+/* ── Batch tab ──────────────────────────────────────────────────────────
+ * Mirrors ui/tabs/batch_tab.py: paste / import a URL list, analyse them one
+ * at a time (with the same per-platform pacing so the sites do not rate-limit
+ * us), tick the ones to keep, then queue them all at once or one-by-one.
+ */
+const MAX_BATCH_URLS = 500;
+
+// Same delays as BatchTab._PLATFORM_ANALYSIS_DELAY, in ms.
+const _BATCH_DELAY_MS = {
+  'instagram.com': 2500, 'tiktok.com': 2000, 'facebook.com': 1500, 'fb.watch': 1500,
+  'twitter.com': 1500, 'x.com': 1500, 'threads.net': 2000, 'youtube.com': 800,
+};
+const _BATCH_DEFAULT_DELAY_MS = 300;
+
+let _batchItems   = [];     // { url, state, info, err, checked }
+let _batchToken   = 0;      // bumped to invalidate an in-flight analyse pass
+let _batchAbort   = null;   // AbortController for the running analyse pass
+let _batchSeqQueue = [];    // items still waiting in sequential mode
+let _batchSeqTaskId = null; // task currently downloading in sequential mode
+let _batchSeqTimer  = null;
+let _batchSeqBusy   = false;
+let _batchIsRetry   = false;  // which label the Analyse button wears mid-pass
+
+function _batchDelayMs(url) {
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch(_) { return _BATCH_DEFAULT_DELAY_MS; }
+  for (const domain in _BATCH_DELAY_MS) {
+    if (host === domain || host.endsWith('.' + domain)) return _BATCH_DELAY_MS[domain];
+  }
+  return _BATCH_DEFAULT_DELAY_MS;
+}
+
+function _isHttpUrl(u) {
+  try {
+    const p = new URL(u);
+    return (p.protocol === 'http:' || p.protocol === 'https:') && !!p.hostname;
+  } catch(_) { return false; }
+}
+
+/* Valid, de-duplicated URLs from the textarea, in order. */
+function parseBatchText() {
+  const seen = new Set();
+  const out  = [];
+  for (const line of document.getElementById('batch-input').value.split(/\r?\n/)) {
+    const url = line.trim();
+    if (url && _isHttpUrl(url) && !seen.has(url)) { seen.add(url); out.push(url); }
+  }
+  return out;
+}
+
+function onBatchTextChange() {
+  const urls = parseBatchText();
+  const lbl  = document.getElementById('batch-count');
+  if (!urls.length)                    lbl.textContent = '';
+  else if (urls.length > MAX_BATCH_URLS) lbl.textContent = T('batch.url_count_capped', { count: urls.length, max: MAX_BATCH_URLS });
+  else                                 lbl.textContent = T('batch.url_count', { count: urls.length });
+  if (!_batchAnalyseRunning()) document.getElementById('batch-analyse-btn').disabled = !urls.length;
+}
+
+function _batchAnalyseRunning() { return _batchAbort !== null; }
+
+function importBatchFile(input) {
+  const file = input.files && input.files[0];
+  input.value = '';                     // let the same file be picked again
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onerror = () =>
+    toast(T('batch.import_read_error', { err: (reader.error && reader.error.name) || '' }), 'error');
+  reader.onload = () => {
+    const urls = [];
+    let invalid = 0;
+    for (const line of String(reader.result || '').split(/\r?\n/)) {
+      const url = line.trim();
+      if (!url || url.startsWith('#')) continue;
+      if (_isHttpUrl(url)) urls.push(url); else invalid++;
+    }
+    if (!urls.length) { toast(T('batch.import_no_valid'), 'error'); return; }
+
+    const total  = urls.length;
+    const capped = total > MAX_BATCH_URLS;
+    const kept   = urls.slice(0, MAX_BATCH_URLS);
+
+    const box      = document.getElementById('batch-input');
+    const existing = box.value.trim();
+    box.value = existing ? existing + '\n' + kept.join('\n') : kept.join('\n');
+
+    const parts = [T('batch.import_done', { count: kept.length })];
+    if (capped)  parts.push(T('batch.import_capped', { max: MAX_BATCH_URLS, skipped: total - MAX_BATCH_URLS }));
+    if (invalid) parts.push(T('batch.import_invalid', { count: invalid }));
+    toast(parts.join(' '));
+    onBatchTextChange();
+  };
+  reader.readAsText(file);
+}
+
+function clearBatch() {
+  _batchToken++;
+  cancelBatchAnalyse(true);
+  _batchStopSeqTimer();
+  _batchSeqQueue = [];
+  _batchItems = [];
+  document.getElementById('batch-input').value = '';
+  document.getElementById('batch-count').textContent = '';
+  setBatchStatus('', '');
+  renderBatchList();
+  renderBatchControls();
+}
+
+/* The builder is kept rather than the finished string so applyI18n() can
+ * replay it: the text comes from T(...) and nothing else rewrites the label,
+ * so switching language mid-run used to freeze it in the old language. */
+let _batchStatusFn = null;
+
+function setBatchStatus(text, color) {
+  _batchStatusFn = text ? (() => [text, color]) : null;
+  _renderBatchStatus();
+}
+
+function setBatchStatusFn(fn) {
+  _batchStatusFn = fn;
+  _renderBatchStatus();
+}
+
+function _renderBatchStatus() {
+  const el = document.getElementById('batch-status');
+  if (!el) return;
+  const [text, color] = _batchStatusFn ? _batchStatusFn() : ['', ''];
+  el.textContent = text;
+  el.style.color = color || 'var(--text3)';
+}
+
+/* Button labels — owned here rather than by data-i18n because they carry
+ * counts and transient state.  applyI18n() calls this on a language switch. */
+function renderBatchControls() {
+  const analyseBtn = document.getElementById('batch-analyse-btn');
+  const retryBtn   = document.getElementById('batch-retry-btn');
+  const queueBtn   = document.getElementById('batch-queue-btn');
+  if (!analyseBtn || !retryBtn || !queueBtn) return;
+
+  if (_batchAnalyseRunning()) {
+    analyseBtn.textContent = _batchIsRetry ? T('batch.retrying_dots') : T('batch.analysing_dots');
+    analyseBtn.disabled = true;
+  } else {
+    const hasRun = _batchItems.length > 0 && _batchItems.every(i => i.state !== 'pending');
+    analyseBtn.textContent = hasRun ? T('batch.analyse_again') : T('dl.analyse');
+    analyseBtn.disabled = parseBatchText().length === 0;
+  }
+
+  const errors = _batchItems.filter(i => i.state === 'error').length;
+  retryBtn.textContent = errors ? T('batch.retry_count', { count: errors }) : T('batch.retry_errors');
+  retryBtn.disabled = errors === 0 || _batchAnalyseRunning();
+
+  // While a sequential run is going the button shows its own progress text.
+  if (_batchSeqTimer) return;
+  const ready = _batchItems.filter(i => i.state === 'ready' && i.checked).length;
+  queueBtn.textContent = ready ? T('batch.queue_add_count', { count: ready }) : T('batch.queue_all');
+  queueBtn.disabled = ready === 0;
+}
+
+const _BATCH_STATE_ICON = {
+  pending:   '·',
+  analysing: '<span class="bt-spin">⟳</span>',
+  ready:     '✓',
+  error:     '✗',
+  queued:    '⬇',
+};
+
+function renderBatchList() {
+  const list = document.getElementById('batch-list');
+  const opts = document.getElementById('batch-opts');
+  if (!list) return;
+
+  if (!_batchItems.length) {
+    list.innerHTML = '<div class="empty"><p>' + escHtml(T('batch.empty')) + '</p></div>';
+    if (opts) opts.style.display = 'none';
+    return;
+  }
+  if (opts) opts.style.display = '';
+
+  list.innerHTML = _batchItems.map((it, idx) => {
+    const named = (it.state === 'ready' || it.state === 'queued') && it.info && it.info.title;
+    const title = named ? it.info.title : it.url;
+    let sub = '';
+    if (it.state === 'error')      sub = it.err || T('batch.analysis_failed');
+    else if (named)                sub = [it.info.platform, it.url].filter(Boolean).join(' · ');
+    return '<div class="bt-item ' + it.state + '">'
+      + '<input type="checkbox" ' + (it.checked ? 'checked' : '')
+      + (it.state === 'ready' ? '' : ' disabled')
+      + ' onchange="onBatchItemCheck(' + idx + ', this.checked)" />'
+      + '<span class="bt-state">' + (_BATCH_STATE_ICON[it.state] || '') + '</span>'
+      + '<div class="bt-body"><div class="bt-title">' + escHtml(title) + '</div>'
+      + (sub ? '<div class="bt-sub">' + escHtml(sub) + '</div>' : '')
+      + '</div>'
+      + '<button class="bt-del" onclick="removeBatchItem(' + idx + ')">✕</button>'
+      + '</div>';
+  }).join('');
+
+  _syncBatchSelectAll();
+}
+
+function _syncBatchSelectAll() {
+  const box   = document.getElementById('batch-select-all');
+  const ready = _batchItems.filter(i => i.state === 'ready');
+  if (!box || !ready.length) return;
+  box.checked = ready.every(i => i.checked);
+}
+
+/* Only READY rows are selectable — an ERROR row can never be queued. */
+function onBatchSelectAll(checked) {
+  _batchItems.forEach(i => { if (i.state === 'ready') i.checked = checked; });
+  renderBatchList();
+  renderBatchControls();
+}
+
+function onBatchItemCheck(idx, checked) {
+  const it = _batchItems[idx];
+  if (!it) return;
+  it.checked = checked;
+  _syncBatchSelectAll();
+  renderBatchControls();
+}
+
+function removeBatchItem(idx) {
+  const it = _batchItems[idx];
+  if (!it) return;
+  _batchItems.splice(idx, 1);
+  // Detached from _batchItems: an in-flight analyse for it resolves into an
+  // object nothing renders any more, and the pass simply moves on.
+  const seq = _batchSeqQueue.indexOf(it);
+  if (seq !== -1) _batchSeqQueue.splice(seq, 1);
+  if (!_batchItems.length) setBatchStatus('', '');
+  renderBatchList();
+  renderBatchControls();
+}
+
+/* Load an analysed playlist's member URLs into the Batch tab and analyse them
+ * — the web counterpart of BatchTab.load_playlist(). */
+function sendPlaylistToBatch() {
+  const entries = (analysedInfo && analysedInfo.playlist_entries) || [];
+  if (!entries.length) return;
+  const kept = entries.slice(0, MAX_BATCH_URLS);
+
+  clearBatch();
+  document.getElementById('batch-input').value = kept.join('\n');
+  onBatchTextChange();
+
+  const label = (analysedInfo.title || analysedInfo.uploader || '').trim();
+  let msg = T('batch.playlist_loaded', { count: kept.length, label: label || T('batch.playlist_label_default') });
+  if (entries.length > kept.length) {
+    msg += ' ' + T('batch.import_capped', { max: MAX_BATCH_URLS, skipped: entries.length - kept.length });
+  }
+  toast(msg);
+  switchTab('batch', document.getElementById('tab-batch'));
+  startBatchAnalyse();
+}
+
+/* ── Analysis pass ──────────────────────────────────────────────────── */
+
+function startBatchAnalyse() {
+  const urls = parseBatchText().slice(0, MAX_BATCH_URLS);
+  if (!urls.length) return;
+  if (!connected) { toast(T('conn.not_connected')); return; }
+  _batchStopSeqTimer();
+  _batchSeqQueue = [];
+  _batchItems = urls.map(url => ({ url, state: 'pending', info: null, err: '', checked: true }));
+  renderBatchList();
+  _runBatchAnalyse();
+}
+
+function retryBatchErrors() {
+  const errors = _batchItems.filter(i => i.state === 'error');
+  if (!errors.length) return;
+  // Checked before the rows are flipped back to pending — otherwise a
+  // disconnected client left the list stuck mid-way with no pass running.
+  if (!connected) { toast(T('conn.not_connected')); return; }
+  _batchStopSeqTimer();
+  _batchSeqQueue = [];
+  errors.forEach(i => { i.state = 'pending'; i.err = ''; i.checked = true; });
+  const _errCount = errors.length;
+  setBatchStatusFn(() => [T('batch.retrying_urls', { count: _errCount }), 'var(--text3)']);
+  renderBatchList();
+  _runBatchAnalyse(true);
+}
+
+function cancelBatchAnalyse(silent) {
+  if (!_batchAbort) return;
+  _batchToken++;
+  _batchAbort.abort();
+  _batchAbort = null;
+  _batchItems.forEach(i => { if (i.state === 'analysing') i.state = 'pending'; });
+  document.getElementById('batch-cancel-btn').style.display = 'none';
+  if (!silent) setBatchStatusFn(() => [T('batch.analyse_stopped'), 'var(--text3)']);
+  renderBatchList();
+  renderBatchControls();
+}
+
+async function _runBatchAnalyse(isRetry) {
+  if (_batchAbort) _batchAbort.abort();
+
+  const token = ++_batchToken;
+  _batchAbort = new AbortController();
+  const signal = _batchAbort.signal;
+
+  _batchIsRetry = !!isRetry;
+  const analyseBtn = document.getElementById('batch-analyse-btn');
+  analyseBtn.textContent = _batchIsRetry ? T('batch.retrying_dots') : T('batch.analysing_dots');
+  analyseBtn.disabled = true;
+  document.getElementById('batch-cancel-btn').style.display = '';
+  document.getElementById('batch-retry-btn').disabled = true;
+  document.getElementById('batch-queue-btn').disabled = true;
+
+  let first = true;
+
+  while (true) {
+    if (token !== _batchToken) return;
+    const item = _batchItems.find(i => i.state === 'pending');
+    if (!item) break;
+
+    item.state = 'analysing';
+    renderBatchList();
+    const done = _batchItems.filter(i => i.state !== 'pending' && i.state !== 'analysing').length;
+    const total = _batchItems.length;
+    setBatchStatusFn(() => [T('batch.analysing_progress', { done, total }), 'var(--text3)']);
+
+    // Pace the requests exactly like the desktop tab: the first URL goes out
+    // immediately, every later one waits out its platform's cooldown.
+    if (!first) await new Promise(r => setTimeout(r, _batchDelayMs(item.url)));
+    first = false;
+    if (token !== _batchToken) return;
+
+    try {
+      const info = await analyseViaSSE(item.url, signal);
+      if (token !== _batchToken) return;
+      item.state   = 'ready';
+      item.info    = info;
+      item.checked = true;
+    } catch(err) {
+      if (token !== _batchToken) return;
+      if (err && err.name === 'AbortError') return;
+      item.state   = 'error';
+      item.err     = String((err && err.message) || T('batch.analysis_failed')).slice(0, 120);
+      item.checked = false;
+    }
+    renderBatchList();
+  }
+
+  _batchAbort = null;
+  document.getElementById('batch-cancel-btn').style.display = 'none';
+  _onBatchAnalyseComplete();
+}
+
+function _onBatchAnalyseComplete() {
+  const total  = _batchItems.length;
+  const errors = _batchItems.filter(i => i.state === 'error').length;
+  const ready  = _batchItems.filter(i => i.state === 'ready' && i.checked).length;
+
+  if (!ready) setBatchStatusFn(() => [T('batch.no_valid_urls', { errors }), 'var(--danger)']);
+  else        setBatchStatusFn(() => [T('batch.ready_summary', {
+                ready, total,
+                err_note: errors ? T('batch.ready_err_note', { errors }) : '',
+              }), 'var(--success)']);
+  renderBatchList();
+  renderBatchControls();
+}
+
+/* ── Queueing ───────────────────────────────────────────────────────── */
+
+async function _batchSubmitOne(item, formatId, outputExt) {
+  try {
+    const task = await api('POST', '/api/download', buildDownloadBody(item.url, item.info, formatId, outputExt));
+    tasks[task.id] = task;
+    renderQueue();
+    updateQueueBadge();
+    item.state = 'queued';
+    return task.id;
+  } catch(err) {
+    item.state   = 'error';
+    item.err     = String(err.message || '').slice(0, 120);
+    item.checked = false;
+    return null;
+  }
+}
+
+async function queueBatchAll() {
+  const formatId  = document.getElementById('batch-quality').value;
+  const outputExt = document.getElementById('batch-format').value;
+  const toSubmit  = _batchItems.filter(i => i.state === 'ready' && i.checked && i.info);
+  if (!toSubmit.length) return;
+
+  const btn = document.getElementById('batch-queue-btn');
+  btn.disabled = true;
+
+  if (document.getElementById('batch-sequential').checked) {
+    _batchSeqQueue = toSubmit.slice();
+    btn.textContent = T('batch.downloading_sequential');
+    const _seqCount = toSubmit.length;
+    setBatchStatusFn(() => [T('batch.sequential_status', { count: _seqCount }), 'var(--text3)']);
+    await _batchSeqNext(formatId, outputExt);
+    // Once, on the first video.  Doing it per item threw the user back onto the
+    // Queue tab every couple of seconds for the whole run.
+    switchTab('queue', document.getElementById('tab-queue'));
+    return;
+  }
+
+  // One call, not one per URL: with auth disabled the server's 60 req/min
+  // limiter rejected everything past the 60th item, and even with a token
+  // 500 serial round-trips took minutes.
+  let queued = 0;
+  try {
+    const resp = await api('POST', '/api/download/batch', {
+      items: toSubmit.map(i => buildDownloadBody(i.url, i.info, formatId, outputExt)),
+    });
+    resp.results.forEach((r, idx) => {
+      const item = toSubmit[idx];
+      if (r.task_id) { item.state = 'queued'; queued++; }
+      else { item.state = 'error'; item.err = String(r.error || '').slice(0, 120); item.checked = false; }
+    });
+    await refreshQueue();
+  } catch(err) {
+    toSubmit.forEach(i => { i.state = 'error'; i.err = String(err.message || '').slice(0, 120); i.checked = false; });
+  }
+  renderBatchList();
+
+  if (queued) {
+    toast(T('batch.queued_toast', { count: queued }));
+    btn.textContent = T('batch.queue_added');
+    setBatchStatusFn(() => [T('batch.queue_added_summary', { count: queued }), 'var(--success)']);
+    switchTab('queue', document.getElementById('tab-queue'));
+  } else {
+    // Every submission raised — say so instead of leaving the button on
+    // "Add N videos" as if the click had done nothing.
+    toast(T('batch.queue_all_failed', { count: toSubmit.length }), 'error');
+    const _failCount = toSubmit.length;
+    setBatchStatusFn(() => [T('batch.queue_all_failed', { count: _failCount }), 'var(--danger)']);
+    renderBatchControls();
+  }
+}
+
+async function _batchSeqNext(formatId, outputExt) {
+  if (_batchSeqBusy) return;
+  _batchSeqBusy = true;
+  try {
+    if (!_batchSeqQueue.length) {
+      _batchStopSeqTimer();
+      const btn = document.getElementById('batch-queue-btn');
+      btn.textContent = T('batch.sequential_done_btn');
+      setBatchStatusFn(() => [T('batch.sequential_done_status'), 'var(--success)']);
+      return;
+    }
+    const fmt = formatId  || document.getElementById('batch-quality').value;
+    const ext = outputExt || document.getElementById('batch-format').value;
+
+    const item = _batchSeqQueue.shift();
+    _batchSeqTaskId = await _batchSubmitOne(item, fmt, ext);
+    renderBatchList();
+
+    const remaining = _batchSeqQueue.length;
+    if (remaining) toast(T('batch.sequential_toast', { remaining }));
+    _batchStartSeqTimer();
+  } finally {
+    _batchSeqBusy = false;
+  }
+}
+
+function _batchStartSeqTimer() {
+  if (_batchSeqTimer) clearInterval(_batchSeqTimer);
+  _batchSeqTimer = setInterval(_batchSeqTick, 2000);
+}
+
+function _batchStopSeqTimer() {
+  if (_batchSeqTimer) { clearInterval(_batchSeqTimer); _batchSeqTimer = null; }
+  _batchSeqTaskId = null;
+}
+
+function _batchSeqTick() {
+  if (!_batchSeqTaskId) { _batchSeqNext(); return; }
+  const task = tasks[_batchSeqTaskId];
+  if (!task || _TERMINAL.has(task.status)) {
+    _batchSeqTaskId = null;
+    _batchSeqNext();
+  }
+}
+
+/* Pull the whole queue back after a bulk enqueue — the batch response only
+ * carries task ids, and an SSE 'started' frame arrives only once a task
+ * actually begins, so QUEUED rows would otherwise be invisible until then. */
+async function refreshQueue() {
+  try {
+    const list = await api('GET', '/api/queue');
+    list.forEach(t => { tasks[t.id] = t; });
+  } catch(_) { /* SSE will catch up */ }
+  renderQueue();
+  updateQueueBadge();
 }
 
 /* ── Queue render ───────────────────────────────────────────────────── */
@@ -2338,28 +3391,40 @@ function renderQueue() {
 
 function queueItemHtml(t) {
   const pct   = Math.min(100, t.progress || 0);
-  const fillCls = { COMPLETED:'done', FAILED:'failed', PAUSED:'paused', CANCELLED:'failed' }[t.status] || '';
+  const fillCls = { COMPLETED:'done', PARTIAL_SAVED:'done', FAILED:'failed', PAUSED:'paused', CANCELLED:'failed' }[t.status] || '';
   const isPaused = t.status === 'PAUSED';
   const isActive = ['QUEUED','DOWNLOADING','PROCESSING'].includes(t.status);
   const isDone   = _TERMINAL.has(t.status);
   const isChecked = selectedIds.has(t.id);
   const checkboxHtml = (selectMode && isDone)
     ? `<input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleSelectItem('${t.id}', this.checked)"
-         style="margin-right:8px; width:16px; height:16px; accent-color:var(--primary); flex-shrink:0;">`
+         style="margin-right:8px; width:16px; height:16px; accent-color:var(--accent); flex-shrink:0;">`
     : '';
 
   const speed = t.speed ? `<span>${escHtml(t.speed)}</span>` : '';
   const eta   = t.eta   ? `<span>ETA ${escHtml(t.eta)}</span>` : '';
   const pctTxt = isActive || isPaused ? `<span>${pct.toFixed(0)}%</span>` : '';
 
+  // Status badge label.  Key built into a variable on purpose: the catalogue
+  // holds one 'q.st.<STATUS>' entry per DownloadStatus member.
+  const stKey = 'q.st.' + t.status;
+
   const errHtml = t.error_msg
     ? `<div class="qi-err">⚠ ${escHtml(t.error_msg)}</div>`
     : '';
 
+  // Pause is only offered for states the server will actually accept
+  // (QUEUED / DOWNLOADING), and never for gallery-dl: that engine has no
+  // wait_if_paused() hook, so pausing relabels the card while the download
+  // carries on. PROCESSING (FFmpeg merge) is not pausable either.
+  const canPause = t.status === 'DOWNLOADING' && t.source_engine !== 'gallery_dl';
+
   let controls = '';
   if (isActive && t.status !== 'QUEUED') {
-    controls = `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">${escHtml(T('q.pause'))}</button>
-                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">${escHtml(T('common.cancel'))}</button>`;
+    controls = (canPause
+        ? `<button class="btn btn-secondary btn-sm" onclick="pauseTask('${t.id}')">${escHtml(T('q.pause'))}</button>`
+        : '')
+      + `<button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">${escHtml(T('common.cancel'))}</button>`;
   } else if (isPaused) {
     controls = `<button class="btn btn-primary btn-sm" onclick="resumeTask('${t.id}')">${escHtml(T('q.resume'))}</button>
                 <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">${escHtml(T('common.cancel'))}</button>`;
@@ -2503,13 +3568,33 @@ function queueItemHtml(t) {
       <div class="progress-fill ${fillCls}" style="width:${pct}%"></div>
     </div>
     <div class="qi-meta">
-      <span class="qi-status ${t.status}">${t.status}</span>
+      <span class="qi-status ${t.status}">${escHtml(T(stKey))}</span>
       <span>${[speed, eta, pctTxt].filter(x=>x).map(x=>x.replace(/<[^>]+>/g,'')).join(' · ')}</span>
     </div>
     ${errHtml}
     ${controls ? `<div class="qi-controls">${controls}</div>` : ''}
     ${fileActions}
   </div>`;
+}
+
+/* In-place update of one queue card's progress bar + meta line.
+   Returns false when the card is not in the DOM, so the caller can fall back
+   to a full re-render. */
+function _patchQueueItem(t) {
+  const card = document.getElementById('qi-' + t.id);
+  if (!card) return false;
+  const pct  = Math.min(100, t.progress || 0);
+  const fill = card.querySelector('.progress-fill');
+  if (fill) fill.style.width = pct + '%';
+  const meta = card.querySelector('.qi-meta > span:last-child');
+  if (meta) {
+    const bits = [];
+    if (t.speed) bits.push(t.speed);
+    if (t.eta)   bits.push('ETA ' + t.eta);
+    bits.push(pct.toFixed(0) + '%');
+    meta.textContent = bits.join(' · ');   // textContent: never parses markup
+  }
+  return true;
 }
 
 function updateQueueBadge() {
@@ -2534,7 +3619,7 @@ async function resumeTask(id) {
 async function cancelTask(id) {
   // Optimistic UI: disable the cancel button immediately to prevent double-tap
   const btn = document.querySelector(`#qi-${id} .btn-danger`);
-  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
+  if (btn) { btn.disabled = true; btn.textContent = T('q.cancelling'); }
 
   try {
     // 8-second client timeout — if the server doesn't ack within this window
@@ -2589,13 +3674,19 @@ async function clearFinished() {
   try {
     if (selectMode && selectedIds.size > 0) {
       const ids = [...selectedIds];
-      await api('DELETE', '/api/queue/items', {ids});
-      ids.forEach(id => delete tasks[id]);
+      const r = await api('DELETE', '/api/queue/items', {ids});
+      // Trust the server's list: it refuses to drop a task whose remote
+      // convert job is still running, and deleting it locally anyway would
+      // hide a live conversion until the next reload.
+      const removed = r.removed_ids || ids;
+      removed.forEach(id => delete tasks[id]);
       selectedIds.clear();
       updateClearBtnLabel();
       renderQueue();
       updateQueueBadge();
-      toast(T('q.cleared_count', { n: ids.length }));
+      const kept = r.excluded_count || 0;
+      toast(kept ? T('q.cleared_kept', { n: kept })
+                 : T('q.cleared_count', { n: removed.length }));
       return;
     }
     const r = await api('DELETE', '/api/queue/finished');
@@ -2609,7 +3700,7 @@ async function clearFinished() {
     renderQueue();
     updateQueueBadge();
     const kept = r.excluded_count || 0;
-    toast(kept ? `Cleared finished tasks (${kept} kept — convert in progress)` : 'Cleared finished tasks');
+    toast(kept ? T('q.cleared_kept', { n: kept }) : T('q.cleared_finished'));
   } catch(e) { toast(e.message); }
 }
 
@@ -2617,13 +3708,13 @@ async function clearFinished() {
 async function transferFile(id, btn) {
   btn.disabled = true;
   const orig = btn.textContent;
-  btn.textContent = '⏳ Sending…';
+  btn.textContent = T('q.sending');
   try {
     const r = await api('POST', `/api/queue/${id}/transfer`);
-    toast(r.detail || 'Transfer queued');
+    toast(r.detail || T('q.transfer_queued'));
     // Transfer is async on the server — show "Queued" briefly while we wait
     // for the taildrop_completed / taildrop_failed SSE event to arrive.
-    btn.textContent = '📡 Queued…';
+    btn.textContent = T('q.transfer_pending');
     // Store task id on the element so the SSE handler can find it.
     btn.dataset.transferId = id;
     // Safety fallback: restore after 3 min in case SSE is lost.
@@ -2700,7 +3791,7 @@ function previewFile(id, title) {
   const content = document.getElementById('preview-content');
   const titleEl = document.getElementById('preview-title');
 
-  titleEl.textContent = title || fname || 'Preview';
+  titleEl.textContent = title || fname || T('preview.title_default');
   content.innerHTML   = '';
 
   if (isVideo) {
@@ -2709,7 +3800,7 @@ function previewFile(id, title) {
         <video controls autoplay playsinline preload="metadata"
           style="max-width:100%;max-height:65vh;border-radius:12px">
           <source src="${fileUrl}">
-          Your browser does not support video playback.
+          ${escHtml(T('preview.no_video'))}
         </video>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
           <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
@@ -2719,7 +3810,7 @@ function previewFile(id, title) {
   } else if (isAudio) {
     content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
       <source src="${fileUrl}">
-      Your browser does not support audio playback.
+      ${escHtml(T('preview.no_audio'))}
     </audio>`;
   } else if (isImage) {
     content.innerHTML = `<img src="${fileUrl}"
@@ -2748,6 +3839,8 @@ async function openConvertSheet(taskId, title) {
   // submitConvert() checks _pendingFilePath first, so a leftover path from an
   // earlier Files-tab sheet would convert that file instead of this task.
   _pendingFilePath      = null;
+  _pendingBatchPaths    = null;
+  _setBatchSheetMode(false);
   document.getElementById('convert-sheet-sub').textContent = title || taskId;
 
   // Reset selections to defaults
@@ -2878,6 +3971,7 @@ function closeConvertSheet() {
   document.getElementById('convert-overlay').classList.remove('open');
   _pendingConvertTaskId = null;
   _pendingFilePath = null;
+  _pendingBatchPaths = null;
 }
 
 function setCvq(el) {
@@ -2897,9 +3991,10 @@ function _setActive(gridId, attr, value) {
 
 async function submitConvert() {
   // Capture BEFORE closeConvertSheet() nullifies pending state
-  const taskId   = _pendingConvertTaskId;
-  const filePath = _pendingFilePath;
-  if (!taskId && !filePath) return;
+  const taskId    = _pendingConvertTaskId;
+  const filePath  = _pendingFilePath;
+  const batchList = _pendingBatchPaths;
+  if (!taskId && !filePath && !batchList) return;
 
   const quality     = document.querySelector('#cvq-grid      .radio-btn.active')?.dataset.cvq      || 'standard';
   const encoderKey  = document.querySelector('#cvenc-grid   .radio-btn.active')?.dataset.cvenc   || 'cpu';
@@ -2914,7 +4009,40 @@ async function submitConvert() {
 
   closeConvertSheet();
 
-  if (filePath) {
+  if (batchList) {
+    // Convert every file ticked in the Files tab, one settings set for all.
+    try {
+      const res = await api('POST', '/api/files/convert/batch', {
+        file_paths:   batchList,
+        target_ext:   'mp4',
+        encoder_key:  encoderKey,
+        quality,
+        speed_preset: speedPreset,
+        custom_crf:   customCrf,
+        output_codec: outputCodec,
+        generate_subtitles: genSubs,
+        subtitle_language:  subsLang,
+        subtitle_model:     subsModel,
+        compute_vmaf:       computeVmaf,
+      });
+      // job_ids come back in the same order as the paths that were accepted,
+      // so the two lists can be zipped to drive each row's progress block.
+      const okPaths = batchList.filter(p => !res.errors.some(e => e.file_path === p));
+      res.job_ids.forEach((jid, i) => {
+        convertJobs[jid] = { job_id: jid, status: 'PENDING', progress: 0,
+                             output_filename: '', error_msg: '' };
+        if (okPaths[i]) _fileJobMap[okPaths[i]] = jid;
+      });
+      _fbSelected.clear();
+      _fbSelectMode = false;
+      toast(res.failed
+        ? T('cv.batch_partial', { ok: res.queued, bad: res.failed })
+        : T('cv.batch_queued',  { n: res.queued }));
+      renderFileBrowser();
+    } catch(e) {
+      toast('❌ ' + e.message);
+    }
+  } else if (filePath) {
     // Convert a file selected from the Files tab
     try {
       const job = await api('POST', '/api/files/convert', {
@@ -3067,7 +4195,7 @@ function previewConvertFile(jobId, title) {
   const content = document.getElementById('preview-content');
   const titleEl = document.getElementById('preview-title');
 
-  titleEl.textContent = title || 'Preview';
+  titleEl.textContent = title || T('preview.title_default');
   content.innerHTML   = '';
 
   // Converted output is always MP4 — use video player directly.
@@ -3090,7 +4218,7 @@ function previewConvertFile(jobId, title) {
 
 async function loadMonitor() {
   try {
-    const { items = [], interval = 30, paused = false } = await api('GET', '/api/monitor');
+    const { items = [], interval = 180, paused = false } = await api('GET', '/api/monitor');
     monitorItems = {};
     items.forEach(m => monitorItems[m.id] = m);
     const sel = document.getElementById('monitor-interval');
@@ -3120,7 +4248,11 @@ function _updateMonitorPauseBtn() {
 
 async function setMonitorInterval(value) {
   try {
-    await api('POST', '/api/monitor/interval', { interval: +value });
+    // The server clamps to MIN_CHECK_INTERVAL — reflect what it applied so the
+    // select never shows an interval that is not actually in effect.
+    const { interval } = await api('POST', '/api/monitor/interval', { interval: +value });
+    const sel = document.getElementById('monitor-interval');
+    if (sel && interval != null) sel.value = String(interval);
   } catch(e) {
     toast(e.message, 'error');
   }
@@ -3223,7 +4355,7 @@ function monitorItemHtml(m) {
   const platform = m.platform
     ? `<span class="mon-platform-tag">${escHtml(m.platform)}</span>` : '';
   const pausedTag = paused
-    ? `<span class="mon-paused-tag">${escHtml(T('mon.pause'))}</span>` : '';
+    ? `<span class="mon-paused-tag">${escHtml(T('mon.paused_tag'))}</span>` : '';
 
   const cancelBtn = m.state === 'RECORDING'
     ? `<button class="btn btn-danger btn-sm" onclick="cancelMonitorItem('${m.id}')">${escHtml(T('mon.stop_rec'))}</button>` : '';
@@ -3271,12 +4403,13 @@ function saveSettings() {
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
 let _toastTimer;
-function toast(msg) {
+function toast(msg, kind) {
   const el = document.getElementById('toast');
   el.textContent = msg;
+  el.classList.toggle('error', kind === 'error');
   el.classList.add('show');
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 4200 : 2600);
 }
 
 function escHtml(s) {
@@ -3353,6 +4486,7 @@ function previewFileByPath(path, name) {
         <video controls autoplay playsinline preload="metadata"
           style="max-width:100%;max-height:65vh;border-radius:12px">
           <source src="${fileUrl}">
+          ${escHtml(T('preview.no_video'))}
         </video>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
           <a class="btn btn-secondary btn-sm" href="vlc://${fileUrl}">VLC</a>
@@ -3362,7 +4496,9 @@ function previewFileByPath(path, name) {
       </div>`;
   } else if (isAudio) {
     content.innerHTML = `<audio controls autoplay style="width:100%;margin-top:24px">
-      <source src="${fileUrl}"></audio>`;
+      <source src="${fileUrl}">
+      ${escHtml(T('preview.no_audio'))}
+    </audio>`;
   } else if (isImage) {
     content.innerHTML = `<img src="${fileUrl}"
       style="max-width:100%;max-height:72vh;border-radius:12px;object-fit:contain"
@@ -3383,21 +4519,76 @@ function joinPath(dir, name) {
 async function browseFiles(path) {
   if (!connected) { toast(T('conn.not_connected')); return; }
   const list = document.getElementById('fb-list');
-  list.innerHTML = '<div class="empty"><p>Loading…</p></div>';
+  list.innerHTML = `<div class="empty"><p>${escHtml(T('fb.reading'))}</p></div>`;
+  // Tapping folders faster than the server answers used to let an older
+  // response land last and paint the wrong directory. Only the newest request
+  // is allowed to touch _browseData.
+  const seq = ++_browseSeq;
   try {
     const params = (path != null) ? '?path=' + encodeURIComponent(path) : '';
     const data   = await api('GET', '/api/files/browse' + params);
+    if (seq !== _browseSeq) return;
     _browseData  = data;
+    // Selection is per-directory: carrying ticks across a navigation would
+    // convert files the user can no longer see in the count.
+    _fbSelected.clear();
     const searchEl = document.getElementById('fb-search');
     if (searchEl) searchEl.value = '';
     renderFileBrowser();
   } catch(e) {
+    if (seq !== _browseSeq) return;
     list.innerHTML = `<div class="empty"><p style="color:var(--danger)">${escHtml(e.message)}</p></div>`;
   }
 }
 
 function browseUp() {
   if (_browseData && _browseData.parent_path != null) browseFiles(_browseData.parent_path);
+}
+
+/* ── Files tab: multi-select for batch convert ──────────────────────── */
+// Mirrors ffmpeg_convert_service.SUPPORTED_EXTS — only these can be queued.
+const FB_CONVERTIBLE_RE = /\.(mp4|mkv|webm|avi|mov|flv|wmv|m4v|ts|mpeg|mpg|3gp)$/i;
+
+function toggleFbSelectMode() {
+  _fbSelectMode = !_fbSelectMode;
+  if (!_fbSelectMode) _fbSelected.clear();
+  // renderFileBrowser() bails out when no directory has been listed yet, so
+  // update the bar directly too — otherwise the button label would not flip.
+  updateFbBatchBar();
+  renderFileBrowser();
+}
+
+function toggleFbSelect(path, checked) {
+  if (checked) _fbSelected.add(path); else _fbSelected.delete(path);
+  updateFbBatchBar();
+}
+
+function _fbConvertibleInView() {
+  if (!_browseData) return [];
+  return _browseData.items
+    .filter(i => i.type === 'file' && FB_CONVERTIBLE_RE.test(i.name))
+    .map(i => joinPath(_browseData.current_path, i.name));
+}
+
+function fbSelectAll() {
+  _fbConvertibleInView().forEach(p => _fbSelected.add(p));
+  renderFileBrowser();
+}
+
+function fbSelectNone() {
+  _fbSelected.clear();
+  renderFileBrowser();
+}
+
+function updateFbBatchBar() {
+  const bar = document.getElementById('fb-batchbar');
+  if (!bar) return;
+  bar.style.display = _fbSelectMode ? 'flex' : 'none';
+  const btn = document.getElementById('fb-selmode-btn');
+  if (btn) btn.textContent = T(_fbSelectMode ? 'fb.select_mode_off' : 'fb.select_mode');
+  const n = _fbSelected.size;
+  document.getElementById('fb-batchcount').textContent = T('fb.selected_count', { n });
+  document.getElementById('fb-batch-convert-btn').disabled = n === 0;
 }
 
 function renderFileBrowser() {
@@ -3434,6 +4625,7 @@ function renderFileBrowser() {
 
   if (!items.length) {
     list.innerHTML = '<div class="empty"><p>' + escHtml(T(searchVal ? 'fb.no_match' : 'fb.empty_dir')) + '</p></div>';
+    updateFbBatchBar();
     return;
   }
 
@@ -3467,6 +4659,13 @@ function renderFileBrowser() {
 
     const jobId = _fileJobMap[fullPath];
     const job   = jobId ? convertJobs[jobId] : null;
+    // Checkbox state lives in _fbSelected, keyed by absolute path, so it
+    // survives the re-render that every toggle triggers.
+    const selCheck = (_fbSelectMode && FB_CONVERTIBLE_RE.test(item.name))
+      ? `<input type="checkbox" class="fb-selcheck" ${_fbSelected.has(fullPath) ? 'checked' : ''}
+           data-path="${escHtml(fullPath)}"
+           onchange="toggleFbSelect(this.dataset.path, this.checked)">`
+      : '';
     // POST /api/files/convert only accepts video containers, so offering the
     // button on a .jpg or a .zip just queued a job that died on a raw FFmpeg
     // error.  Mirrors ffmpeg_convert_service.SUPPORTED_EXTS.
@@ -3574,6 +4773,7 @@ function renderFileBrowser() {
     </div>`;
 
     return `<div class="fb-item">
+      ${selCheck}
       <div class="fb-icon">📄</div>
       <div class="fb-body">
         <div class="fb-name">${escHtml(item.name)}</div>
@@ -3583,6 +4783,8 @@ function renderFileBrowser() {
       </div>
     </div>`;
   }).join('');
+
+  updateFbBatchBar();
 }
 
 async function deleteFileItem(path, name, btn) {
@@ -3590,6 +4792,7 @@ async function deleteFileItem(path, name, btn) {
   btn.disabled = true;
   try {
     await api('DELETE', '/api/files/delete', { path });
+    delete _fileJobMap[path];
     toast(T('fb.deleted', { name }));
     browseFiles(_browseData.current_path);
   } catch(e) {
@@ -3604,6 +4807,12 @@ async function renameFileByPath(path, name, btn) {
   btn.disabled = true;
   try {
     const r = await api('POST', '/api/files/rename', { path, new_name: newName.trim() });
+    // _fileJobMap is keyed by absolute path, so a rename orphaned the running
+    // convert job and its progress card vanished from the list. Move the key.
+    if (_fileJobMap[path] && r.path) {
+      _fileJobMap[r.path] = _fileJobMap[path];
+      delete _fileJobMap[path];
+    }
     toast(r.detail || T('q.renamed'));
     browseFiles(_browseData.current_path);
   } catch(e) {
@@ -3727,6 +4936,8 @@ async function submitArchiveExtract() {
 function openFileConvertSheet(filePath, fileName) {
   _pendingFilePath      = filePath;
   _pendingConvertTaskId = null;
+  _pendingBatchPaths    = null;
+  _setBatchSheetMode(false);
   document.getElementById('convert-sheet-sub').textContent = fileName || filePath;
 
   _setActive('cvq-grid',     'data-cvq',     'standard');
@@ -3741,6 +4952,249 @@ function openFileConvertSheet(filePath, fileName) {
   populateConvertOptions();
 
   document.getElementById('convert-overlay').classList.add('open');
+}
+
+function openBatchConvertSheet() {
+  const paths = [..._fbSelected];
+  if (!paths.length) { toast(T('cv.batch_none')); return; }
+
+  // One settings sheet for the whole batch — submitConvert() checks
+  // _pendingBatchPaths first, so the single-file and task paths stay untouched.
+  _pendingBatchPaths    = paths;
+  _pendingFilePath      = null;
+  _pendingConvertTaskId = null;
+  document.getElementById('convert-sheet-sub').textContent =
+    T('cv.batch_subtitle', { n: paths.length });
+
+  _setActive('cvq-grid',     'data-cvq',     'standard');
+  _setActive('cvenc-grid',  'data-cvenc',  'cpu');
+  _setActive('cvspd-grid',  'data-cvspd',  'balanced');
+  _setActive('cvcodec-grid','data-cvcodec','h264');
+  document.getElementById('crf-row').style.display = 'none';
+  document.getElementById('crf-slider').value      = '23';
+  document.getElementById('crf-val').textContent   = '23';
+  _resetConvertExtras();
+
+  populateConvertOptions();
+  _setBatchSheetMode(true);
+  loadConvertConcurrency();
+
+  document.getElementById('convert-overlay').classList.add('open');
+}
+
+// The parallel-limit row and the subtitles-only button only make sense for a
+// batch: submitSubtitles() converts exactly one file, and a lone conversion
+// is not affected by the queue's parallel limit.
+function _setBatchSheetMode(on) {
+  const row = document.getElementById('cvpar-row');
+  if (row && !on) row.style.display = 'none';
+  const subsBtn = document.getElementById('cvsubs-only-btn');
+  if (subsBtn) subsBtn.style.display = on ? 'none' : '';
+}
+
+/* ── Parallel-conversion limit (shared with the desktop Convert tab) ── */
+async function loadConvertConcurrency() {
+  const row   = document.getElementById('cvpar-row');
+  const input = document.getElementById('cvpar-input');
+  if (!row || !input) return;
+  try {
+    const cfg = await api('GET', '/api/convert/concurrency');
+    input.max   = cfg.limit;
+    input.value = cfg.max_concurrent;
+    row.style.display = 'block';
+  } catch(e) {
+    // Older server without the endpoint: hide the control rather than
+    // offering a setting that silently does nothing.
+    row.style.display = 'none';
+  }
+}
+
+async function onConvertConcurrencyChanged() {
+  const input = document.getElementById('cvpar-input');
+  const value = parseInt(input.value, 10);
+  if (!Number.isInteger(value)) return;
+  try {
+    const cfg = await api('POST', '/api/convert/concurrency', { max_concurrent: value });
+    input.value = cfg.max_concurrent;   // server clamps; show what was applied
+  } catch(e) {
+    toast('❌ ' + e.message);
+    loadConvertConcurrency();
+  }
+}
+
+/* ── Documents tab (Markdown / HTML / Office <-> PDF) ────────────────── */
+let _docCaps    = null;
+let _docBrowse  = null;
+let _docSeq     = 0;
+const DOC_TARGET_LABEL = { pdf: 'PDF', html: 'HTML', md: 'Markdown', docx: 'Word (.docx)' };
+
+/* Mirrors app/services/doc_convert_service._ROUTES — the server re-validates,
+   this only decides which options the picker offers. */
+const DOC_ROUTES = {
+  md:     ['pdf', 'html'],
+  html:   ['pdf'],
+  pdf:    ['md', 'html', 'docx'],
+  office: ['pdf'],
+};
+const DOC_KIND_BY_EXT = {
+  md: 'md', markdown: 'md', mdown: 'md', mkd: 'md', mdtxt: 'md',
+  html: 'html', htm: 'html', xhtml: 'html',
+  pdf: 'pdf',
+  doc: 'office', docx: 'office', docm: 'office', odt: 'office', rtf: 'office',
+  xls: 'office', xlsx: 'office', xlsm: 'office', ods: 'office', csv: 'office',
+  ppt: 'office', pptx: 'office', odp: 'office',
+};
+
+function docKind(name) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(name || '');
+  return m ? (DOC_KIND_BY_EXT[m[1].toLowerCase()] || null) : null;
+}
+
+function docTargetsFor(name) {
+  const kind = docKind(name);
+  if (!kind) return [];
+  return (DOC_ROUTES[kind] || []).filter(
+    fmt => !_docCaps || _docCaps.routes[kind + '->' + fmt] !== false
+  );
+}
+
+async function openDocsTab() {
+  await loadDocCaps();
+  docBrowse(_docBrowse ? _docBrowse.current_path : undefined);
+}
+
+async function loadDocCaps() {
+  if (!connected) return;
+  try {
+    _docCaps = await api('GET', '/api/docs/capabilities');
+  } catch (e) {
+    _docCaps = null;
+  }
+  renderDocCaps();
+}
+
+function renderDocCaps() {
+  const box = document.getElementById('doc-caps');
+  const hint = document.getElementById('doc-caps-hint');
+  if (!box) return;
+  if (!_docCaps) {
+    box.innerHTML = '<span class="doc-cap miss">' + escHtml(T('doc.caps_unknown')) + '</span>';
+    if (hint) hint.style.display = 'none';
+    const unknownWp = document.getElementById('doc-wp-hint');
+    if (unknownWp) unknownWp.style.display = 'none';
+    return;
+  }
+  const rows = [
+    ['markdown',    'doc.cap.markdown'],
+    ['weasyprint',  'doc.cap.weasyprint'],
+    ['pypdf',       'doc.cap.pypdf'],
+    ['libreoffice', 'doc.cap.libreoffice'],
+  ];
+  box.innerHTML = rows.map(([key, i18nKey]) => {
+    const ok = !!_docCaps[key];
+    return '<span class="doc-cap ' + (ok ? 'ok' : 'miss') + '">' +
+           (ok ? '✔ ' : '✖ ') + escHtml(T(i18nKey)) + '</span>';
+  }).join('');
+  if (hint) hint.style.display = _docCaps.libreoffice ? 'none' : '';
+  const wpHint = document.getElementById('doc-wp-hint');
+  if (wpHint) wpHint.style.display = _docCaps.weasyprint ? 'none' : '';
+}
+
+async function docBrowse(path) {
+  if (!connected) { toast(T('conn.not_connected')); return; }
+  const list = document.getElementById('doc-list');
+  list.innerHTML = '<div class="empty"><p>' + escHtml(T('fb.reading')) + '</p></div>';
+  const seq = ++_docSeq;
+  try {
+    const params = (path != null) ? '?path=' + encodeURIComponent(path) : '';
+    const data = await api('GET', '/api/files/browse' + params);
+    if (seq !== _docSeq) return;
+    _docBrowse = data;
+    renderDocBrowser();
+  } catch (e) {
+    if (seq !== _docSeq) return;
+    list.innerHTML = '<div class="empty"><p style="color:var(--danger)">' + escHtml(e.message) + '</p></div>';
+  }
+}
+
+function docBrowseUp() {
+  if (_docBrowse && _docBrowse.parent_path != null) docBrowse(_docBrowse.parent_path);
+}
+
+function renderDocBrowser() {
+  if (!_docBrowse) return;
+  const data = _docBrowse;
+  document.getElementById('doc-path').textContent = data.current_path;
+  const upBtn = document.getElementById('doc-up-btn');
+  upBtn.style.display = data.parent_path != null ? 'inline-flex' : 'none';
+
+  const list = document.getElementById('doc-list');
+  const dirs  = data.items.filter(i => i.type === 'dir');
+  const files = data.items.filter(i => i.type === 'file' && docTargetsFor(i.name).length);
+
+  if (!dirs.length && !files.length) {
+    list.innerHTML = '<div class="empty"><p>' + escHtml(T('doc.empty_dir')) + '</p></div>';
+    return;
+  }
+
+  const dirHtml = dirs.map(item => {
+    const full = joinPath(data.current_path, item.name);
+    return '<div class="fb-item">' +
+      '<div class="fb-icon" style="cursor:pointer" data-path="' + escHtml(full) + '" onclick="docBrowse(this.dataset.path)">📁</div>' +
+      '<div class="fb-body"><div class="fb-name" style="cursor:pointer" data-path="' + escHtml(full) + '" onclick="docBrowse(this.dataset.path)">' +
+      escHtml(item.name) + '</div></div></div>';
+  }).join('');
+
+  const fileHtml = files.map((item, idx) => {
+    const full = joinPath(data.current_path, item.name);
+    const targets = docTargetsFor(item.name);
+    const meta = [fmtSize(item.size),
+      item.modified_at ? new Date(item.modified_at * 1000).toLocaleDateString() : '']
+      .filter(Boolean).join(' · ');
+    const opts = targets.map(fmt =>
+      '<option value="' + fmt + '">' + escHtml(DOC_TARGET_LABEL[fmt] || fmt.toUpperCase()) + '</option>'
+    ).join('');
+    return '<div class="fb-item" id="doc-row-' + idx + '">' +
+      '<div class="fb-icon">📄</div>' +
+      '<div class="fb-body">' +
+        '<div class="fb-name">' + escHtml(item.name) + '</div>' +
+        '<div class="fb-meta">' + escHtml(meta) + '</div>' +
+        '<div class="doc-actions">' +
+          '<select id="doc-fmt-' + idx + '">' + opts + '</select>' +
+          '<button class="btn btn-sm btn-secondary" data-path="' + escHtml(full) + '" data-idx="' + idx + '" ' +
+            'onclick="convertDoc(this.dataset.path, this.dataset.idx, this)">' + escHtml(T('doc.convert')) + '</button>' +
+        '</div>' +
+        '<div id="doc-out-' + idx + '"></div>' +
+      '</div></div>';
+  }).join('');
+
+  list.innerHTML = dirHtml + fileHtml;
+}
+
+async function convertDoc(path, idx, btn) {
+  const sel = document.getElementById('doc-fmt-' + idx);
+  const out = document.getElementById('doc-out-' + idx);
+  if (!sel || !out) return;
+  const target = sel.value;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = T('doc.converting');
+  out.innerHTML = '';
+  try {
+    const res = await api('POST', '/api/docs/convert', { source_path: path, target_format: target });
+    const base  = cfg.host.replace(/\/+$/, '');
+    const token = cfg.token ? '&token=' + encodeURIComponent(cfg.token) : '';
+    const url   = base + '/api/files/serve?path=' + encodeURIComponent(res.output_path) + token;
+    out.innerHTML = '<div class="doc-result">✅ ' + escHtml(res.filename) + ' · ' + escHtml(fmtSize(res.size)) +
+      ' <a class="btn btn-sm btn-secondary" style="margin-left:6px" target="_blank" rel="noopener" href="' +
+      escHtml(url) + '">' + escHtml(T('doc.open')) + '</a></div>';
+    toast('✅ ' + res.filename);
+  } catch (e) {
+    out.innerHTML = '<div class="doc-error">❌ ' + escHtml(e.message) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 function fmtSize(bytes) {
@@ -3796,6 +5250,17 @@ document.getElementById('archive-extract-overlay').addEventListener('click', fun
 // Allow Enter key in URL input to trigger analyse
 document.getElementById('url-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') doAnalyse();
+});
+
+// Editing the URL invalidates the metadata card shown for the previous one.
+document.getElementById('url-input').addEventListener('input', e => {
+  if (!analysedUrl || e.target.value.trim() === analysedUrl) return;
+  analysedInfo = null;
+  analysedUrl  = '';
+  document.getElementById('meta-card').style.display     = 'none';
+  document.getElementById('analyse-status').textContent  = '';
+  document.getElementById('format-row').style.display    = '';
+  document.getElementById('live-banner').style.display   = 'none';
 });
 </script>
 </body>

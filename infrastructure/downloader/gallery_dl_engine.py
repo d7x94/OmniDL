@@ -30,6 +30,7 @@ from typing import Any, Callable, Optional
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,83 @@ _SUPPORTED_RE = re.compile(
 def is_gallery_dl_url(url: str) -> bool:
     """True when the URL belongs to a platform gallery-dl supports for images."""
     return bool(_SUPPORTED_RE.search(url))
+
+
+# Facebook photo / album URLs.  yt-dlp's FacebookIE._VALID_URL matches none of
+# these forms, so it raises "Unsupported URL" — a hard error that stopped the
+# photo-error fallback from ever running.  These go straight to gallery-dl.
+# /<user>/posts/<id> is deliberately absent: those can hold a video, so they
+# stay on the yt-dlp-first path with the photo-error fallback behind it.
+_FB_PHOTO_RE = re.compile(
+    r"facebook\.com/(?:"
+    r"photo(?:\.php)?/?\?|"
+    r"media/set/?\?|"
+    r"[^/?#]+/photos(?:_by|_albums)?(?:/|\?|$)"
+    r")|facebook\.com/[^?#]*\?[^#]*\bset=a\.",
+    re.I,
+)
+
+
+def is_facebook_photo_url(url: str) -> bool:
+    """True for a Facebook photo or album URL that only gallery-dl can fetch."""
+    return bool(_FB_PHOTO_RE.search(url))
+
+
+# BUG-FB-SETID FIX: a /share/p/ link resolves to story.php?story_fbid=X&id=Y, and
+# gallery-dl's USER_PATTERN excludes only "permalink.php" and "photo.php" — so
+# "story.php" is captured as a *profile name*, routed to FacebookUserExtractor, and
+# dies with "An unexpected error occurred: KeyError - 'set_id'" (log 2026-09-09
+# 15:18:12/15:18:21, task 7f2b7e61, both attempts).  The /<owner>/posts/<id> form
+# routes to FacebookSetExtractor, which parses the post page and falls back to the
+# single-photo path when the post holds no photo set.
+_FB_STORY_PHP_RE = re.compile(r"facebook\.com/story\.php\?", re.I)
+
+# BUG-FB-SHARE: /share/{p,v,r}/<token> is Facebook's own short form.  gallery-dl
+# has no extractor for it and exits with "Unsupported URL"; the resolution to the
+# canonical story.php URL used to happen only inside yt_dlp_engine.extract_info,
+# so a photo post routed to gallery-dl still arrived as a /share/ link.
+_FB_SHARE_RE = re.compile(r"facebook\.com/share/(?:p|v|r)/", re.I)
+
+# BUG-FB-POST: a Facebook feed post (story.php / permalink.php / <user>/posts/)
+# can hold photos, photos with a music track, or photos plus a video.
+# gallery-dl's FacebookSetExtractor yields the photos only, so these URLs need
+# both engines: gallery-dl for the images, then a yt-dlp pass for the videos.
+_FB_POST_RE = re.compile(
+    r"facebook\.com/(?:"
+    r"story\.php\?[^#]*\bstory_fbid=|"
+    r"permalink\.php\?[^#]*\bstory_fbid=|"
+    r"(?:groups/[^/?#]+/)?[^/?#]+/posts/|"
+    r"share/p/"
+    r")",
+    re.I,
+)
+
+
+def is_facebook_post_url(url: str) -> bool:
+    """True for a Facebook feed post that may mix photos, music and video."""
+    return bool(_FB_POST_RE.search(url))
+
+
+def normalize_gallery_dl_url(url: str) -> str:
+    """Rewrite URL forms gallery-dl mis-dispatches. Returns *url* unchanged otherwise."""
+    if _FB_SHARE_RE.search(url):
+        from infrastructure.downloader.yt_dlp_engine import (  # noqa: PLC0415
+            _resolve_facebook_share_url,
+        )
+
+        url = _resolve_facebook_share_url(url)
+    if not _FB_STORY_PHP_RE.search(url):
+        return url
+    from urllib.parse import parse_qs, urlparse
+
+    q = parse_qs(urlparse(url).query)
+    story_fbid = (q.get("story_fbid") or [""])[0]
+    owner_id = (q.get("id") or [""])[0]
+    if story_fbid.isdigit() and owner_id.isdigit():
+        rewritten = f"https://www.facebook.com/{owner_id}/posts/{story_fbid}"
+        logger.debug("gallery-dl: rewrote story.php URL %s -> %s", url, rewritten)
+        return rewritten
+    return url
 
 
 def _find_executable() -> Optional[str]:
@@ -129,20 +207,16 @@ def _friendly_error(msg: str) -> str:
     """
     m = msg.lower()
     if "login" in m or "401" in m or "cookie" in m or "authentication" in m:
-        return (
-            "login: gallery-dl yêu cầu đăng nhập.\n"
-            "Kiểm tra cookie file trong Settings → Network → Cookie file.\n"
-            "Đảm bảo dùng cookie Instagram (không phải Facebook)."
-        )
+        return "login: " + t("err.gdl_login_required")
     if "404" in m or "not found" in m:
-        return "not found: URL không tìm thấy hoặc nội dung đã bị xóa."
+        return "not found: " + t("err.not_found")
     if "429" in m or "rate" in m or "too many" in m:
-        return "blocked: gallery-dl bị rate limit — Instagram đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại."
+        return "blocked: " + t("err.gdl_rate_limited")
     if "gallery-dl" in m and ("not found" in m or "no such" in m):
-        return "unsupported url: gallery-dl chưa được cài đặt.\nChạy: pip install gallery-dl"
+        return "unsupported url: " + t("err.gdl_not_installed_short")
     if "private" in m:
-        return "private: Nội dung này ở chế độ riêng tư —\ncần cookie tài khoản có quyền xem."
-    return msg[:300] if msg else "gallery-dl thất bại không rõ nguyên nhân."
+        return "private: " + t("err.gdl_private")
+    return msg[:300] if msg else t("err.gdl_unknown")
 
 
 # ── BUG-BW helpers ────────────────────────────────────────────────────────────
@@ -214,10 +288,10 @@ def _ytdlp_carousel_videos(
     # rescued files directly there — no uploader subdir — so they share the same
     # directory as the gallery-dl images and task.filename already points there.
     if rescue_dir is not None:
-        outtmpl = str(rescue_dir / "%(title).60B [%(id).12B].%(ext)s")
+        outtmpl = str(rescue_dir / "%(title).60B [%(id).30B].%(ext)s")
     else:
         outtmpl = str(
-            output_dir / "%(uploader,channel|instagram_rescue)s" / "%(title).60B [%(id).12B].%(ext)s"
+            output_dir / "%(uploader,channel|instagram_rescue)s" / "%(title).60B [%(id).30B].%(ext)s"
         )
     opts: dict[str, object] = {
         # BUG-BX / BUG-BY: Instagram carousel videos may be:
@@ -314,9 +388,7 @@ class GalleryDlEngine:
         """Return gallery-dl path (or sentinel) or raise RuntimeError with install hint."""
         exe = _find_executable()
         if not exe:
-            raise RuntimeError(
-                "gallery-dl chưa được cài đặt.\nChạy: pip install gallery-dl\nSau đó khởi động lại OmniDL."
-            )
+            raise RuntimeError(t("err.gdl_not_installed"))
         return exe
 
     def _base_cmd(self, url: str = "") -> "tuple[list[str], str | None]":
@@ -401,7 +473,8 @@ class GalleryDlEngine:
         Raises RuntimeError on failure.
         """
         base_cmd, cookie_temp = self._base_cmd(url=url)
-        cmd = base_cmd + ["--dump-json", "--no-download", url]
+        _gdl_url = normalize_gallery_dl_url(url)
+        cmd = base_cmd + ["--dump-json", "--no-download", _gdl_url]
         logger.debug("gallery-dl extract_info: %s", cmd)
 
         try:
@@ -409,15 +482,17 @@ class GalleryDlEngine:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                # 30 s was enough for a single Instagram post but truncated
+                # --dump-json on large Facebook albums (one JSON line per photo).
+                timeout=90,
                 encoding="utf-8",
                 errors="replace",
                 creationflags=_WIN_NO_WINDOW,
             )
         except subprocess.TimeoutExpired:
-            raise RuntimeError("gallery-dl hết thời gian khi lấy thông tin URL.") from None
+            raise RuntimeError(t("err.gdl_timeout")) from None
         except FileNotFoundError:
-            raise RuntimeError("gallery-dl không tìm thấy.\nCài đặt: pip install gallery-dl") from None
+            raise RuntimeError(t("err.gdl_missing_binary")) from None
         finally:
             # Always clean up decrypted temp cookie file, even on error.
             if cookie_temp:
@@ -449,9 +524,7 @@ class GalleryDlEngine:
             stderr = result.stderr.strip()
             if result.returncode != 0 or stderr:
                 raise RuntimeError(_friendly_error(stderr or "No items found"))
-            raise RuntimeError(
-                "gallery-dl không tìm thấy nội dung tại URL này.\nKiểm tra URL hoặc thử refresh cookie."
-            )
+            raise RuntimeError(t("err.gdl_no_content"))
 
         first = items[0]
         count = len(items)
@@ -469,18 +542,19 @@ class GalleryDlEngine:
         )
 
         # Build a human-readable title
+        from infrastructure.downloader.yt_dlp_engine import _detect_platform
+
+        platform = _detect_platform(url)
         raw_title = first.get("title") or first.get("description", "")[:80].split("\n")[0] or ""
         if not raw_title:
-            raw_title = f"{count} ảnh" if count > 1 else "Instagram Photo"
+            # Hard-coding "Instagram Photo" here mislabelled every single-item
+            # Facebook / Twitter / Pinterest gallery.  Use the detected platform.
+            raw_title = t("gdl.photo_count", count=count) if count > 1 else f"{platform} Photo"
 
         post_id = str(first.get("post_id") or first.get("shortcode") or first.get("id", "") or "")
 
         # Use first image URL as thumbnail preview
         thumbnail = str(first.get("url") or first.get("thumbnail") or "")
-
-        from infrastructure.downloader.yt_dlp_engine import _detect_platform
-
-        platform = _detect_platform(url)
 
         logger.info(
             "gallery-dl extract_info: %d item(s) | platform=%s | id=%s",
@@ -540,6 +614,33 @@ class GalleryDlEngine:
             output_dir = (output_dir / _slug).resolve()
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Same isolation for Facebook photo posts, albums and feed posts: without
+        # it a 60-photo album empties straight into the download root, mixing with
+        # every other download and leaving Taildrop no way to group the set.
+        elif is_facebook_photo_url(task.url) or is_facebook_post_url(task.url):
+            _fb_id = ""
+            for _rx in (
+                r"fbid=(\d+)",
+                r"set=a\.(\d+)",
+                r"set=([\w.]+)",
+                r"/photos/[^/]*/(\d+)",
+                r"story_fbid=(\d+)",
+                r"/posts/(\w+)",
+                r"/share/p/(\w+)",
+            ):
+                _fm = re.search(_rx, task.url, re.I)
+                if _fm:
+                    _fb_id = _fm.group(1)[:24]
+                    break
+            _upl = ""
+            if task.media_info and task.media_info.uploader:
+                _upl = re.sub(r"[^\w.]", "_", task.media_info.uploader)[:32].strip("_")
+            _date_str = datetime.date.today().strftime("%Y%m%d")
+            _slug = "_".join(x for x in (_upl or "facebook", _date_str, _fb_id) if x)
+            output_dir = (output_dir / _slug).resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _is_post_isolated = True
+
         # ── Instagram carousel: images-only strategy ─────────────────────
         # gallery-dl fetches Instagram video CDN URLs which are video-only
         # DASH streams (no audio).  For carousel posts (/p/ URLs), tell
@@ -547,7 +648,13 @@ class GalleryDlEngine:
         # them afterwards with proper bestvideo+bestaudio merge.
         _is_ig_carousel = bool(_sc_m) and bool(re.search(r"instagram\.com/p/", task.url, re.I))
 
+        # BUG-FB-POST: same two-engine treatment for a Facebook feed post — see
+        # _FB_POST_RE.  No --filter is needed here: gallery-dl's set extractor
+        # never writes a video for these URLs, it just skips the video items.
+        _is_fb_post = is_facebook_post_url(task.url)
+
         base_cmd, cookie_temp = self._base_cmd(url=task.url)
+        _gdl_url = normalize_gallery_dl_url(task.url)
         if _is_ig_carousel:
             cmd = base_cmd + [
                 "--filter",
@@ -556,7 +663,7 @@ class GalleryDlEngine:
                 str(output_dir),
                 "--directory",
                 ".",
-                task.url,
+                _gdl_url,
             ]
         else:
             cmd = base_cmd + [
@@ -564,9 +671,9 @@ class GalleryDlEngine:
                 str(output_dir),
                 "--directory",
                 ".",
-                task.url,
+                _gdl_url,
             ]
-        logger.info("gallery-dl download: %s → %s", task.url, output_dir)
+        logger.info("gallery-dl download: %s → %s", _gdl_url, output_dir)
 
         # BUG-BV: capture wall-clock time before the subprocess starts so the
         # fallback scan can scope results to files created in THIS session only.
@@ -593,11 +700,11 @@ class GalleryDlEngine:
                     Path(cookie_temp).unlink(missing_ok=True)
                 except Exception:
                     pass
-            raise RuntimeError("gallery-dl không tìm thấy.\nCài đặt: pip install gallery-dl") from None
+            raise RuntimeError(t("err.gdl_missing_binary")) from None
 
         task.status = DownloadStatus.DOWNLOADING
         task.progress = 0.0
-        task.eta = "⬇ Đang chuẩn bị tải ảnh…"
+        task.eta = t("progress.gdl_preparing")
         if on_progress:
             on_progress(task)
 
@@ -648,7 +755,7 @@ class GalleryDlEngine:
                         Path(f).stat().st_size for f in downloaded_files if Path(f).exists()
                     )
                     n = len(downloaded_files)
-                    task.eta = f"⬇ {n} file{'s' if n > 1 else ''} đã tải"
+                    task.eta = t("progress.gdl_downloaded", count=n)
                     task.speed = ""
                     # Indeterminate — show pulse at 50% while files arrive
                     task.progress = min(50.0 + n * 5, 95.0)
@@ -669,9 +776,16 @@ class GalleryDlEngine:
         # For Instagram carousels with --filter, gallery-dl may exit non-zero
         # when all items are videos (filter excludes everything).  That is OK
         # — yt-dlp will handle the videos below.
+        # BUG-FB-POST: for a Facebook feed post this is not yet a failure — the
+        # post may hold a video and no photo set at all.  Hold the message and
+        # raise it after the yt-dlp pass below only if that finds nothing either.
+        _deferred_err = ""
         if proc.returncode != 0 and not downloaded_files and not _is_ig_carousel:
             err = "\n".join(ln for ln in stderr_lines if ln and not ln.startswith("[debug]"))
-            raise RuntimeError(_friendly_error(err or "gallery-dl exit code non-zero"))
+            _deferred_err = _friendly_error(err or "gallery-dl exit code non-zero")
+            if not _is_fb_post:
+                raise RuntimeError(_deferred_err)
+            logger.info("gallery-dl found no photo set for %s — trying the yt-dlp video pass", _gdl_url)
 
         # Partial success (some files downloaded, process exited non-zero)
         if proc.returncode != 0 and downloaded_files:
@@ -787,7 +901,7 @@ class GalleryDlEngine:
 
         _vid_exts_set = frozenset({".mp4", ".mov", ".webm", ".mkv", ".m4v"})
 
-        if _is_ig_carousel and not task.is_cancellation_requested:
+        if (_is_ig_carousel or _is_fb_post) and not task.is_cancellation_requested:
             from utils.ffmpeg_locator import get_ffmpeg_path  # noqa: PLC0415
 
             _ffmpeg_dir = get_ffmpeg_path()
@@ -809,7 +923,7 @@ class GalleryDlEngine:
                 _gdl_video_paths = {str(v) for v in _gdl_videos}
                 _current_gdl_files = [f for f in _current_gdl_files if f not in _gdl_video_paths]
 
-            task.eta = "⬇ Đang tải video có âm thanh…"
+            task.eta = t("progress.gdl_video_audio")
             if on_progress:
                 on_progress(task)
 
@@ -845,7 +959,7 @@ class GalleryDlEngine:
             _vid_dl_start = time.time()
             try:
                 video_files = _ytdlp_carousel_videos(
-                    url=task.url,
+                    url=_gdl_url,
                     output_dir=output_dir,
                     dl_start_ts=_vid_dl_start,
                     cookie_file=_vid_cookie,
@@ -869,16 +983,28 @@ class GalleryDlEngine:
                 elif task.gallery_dl_files:
                     task.filename = task.gallery_dl_files[0]
                 logger.info(
-                    "Instagram carousel: %d image(s) + %d video(s) with audio",
+                    "%s: %d image(s) + %d video(s) with audio",
+                    "Facebook post" if _is_fb_post else "Instagram carousel",
                     len(_current_gdl_files),
                     len(video_files),
                 )
             else:
                 logger.info(
-                    "Instagram carousel: no video items rescued for %s — "
+                    "%s: no video items rescued for %s — "
                     "post is image-only, or the video download failed",
-                    task.url,
+                    "Facebook post" if _is_fb_post else "Instagram carousel",
+                    _gdl_url,
                 )
+
+        # BUG-FB-POST: neither engine produced a file — surface gallery-dl's
+        # own message rather than reporting a silent success with nothing saved.
+        if _deferred_err and not (getattr(task, "gallery_dl_files", None) or downloaded_files):
+            if cookie_temp:
+                try:
+                    Path(cookie_temp).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            raise RuntimeError(_deferred_err)
 
         # Always clean up the decrypted temp cookie file after subprocess exits.
         # On early-exit paths (cancel / error raises above) the atexit handler

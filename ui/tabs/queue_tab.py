@@ -185,7 +185,13 @@ class QueueTab(QWidget):
                 if self._select_mode:
                     w.set_select_mode(True, self._on_item_select)
             else:
-                self._widgets[task.id].refresh(task)
+                w = self._widgets[task.id]
+                w.refresh(task)
+                if self._select_mode:
+                    # Re-apply: a task that finished since the last poll had no
+                    # checkbox while it was running, and nothing else would ever
+                    # give it one until select mode was toggled off and on.
+                    w.set_select_mode(True, self._on_item_select)
 
         has_tasks = bool(tasks)
         self._empty_lbl.setVisible(not has_tasks)

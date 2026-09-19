@@ -139,8 +139,12 @@ class TestSendFileNameFlag:
         assert cmd == ["/usr/bin/tailscale", "file", "cp", str(f), "iphone:"]
         svc.close()
 
-    def test_emoji_filename_uses_name_flag(self, tmp_path):
-        """Filename with emoji → --name <safe_name> injected before the path."""
+    def test_emoji_filename_sent_unicode_first(self, tmp_path):
+        """Non-ASCII filename → first attempt keeps the full Unicode name.
+
+        BUG-TD-NAME: the name is no longer flattened to ASCII up-front, because
+        that silently deleted emoji, CJK and Vietnamese diacritics.
+        """
         raw_name = "clip ❤️🔥 fun.mp4"
         f = tmp_path / raw_name
         f.write_bytes(b"data")
@@ -155,46 +159,109 @@ class TestSendFileNameFlag:
             r = svc.send_file(f, "iphone")
 
         assert r.success
+        assert mock_run.call_count == 1
         cmd = mock_run.call_args[0][0]
-        assert "--name" in cmd
-        name_idx = cmd.index("--name")
-        safe_name = cmd[name_idx + 1]
-        # Safe name must be pure ASCII and keep the extension.
-        safe_name.encode("ascii")
-        assert safe_name.endswith(".mp4")
-        assert "❤" not in safe_name
+        assert "--name" not in cmd, "on-disk name already carries the emoji"
+        assert r.sent_name == raw_name
         svc.close()
 
-    def test_real_tiktok_filename_uses_name_flag(self, tmp_path):
-        """
-        Regression: the exact filename from omnidl_run.log triggers --name.
-        """
-        raw_name = (
-            "dodonhatminh109 - 2026-03-28 - Top 15 edurun 2026 "
-            "\u2764\ufe0f\u200d\U0001f525@Ba d\xedm  "
-            "#dodonhatminh  #vinschool  #edurun  #... [762213827654].mp4"
-        )
+    def test_non_ascii_falls_back_to_ascii_name_on_rejection(self, tmp_path):
+        """When the peer rejects the Unicode name, retry with a readable ASCII one."""
+        raw_name = "1965dreamfootball - 2026-08-27 - YUSUKI cậu ấy thật đáng yêu [7678718864875719954].mp4"
         f = tmp_path / raw_name
         f.write_bytes(b"data")
-        svc = _make_svc(enabled=True, node="iphone-12-pro-max")
+        svc = _make_svc(enabled=True, node="iphone")
 
+        reject = MagicMock()
+        reject.returncode = 1
+        reject.stderr = "400 Bad Request: invalid filename"
         ok = MagicMock()
         ok.returncode = 0
+
         with (
             patch("shutil.which", return_value="/usr/bin/tailscale"),
-            patch("subprocess.run", return_value=ok) as mock_run,
+            patch("subprocess.run", side_effect=[reject, ok]) as mock_run,
         ):
-            r = svc.send_file(f, "iphone-12-pro-max")
+            r = svc.send_file(f, "iphone")
 
-        assert r.success, f"Expected success; got error: {r.error}"
-        cmd = mock_run.call_args[0][0]
-        assert "--name" in cmd, "Expected --name flag for non-ASCII filename"
-        name_idx = cmd.index("--name")
-        safe_name = cmd[name_idx + 1]
-        safe_name.encode("ascii")  # must be pure ASCII — no UnicodeEncodeError
+        assert r.success
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        assert "--name" in cmd
+        safe_name = cmd[cmd.index("--name") + 1]
+        safe_name.encode("ascii")  # pure ASCII — no UnicodeEncodeError
+        # Transliterated, not deleted: the old code produced "cu y tht ng yu".
+        assert "cau ay that dang yeu" in safe_name
         assert safe_name.endswith(".mp4")
-        # Original (unsafe) file path is still passed as the actual source
-        assert str(f) in cmd
+        assert "[7678718864875719954]" in safe_name
+        assert r.sent_name == safe_name
+        svc.close()
+
+    def test_cjk_fallback_has_no_dangling_separator(self, tmp_path):
+        """CJK has no ASCII form — the fallback must not start with a bare ' - '."""
+        raw_name = "家有兩兄妹 - 2026-06-10 - Video [1661273081771069].mp4"
+        f = tmp_path / raw_name
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        reject = MagicMock()
+        reject.returncode = 1
+        reject.stderr = "400 Bad Request: invalid filename"
+        ok = MagicMock()
+        ok.returncode = 0
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", side_effect=[reject, ok]) as mock_run,
+        ):
+            r = svc.send_file(f, "iphone")
+
+        assert r.success
+        safe_name = mock_run.call_args_list[1][0][0][
+            mock_run.call_args_list[1][0][0].index("--name") + 1
+        ]
+        assert safe_name == "2026-06-10 - Video [1661273081771069].mp4"
+        svc.close()
+
+    def test_ascii_filename_never_retries(self, tmp_path):
+        """A pure-ASCII name has no fallback — one failed attempt, then give up."""
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = "peer offline"
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=fail) as mock_run,
+        ):
+            r = svc.send_file(f, "iphone")
+
+        assert not r.success
+        assert mock_run.call_count == 1
+        assert r.sent_name == ""
+        svc.close()
+
+    def test_timeout_does_not_retry(self, tmp_path):
+        """A timeout says nothing about the filename — no second attempt."""
+        f = tmp_path / "phim tiếng Việt.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=300),
+            ) as mock_run,
+        ):
+            r = svc.send_file(f, "iphone")
+
+        assert not r.success
+        assert mock_run.call_count == 1
+        assert "timed out" in r.error
         svc.close()
 
 
@@ -943,3 +1010,57 @@ class TestSendNow:
             svc.send_now(task)
         mock_submit.assert_called_once()
         svc.close()
+
+
+class TestCliErrorSanitiser:
+    """Log audit 2026-09-17: `tailscale file cp` stderr went into the log raw.
+
+    The record split across physical lines and the reported error was the
+    harmless "# warning: <peer> is reportedly offline; trying anyway" advisory
+    while the real cause ("502 Bad Gateway") sat on an untimestamped line below.
+    """
+
+    _REAL_STDERR = (
+        "\x1b[K# warning: iphone-12-pro-max is reportedly offline; trying anyway\r\n"
+        "502 Bad Gateway:\r\n"
+    )
+
+    def test_strips_ansi_and_keeps_real_cause(self):
+        from app.services.taildrop_service import _clean_cli_error
+
+        cleaned = _clean_cli_error(self._REAL_STDERR)
+        assert cleaned == "502 Bad Gateway:"
+        assert "\x1b" not in cleaned
+        assert "\r" not in cleaned and "\n" not in cleaned
+
+    def test_warning_kept_when_it_is_the_only_output(self):
+        from app.services.taildrop_service import _clean_cli_error
+
+        cleaned = _clean_cli_error("\x1b[K# warning: peer is reportedly offline\r")
+        assert cleaned == "# warning: peer is reportedly offline"
+
+    def test_multiple_error_lines_joined_on_one_line(self):
+        from app.services.taildrop_service import _clean_cli_error
+
+        assert _clean_cli_error("first\nsecond\n") == "first | second"
+
+    def test_send_file_error_is_single_line(self, tmp_path):
+        svc = _make_svc(enabled=True, node="iphone")
+        f = tmp_path / "out.mp4"
+        f.write_bytes(b"data")
+
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = self._REAL_STDERR
+        fail.stdout = ""
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=fail),
+        ):
+            result = svc.send_file(f, "iphone")
+
+        assert result.success is False
+        assert "502 Bad Gateway" in result.error
+        assert "\n" not in result.error
+        assert "\x1b" not in result.error

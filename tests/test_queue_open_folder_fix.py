@@ -481,6 +481,13 @@ def test_pause_cancel_hidden_on_completed_with_empty_filename():
         "_size_lbl",
         "_err_lbl",
         "_convert_btn",
+        # refresh() now hides every file action for a COMPLETED task with no
+        # filename (the Remote API clears it when the file is deleted), so
+        # these three must be stubbed here too — the other stub lists in this
+        # file already carry them.
+        "_edit_btn",
+        "_rename_btn",
+        "_send_btn",
     ):
         m = MagicMock()
         m.winfo_ismapped.return_value = False

@@ -59,6 +59,7 @@ class Pass3UserApi(LiveDetectionStrategy):
                 timeout=10,
             )
         except Exception as exc:
+            ctx.network_error = True
             logger.debug("tiktok_detection: @%s pass-3 network error: %s", ctx.username, exc)
             return None
         finally:
@@ -78,6 +79,11 @@ class Pass3UserApi(LiveDetectionStrategy):
             data = json.loads(resp.text)
         except ValueError as exc:
             if not resp.text.strip():
+                # An empty body is bot-detection, not an answer about live
+                # status — tell HealthDaemon the strategy is not functioning
+                # so a permanently blocked pass can be disabled instead of
+                # being called on every poll (2,401 times over 33 hours).
+                ctx.unavailable = True
                 logger.debug(
                     "tiktok_detection: @%s pass-3 empty response body (bot-detection suspected)",
                     ctx.username,

@@ -43,6 +43,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from api.models import (
+    MAX_BATCH_ITEMS,
     AnalyseRequest,
     AnalyseResponse,
     ArchiveCompressRequest,
@@ -51,12 +52,23 @@ from api.models import (
     ArchiveExtractRequest,
     ArchiveExtractResponse,
     ArchiveMemberResponse,
+    BatchConvertItemError,
+    BatchConvertResponse,
+    BatchDownloadRequest,
+    BatchDownloadResponse,
+    BatchDownloadResult,
+    BatchFileConvertRequest,
     ClearItemsRequest,
     ClipboardAnalyseRequest,
     CodecOption,
     ConvertCapabilities,
+    ConvertConcurrencyRequest,
+    ConvertConcurrencyResponse,
     ConvertJobResponse,
     ConvertRequest,
+    DocConvertCapabilitiesResponse,
+    DocConvertRequest,
+    DocConvertResponse,
     DownloadRequest,
     EncoderOption,
     FileActionResponse,
@@ -95,6 +107,16 @@ from app.services.archive_service import (
     ArchivePathTraversalError,
     ArchiveService,
 )
+from app.services.doc_convert_service import (
+    SOURCE_EXTS,
+    TARGET_FORMATS,
+    DocConvertError,
+    DocConvertService,
+    DocConvertToolMissingError,
+    DocConvertUnsupportedError,
+)
+from app.services.doc_convert_service import capabilities as doc_capabilities
+from app.services.ffmpeg_convert_service import ConvertQueue
 from domain.models.conversion_job import ConversionJob, ConversionStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from utils.helpers import sanitise_filename
@@ -140,8 +162,17 @@ _ANALYSE_CACHE_TTL = 30.0  # seconds to keep result after completion
 _ANALYSE_CACHE_MAX_AGE = 300.0
 _ANALYSE_CACHE_MAX_ENTRIES = 32
 _EXTRA_MIME = {".ts": "video/mp2t"}  # missing from Python's default mimetypes DB
+# Extensions whose content the browser would execute in the serving origin.
+_ACTIVE_CONTENT_EXTS = frozenset(
+    {".html", ".htm", ".xhtml", ".svg", ".xml", ".xsl", ".xslt", ".mhtml", ".mht"}
+)
 
 # Per-IP sliding-window rate limiter (stdlib only, no new deps).
+# Upper bound on a document handed to /api/docs/convert. WeasyPrint and
+# LibreOffice both hold the whole document in memory; without a cap a single
+# multi-GB file would pin a worker thread and the process RSS with it.
+_DOC_CONVERT_MAX_BYTES = 200 * 1024 * 1024  # 200 MiB
+
 _RATE_LIMIT = 60  # max requests per window
 _RATE_WINDOW = 60.0  # seconds
 _rate_buckets: dict[str, collections.deque] = {}
@@ -252,6 +283,15 @@ def _offer_sse(q: asyncio.Queue, msg: str) -> None:
         q.put_nowait(None)
 
 
+def _playlist_entries(info: MediaInfo) -> list[str]:
+    """Member URLs of a playlist result, capped at what a batch can accept.
+
+    The desktop Batch tab caps its own import the same way; sending more would
+    only be discarded by the client and bloats the analyse response.
+    """
+    return [str(u) for u in info.playlist_entries[:MAX_BATCH_ITEMS]]
+
+
 def _task_to_dict(task: DownloadTask) -> dict:
     """Serialize a DownloadTask to a JSON-safe dict for SSE / REST responses."""
     snap = task.snapshot()
@@ -270,6 +310,12 @@ def _task_to_dict(task: DownloadTask) -> dict:
         "error_msg": snap["error_msg"],
         "created_at": task.created_at,
         "is_live": bool(task.media_info.is_live) if task.media_info else False,
+        # Clients need this to know whether Pause is meaningful: the gallery-dl
+        # engine has no wait_if_paused() hook, so pausing one of its tasks only
+        # relabels the card while the download keeps running.
+        "source_engine": (
+            getattr(task.media_info, "source_engine", "yt_dlp") if task.media_info else "yt_dlp"
+        ),
     }
 
 
@@ -298,6 +344,12 @@ def _wire_event_bus(bus: EventBus) -> None:
     def _on_cancelled(task: DownloadTask) -> None:
         _broadcast("cancelled", _task_to_dict(task))
 
+    def _on_removed(ids: list[str], **_kw) -> None:
+        """Tasks dropped from the registry (clear finished / clear selected /
+        MAX_TASKS purge).  Without this the browser keeps rendering cards for
+        tasks the server has forgotten, and every file action on them 404s."""
+        _broadcast("removed", {"ids": list(ids)})
+
     # Taildrop transfer results — broadcast so the Remote UI can restore
     # the transfer button and show a completion / failure toast.
     # kwargs: task, dest_node  (and error for FAILED)
@@ -325,6 +377,7 @@ def _wire_event_bus(bus: EventBus) -> None:
     bus.subscribe(EventBus.DOWNLOAD_COMPLETED, _on_completed)
     bus.subscribe(EventBus.DOWNLOAD_FAILED, _on_failed)
     bus.subscribe(EventBus.DOWNLOAD_CANCELLED, _on_cancelled)
+    bus.subscribe(EventBus.DOWNLOAD_REMOVED, _on_removed)
     bus.subscribe(EventBus.TAILDROP_COMPLETED, _on_taildrop_completed)
     bus.subscribe(EventBus.TAILDROP_FAILED, _on_taildrop_failed)
 
@@ -370,6 +423,7 @@ def _wire_event_bus(bus: EventBus) -> None:
             (EventBus.DOWNLOAD_COMPLETED, _on_completed),
             (EventBus.DOWNLOAD_FAILED, _on_failed),
             (EventBus.DOWNLOAD_CANCELLED, _on_cancelled),
+            (EventBus.DOWNLOAD_REMOVED, _on_removed),
             (EventBus.TAILDROP_COMPLETED, _on_taildrop_completed),
             (EventBus.TAILDROP_FAILED, _on_taildrop_failed),
             (EventBus.CONVERT_STARTED, _on_convert_started),
@@ -430,9 +484,14 @@ def create_app(
 
     # No config/event_bus dependency — stateless across calls, no 503 fallback needed.
     archive_svc = ArchiveService()
+    doc_convert_svc = DocConvertService()
     # Bounds concurrent compress/extract/contents calls, matching
     # RemoteConvertService's max_workers=2 for the same class of CPU/IO work.
     _archive_semaphore = asyncio.Semaphore(2)
+    # Document conversion is the same class of CPU/IO work (WeasyPrint
+    # rendering, a LibreOffice subprocess); bound it identically so a burst
+    # of API calls cannot fork an unbounded number of soffice processes.
+    _doc_convert_semaphore = asyncio.Semaphore(2)
 
     # ── Auth dependency ───────────────────────────────────────────────────
 
@@ -490,8 +549,22 @@ def create_app(
 
     @app.get("/api/ping")
     async def ping(_: None = Depends(_require_auth)):
-        """Health check — no auth required when token is empty."""
-        return {"status": "ok", "app": "OmniDL", "version": "1.0.0"}
+        """Health check — no auth required when token is empty.
+
+        ``facebook_story`` tells the client whether this host can drive a local
+        Brave/Chrome over CDP, so the web UI can hide the Story hint instead of
+        letting the user discover it from a 400 after analysing.
+        """
+        import sys as _sys  # noqa: PLC0415
+
+        from utils.__version__ import __version__ as _app_version  # noqa: PLC0415
+
+        return {
+            "status": "ok",
+            "app": "OmniDL",
+            "version": _app_version,
+            "facebook_story": _sys.platform in ("win32", "darwin"),
+        }
 
     # ── UI language ───────────────────────────────────────────────────────
 
@@ -532,6 +605,12 @@ def create_app(
         long pole — kuaishou_engine._EXTRACT_BUDGET_S caps strategies A-D plus
         the CDP fallback (strategy E) to fit inside this deadline.
         """
+        # Fail here rather than after the client has analysed, chosen a format
+        # and posted /api/download — the answer is the same either way.
+        _cdp_reason = cdp_only_reason(body.url)
+        if _cdp_reason:
+            raise HTTPException(status_code=400, detail=_cdp_reason)
+
         result: dict = {}
         done = threading.Event()
 
@@ -570,6 +649,7 @@ def create_app(
             formats=info.formats,
             is_live=info.is_live,
             playlist_count=len(info.playlist_entries),
+            playlist_entries=_playlist_entries(info),
             source_engine=info.source_engine,  # BUG-BT fix: forward engine choice to client
             tiktok_room_id=info.tiktok_room_id,
         )
@@ -698,6 +778,7 @@ def create_app(
                             "formats": info.formats,
                             "is_live": info.is_live,
                             "playlist_count": len(info.playlist_entries),
+                            "playlist_entries": _playlist_entries(info),
                             "source_engine": info.source_engine,
                             "tiktok_room_id": info.tiktok_room_id or "",
                         }
@@ -793,18 +874,19 @@ def create_app(
             formats=info.formats,
             is_live=info.is_live,
             playlist_count=len(info.playlist_entries),
+            playlist_entries=_playlist_entries(info),
             source_engine=info.source_engine,
             tiktok_room_id=info.tiktok_room_id,
         )
 
     # ── Download ──────────────────────────────────────────────────────────
 
-    @app.post("/api/download", response_model=TaskResponse)
-    async def start_download(body: DownloadRequest, _: None = Depends(_require_auth)):
-        """
-        Enqueue a download job.
-        A minimal MediaInfo is constructed from the request so the job can
-        be queued immediately — yt-dlp fills in the real title during download.
+    def _enqueue_download(body) -> DownloadTask:
+        """Turn a DownloadRequest / BatchDownloadItem into a queued task.
+
+        Shared by /api/download and /api/download/batch so both paths apply the
+        same canonical-URL lookup, room-id validation and CDP guard.
+        Raises HTTPException(400) for a URL this host cannot download.
         """
         # BUG-TT-DOWNLOAD-CANONICAL: iOS shortcuts send the original short URL
         # (vt.tiktok.com/ZSxxx) to /api/download even after /api/analyse resolved
@@ -845,49 +927,59 @@ def create_app(
             is_live=bool(body.is_live),  # forwarded from /api/analyse — avoids a second extract_info
             tiktok_room_id=_info_room_id,  # BUG-TT-25: enables signed room/info fallback
         )
-        import sys as _sys  # noqa: PLC0415
+        _cdp_reason = cdp_only_reason(body.url)
+        if _cdp_reason:
+            raise HTTPException(status_code=400, detail=_cdp_reason)
 
-        # Only a real /stories/ permalink is CDP-only.  is_facebook_story_url()
-        # also matches every fb.watch short link, which made this guard reject
-        # ordinary Facebook videos yt-dlp handles fine on a Linux server.
-        from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
-            is_facebook_story_permalink as _is_story_url,
+        return service.start_download(
+            url=body.url,
+            media_info=info,
+            format_id=body.format_id or config.default_quality,
+            output_ext=body.output_ext or config.default_format,
         )
 
-        if _is_story_url(body.url) and _sys.platform not in ("win32", "darwin"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Facebook Story downloads require a local Brave/Chrome browser "
-                    "and are only supported on Windows and macOS. "
-                    f"This server is running on {_sys.platform}."
-                ),
-            )
-
-        from infrastructure.downloader.waaw_engine import (  # noqa: PLC0415
-            is_waaw_url as _is_waaw_url,
-        )
-
-        if _is_waaw_url(body.url) and _sys.platform not in ("win32", "darwin"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "waaw.ac downloads require a local Brave/Chrome browser "
-                    "and are only supported on Windows and macOS. "
-                    f"This server is running on {_sys.platform}."
-                ),
-            )
-
+    @app.post("/api/download", response_model=TaskResponse)
+    async def start_download(body: DownloadRequest, _: None = Depends(_require_auth)):
+        """
+        Enqueue a download job.
+        A minimal MediaInfo is constructed from the request so the job can
+        be queued immediately — yt-dlp fills in the real title during download.
+        """
         try:
-            task = service.start_download(
-                url=body.url,
-                media_info=info,
-                format_id=body.format_id or config.default_quality,
-                output_ext=body.output_ext or config.default_format,
-            )
+            task = _enqueue_download(body)
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return TaskResponse(**_task_to_dict(task))
+
+    @app.post(
+        "/api/download/batch",
+        response_model=BatchDownloadResponse,
+        summary="Enqueue many downloads in one call (Batch tab)",
+    )
+    async def start_download_batch(body: BatchDownloadRequest, _: None = Depends(_require_auth)):
+        """
+        Enqueue up to MAX_BATCH_ITEMS jobs at once.
+
+        One bad URL does not abort the rest: every item gets its own entry in
+        ``results`` carrying either ``task_id`` or ``error``.  A single call
+        also keeps the whole batch to one hit on the per-IP rate limiter,
+        which a per-URL POST loop blew through after 60 items.
+        """
+        results: list[BatchDownloadResult] = []
+        for item in body.items:
+            try:
+                task = _enqueue_download(item)
+            except HTTPException as exc:
+                results.append(BatchDownloadResult(url=item.url, error=str(exc.detail)))
+            except Exception as exc:  # noqa: BLE001 — one item must not sink the batch
+                logger.warning("Batch enqueue failed for %s: %s", item.url[:80], exc)
+                results.append(BatchDownloadResult(url=item.url, error=str(exc)))
+            else:
+                results.append(BatchDownloadResult(url=item.url, task_id=task.id))
+        queued = sum(1 for r in results if r.task_id)
+        return BatchDownloadResponse(results=results, queued=queued, failed=len(results) - queued)
 
     # ── Queue ─────────────────────────────────────────────────────────────
 
@@ -905,14 +997,26 @@ def create_app(
 
     @app.post("/api/queue/{task_id}/pause", response_model=QueueActionResponse)
     async def pause_task(task_id: str, _: None = Depends(_require_auth)):
-        _get_task_or_404(service, task_id)
-        service.pause_download(task_id)
+        task = _get_task_or_404(service, task_id)
+        # Only QUEUED / DOWNLOADING can be paused.  Pausing anything else used
+        # to move a finished task out of terminal_states(), which made it
+        # immune to "clear finished" and let a later resume flip it back to
+        # DOWNLOADING forever.  DownloadTask.pause() now refuses; report it.
+        if not service.pause_download(task_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task cannot be paused in state {task.status.name}",
+            )
         return QueueActionResponse(task_id=task_id, action="paused")
 
     @app.post("/api/queue/{task_id}/resume", response_model=QueueActionResponse)
     async def resume_task(task_id: str, _: None = Depends(_require_auth)):
-        _get_task_or_404(service, task_id)
-        service.resume_download(task_id)
+        task = _get_task_or_404(service, task_id)
+        if not service.resume_download(task_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task is not paused (state {task.status.name})",
+            )
         return QueueActionResponse(task_id=task_id, action="resumed")
 
     @app.post("/api/queue/{task_id}/cancel", response_model=QueueActionResponse)
@@ -927,15 +1031,39 @@ def create_app(
         service.cancel_download(task_id)
         return QueueActionResponse(task_id=task_id, action="cancelled")
 
+    def _tasks_with_active_convert() -> frozenset[str]:
+        """Task IDs that still have a PENDING / CONVERTING remote convert job.
+
+        Removing one orphans the running FFmpeg process: the job keeps going
+        with no queue entry left to show its progress or cancel it.
+        """
+        if remote_convert is None:
+            return frozenset()
+        _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
+        return frozenset(j.source_task_id for j in remote_convert.get_all_jobs() if j.status in _ACTIVE)
+
     @app.delete("/api/queue/items")
     async def clear_selected_items(
         body: ClearItemsRequest,
         _: None = Depends(_require_auth),
     ):
-        """Remove specific tasks by ID (only if terminal status)."""
-        if body.ids:
-            service.clear_specific(body.ids)
-        return {"status": "ok", "count": len(body.ids)}
+        """Remove specific tasks by ID (only if terminal status).
+
+        Tasks with a running remote convert job are skipped for the same
+        reason DELETE /api/queue/finished skips them — clearing one would
+        leave its FFmpeg job running with nothing in the queue to control it.
+        """
+        exclude = _tasks_with_active_convert()
+        wanted = [tid for tid in body.ids if tid not in exclude]
+        skipped = [tid for tid in body.ids if tid in exclude]
+        removed = service.clear_specific(wanted) if wanted else []
+        return {
+            "status": "ok",
+            "count": len(removed),
+            "removed_ids": removed,
+            "excluded_count": len(skipped),
+            "excluded_ids": skipped,
+        }
 
     @app.delete("/api/queue/finished")
     async def clear_finished(_: None = Depends(_require_auth)):
@@ -945,14 +1073,14 @@ def create_app(
         job are excluded — clearing them would orphan the running FFmpeg process
         and leave it with no corresponding queue entry on next reconnect.
         """
-        exclude: frozenset[str] = frozenset()
-        if remote_convert is not None:
-            _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
-            exclude = frozenset(
-                j.source_task_id for j in remote_convert.get_all_jobs() if j.status in _ACTIVE
-            )
-        service.clear_finished(exclude_ids=exclude or None)
-        return {"status": "ok", "excluded_count": len(exclude), "excluded_ids": list(exclude)}
+        exclude = _tasks_with_active_convert()
+        removed = service.clear_finished(exclude_ids=exclude or None)
+        return {
+            "status": "ok",
+            "removed_ids": removed,
+            "excluded_count": len(exclude),
+            "excluded_ids": list(exclude),
+        }
 
     # ── File actions (completed tasks only) ───────────────────────────────
 
@@ -1094,7 +1222,17 @@ def create_app(
             except OSError:
                 pass
         else:
-            file_path.unlink()
+            try:
+                file_path.unlink()
+            except OSError as exc:
+                # Windows keeps a hard lock while another process (FFmpeg, the
+                # Taildrop transfer, a media player) still has the file open —
+                # answer 409 instead of letting PermissionError surface as an
+                # unhandled 500 with a full traceback in the log.
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Could not delete {file_path.name}: {exc.strerror or exc}",
+                ) from exc
         # Clear filename on the task so the UI knows the file is gone.
         task.filename = ""
         logger.info("Remote API: deleted file '%s' for task %s", file_path.name, task_id)
@@ -1133,6 +1271,12 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            # Same file-lock case as delete_task_file above.
+            raise HTTPException(
+                status_code=409,
+                detail=f"Could not rename: {exc.strerror or exc}",
+            ) from exc
 
         return FileActionResponse(
             task_id=task_id,
@@ -1322,7 +1466,8 @@ def create_app(
         • source file must reside inside download_dir (path traversal guard)
         • encoder_key / quality / speed_preset are validated server-side
         • returns immediately; progress arrives via SSE convert_progress events
-        • at most 2 remote conversions run simultaneously (ConvertQueue)
+        • at most `max_concurrent` remote conversions run simultaneously
+          (ConvertQueue; see GET/POST /api/convert/concurrency)
 
         Security: encoder_key is validated against an explicit allowlist
         before being passed to FFmpeg — no arbitrary codec injection possible.
@@ -1457,6 +1602,43 @@ def create_app(
         return _job_to_response(job)
 
     @app.get(
+        "/api/convert/concurrency",
+        response_model=ConvertConcurrencyResponse,
+        summary="How many conversions run in parallel",
+    )
+    async def get_convert_concurrency(
+        _: None = Depends(_require_auth),
+    ) -> ConvertConcurrencyResponse:
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        return ConvertConcurrencyResponse(
+            max_concurrent=remote_convert.max_concurrent,
+            limit=ConvertQueue.MAX_CONCURRENT_LIMIT,
+        )
+
+    @app.post(
+        "/api/convert/concurrency",
+        response_model=ConvertConcurrencyResponse,
+        summary="Set how many conversions run in parallel",
+    )
+    async def set_convert_concurrency(
+        body: ConvertConcurrencyRequest, _: None = Depends(_require_auth)
+    ) -> ConvertConcurrencyResponse:
+        """Persisted to config, so the desktop Convert tab picks it up too.
+
+        Jobs already waiting for a slot keep the old limit; the new one applies
+        to everything submitted after this call.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+        applied = remote_convert.set_max_concurrent(body.max_concurrent)
+        logger.info("Remote API: convert concurrency set to %d", applied)
+        return ConvertConcurrencyResponse(
+            max_concurrent=applied,
+            limit=ConvertQueue.MAX_CONCURRENT_LIMIT,
+        )
+
+    @app.get(
         "/api/convert/{job_id}",
         response_model=ConvertJobResponse,
         summary="Get status and progress of a conversion job",
@@ -1589,6 +1771,12 @@ def create_app(
                 raise HTTPException(status_code=400, detail=reason)
             if "outside the allowed" in reason:
                 raise HTTPException(status_code=403, detail=reason)
+            # Windows holds a lock while another process (the Taildrop
+            # transfer queued the moment the conversion finished, FFmpeg, a
+            # media player) still has the output open — answer 409 like
+            # /api/queue/{task_id}/file already does, not a bare 500.
+            if "in use by another process" in reason or "used by another process" in reason:
+                raise HTTPException(status_code=409, detail=reason)
             raise HTTPException(status_code=500, detail=reason)
 
         job = remote_convert.get_job(job_id)
@@ -1628,15 +1816,20 @@ def create_app(
         limit: int = Query(50, ge=1, le=500, description="Items per page"),
         _: None = Depends(_require_auth),
     ) -> HistoryListResponse:
-        items = list(reversed(service.get_history()))
+        # HistoryRepository.all() is already newest-first; reversing it here
+        # served page 1 of the web history as the OLDEST downloads.
+        items = service.get_history()
         if q:
             ql = q.lower()
+            # `or ""` guards a stored null title/filename, which .lower() would
+            # otherwise turn into a 500. HistoryRepository.search() guards the
+            # same way.
             items = [
                 x
                 for x in items
-                if ql in x.get("url", "").lower()
-                or ql in x.get("title", "").lower()
-                or ql in x.get("filename", "").lower()
+                if ql in (x.get("url") or "").lower()
+                or ql in (x.get("title") or "").lower()
+                or ql in (x.get("filename") or "").lower()
             ]
         if status:
             items = [x for x in items if x.get("status") == status]
@@ -1685,6 +1878,19 @@ def create_app(
                 status_code=400,
                 detail="Path is outside the allowed download directory",
             )
+        if target == root and not root.exists():
+            # On a fresh install (or when download_dir points at a drive that is
+            # not mounted yet) the folder does not exist until the first download
+            # creates it — DownloadService.start_download() mkdirs it lazily.
+            # Without this the whole Files tab was dead with "Path does not
+            # exist" before the user had downloaded anything.
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+            except OSError as err:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Cannot create download directory: {err.strerror}",
+                ) from err
         if not target.exists():
             raise HTTPException(status_code=404, detail="Path does not exist")
         if not target.is_dir():
@@ -1696,7 +1902,7 @@ def create_app(
 
         items: list[FileBrowseItem] = []
         try:
-            entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+            entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
         except PermissionError as err:
             raise HTTPException(status_code=403, detail="Permission denied reading directory") from err
 
@@ -1704,12 +1910,20 @@ def create_app(
             try:
                 stat = entry.stat()
             except OSError:
-                continue
+                # Broken symlink, or a file that vanished between iterdir() and
+                # stat().  lstat() describes the link itself, so the entry stays
+                # listed — and therefore deletable — instead of silently
+                # disappearing from the browser with no way to clean it up.
+                try:
+                    stat = entry.lstat()
+                except OSError:
+                    continue
+            is_dir = entry.is_dir()
             items.append(
                 FileBrowseItem(
                     name=entry.name,
-                    type="file" if entry.is_file() else "dir",
-                    size=stat.st_size if entry.is_file() else None,
+                    type="dir" if is_dir else "file",
+                    size=None if is_dir else stat.st_size,
                     modified_at=stat.st_mtime,
                 )
             )
@@ -1743,24 +1957,16 @@ def create_app(
         if remote_convert is None:
             raise HTTPException(status_code=503, detail="Convert service not available")
 
-        root = config.download_dir.resolve()
-        try:
-            file_path = Path(body.file_path).resolve()
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid file_path") from None
-
-        if not file_path.is_relative_to(root):
-            raise HTTPException(
-                status_code=400,
-                detail="file_path is outside the allowed download directory",
-            )
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail="File not found on server")
-        if not file_path.is_file():
-            raise HTTPException(status_code=400, detail="file_path is not a file")
+        file_path = _resolve_inside_download_dir(config, body.file_path)
 
         try:
-            job = remote_convert.start_convert_from_path(
+            # start_convert_from_path() validates against the FFmpeg probes,
+            # which shell out to real test encodes on a cache miss (cold start
+            # or the 5-minute TTL expiring).  Running that inline would freeze
+            # the event loop — and every SSE client with it — for seconds, the
+            # same reason list_codecs / list_encoders offload their probe.
+            job = await asyncio.to_thread(
+                remote_convert.start_convert_from_path,
                 file_path=file_path,
                 encoder_key=body.encoder_key or "auto",
                 quality=body.quality or "standard",
@@ -1782,6 +1988,83 @@ def create_app(
             file_path.name,
         )
         return FileConvertJobResponse(job_id=job.job_id)
+
+    @app.post(
+        "/api/files/convert/batch",
+        response_model=BatchConvertResponse,
+        summary="Start conversion jobs on several local files with one set of settings",
+    )
+    async def convert_files_batch(
+        body: BatchFileConvertRequest, _: None = Depends(_require_auth)
+    ) -> BatchConvertResponse:
+        """
+        Queue up to 100 files in one call.  They run through the same
+        ConvertQueue as every other job, so at most `max_concurrent`
+        (GET/POST /api/convert/concurrency) encode at a time and the rest wait.
+
+        Flow from a phone:
+          1. GET  /api/files/browse            → tick the files you want
+          2. POST /api/files/convert/batch     → { file_paths: [...], quality, ... }
+          3. GET  /api/convert/{job_id}        → track each returned job (or SSE)
+
+        Partial success is reported, not hidden: a path that is missing or
+        outside download_dir lands in `errors` while the rest still queue.
+        The whole call only fails when the service is down or no path is valid.
+
+        Security: every path goes through the same CWE-22 guard as
+        POST /api/files/convert; encode settings share its allowlists.
+        """
+        if remote_convert is None:
+            raise HTTPException(status_code=503, detail="Convert service not available")
+
+        job_ids: list[str] = []
+        errors: list[BatchConvertItemError] = []
+
+        for raw_path in body.file_paths:
+            try:
+                file_path = _resolve_inside_download_dir(config, raw_path)
+            except HTTPException as exc:
+                errors.append(BatchConvertItemError(file_path=raw_path, error=str(exc.detail)))
+                continue
+            try:
+                # Offloaded for the same reason as POST /api/files/convert, and
+                # it matters more here: up to 100 files in one request.
+                job = await asyncio.to_thread(
+                    remote_convert.start_convert_from_path,
+                    file_path=file_path,
+                    encoder_key=body.encoder_key or "auto",
+                    quality=body.quality or "standard",
+                    speed_preset=body.speed_preset or "balanced",
+                    custom_crf=body.custom_crf if body.custom_crf is not None else 23,
+                    target_ext=body.target_ext or "mp4",
+                    output_codec=body.output_codec or "h264",
+                    generate_subtitles=bool(body.generate_subtitles),
+                    subtitle_language=body.subtitle_language or "auto",
+                    subtitle_model=body.subtitle_model or "base",
+                    compute_vmaf=bool(body.compute_vmaf),
+                )
+            except ValueError as exc:
+                # Bad encode settings fail identically for every file, and the
+                # active-job cap trips once the queue is full — either way the
+                # remaining paths would only repeat the same error.
+                errors.append(BatchConvertItemError(file_path=raw_path, error=str(exc)))
+                continue
+            job_ids.append(job.job_id)
+
+        if not job_ids and errors:
+            raise HTTPException(status_code=422, detail=errors[0].error)
+
+        logger.info(
+            "Remote API: batch convert queued %d job(s), %d rejected",
+            len(job_ids),
+            len(errors),
+        )
+        return BatchConvertResponse(
+            job_ids=job_ids,
+            errors=errors,
+            queued=len(job_ids),
+            failed=len(errors),
+        )
 
     @app.post(
         "/api/files/subtitles",
@@ -1809,7 +2092,10 @@ def create_app(
         file_path = _resolve_inside_download_dir(config, body.file_path)
 
         try:
-            job = remote_convert.start_subtitles(
+            # start_subtitles() runs the same blocking FFmpeg capability probes
+            # as the convert endpoints; keep them off the event loop.
+            job = await asyncio.to_thread(
+                remote_convert.start_subtitles,
                 file_path=file_path,
                 subtitle_language=body.subtitle_language or "auto",
                 subtitle_model=body.subtitle_model or "base",
@@ -1839,8 +2125,15 @@ def create_app(
         - No shell=True, no subprocess.
         """
         root = config.download_dir.resolve()
+        raw = Path(body.path)
         try:
-            target = Path(body.path).resolve()
+            # A symlink is deleted as the link it is, never followed.  resolve()
+            # would hand back the link's *target*: for a dangling link that is a
+            # path that no longer exists (so the confinement check rejected it
+            # and the broken link could never be cleaned up), and for a live one
+            # it would aim the delete outside download_dir.  Resolving only the
+            # parent keeps the CWE-22 guard intact while addressing the link.
+            target = raw.parent.resolve() / raw.name if raw.is_symlink() else raw.resolve()
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid path") from None
 
@@ -1854,20 +2147,27 @@ def create_app(
                 status_code=400,
                 detail="Cannot delete the root download directory",
             )
-        if not target.exists():
+        if not target.exists() and not target.is_symlink():
             raise HTTPException(status_code=404, detail="Path does not exist")
 
         try:
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
+            if target.is_symlink() or not target.is_dir():
                 target.unlink()
+            else:
+                shutil.rmtree(target)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=exc.strerror) from exc
 
-        logger.info("Remote API: deleted '%s'", target)
+        # A queued task or a history entry may point at what we just removed.
+        # Leaving those records on a dead path makes the Queue / History cards
+        # keep offering Preview / Send / Convert / Rename, all of which then
+        # 404.  POST /api/files/rename already syncs both sides via
+        # rename_download(); this is the delete-side equivalent.
+        cleared = service.clear_file_record(target)
+
+        logger.info("Remote API: deleted '%s' (cleared %d record(s))", target, cleared)
         return FileDeleteResponse(
-            path=body.path,
+            path=str(target),
             action="deleted",
             detail=f"Deleted: {target.name}",
         )
@@ -1903,6 +2203,16 @@ def create_app(
         if old_path.is_dir():
             raise HTTPException(status_code=400, detail="Cannot rename a directory")
 
+        # sanitise_filename() strips path separators, so "clip" and "clip.mkv"
+        # both arrive here as a bare basename.  A user who types just "clip"
+        # means "keep the file, change its name" — dropping ".mp4" leaves a file
+        # that /api/files/serve reports as octet-stream and that the convert
+        # allowlist rejects.  Re-attach the original suffix when the new name
+        # carries none of its own.
+        requested_name = sanitise_filename(body.new_name)
+        if not Path(requested_name).suffix and old_path.suffix:
+            requested_name += old_path.suffix
+
         # A queued task or a history entry may point at this exact file.  Renaming
         # it behind DownloadService's back leaves task.filename / the history row
         # on the old name, so every task-scoped endpoint (preview, delete,
@@ -1925,7 +2235,7 @@ def create_app(
 
         if owner_id:
             try:
-                new_name_str = service.rename_download(owner_id, body.new_name)
+                new_name_str = service.rename_download(owner_id, requested_name)
             except FileNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             except FileExistsError as exc:
@@ -1941,7 +2251,7 @@ def create_app(
                 detail=f"Renamed to {Path(new_name_str).name}",
             )
 
-        safe_name = sanitise_filename(body.new_name)
+        safe_name = requested_name
         new_path = old_path.parent / safe_name
         renamed = str(new_path) != str(old_path)
         # new_path.exists() can be True for a case-only rename on case-insensitive
@@ -2092,6 +2402,82 @@ def create_app(
             ]
         )
 
+    # ── Document convert (Markdown / HTML / Office <-> PDF) ──────────────
+
+    @app.get(
+        "/api/docs/capabilities",
+        response_model=DocConvertCapabilitiesResponse,
+        summary="Report which document-conversion back-ends this host has",
+    )
+    async def doc_convert_capabilities(
+        _: None = Depends(_require_auth),
+    ) -> DocConvertCapabilitiesResponse:
+        caps = doc_capabilities()
+        return DocConvertCapabilitiesResponse(
+            markdown=caps.markdown,
+            weasyprint=caps.weasyprint,
+            pypdf=caps.pypdf,
+            libreoffice=caps.libreoffice,
+            routes=caps.routes,
+            source_extensions=sorted(SOURCE_EXTS),
+            target_formats=list(TARGET_FORMATS),
+        )
+
+    @app.post(
+        "/api/docs/convert",
+        response_model=DocConvertResponse,
+        summary="Convert a document within download_dir (Markdown/HTML/Office <-> PDF)",
+    )
+    async def doc_convert(body: DocConvertRequest, _: None = Depends(_require_auth)) -> DocConvertResponse:
+        """Convert one server-side document and return where the result landed.
+
+        Security:
+        - source_path and out_dir are both confined to config.download_dir
+          (CWE-22); the output never escapes it either.
+        - Source size is capped so a huge upload cannot pin a worker thread.
+        - The renderer refuses remote/out-of-folder resources referenced by the
+          document itself (see doc_convert_service._make_url_fetcher).
+        """
+        src = _resolve_within_download_dir(body.source_path, must_exist=True)
+        if not src.is_file():
+            raise HTTPException(status_code=400, detail="source_path must be a file")
+        try:
+            size = src.stat().st_size
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=exc.strerror) from exc
+        if size > _DOC_CONVERT_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Source file exceeds the {_DOC_CONVERT_MAX_BYTES // (1024 * 1024)} MB limit",
+            )
+
+        if body.out_dir:
+            out_dir = _resolve_within_download_dir(body.out_dir, must_exist=False)
+            if out_dir.exists() and not out_dir.is_dir():
+                raise HTTPException(status_code=400, detail="out_dir exists and is not a directory")
+        else:
+            out_dir = src.parent
+
+        try:
+            async with _doc_convert_semaphore:
+                result = await asyncio.to_thread(doc_convert_svc.convert, src, body.target_format, out_dir)
+        except DocConvertUnsupportedError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except DocConvertToolMissingError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except DocConvertError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=exc.strerror or "I/O error") from exc
+
+        logger.info("Remote API: converted '%s' to %s", src.name, body.target_format)
+        return DocConvertResponse(
+            output_path=str(result),
+            filename=result.name,
+            size=result.stat().st_size,
+            target_format=body.target_format,
+        )
+
     @app.get("/api/nodes", summary="List configured Taildrop target nodes")
     async def list_nodes(_: None = Depends(_require_auth)) -> list[str]:
         return config.taildrop_target_nodes
@@ -2112,11 +2498,20 @@ def create_app(
             or mimetypes.guess_type(target.name)[0]
             or "application/octet-stream"
         )
+        # Active content (HTML/SVG/XML) served inline would execute in the API's
+        # own origin, where the PWA keeps the bearer token — a stored XSS for
+        # any such file inside download_dir, including the .html the document
+        # converter writes from an arbitrary Markdown/PDF source. Hand those
+        # over as an opaque download instead; media previews are unaffected.
+        disposition = "inline"
+        if target.suffix.lower() in _ACTIVE_CONTENT_EXTS:
+            mime = "application/octet-stream"
+            disposition = "attachment"
         return FileResponse(
             path=str(target),
             media_type=mime,
             filename=target.name,
-            content_disposition_type="inline",
+            content_disposition_type=disposition,
             headers={"Accept-Ranges": "bytes"},
         )
 
@@ -2362,6 +2757,42 @@ def _first_video_in_dir(folder: Path) -> Path:
     if not videos:
         raise HTTPException(status_code=400, detail="No video files found in this download folder")
     return videos[0]
+
+
+def cdp_only_reason(url: str) -> str:
+    """Return why *url* cannot be served by this host, or "" when it can.
+
+    Facebook Story permalinks and waaw.ac links are captured by driving a local
+    Brave/Chrome over CDP, which exists only on Windows and macOS.  The check
+    used to live in POST /api/download alone, so a client got a clean answer
+    only after analysing, picking a format and submitting.  Both /api/analyse
+    and /api/download call this now, and GET /api/ping reports the capability
+    up-front so a client never offers the option at all.
+    """
+    import sys as _sys
+
+    from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
+        is_facebook_story_permalink,
+    )
+    from infrastructure.downloader.waaw_engine import is_waaw_url  # noqa: PLC0415
+
+    if _sys.platform in ("win32", "darwin"):
+        return ""
+
+    # Only a real /stories/ permalink is CDP-only.  is_facebook_story_url()
+    # also matches every fb.watch short link, which made this guard reject
+    # ordinary Facebook videos yt-dlp handles fine on a Linux server.
+    if is_facebook_story_permalink(url):
+        what = "Facebook Story downloads"
+    elif is_waaw_url(url):
+        what = "waaw.ac downloads"
+    else:
+        return ""
+
+    return (
+        f"{what} require a local Brave/Chrome browser and are only supported "
+        f"on Windows and macOS. This server is running on {_sys.platform}."
+    )
 
 
 def _resolve_inside_download_dir(config: "ConfigManager", raw_path: str) -> Path:

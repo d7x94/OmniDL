@@ -23,6 +23,7 @@ COMMANDS = [
     ("⇄", "nav.convert", "convert"),
     ("✂", "nav.editor", "editor"),
     ("⧉", "nav.archive", "archive"),
+    ("▤", "nav.docs", "docs"),
     ("◷", "nav.history", "history"),
     ("⊙", "nav.settings", "settings"),
     ("◆", "nav.special_dl", "special_dl"),

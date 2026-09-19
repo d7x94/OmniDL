@@ -28,6 +28,10 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import MediaInfo
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.facebook_live_checker import (
+    extract_facebook_username,
+    is_facebook_profile_url,
+)
 from utils.helpers import is_valid_url, open_folder, reveal_in_explorer
 from utils.i18n import t
 from utils.instagram_live_checker import (
@@ -97,6 +101,18 @@ _STATE_COLOR: dict[_MonitorState, str] = {
     _MonitorState.ENDED: "text2",
     _MonitorState.ERROR: "error",
 }
+
+
+_ACTIVE_STATES: set[_MonitorState] = {
+    _MonitorState.WAITING,
+    _MonitorState.CHECKING,
+    _MonitorState.LIVE,
+    _MonitorState.RECORDING,
+}
+
+
+def _active_count(items: "list[_MonitorItem]") -> int:
+    return sum(1 for i in items if i.state in _ACTIVE_STATES)
 
 
 @dataclass
@@ -333,7 +349,7 @@ class LiveMonitorTab(QWidget):
         if not is_valid_url(url):
             self._app.toast(t("live.invalid_url"), "error")
             return
-        if len(self._items) >= MAX_MONITOR_URLS:
+        if _active_count(self._items) >= MAX_MONITOR_URLS:
             self._app.toast(t("live.limit_reached", max=MAX_MONITOR_URLS), "error")
             return
 
@@ -352,7 +368,13 @@ class LiveMonitorTab(QWidget):
         _tiktok_live_username = extract_tiktok_username_from_live_url(url) or ""
         is_tiktok_profile = _is_short_link or bool(_tiktok_live_username) or is_tiktok_profile_url(url)
 
-        is_profile = is_ig_profile or is_tiktok_profile
+        is_fb_profile = not is_ig_profile and not is_tiktok_profile and is_facebook_profile_url(url)
+        if is_fb_profile:
+            # Normalise the /live tab back to the plain page URL so the same
+            # page added twice (with and without /live) is caught as duplicate.
+            url = f"https://www.facebook.com/{extract_facebook_username(url) or ''}"
+
+        is_profile = is_ig_profile or is_tiktok_profile or is_fb_profile
 
         if is_ig_profile:
             username = _ig_live_username or extract_instagram_username(url) or ""
@@ -364,18 +386,15 @@ class LiveMonitorTab(QWidget):
             if not username and not _is_short_link:
                 username = extract_tiktok_username(url) or ""
             profile_platform = "tiktok"
+        elif is_fb_profile:
+            username = extract_facebook_username(url) or ""
+            profile_platform = "facebook"
         else:
             username = ""
             profile_platform = ""
 
-        active_states = {
-            _MonitorState.WAITING,
-            _MonitorState.CHECKING,
-            _MonitorState.LIVE,
-            _MonitorState.RECORDING,
-        }
         for i in self._items:
-            if i.state not in active_states:
+            if i.state not in _ACTIVE_STATES:
                 continue
             same_profile = (
                 bool(username)
@@ -392,6 +411,13 @@ class LiveMonitorTab(QWidget):
 
             if not _resolve_cookie("https://www.instagram.com/", self._app.config):
                 self._app.toast(t("live.ig_cookie_needed"), "error")
+                return
+
+        if is_fb_profile:
+            from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+
+            if not _resolve_cookie("https://www.facebook.com/", self._app.config):
+                self._app.toast(t("err.profile_watch_needs_fb_cookie"), "error")
                 return
 
         item = _MonitorItem(
@@ -636,7 +662,9 @@ class LiveMonitorTab(QWidget):
             )
 
         if item.platform_lbl:
-            platform = item.media_info.platform if item.media_info else ""
+            platform = (
+                item.media_info.platform if item.media_info else ""
+            ) or item.profile_platform
             if platform:
                 item.platform_lbl.setText(f"  {platform}  ")
                 item.platform_lbl.show()
@@ -661,13 +689,7 @@ class LiveMonitorTab(QWidget):
                 item.progress_lbl.hide()
 
         if item.pause_btn:
-            active = state in (
-                _MonitorState.WAITING,
-                _MonitorState.CHECKING,
-                _MonitorState.LIVE,
-                _MonitorState.RECORDING,
-            )
-            if active:
+            if state in _ACTIVE_STATES:
                 item.pause_btn.setText(t("live.resume") if item.paused else t("live.pause"))
                 item.pause_btn.show()
             else:
@@ -852,17 +874,13 @@ class LiveMonitorTab(QWidget):
     def _respawn_watch(self, finished: _MonitorItem) -> None:
         # The finished row keeps its ENDED state (file / MP4 buttons); a fresh
         # WAITING item carries the profile watch forward.
-        if not finished.watch_url or len(self._items) >= MAX_MONITOR_URLS:
+        # ENDED / ERROR rows are history, not watches -- counting them against
+        # the cap silently killed the profile watch after ~20 recordings.
+        if not finished.watch_url or _active_count(self._items) >= MAX_MONITOR_URLS:
             return
-        active = {
-            _MonitorState.WAITING,
-            _MonitorState.CHECKING,
-            _MonitorState.LIVE,
-            _MonitorState.RECORDING,
-        }
         for i in self._items:
             if (
-                i.state in active
+                i.state in _ACTIVE_STATES
                 and i.is_profile_watch
                 and i.profile_platform == finished.profile_platform
                 and i.username == finished.username
@@ -931,6 +949,8 @@ class LiveMonitorTab(QWidget):
 
             if item.profile_platform == "tiktok":
                 self._app.service.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
+            elif item.profile_platform == "facebook":
+                self._app.service.check_facebook_profile_live(url=url, on_done=on_done, on_error=on_error)
             else:
                 self._app.service.check_profile_live(url=url, on_done=on_done, on_error=on_error, deep=deep)
         else:

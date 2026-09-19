@@ -364,7 +364,10 @@ class DownloadItemWidget(QFrame):
                 self._send_btn.show()
             self._pause_btn.hide()
             self._cancel_btn.hide()
-        elif not terminal:
+        else:
+            # Also covers a COMPLETED task whose file was deleted elsewhere
+            # (the Remote API clears task.filename): the old `elif not
+            # terminal` left every file action visible on a dead path.
             self._completed_path = ""
             self._folder_btn.hide()
             self._preview_btn.hide()
@@ -497,6 +500,13 @@ class DownloadItemWidget(QFrame):
             open_folder(p.parent)
 
     def set_select_mode(self, enabled: bool, on_toggle) -> None:
+        """Show / hide this card's selection checkbox.
+
+        Safe to call repeatedly with the same argument — the queue polls and
+        re-applies select mode on every refresh so that a task which *finishes*
+        while select mode is on still gets a checkbox (it had none while it was
+        running, because only terminal tasks are selectable).
+        """
         from PySide6.QtWidgets import QCheckBox  # noqa: PLC0415
 
         if enabled:
@@ -510,21 +520,20 @@ class DownloadItemWidget(QFrame):
                 top_layout = self.layout().itemAt(0).layout()
                 top_layout.insertWidget(0, cb)
                 self._checkbox = cb
+                if on_toggle:
+                    tid = self.task.id
+                    cb.toggled.connect(lambda checked, t=tid: on_toggle(t, checked))
             self._checkbox.setVisible(True)
-            try:
-                self._checkbox.toggled.disconnect()
-            except RuntimeError:
-                pass
-            if on_toggle:
-                tid = self.task.id
-                self._checkbox.toggled.connect(lambda checked, t=tid: on_toggle(t, checked))
         else:
             if self._checkbox is not None:
                 self._checkbox.setVisible(False)
-                try:
-                    self._checkbox.toggled.disconnect()
-                except RuntimeError:
-                    pass
+                # Reset the tick.  Leaving it checked while the owner clears its
+                # selection set made a re-entered select mode show ticked rows
+                # that were not actually selected, so "Clear selected" silently
+                # fell back to clearing *every* finished task.
+                self._checkbox.blockSignals(True)
+                self._checkbox.setChecked(False)
+                self._checkbox.blockSignals(False)
 
     def retranslate(self) -> None:
         self._pause_btn.setToolTip(t("item.pause_tip"))

@@ -6,7 +6,7 @@ Coverage for previously untested paths:
   _build_cmd rotate/speed/volume/mute branches, _font_clause no-font branch.
 - infrastructure/downloader/yt_dlp_engine.py:
   - _extract_tiktok_live_hls_url BUG-TT-25/26/29 "not currently live" fallbacks
-  - _download_tiktok_live_direct (FFmpeg subprocess paths)
+  - _download_live_hls_direct (FFmpeg subprocess paths)
   - _download_tiktok_live_hls_curl (curl_cffi HLS paths)
 """
 
@@ -336,7 +336,7 @@ class TestExtractHlsNotLiveFallbacks:
 
 
 # ---------------------------------------------------------------------------
-# yt_dlp_engine: _download_tiktok_live_direct
+# yt_dlp_engine: _download_live_hls_direct
 # ---------------------------------------------------------------------------
 
 
@@ -352,7 +352,7 @@ class TestDownloadTiktokLiveDirect:
         with patch.object(mod, "get_ffmpeg_path", return_value=""), \
              patch("subprocess.Popen", side_effect=FileNotFoundError()):
             with pytest.raises(RuntimeError, match="FFmpeg"):
-                engine._download_tiktok_live_direct(
+                engine._download_live_hls_direct(
                     self.HLS, str(tmp_path / "o.ts"), task, "", None
                 )
 
@@ -371,7 +371,7 @@ class TestDownloadTiktokLiveDirect:
         progressed = []
         with patch.object(mod, "get_ffmpeg_path", return_value=""), \
              patch("subprocess.Popen", return_value=self._proc(0)):
-            engine._download_tiktok_live_direct(
+            engine._download_live_hls_direct(
                 self.HLS, str(tmp_path / "o.ts"), task, "", lambda t: progressed.append(t)
             )
 
@@ -384,7 +384,7 @@ class TestDownloadTiktokLiveDirect:
         with patch.object(mod, "get_ffmpeg_path", return_value=""), \
              patch("subprocess.Popen", return_value=self._proc(1, b"404 Not Found\n")):
             with pytest.raises(RuntimeError, match="exited with code 1"):
-                engine._download_tiktok_live_direct(
+                engine._download_live_hls_direct(
                     self.HLS, str(tmp_path / "o.ts"), task, "", None
                 )
 
@@ -396,7 +396,7 @@ class TestDownloadTiktokLiveDirect:
         with patch.object(mod, "get_ffmpeg_path", return_value=""), \
              patch("subprocess.Popen", return_value=proc):
             with pytest.raises(yt_dlp.utils.DownloadError, match="Cancelled"):
-                engine._download_tiktok_live_direct(
+                engine._download_live_hls_direct(
                     self.HLS, str(tmp_path / "o.ts"), task, "", None
                 )
         proc.kill.assert_called()
@@ -409,7 +409,7 @@ class TestDownloadTiktokLiveDirect:
              patch.object(mod.time, "sleep"), \
              patch("subprocess.Popen", return_value=proc):
             with pytest.raises(RuntimeError, match="stall watchdog"):
-                engine._download_tiktok_live_direct(
+                engine._download_live_hls_direct(
                     self.HLS, str(tmp_path / "o.ts"), task, "", None
                 )
         proc.kill.assert_called()

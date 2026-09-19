@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -69,9 +70,6 @@ _QUALITY_KEYS = [
     ("custom", "convert.quality.custom.label", "convert.quality.custom.desc"),
 ]
 
-_MAX_CONCURRENT = 2
-
-
 class FileState(Enum):
     PENDING = auto()
     QUEUED = auto()
@@ -102,6 +100,10 @@ class FileJob:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     source: Path = field(default_factory=Path)
     state: FileState = FileState.PENDING
+    # Ticked in the card's checkbox.  New files start selected so the
+    # old "Convert converts everything" behaviour is what you get if you
+    # never touch a checkbox.
+    selected: bool = True
     progress: float = 0.0
     output: Optional[Path] = None
     error_msg: str = ""
@@ -143,6 +145,7 @@ class FileCard(QFrame):
         on_open_folder,
         on_cancel,
         on_delete_output,
+        on_toggle_select=None,
     ) -> None:
         super().__init__(parent)
         self.job = job
@@ -150,6 +153,7 @@ class FileCard(QFrame):
         self._on_open_folder = on_open_folder
         self._on_cancel = on_cancel
         self._on_delete_output = on_delete_output
+        self._on_toggle_select = on_toggle_select
         self.setStyleSheet(f"""
             FileCard {{
                 background-color: {T.surface};
@@ -170,6 +174,16 @@ class FileCard(QFrame):
         top_layout = QHBoxLayout(top)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(6)
+
+        # Batch selection.  Only a PENDING file can be picked — one already
+        # queued, converting or finished is not a valid target for Convert.
+        self._sel_cb = QCheckBox()
+        self._sel_cb.setChecked(self.job.selected)
+        self._sel_cb.setEnabled(self.job.state == FileState.PENDING)
+        self._sel_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sel_cb.setToolTip(t("convert.select_file_tip"))
+        self._sel_cb.toggled.connect(self._emit_select)
+        top_layout.addWidget(self._sel_cb)
 
         ext = self.job.source.suffix.lower().lstrip(".")
         self._dot = QLabel("●")
@@ -349,8 +363,20 @@ class FileCard(QFrame):
         if self.job.media_info is not None:
             self.update_info(self.job.media_info)
 
+    def _emit_select(self, checked: bool) -> None:
+        self.job.selected = checked
+        if self._on_toggle_select:
+            self._on_toggle_select()
+
     def refresh(self) -> None:
         job = self.job
+        # blockSignals: this mirrors model state into the widget, so it must
+        # not re-enter _emit_select and bounce back into the tab.
+        self._sel_cb.blockSignals(True)
+        self._sel_cb.setChecked(job.selected)
+        self._sel_cb.setEnabled(job.state == FileState.PENDING)
+        self._sel_cb.blockSignals(False)
+
         s_key, s_txt, s_bg = _STATE_BADGE_KEY[job.state]
         self._state_badge.setText(f"  {t(s_key)}  ")
         self._state_badge.setStyleSheet(
@@ -473,6 +499,7 @@ class FileCard(QFrame):
         return s[:n] + "…" if s and len(s) > n else (s or "")
 
     def retranslate(self) -> None:
+        self._sel_cb.setToolTip(t("convert.select_file_tip"))
         self._cancel_btn.setText(t("archive.cancel"))
         self._open_btn.setText(t("live.open"))
         self._preview_btn.setText(t("special.view"))
@@ -497,7 +524,7 @@ class ConvertTab(QWidget):
         self._cards: dict[str, FileCard] = {}
         self._quality = "standard"
         self._cfg_collapsed = False
-        self._queue = ConvertQueue(max_concurrent=_MAX_CONCURRENT)
+        self._queue = ConvertQueue(max_concurrent=app.config.convert_max_concurrent)
         self._active_count = 0
         self._encoder_key = "cpu"
         self._encoder_auto_selected = False
@@ -585,7 +612,26 @@ class ConvertTab(QWidget):
         self._clear_btn.clicked.connect(self._clear_done)
         hdr_layout.addWidget(self._clear_btn)
 
+        self._select_all_cb = QCheckBox(t("convert.select_all"))
+        self._select_all_cb.setChecked(True)
+        self._select_all_cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_all_cb.setToolTip(t("convert.select_all_tip"))
+        self._select_all_cb.clicked.connect(self._on_select_all_clicked)
+        hdr_layout.addWidget(self._select_all_cb)
+
         hdr_layout.addStretch()
+
+        self._par_lbl = QLabel(t("convert.parallel_label"))
+        self._par_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
+        hdr_layout.addWidget(self._par_lbl)
+
+        self._par_spin = QSpinBox()
+        self._par_spin.setRange(1, ConvertQueue.MAX_CONCURRENT_LIMIT)
+        self._par_spin.setValue(self._queue.max_concurrent)
+        self._par_spin.setFixedSize(56, 30)
+        self._par_spin.setToolTip(t("convert.parallel_tip"))
+        self._par_spin.valueChanged.connect(self._on_parallel_changed)
+        hdr_layout.addWidget(self._par_spin)
 
         self._cfg_toggle_btn = QPushButton(t("convert.settings_toggle_up"))
         self._cfg_toggle_btn.setFixedSize(130, 30)
@@ -1174,10 +1220,49 @@ class ConvertTab(QWidget):
         if card:
             card.update_info(job.media_info)
 
+    # ── Batch selection ───────────────────────────────────────────────────────
+
+    def _selected_pending(self) -> "list[FileJob]":
+        """Files a Convert / Subtitles run should act on.
+
+        Only PENDING files are eligible.  When every box is unticked we fall
+        back to all of them rather than doing nothing silently — pressing the
+        button always has an effect.
+        """
+        pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
+        chosen = [j for j in pending if j.selected]
+        return chosen or pending
+
+    def _on_select_all_clicked(self, checked: bool) -> None:
+        for job in self._jobs.values():
+            if job.state == FileState.PENDING:
+                job.selected = checked
+        for job in self._jobs.values():
+            card = self._cards.get(job.id)
+            if card is not None:
+                card.refresh()
+        self._refresh_status()
+
+    def _sync_select_all_cb(self) -> None:
+        """Reflect the individual boxes without re-firing _on_select_all_clicked.
+
+        Uses setChecked (not click()), and the header box is wired to
+        ``clicked`` rather than ``toggled``, so a programmatic update here
+        never loops back into the per-file boxes.
+        """
+        pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
+        self._select_all_cb.setChecked(bool(pending) and all(j.selected for j in pending))
+        self._select_all_cb.setEnabled(bool(pending))
+
+    def _on_parallel_changed(self, value: int) -> None:
+        # The spin box range is ConvertQueue.MAX_CONCURRENT_LIMIT, so the queue
+        # never clamps to anything other than what was asked for.
+        self._app.config.set("convert_max_concurrent", self._queue.set_max_concurrent(value))
+
     # ── Convert ───────────────────────────────────────────────────────────────
 
     def _start_all(self) -> None:
-        pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
+        pending = self._selected_pending()
         if not pending:
             return
 
@@ -1216,8 +1301,8 @@ class ConvertTab(QWidget):
         self._refresh_ui()
 
     def _start_subtitles_only(self) -> None:
-        """Transcribe every pending file to a .srt — no video re-encode."""
-        pending = [j for j in self._jobs.values() if j.state == FileState.PENDING]
+        """Transcribe the selected pending files to .srt — no video re-encode."""
+        pending = self._selected_pending()
         if not pending:
             return
 
@@ -1257,11 +1342,18 @@ class ConvertTab(QWidget):
             job.progress = pct
             ui_bridge.post(lambda j=job: self._tick_card(j))
 
+        subtitles_only = encode_settings is not None and encode_settings.subtitles_only
+
         def on_done(out_path: Path) -> None:
             job.state = FileState.DONE
             job.progress = 100.0
             job.output = out_path
             ui_bridge.post(lambda j=job: self._finish_job(j))
+            # A subtitles-only job's "output" is the .srt itself.  Auto-sending
+            # it to the phone is not what the button asked for, and the Remote
+            # API path already excludes these jobs from the Taildrop hook.
+            if subtitles_only:
+                return
             try:
                 self._app.taildrop.send_converted_file(out_path)
             except Exception:
@@ -1306,6 +1398,7 @@ class ConvertTab(QWidget):
             on_open_folder=self._open_output,
             on_cancel=self._cancel_job,
             on_delete_output=self._delete_output,
+            on_toggle_select=self._sync_select_all_cb,
         )
         self._items_layout.insertWidget(idx, card)
         self._cards[job.id] = card
@@ -1367,11 +1460,13 @@ class ConvertTab(QWidget):
                     on_open_folder=self._open_output,
                     on_cancel=self._cancel_job,
                     on_delete_output=self._delete_output,
+                    on_toggle_select=self._sync_select_all_cb,
                 )
                 self._items_layout.insertWidget(self._items_layout.count(), card)
                 self._cards[job.id] = card
 
         self._empty.setVisible(not bool(self._jobs))
+        self._sync_select_all_cb()
         self._refresh_status()
 
     def _refresh_status(self) -> None:
@@ -1497,6 +1592,10 @@ class ConvertTab(QWidget):
         self._add_btn.setText(t("archive.add_file"))
         self._folder_btn.setText(t("archive.add_folder"))
         self._clear_btn.setText(t("convert.clear_done"))
+        self._select_all_cb.setText(t("convert.select_all"))
+        self._select_all_cb.setToolTip(t("convert.select_all_tip"))
+        self._par_lbl.setText(t("convert.parallel_label"))
+        self._par_spin.setToolTip(t("convert.parallel_tip"))
         self._cfg_toggle_btn.setText(
             t("convert.settings_toggle_down") if self._cfg_collapsed else t("convert.settings_toggle_up")
         )

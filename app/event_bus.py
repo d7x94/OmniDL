@@ -136,6 +136,7 @@ class EventBus:
     DOWNLOAD_COMPLETED = "download.completed"
     DOWNLOAD_FAILED    = "download.failed"
     DOWNLOAD_CANCELLED = "download.cancelled"
+    DOWNLOAD_REMOVED   = "download.removed"      # kwargs: ids (list[str])
     ANALYSIS_DONE      = "analysis.done"
     ANALYSIS_FAILED    = "analysis.failed"
     TAILDROP_COMPLETED = "taildrop.completed"   # kwargs: task, dest_node

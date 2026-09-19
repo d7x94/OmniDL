@@ -155,6 +155,30 @@ def _close_console() -> None:
     _ctypes.windll.user32.PostMessageW(_console_hwnd, _WM_CLOSE, 0, 0)
 
 
+def _cookie_paths_in_use(config) -> "set[str]":
+    """Every cookie path the config still references, plus its .txt/.enc sibling.
+
+    encrypt_cookie_file() renames .txt -> .enc after the path was saved, so the
+    stored string and the file on disk can disagree; both spellings are kept so
+    the stale-file cleanup never deletes a jar that is actually in use.
+    """
+    raw = [config.cookie_file]
+    raw.extend(config.platform_cookies.values())
+    raw.extend(a.get("cookie_file", "") for a in config.tiktok_account_pool if isinstance(a, dict))
+
+    paths: set[str] = set()
+    for item in raw:
+        if not item:
+            continue
+        p = Path(item)
+        paths.add(str(p))
+        if p.suffix == ".txt":
+            paths.add(str(p.with_suffix(".enc")))
+        elif p.suffix == ".enc":
+            paths.add(str(p.with_suffix(".txt")))
+    return paths
+
+
 def main() -> None:
     from utils.logger import setup_logging
 
@@ -227,7 +251,9 @@ def main() -> None:
         n_encrypted = encrypt_plaintext_cookies(_cookie_dir)
         if n_encrypted:
             logger.info("Startup cookie migration: %d plaintext file(s) encrypted", n_encrypted)
-        n_deleted = cleanup_stale_cookies(_cookie_dir, max_age_days=30)
+        n_deleted = cleanup_stale_cookies(
+            _cookie_dir, max_age_days=30, keep=_cookie_paths_in_use(config)
+        )
         if n_deleted:
             logger.info("Startup cookie cleanup: %d stale file(s) removed", n_deleted)
     except Exception as exc:

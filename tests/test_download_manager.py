@@ -14,6 +14,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from infrastructure.downloader.yt_dlp_engine import _keyed_exc
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
@@ -237,7 +238,9 @@ class TestRetryBehavior:
         """BUG-IG-COOKIE: expired IG session cookie error must fail immediately."""
         cfg = make_config(max_retries=3)
         engine = MagicMock()
-        engine.download.side_effect = RuntimeError("Cookie Instagram hết hạn - làm mới cookie trong Settings")
+        # yt_dlp_engine raises this through _keyed_exc(), which attaches the
+        # language-independent .error_key the manager classifies on.
+        engine.download.side_effect = _keyed_exc("err.ig_cookie_expired")
         mgr = DownloadManager(config=cfg, engine=engine, event_bus=make_bus())
         mgr.start()
         try:
@@ -393,7 +396,10 @@ class TestPauseResumeCancelGetAll:
         try:
             task = make_task()
             mgr.enqueue(task)
-            mgr.pause(task.id)
+            # The fake engine finishes synchronously, and a terminal task is no
+            # longer pausable — put it back in a pausable state first.
+            task.status = DownloadStatus.DOWNLOADING
+            assert mgr.pause(task.id) is True
             calls = [c for c in bus.publish.call_args_list if c[0][0] == EventBus.DOWNLOAD_PROGRESS]
             assert any(c[1].get("task") is task for c in calls)
         finally:
@@ -413,7 +419,9 @@ class TestPauseResumeCancelGetAll:
         try:
             task = make_task()
             mgr.enqueue(task)
-            mgr.resume(task.id)
+            # resume() only acts on a PAUSED task.
+            task.status = DownloadStatus.PAUSED
+            assert mgr.resume(task.id) is True
             calls = [c for c in bus.publish.call_args_list if c[0][0] == EventBus.DOWNLOAD_PROGRESS]
             assert any(c[1].get("task") is task for c in calls)
         finally:

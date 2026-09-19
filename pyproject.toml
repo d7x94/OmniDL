@@ -1,6 +1,6 @@
 [project]
 name = "omnidl"
-version = "19.5.0"
+version = "20.3.2"
 description = "Ultimate Media Downloader"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,6 +20,9 @@ dependencies = [
     "ffmpeg-python>=0.2.0",
     "py7zr>=1.1.3",
     "pyzipper>=0.4.0",
+	"weasyprint>=69.0",
+    "markdown>=3.6",
+    "pypdf>=4.2.0",
 ]
 
 [project.optional-dependencies]

@@ -70,6 +70,16 @@ class HistoryRepository:
                         self._entries.append(json.loads(line))
                     except json.JSONDecodeError:
                         logger.warning("Skipping malformed history line: %s", line[:80])
+            # add() keeps self._entries newest-first, but _append_line() writes
+            # each new record to the END of the file, so reading the JSONL back
+            # top-to-bottom yields OLDEST-first. Two consequences before this
+            # sort existed: the History tab listed the oldest downloads at the
+            # top after every restart, and the over-limit trim below (which
+            # keeps the FIRST _limit entries) permanently erased the NEWEST
+            # records from disk. Sorting on finished_at restores newest-first
+            # regardless of how the file was written, so files produced by
+            # older builds heal themselves on the next launch.
+            self._entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
             logger.debug("History loaded: %d entries", len(self._entries))
         except Exception as exc:
             logger.warning("History load failed (%s)", exc)

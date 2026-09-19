@@ -10,12 +10,16 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 # ── Requests ──────────────────────────────────────────────────────────────────
 
 # Extract first URL from mixed clipboard/share text (e.g. Kuaishou share text).
 _URL_RE = re.compile(r"https?://\S+")
+
+
+# Matches MAX_BATCH_URLS in ui/tabs/batch_tab.py and the web UI.
+MAX_BATCH_ITEMS = 500
 
 
 class AnalyseRequest(BaseModel):
@@ -128,6 +132,56 @@ class AnalyseResponse(BaseModel):
     # must be forwarded to /api/download so the engine can use the signed
     # room/info API instead of yt-dlp's unsigned path (which returns "not live").
     tiktok_room_id: str = ""
+    # Member URLs of a playlist/channel result, capped server-side.  The
+    # desktop app hands these to its Batch tab instead of queueing the
+    # playlist as one task; without them the web UI has no way to do the same.
+    playlist_entries: list[str] = []
+
+
+class BatchDownloadItem(DownloadRequest):
+    """One entry of a batch enqueue request.
+
+    Subclasses DownloadRequest rather than repeating its fields: the copy left
+    out its three validators, so /api/download/batch accepted a url, an
+    output_ext and a source_engine that /api/download rejects with 422.
+    """
+
+
+class BatchDownloadRequest(BaseModel):
+    """Enqueue up to MAX_BATCH_ITEMS downloads in a single call.
+
+    The Batch tab used to POST /api/download once per URL.  With auth disabled
+    every request counts against the 60 req/min limiter, so a list longer than
+    60 was rejected halfway through; one call keeps the whole batch atomic
+    from the limiter's point of view.
+    """
+
+    items: list[BatchDownloadItem]
+
+    @field_validator("items")
+    @classmethod
+    def _not_empty(cls, v: list) -> list:
+        if not v:
+            raise ValueError("items must not be empty")
+        if len(v) > MAX_BATCH_ITEMS:
+            raise ValueError(f"at most {MAX_BATCH_ITEMS} items per batch")
+        return v
+
+
+class BatchDownloadResult(BaseModel):
+    """Outcome for one item of a batch enqueue."""
+
+    url: str
+    task_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BatchDownloadResponse(BaseModel):
+    """Per-item outcomes, in request order."""
+
+    results: list[BatchDownloadResult]
+    queued: int
+    failed: int
 
 
 class TaskResponse(BaseModel):
@@ -147,6 +201,9 @@ class TaskResponse(BaseModel):
     error_msg: str
     created_at: float  # Unix timestamp
     is_live: bool = False
+    # "yt_dlp" or "gallery_dl".  gallery-dl downloads cannot be paused (the
+    # engine has no wait_if_paused() hook), so clients hide the Pause button.
+    source_engine: str = "yt_dlp"
 
 
 class ClearItemsRequest(BaseModel):
@@ -358,6 +415,54 @@ class FileConvertJobResponse(BaseModel):
     job_id: str
 
 
+class BatchFileConvertRequest(FileConvertRequest):
+    """Convert several local files with one set of settings.
+
+    Inherits every encode field (and the target_ext validator) from
+    FileConvertRequest; ``file_path`` is unused here and defaults to "" so a
+    client only has to send ``file_paths``.
+    """
+
+    file_path: str = ""
+    # Capped at 100: each accepted entry becomes a queued job, and
+    # remote_convert_service.MAX_ACTIVE_JOBS refuses the rest anyway.
+    file_paths: list[str] = Field(default_factory=list, min_length=1, max_length=100)
+
+
+class BatchConvertItemError(BaseModel):
+    """One file in a batch that could not be queued, and why."""
+
+    file_path: str
+    error: str
+
+
+class BatchConvertResponse(BaseModel):
+    """Result of POST /api/files/convert/batch.
+
+    Partial success is normal: a batch where some paths are missing still
+    queues the rest, so the client gets both lists rather than a 4xx that
+    hides the jobs that did start.
+    """
+
+    job_ids: list[str] = Field(default_factory=list)
+    errors: list[BatchConvertItemError] = Field(default_factory=list)
+    queued: int = 0
+    failed: int = 0
+
+
+class ConvertConcurrencyRequest(BaseModel):
+    """Set how many conversions may run at once."""
+
+    max_concurrent: int = Field(ge=1, le=8)
+
+
+class ConvertConcurrencyResponse(BaseModel):
+    """Current parallel-conversion limit and the maximum this server allows."""
+
+    max_concurrent: int
+    limit: int
+
+
 class FileRenameRequest(BaseModel):
     """Rename the output file of a completed task."""
 
@@ -469,12 +574,19 @@ class MonitorItemResponse(BaseModel):
 
 
 class MonitorIntervalRequest(BaseModel):
-    interval: int
+    # Bounded to the range both UIs offer (60 / 180 / 300 / 600 s).  Unbounded,
+    # a raw API call could set an interval of years: set_check_interval() only
+    # clamps the lower end, so the server answered 200 OK while silently
+    # switching live monitoring off, and the client's <select> then had no
+    # matching option to display.
+    interval: int = Field(ge=60, le=600)
 
 
 class MonitorListResponse(BaseModel):
     items: list[MonitorItemResponse]
-    interval: int = 30
+    # Mirrors LiveMonitorService.DEFAULT_CHECK_INTERVAL; 30 was below the
+    # service's MIN_CHECK_INTERVAL and could never be the real value.
+    interval: int = 180
     paused: bool = False
 
 
@@ -528,6 +640,46 @@ class ArchiveExtractResponse(BaseModel):
     dest_dir: str
     extracted_paths: list[str]
     total_bytes: int
+
+
+# ── Document convert (Markdown / HTML / Office <-> PDF) ───────────────────────
+
+
+class DocConvertRequest(BaseModel):
+    """Convert one document (inside download_dir) to another document format."""
+
+    source_path: str
+    target_format: str
+    # Defaults to the source file's own folder when omitted.
+    out_dir: Optional[str] = None
+
+    @field_validator("target_format")
+    @classmethod
+    def _validate_target(cls, v: str) -> str:
+        normalised = (v or "").strip().lower().lstrip(".")
+        if normalised not in ("pdf", "html", "md", "docx"):
+            raise ValueError("target_format must be one of: pdf, html, md, docx")
+        return normalised
+
+
+class DocConvertResponse(BaseModel):
+    output_path: str
+    filename: str
+    size: int
+    target_format: str
+
+
+class DocConvertCapabilitiesResponse(BaseModel):
+    """Which document back-ends this host has, and which routes they enable."""
+
+    markdown: bool
+    weasyprint: bool
+    pypdf: bool
+    libreoffice: bool
+    # "md->pdf" -> True/False
+    routes: dict[str, bool]
+    source_extensions: list[str]
+    target_formats: list[str]
 
 
 # ── UI language ───────────────────────────────────────────────────────────────

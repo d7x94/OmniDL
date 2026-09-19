@@ -44,6 +44,7 @@ NAV_ITEMS = [
     ("convert", "⇄", "nav.convert", "nav.section.tools"),
     ("editor", "✂", "nav.editor", "nav.section.tools"),
     ("archive", "⧉", "nav.archive", "nav.section.tools"),
+    ("docs", "▤", "nav.docs", "nav.section.tools"),
     ("history", "◷", "nav.history", "nav.section.library"),
     ("settings", "⊙", "nav.settings", "nav.section.system"),
     ("special_dl", "◆", "nav.special_dl", "nav.section.system"),
@@ -242,6 +243,7 @@ class MainWindow(QMainWindow):
         from ui.tabs.archive_tab import ArchiveTab
         from ui.tabs.batch_tab import BatchTab
         from ui.tabs.convert_tab import ConvertTab
+        from ui.tabs.doc_convert_tab import DocConvertTab
         from ui.tabs.editor_tab import EditorTab
         from ui.tabs.history_tab import HistoryTab
         from ui.tabs.home_tab import HomeTab
@@ -258,6 +260,7 @@ class MainWindow(QMainWindow):
             "convert": ConvertTab,
             "editor": EditorTab,
             "archive": ArchiveTab,
+            "docs": DocConvertTab,
             "history": HistoryTab,
             "settings": SettingsTab,
             "special_dl": SpecialDlTab,

@@ -30,6 +30,7 @@ Features
 
 from __future__ import annotations
 
+import glob as _glob
 import json
 import logging
 import re
@@ -56,6 +57,16 @@ logger = logging.getLogger(__name__)
 # ── Progress API regex ────────────────────────────────────────────────────────
 _PROG_MS_RE = re.compile(r"^out_time_ms=(-?\d+)")
 _TIME_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)")
+
+
+def _signed_exit_code(code: int) -> int:
+    """Render a Windows process exit code the way FFmpeg documents it.
+
+    POSIX normalises a negative exit status for us; Windows hands back the raw
+    32-bit DWORD, so FFmpeg's AVERROR(-40) reached convert.err.ffmpeg_exit as
+    4294967256 -- a number nobody can look up.
+    """
+    return code - 0x100000000 if code >= 0x80000000 else code
 
 
 def _parse_seconds(m: "re.Match[str]") -> float:
@@ -376,6 +387,7 @@ def _crf_to_percent_quality(crf: int, spec: HwEncoderSpec) -> str:
     value = high + (small - high) * frac
     return str(int(round(max(0.0, min(100.0, value)))))
 
+
 # H.264 probe targets — one per GPU brand; sufficient to populate ENCODER_OPTIONS base keys.
 # HEVC/AV1 variants are looked up from _HW_ENCODER_CATALOG at encode time, not from the available set.
 _PROBE_CODECS: list[tuple[str, str]] = [
@@ -653,7 +665,7 @@ def compute_vmaf(
             if result.returncode != 0:
                 logger.info(
                     "compute_vmaf: ffmpeg exited %d: %s",
-                    result.returncode,
+                    _signed_exit_code(result.returncode),
                     (result.stderr or b"").decode("utf-8", "replace")[-300:],
                 )
                 return None
@@ -728,7 +740,7 @@ def _validate_encoder_codec(ffmpeg_bin: Path, codec: str) -> bool:
         logger.debug(
             "_validate_encoder_codec: %s exited with code %d",
             codec,
-            result.returncode,
+            _signed_exit_code(result.returncode),
         )
         return False
     except Exception as exc:
@@ -1128,7 +1140,12 @@ class FfmpegConvertService:
         # and are safe to delete immediately.
         _UUID_PART_RE = re.compile(r"_[0-9a-f]{8}\.part\.mp4$")
         _now = time.time()
-        for _stale in dest_dir.glob(f"{source.stem}_iPhone*.part.mp4"):
+        # Path.glob() reads "[", "]", "?" and "*" as pattern syntax, and video
+        # titles are full of them ("Song [MV].mp4").  Without escaping, the
+        # cleanup below silently matched nothing and every interrupted job left
+        # its .part file on disk forever.
+        _stem_pat = _glob.escape(source.stem)
+        for _stale in dest_dir.glob(f"{_stem_pat}_iPhone*.part.mp4"):
             try:
                 if _UUID_PART_RE.search(_stale.name) and _now - _stale.stat().st_mtime <= 3600:
                     continue  # possibly an active concurrent job — leave it alone
@@ -1136,7 +1153,7 @@ class FfmpegConvertService:
                 logger.info("Deleted stale .part file before restart: %s", _stale.name)
             except OSError:
                 pass
-        for _stale_trim in dest_dir.glob(f"{source.stem}_iPhone*.part.trim.mp4"):
+        for _stale_trim in dest_dir.glob(f"{_stem_pat}_iPhone*.part.trim.mp4"):
             try:
                 _stale_trim.unlink(missing_ok=True)
                 logger.info("Deleted stale .part.trim.mp4 file: %s", _stale_trim.name)
@@ -1326,7 +1343,7 @@ class FfmpegConvertService:
         temp_mp3 = dest_dir / f"{source.stem}_{_mp3_job_id}.part.mp3"
         _UUID_PART_MP3_RE = re.compile(r"_[0-9a-f]{8}\.part\.mp3$")
         _now_mp3 = time.time()
-        for _stale_mp3 in dest_dir.glob(f"{source.stem}*.part.mp3"):
+        for _stale_mp3 in dest_dir.glob(f"{_glob.escape(source.stem)}*.part.mp3"):
             try:
                 if (
                     _UUID_PART_MP3_RE.search(_stale_mp3.name)
@@ -1538,8 +1555,21 @@ class FfmpegConvertService:
                     "copy",
                     str(trim_tmp),
                 ]
-                r = subprocess.run(trim_cmd, capture_output=True, timeout=120, creationflags=_WIN_NO_WINDOW)
-                if r.returncode == 0:
+                try:
+                    r = subprocess.run(
+                        trim_cmd,
+                        capture_output=True,
+                        timeout=self._remux_timeout_s(temp_output),
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                except subprocess.TimeoutExpired:
+                    # The trim is an optional repair pass; the untrimmed file is
+                    # still playable.  Drop the half-written temp and carry on
+                    # rather than failing a conversion that already succeeded.
+                    trim_tmp.unlink(missing_ok=True)
+                    logger.warning("Audio trim remux timed out — keeping original")
+                    r = None
+                if r is not None and r.returncode == 0:
                     temp_output.unlink(missing_ok=True)
                     trim_tmp.rename(temp_output)
                     logger.info(
@@ -1547,11 +1577,11 @@ class FfmpegConvertService:
                         out_info.audio_duration_s,
                         trim_to,
                     )
-                else:
+                elif r is not None:
                     trim_tmp.unlink(missing_ok=True)
                     logger.warning(
                         "Audio trim remux failed (code %d) — keeping original",
-                        r.returncode,
+                        _signed_exit_code(r.returncode),
                     )
 
         # Remux to target container when target_ext differs from mp4.
@@ -1568,7 +1598,20 @@ class FfmpegConvertService:
                 "copy",
                 str(remux_output),
             ]
-            result = subprocess.run(remux_cmd, capture_output=True, timeout=120, creationflags=_WIN_NO_WINDOW)
+            try:
+                result = subprocess.run(
+                    remux_cmd,
+                    capture_output=True,
+                    timeout=self._remux_timeout_s(temp_output),
+                    creationflags=_WIN_NO_WINDOW,
+                )
+            except subprocess.TimeoutExpired as exc:
+                # Both files are orphaned otherwise: the .part.mp4 was only
+                # deleted after subprocess.run() returned, and the target
+                # container is half-written.
+                temp_output.unlink(missing_ok=True)
+                remux_output.unlink(missing_ok=True)
+                raise ConversionError(f"Remux to .{target_ext} timed out") from exc
             temp_output.unlink(missing_ok=True)
             if result.returncode != 0:
                 remux_output.unlink(missing_ok=True)
@@ -2018,7 +2061,9 @@ class FfmpegConvertService:
             if cancel_event is not None and cancel_event.is_set():
                 raise ConversionCancelledError(t("convert.cancelled"))
             tail = "\n".join(stderr_lines[-10:])
-            raise ConversionError(t("convert.err.ffmpeg_exit", code=proc.returncode, tail=tail))
+            raise ConversionError(
+                t("convert.err.ffmpeg_exit", code=_signed_exit_code(proc.returncode), tail=tail)
+            )
 
         # Log FFmpeg warnings even on success — helps diagnose FLV/TS issues
         # where returncode=0 but frames were dropped or codec errors occurred.
@@ -2092,6 +2137,19 @@ class FfmpegConvertService:
             i += 1
 
     @staticmethod
+    def _remux_timeout_s(source: Path) -> float:
+        """Seconds to allow for a stream-copy remux of *source*.
+
+        A remux runs at disk speed, so a flat 120 s killed legitimate jobs on
+        multi-GB recordings.  Budget ~1 s per 10 MB, floor 120 s, cap 1 hour.
+        """
+        try:
+            size_mb = source.stat().st_size / 1_048_576
+        except OSError:
+            size_mb = 0.0
+        return max(120.0, min(3600.0, size_mb / 10.0))
+
+    @staticmethod
     def _validate_output(output: Path) -> None:
         if not output.is_file() or output.stat().st_size < 1_000:
             raise ConversionError(f"File output trong hoac khong ton tai: {output}")
@@ -2134,12 +2192,32 @@ class ConvertQueue:
     Limits active conversions to ``max_concurrent`` at a time.
     """
 
+    #: Upper bound for set_max_concurrent(); more parallel FFmpeg processes
+    #: than this only makes every job slower on consumer hardware.
+    MAX_CONCURRENT_LIMIT = 8
+
     def __init__(self, max_concurrent: int = 2) -> None:
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be >= 1")
         self._semaphore = threading.Semaphore(max_concurrent)
         self._svc = FfmpegConvertService()
         self.max_concurrent = max_concurrent
+
+    def set_max_concurrent(self, max_concurrent: int) -> int:
+        """Change the parallel-job limit; returns the value actually applied.
+
+        Each queued worker captures the semaphore it will wait on at submit
+        time, so jobs already waiting keep the old limit and only jobs
+        submitted after this call see the new one.
+        # ponytail: a swap, not a resize — a batch submitted across the change
+        # can briefly run old+new limits at once.  Resize the live semaphore
+        # only if that transient overshoot ever matters.
+        """
+        applied = max(1, min(self.MAX_CONCURRENT_LIMIT, int(max_concurrent)))
+        if applied != self.max_concurrent:
+            self._semaphore = threading.Semaphore(applied)
+            self.max_concurrent = applied
+        return applied
 
     def submit(
         self,
@@ -2162,9 +2240,12 @@ class ConvertQueue:
         enabling GPU encoding and custom quality control.
         """
         cancel_event = threading.Event()
+        # Captured now so set_max_concurrent() cannot swap the semaphore out
+        # from under a worker between acquire() and release().
+        sem = self._semaphore
 
         def _worker() -> None:
-            self._semaphore.acquire()
+            sem.acquire()
             try:
                 if cancel_event.is_set():
                     if on_error:
@@ -2185,7 +2266,7 @@ class ConvertQueue:
                     on_result=on_result,
                 )
             finally:
-                self._semaphore.release()
+                sem.release()
 
         threading.Thread(
             target=_worker,

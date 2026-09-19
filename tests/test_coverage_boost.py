@@ -209,6 +209,9 @@ class TestCheckTiktokProfileLive:
                 on_error=errors.append,
             )
         assert _wait(errors)
+        # on_error fires inside `except`, the unlink inside the `finally` that
+        # follows it — waiting only on `errors` reads `unlinked` too early.
+        assert _wait(unlinked)
         assert "/tmp/temp_tt_cookie2.txt" in unlinked  # nosec B108
 
 

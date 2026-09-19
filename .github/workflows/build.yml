@@ -368,6 +368,11 @@ jobs:
             --hidden-import curl_cffi `
             --hidden-import curl_cffi.requests `
             --collect-all curl_cffi `
+            --collect-all weasyprint `
+            --collect-all pyphen `
+            --collect-all tinyhtml5 `
+            --collect-all markdown `
+            --hidden-import pypdf `
             --noupx `
             --distpath dist `
             main.py

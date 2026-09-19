@@ -47,8 +47,22 @@ _TEMP_PREFIX = "omnidl_dec_"
 
 # In-memory plaintext cache: path_str -> (plaintext_bytes, enc_mtime)
 # Avoids repeated DPAPI/Fernet syscalls for the same cookie file within a session.
+# Bounded: decrypted session cookies are the most sensitive data OmniDL holds,
+# so the cache keeps only the few files actually in use (oldest entry evicted).
+_COOKIE_CACHE_MAX = 16
 _cookie_cache: dict[str, tuple[bytes, float]] = {}
 _cookie_cache_lock = threading.Lock()
+
+
+def invalidate_cookie_cache(path: "Path | str") -> None:
+    """Drop the cached plaintext for *path* (call when the file is deleted).
+
+    Without this the decrypted cookies of an account the user just removed
+    stayed resident in memory for the rest of the session.
+    """
+    key = str(path)
+    with _cookie_cache_lock:
+        _cookie_cache.pop(key, None)
 
 _KEYCHAIN_SERVICE = "OmniDL"
 _KEYCHAIN_ACCOUNT = "cookie_encryption_key_v1"
@@ -299,6 +313,8 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
                 )
 
         with _cookie_cache_lock:
+            while len(_cookie_cache) >= _COOKIE_CACHE_MAX:
+                _cookie_cache.pop(next(iter(_cookie_cache)))
             _cookie_cache[_cache_key] = (plaintext, _enc_mtime)
 
     tmp_fd, tmp_str = tempfile.mkstemp(suffix=".txt", prefix=_TEMP_PREFIX, dir=enc_path.parent)
@@ -322,18 +338,31 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
     return tmp_path
 
 
-def cleanup_stale_cookies(safe_dir: Path, max_age_days: int = 30) -> int:
-    """Delete .txt and .enc cookie files older than max_age_days. Returns count deleted."""
+def cleanup_stale_cookies(
+    safe_dir: Path, max_age_days: int = 30, keep: "set[str] | None" = None
+) -> int:
+    """Delete .txt and .enc cookie files older than max_age_days. Returns count deleted.
+
+    *keep* holds paths the config still references (account pool, global and
+    per-platform cookies).  They are never deleted regardless of age: mtime
+    only changes when cookies are re-extracted, so a working account added 31
+    days ago used to have its jar wiped at startup while the config kept
+    pointing at the now-missing file.
+    """
     import time
 
     if not safe_dir.is_dir():
         return 0
+    protected = {str(Path(k).resolve()) for k in (keep or set()) if k}
     now = time.time()
     deleted = 0
     for f in safe_dir.iterdir():
         if f.name.startswith("_tmp_") or f.name.startswith(_TEMP_PREFIX):
             continue
         if f.suffix not in (".txt", ENCRYPTED_SUFFIX):
+            continue
+        if str(f.resolve()) in protected:
+            logger.debug("Stale cookie cleanup: keeping in-use file %s", f.name)
             continue
         try:
             age_days = (now - f.stat().st_mtime) / 86400

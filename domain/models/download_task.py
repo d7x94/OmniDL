@@ -101,6 +101,12 @@ class DownloadTask:
     # ── Control primitives (not serialised) ──────────────────────────────
     keep_partial: bool = False  # set by UI before cancel on live tasks → engine saves partial file
 
+    # True while DownloadManager still has a retry left for this task.  Engines
+    # read it to log yt-dlp's own errors at DEBUG instead of ERROR: a failed
+    # attempt that the next one recovers from is not a failure, and only
+    # DownloadManager knows whether another attempt follows.
+    has_retry_remaining: bool = field(default=False, compare=False, repr=False)
+
     _cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
     _pause_event: threading.Event = field(default_factory=_set_event, compare=False, repr=False)
     # An RLock guards coordinated multi-field reads via snapshot().  Python's
@@ -136,18 +142,33 @@ class DownloadTask:
 
     # ── Control ───────────────────────────────────────────────────────────
 
-    def pause(self) -> None:
+    # Only these states can be paused.  PROCESSING is excluded because the
+    # FFmpeg merge has no pause hook, and every terminal state is excluded
+    # because pausing one used to move it *out* of terminal_states(): the task
+    # then survived "clear finished" forever and a following resume() flipped a
+    # long-finished download back to DOWNLOADING, leaving a ghost job in the
+    # queue badge that could never complete.  The desktop UI hides the button
+    # for those states, but the REST API (POST /api/queue/{id}/pause) reached
+    # them directly, so the guard belongs here where every caller passes.
+    _PAUSABLE = (DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING)
+
+    def pause(self) -> bool:
+        """Pause the task.  Returns False when the state does not allow it."""
         with self._lock:  # DEF-004: atomic check-and-mutate
-            if self.status == DownloadStatus.PROCESSING:
-                return
+            if self.status not in self._PAUSABLE:
+                return False
             self._pause_event.clear()
             self.status = DownloadStatus.PAUSED
+            return True
 
-    def resume(self) -> None:
+    def resume(self) -> bool:
+        """Resume a paused task.  Returns False when it was not paused."""
         with self._lock:  # DEF-004: atomic check-and-mutate
             self._pause_event.set()
-            if self.status == DownloadStatus.PAUSED:
-                self.status = DownloadStatus.DOWNLOADING
+            if self.status != DownloadStatus.PAUSED:
+                return False
+            self.status = DownloadStatus.DOWNLOADING
+            return True
 
     def cancel(self) -> None:
         with self._lock:

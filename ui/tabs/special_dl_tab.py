@@ -358,6 +358,14 @@ class SpecialDlTab(QWidget):
         )
         browser = self._browser_combo.currentText()
 
+        # Pre-flight: report the three things that make a Story capture
+        # impossible before spending 90 s on a browser launch.
+        if platform_key == "facebook_story":
+            err = self._preflight_facebook_story(url, browser)
+            if err:
+                self._set_status("error", err)
+                return
+
         self._running = True
         self._dl_btn.setEnabled(False)
         self._dl_btn.setText(t("special.downloading"))
@@ -405,6 +413,31 @@ class SpecialDlTab(QWidget):
                 )
             )
 
+    def _preflight_facebook_story(self, url: str, browser: str) -> str:
+        """Return a user-facing error, or "" when the capture can go ahead."""
+        import sys
+
+        from infrastructure.downloader.cookie_extractor import _is_browser_running
+        from infrastructure.downloader.facebook_story_engine import (
+            _find_browser_exe,
+            is_facebook_story_permalink,
+        )
+
+        # fb.watch also matches is_facebook_story_url(), but it fronts ordinary
+        # videos far more often than Stories and yt-dlp handles those natively —
+        # send the user to the Download tab instead of a doomed 90 s capture.
+        if not is_facebook_story_permalink(url):
+            return t("special.error.not_story_url")
+        if sys.platform not in ("win32", "darwin"):
+            return t("err.fb_story_platform")
+        try:
+            _find_browser_exe(browser)
+        except RuntimeError as exc:
+            return str(exc)
+        if _is_browser_running(browser):
+            return t("err.fb_story_browser_running", browser=browser.title())
+        return ""
+
     def _run_facebook_story(self, url: str, browser: str) -> "Path | None":
         from infrastructure.downloader.facebook_story_engine import download_story
 
@@ -416,7 +449,6 @@ class SpecialDlTab(QWidget):
             config=self._config,
             browser=browser,
             on_progress=_on_progress,
-            timeout=45.0,
         )
 
     # ── UI helpers ────────────────────────────────────────────────────────────

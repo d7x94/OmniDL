@@ -20,7 +20,8 @@ import yt_dlp
 
 from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
-from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _detect_platform
+from infrastructure.downloader.yt_dlp_engine import YtDlpEngine, _detect_platform, _fmt_bytes
+from utils.i18n import t
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -188,8 +189,9 @@ class TestExtractInfoSuccess:
         import infrastructure.downloader.yt_dlp_engine as mod
 
         with patch.object(mod.yt_dlp, "YoutubeDL", fake_ydl_class(playlist_dict)):
-            with pytest.raises(RuntimeError, match=r"empty|không có video|no video"):
+            with pytest.raises(RuntimeError) as excinfo:
                 engine.extract_info("https://youtube.com/playlist?list=abc")
+            assert str(excinfo.value) == t("err.playlist_empty")
 
     def test_none_result_raises(self):
         cfg = make_config()
@@ -1086,7 +1088,9 @@ class TestInstagramLive:
         )
 
         assert task.eta != "", "eta must not be empty for live with no total_bytes (FIX-1)"
-        assert "ghi" in task.eta, f"eta must mention 'đã ghi' for live recording, got: {task.eta!r} (FIX-1)"
+        assert task.eta == t("progress.recorded", size=_fmt_bytes(5 * 1024 * 1024)), (
+            f"eta must be the translated 'recorded' label, got: {task.eta!r} (FIX-1)"
+        )
 
     def test_vod_hook_not_affected_by_live_fix(self):
         """
@@ -1140,7 +1144,9 @@ class TestInstagramLive:
         )
 
         assert task.eta != "01:30", f"Live hook must NOT use yt-dlp's numeric eta, got: {task.eta!r}"
-        assert "ghi" in task.eta, f"Live hook must show bytes-recorded format, got: {task.eta!r}"
+        assert task.eta == t("progress.recorded", size=_fmt_bytes(1024)), (
+            f"Live hook must show the bytes-recorded format, got: {task.eta!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1651,8 +1657,9 @@ class TestBugTtProd:
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_result):
-                with pytest.raises(RuntimeError, match="âm thanh"):
+                with pytest.raises(RuntimeError) as excinfo:
                     engine.download(task)
+                assert excinfo.value.error_key == "err.tiktok_audio_only"
 
         assert not output_file.exists(), "BUG-TT-EFF: template effect file must be deleted"
 
@@ -1666,8 +1673,9 @@ class TestBugTtProd:
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=None):
-                with pytest.raises(RuntimeError, match="âm thanh"):
+                with pytest.raises(RuntimeError) as excinfo:
                     engine.download(task)
+                assert excinfo.value.error_key == "err.tiktok_audio_only"
 
     def test_shopping_video_musical_ly_retry_succeeds(self, tmp_path):
         """BUG-TT-SHOP-3: first attempt audio-only, musical_ly extract_info finds h264, retry downloads real video."""
@@ -1811,8 +1819,9 @@ class TestBugTtProd:
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
             with patch("app.services.ffmpeg_convert_service.probe_media_info", return_value=probe_no_video):
-                with pytest.raises(RuntimeError, match="không thể tải|TikTok chặn"):
+                with pytest.raises(RuntimeError) as excinfo:
                     engine.download(task)
+                assert excinfo.value.error_key == "err.tiktok_ec_blocked"
 
         assert call_count[0] == 2, "BUG-TT-SHOP-5: web path fallback download attempted after EC block"
 
@@ -1991,7 +2000,7 @@ class TestFriendlyErrorBranches:
 
     def test_currently_not_available(self):
         r = self._fe("this video is currently not available")
-        assert "tồn tại" in r or "available" in r.lower()
+        assert r == t("err.video_deleted")
 
     def test_not_comfortable(self):
         r = self._fe("we are not comfortable with this content")

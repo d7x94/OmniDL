@@ -41,6 +41,7 @@ Dependencies
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import socket as _socket
@@ -50,6 +51,8 @@ import time
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
+
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from infrastructure.config.config_manager import ConfigManager
@@ -402,7 +405,7 @@ def _normalize_url(url: str) -> str:
     p = urllib.parse.urlparse(url)
     q = urllib.parse.parse_qs(p.query, keep_blank_values=True)
     q["view_single"] = ["1"]
-    return urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode({k: v[0] for k, v in q.items()})))
+    return urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(q, doseq=True)))
 
 
 def _is_fb_video_url(url: str) -> bool:
@@ -456,7 +459,7 @@ def _full_video_url(cdn_url: str) -> str:
     q.pop("bytestart", None)
     q.pop("byteend", None)
     q.pop("range", None)
-    return urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode({k: v[0] for k, v in q.items()})))
+    return urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(q, doseq=True)))
 
 
 def _derive_audio_url(video_url: str) -> Optional[str]:
@@ -595,14 +598,21 @@ def _clear_crashed_flag(profile_dir: Path) -> None:
                 continue  # nothing to change — skip write
 
             # Atomic write: write to temp file in same dir, then rename
+            import os as _os
+
             tmp_fd, tmp_str = tempfile.mkstemp(dir=prefs.parent, suffix=".tmp", prefix="omnidl_prefs_")
             try:
-                import os as _os
-
                 _os.write(tmp_fd, json.dumps(data, separators=(",", ": ")).encode("utf-8"))
-            finally:
                 _os.close(tmp_fd)
-            Path(tmp_str).replace(prefs)
+                Path(tmp_str).replace(prefs)
+            except Exception:
+                # Leave no omnidl_prefs_*.tmp behind in the user's browser profile.
+                try:
+                    _os.close(tmp_fd)
+                except OSError:
+                    pass
+                Path(tmp_str).unlink(missing_ok=True)
+                raise
             logger.debug("Cleared crashed flag in %s/%s/Preferences", profile_dir.name, slot)
         except (json.JSONDecodeError, OSError, KeyError):
             # Preferences corrupt or unreadable — skip silently (same as before)
@@ -655,14 +665,11 @@ def _find_browser_exe(browser: str) -> str:
             ]
 
     else:
-        raise RuntimeError("Facebook Story chỉ hỗ trợ Windows và macOS.\nLinux chưa được hỗ trợ.")
+        raise RuntimeError(t("err.fb_story_platform"))
 
     exe = next((p for p in candidates if Path(p).exists()), None)
     if not exe:
-        raise RuntimeError(
-            f"Không tìm thấy {browser.title()}.  Hãy cài đặt trình duyệt trước.\n"
-            "Lưu ý: bản tải từ App Store không hỗ trợ CDP — cần bản từ website chính thức."
-        )
+        raise RuntimeError(t("err.browser_not_found_cdp", browser=browser.title()))
     return exe
 
 
@@ -710,7 +717,7 @@ def _cdp_intercept(
     try:
         from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright  # noqa: I001
     except ImportError as err:
-        raise RuntimeError("Thiếu thư viện Playwright.\nChạy: pip install playwright") from err
+        raise RuntimeError(t("err.playwright_missing")) from err
 
     import os
 
@@ -722,6 +729,22 @@ def _cdp_intercept(
                 pass
 
     exe = _find_browser_exe(browser)
+
+    # ── Refuse to launch while the browser is already open ────────────────
+    # Chromium is single-instance per user-data-dir: launching a second copy
+    # against a profile that is already open forwards the command line to the
+    # running process and exits, silently dropping --remote-debugging-port.
+    # CDP then never comes up, the connect loop burns 30 s and reports a
+    # confusing "connection failed", and the finally-block terminate()/kill()
+    # aims at whatever process we did spawn.  Detecting it up-front turns a
+    # slow mystery failure into an instant, actionable message.
+    from infrastructure.downloader.cookie_extractor import (  # noqa: PLC0415
+        _is_browser_running,
+    )
+
+    if _is_browser_running(browser):
+        raise RuntimeError(t("err.fb_story_browser_running", browser=browser.title()))
+
     port = _free_port()
 
     if sys.platform == "win32":
@@ -747,6 +770,11 @@ def _cdp_intercept(
     cmd = [
         exe,
         f"--remote-debugging-port={port}",
+        # Bind the debugging endpoint to loopback only.  Chromium already
+        # defaults to 127.0.0.1, but stating it explicitly means a future
+        # default change (or an inherited env/policy) cannot expose the
+        # user's logged-in Facebook session to the local network.
+        "--remote-debugging-address=127.0.0.1",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate",
@@ -781,7 +809,13 @@ def _cdp_intercept(
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
     ]
-    _prog(8, f"Đang khởi động {browser.title()}...")
+    # Name the profile explicitly instead of relying on Chromium's default.
+    # It resolves to the same directory, but it makes the single-instance rule
+    # visible (see the _is_browser_running guard above) and matches how
+    # cookie_extractor.extract_via_cdp launches the same browsers.
+    if profile_base.exists():
+        cmd.append(f"--user-data-dir={profile_base}")
+    _prog(8, t("progress.browser_start_named", browser=browser.title()))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -816,7 +850,7 @@ def _cdp_intercept(
 
     try:
         with sync_playwright() as pw:
-            _prog(10, "Đang kết nối CDP...")
+            _prog(10, t("progress.cdp_connect"))
             cdp_browser = None
             deadline = time.monotonic() + 30.0
             last_exc = None
@@ -833,11 +867,7 @@ def _cdp_intercept(
                     time.sleep(0.8)
 
             if cdp_browser is None:
-                raise RuntimeError(
-                    "Không kết nối được CDP.\n\n"
-                    "Đóng HOÀN TOÀN trình duyệt (kể cả System Tray) rồi thử lại.\n"
-                    f"(chi tiết: {last_exc})"
-                )
+                raise RuntimeError(t("err.cdp_connect_failed_hard", err=last_exc))
 
             logger.info("CDP: Playwright connected on port %d", port)
 
@@ -985,7 +1015,7 @@ def _cdp_intercept(
             # networkidle waited until the 17s story finished and FB advanced
             # to the next story — causing the wrong story URL to be captured.
             story_url_norm = _normalize_url(story_url)
-            _prog(12, "Đang mở Story trong trình duyệt...")
+            _prog(12, t("progress.fb_open_story"))
             logger.info("CDP: navigating to %s", story_url_norm[:100])
 
             try:
@@ -1055,7 +1085,7 @@ def _cdp_intercept(
                         progressive_url = str(pval_early)
                 except Exception:
                     pass
-            _prog(15, "Đang chờ video load...")
+            _prog(15, t("progress.wait_video"))
             loop_deadline = time.monotonic() + timeout
             # Initialize last_play to now so the polling loop waits the full
             # cadence (5 s / 3 s) before calling _PLAY_JS again — we already
@@ -1150,7 +1180,7 @@ def _cdp_intercept(
 
                 _prog(
                     min(45, 15 + int((timeout - (loop_deadline - now)) / timeout * 30)),
-                    "Đang chờ video load...",
+                    t("progress.wait_video"),
                 )
                 time.sleep(0.4)
 
@@ -1220,7 +1250,7 @@ def _download_cdn_url(
     except Exception as exc:
         logger.debug("HEAD failed (%s) — proceeding with GET", exc)
 
-    _prog(50, "", "Đang tải video...")
+    _prog(50, "", t("progress.downloading_video"))
     try:
         resp = requests.get(full_url, headers=headers, stream=True, timeout=60)
         resp.raise_for_status()
@@ -1235,7 +1265,9 @@ def _download_cdn_url(
     stream_deadline = start + 300.0
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(dest, "wb") as f:
+    # closing(resp): the deadline branch below returns mid-iteration, which
+    # left the socket open until the GC ran.
+    with contextlib.closing(resp), open(dest, "wb") as f:
         for chunk in resp.iter_content(chunk_size=256 * 1024):
             if time.monotonic() > stream_deadline:
                 logger.warning("_download_cdn_url: stream deadline exceeded (300s)")
@@ -1254,7 +1286,7 @@ def _download_cdn_url(
                     if speed > 0
                     else ""
                 )
-                _prog(pct, s_str, f"Đang tải... {done // 1024} KB")
+                _prog(pct, s_str, t("progress.downloading_kb", kb=done // 1024))
 
     if _validate_mp4(dest):
         return dest
@@ -1282,7 +1314,7 @@ def _ffmpeg_download(
 
     if on_progress:
         try:
-            on_progress(60, "", "ffmpeg đang xử lý DASH stream...")
+            on_progress(60, "", t("progress.ffmpeg_dash"))
         except Exception:
             pass
 
@@ -1354,7 +1386,7 @@ def _ffmpeg_mux(
 
     if on_progress:
         try:
-            on_progress(55, "", "FFmpeg đang ghép video + audio...")
+            on_progress(55, "", t("progress.ffmpeg_merge"))
         except Exception:
             pass
 
@@ -1402,13 +1434,20 @@ def _ffmpeg_mux(
     return None
 
 
-def _has_audio_stream(ffmpeg_bin: str, path: Path) -> bool:
-    """Return True if the MP4 file contains at least one audio stream."""
-    ffprobe = str(Path(ffmpeg_bin).parent / "ffprobe")
+def _has_audio_stream(ffprobe_bin: str, path: Path) -> bool:
+    """Return True if the MP4 file contains at least one audio stream.
+
+    Takes the ffprobe path from FFmpegLocation.ffprobe_bin.  Deriving it as
+    ffmpeg_bin.parent / "ffprobe" dropped the ".exe" suffix on Windows, so the
+    probe raised FileNotFoundError, the except branch returned True, and
+    _ffmpeg_download_with_audio accepted a video-only result as "with audio".
+    """
+    if not ffprobe_bin or ffprobe_bin == "<not found>":
+        return True  # cannot probe — assume audio present
     try:
         result = subprocess.run(
             [
-                ffprobe,
+                ffprobe_bin,
                 "-v",
                 "error",
                 "-select_streams",
@@ -1461,7 +1500,7 @@ def _ffmpeg_download_with_audio(
 
     if on_progress:
         try:
-            on_progress(55, "", "FFmpeg đang tải video+audio từ DASH...")
+            on_progress(55, "", t("progress.ffmpeg_dash_fetch"))
         except Exception:
             pass
 
@@ -1498,7 +1537,7 @@ def _ffmpeg_download_with_audio(
         return None
 
     if result.returncode == 0 and _validate_mp4(dest):
-        if _has_audio_stream(loc.ffmpeg_bin, dest):
+        if _has_audio_stream(loc.ffprobe_bin, dest):
             logger.info(
                 "ffmpeg dash-all OK (with audio): %s (%d bytes)",
                 dest.name,
@@ -1520,19 +1559,30 @@ def download_story(
     config: "ConfigManager",
     browser: str = "brave",
     on_progress: Optional[Callable[[int, str, str], None]] = None,
-    timeout: float = 60.0,
+    # Must stay above _AUDIO_WAIT_S (40 s) plus the 3-5 s it takes to capture
+    # the video URL, otherwise the capture loop is cut off before the audio
+    # DASH track can arrive and every story downloads silent.
+    timeout: float = 90.0,
+    output_dir: Optional[Path] = None,
 ) -> Path:
     """Download a Facebook Story video.
 
     Raises RuntimeError with a Vietnamese user-facing message on failure.
     Public API is identical to the previous CDP implementation.
+
+    *output_dir* overrides config.download_dir so a task queued with a custom
+    folder (Download tab folder picker, DownloadTask.output_dir) lands there,
+    like every other engine.  None keeps the configured download directory.
     """
     if not is_facebook_story_url(url):
-        raise RuntimeError("URL không phải Facebook Story.\nHãy dán URL dạng facebook.com/stories/...")
+        raise RuntimeError(t("err.fb_not_story_url"))
 
-    if not config.download_dir:
-        raise RuntimeError("Thư mục tải về chưa được thiết lập")
-    output_dir = Path(config.download_dir)
+    if output_dir is None:
+        if not config.download_dir:
+            raise RuntimeError(t("err.no_download_dir"))
+        output_dir = Path(config.download_dir)
+    else:
+        output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     m = re.search(r"/stories/(\d+)", url)
     slug = m.group(1)[:16] if m else str(int(time.time()))
@@ -1554,14 +1604,7 @@ def download_story(
         cdn_url = progressive_url
 
     if not cdn_url:
-        raise RuntimeError(
-            "Không bắt được URL video của Story.\n\n"
-            "Có thể do:\n"
-            "• Story đã hết hạn (Stories tồn tại 24 giờ)\n"
-            "• Bạn chưa đăng nhập Facebook trong Brave/Chrome\n"
-            "• Story này chỉ có ảnh (không có video)\n\n"
-            "Mở Story trong trình duyệt kiểm tra trước."
-        )
+        raise RuntimeError(t("err.fb_story_no_video_url"))
 
     logger.info("Video URL: %s…", cdn_url[:80])
     if audio_url:
@@ -1578,7 +1621,11 @@ def download_story(
     # We keep this block for cases where CDP DID capture audio URL directly —
     # which is path (a) below.
     if not audio_url:
-        candidate = _derive_audio_url(cdn_url)
+        # Derive from the range-free URL: a captured DASH segment URL still
+        # carries bytestart/byteend, and probing that window with an extra
+        # Range header makes the CDN answer with a slice the probe reads as
+        # "no audio track", dropping sound from a story that has it.
+        candidate = _derive_audio_url(_full_video_url(cdn_url))
         if candidate:
             logger.debug("Derived audio candidate: %s…", candidate[:80])
             audio_url = _probe_audio_url(candidate)
@@ -1589,7 +1636,7 @@ def download_story(
 
     if on_progress:
         try:
-            on_progress(48, "", "Đã bắt được URL — đang tải...")
+            on_progress(48, "", t("progress.url_captured"))
         except Exception:
             pass
 
@@ -1615,7 +1662,7 @@ def download_story(
             from utils.ffmpeg_locator import locate_ffmpeg
 
             loc = locate_ffmpeg()
-            has_audio = _has_audio_stream(loc.ffmpeg_bin, result) if loc else True
+            has_audio = _has_audio_stream(loc.ffprobe_bin, result) if loc else True
             logger.info("Progressive URL download OK (audio=%s)", has_audio)
         else:
             logger.warning("Progressive URL download failed — trying DASH all-streams")
@@ -1636,17 +1683,11 @@ def download_story(
         result = _ffmpeg_download(cdn_url, dest, on_progress)
 
     if not result:
-        raise RuntimeError(
-            "Bắt được URL video nhưng không tải được file hoàn chỉnh.\n\n"
-            "Nguyên nhân thường gặp:\n"
-            "• CDN URL đã hết hạn (load quá lâu)\n"
-            "• Kết nối mạng không ổn định\n\n"
-            "Hãy thử lại ngay sau khi mở Story trong trình duyệt."
-        )
+        raise RuntimeError(t("err.fb_story_incomplete_download"))
 
     if on_progress:
         try:
-            on_progress(100, "", f"✅ Hoàn thành! {result.name}")
+            on_progress(100, "", t("progress.done_named", name=result.name))
         except Exception:
             pass
 
