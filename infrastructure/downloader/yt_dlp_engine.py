@@ -1426,7 +1426,7 @@ class YtDlpEngine:
                             GalleryDlEngine,
                         )
                         from infrastructure.downloader.gallery_dl_engine import (
-                            is_supported as _gdl_supported,
+                            is_gallery_dl_url as _gdl_supported,
                         )
 
                         if _gdl_supported(url):

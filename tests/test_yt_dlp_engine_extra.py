@@ -1421,9 +1421,13 @@ class TestInstagramPhoto:
                 raise yt_dlp.utils.DownloadError("[Instagram] DV8iEFpEfTl: There is no video in this post")
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
-            with patch.object(mod.time, "sleep") as mock_sleep:
-                # Returns synthetic MediaInfo — does not raise
-                result = engine.extract_info(url)
+            with patch(
+                "infrastructure.downloader.gallery_dl_engine.GalleryDlEngine.extract_info",
+                side_effect=RuntimeError("gallery-dl unavailable"),
+            ):
+                with patch.object(mod.time, "sleep") as mock_sleep:
+                    # Returns synthetic MediaInfo — does not raise
+                    result = engine.extract_info(url)
 
         assert call_count["n"] == 1, (
             f"Photo post must be handled after exactly 1 call, got {call_count['n']} (FIX-B)"
@@ -1541,9 +1545,13 @@ class TestInstagramPhoto:
                 )
 
         with patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL):
-            with patch.object(mod.time, "sleep") as mock_sleep:
-                # Should return synthetic MediaInfo, not raise
-                result = engine.extract_info(url)
+            with patch(
+                "infrastructure.downloader.gallery_dl_engine.GalleryDlEngine.extract_info",
+                side_effect=RuntimeError("gallery-dl unavailable"),
+            ):
+                with patch.object(mod.time, "sleep") as mock_sleep:
+                    # Should return synthetic MediaInfo, not raise
+                    result = engine.extract_info(url)
 
         assert call_count["n"] == 1, (
             f"'No video formats found!' must be handled in 1 call, got {call_count['n']} (FIX-B)"
