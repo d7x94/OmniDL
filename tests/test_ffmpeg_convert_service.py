@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -685,14 +686,27 @@ class TestDetectAvailableEncoders:
             result = detect_available_encoders(ffmpeg_bin=ffmpeg)
         assert result == {"cpu"}
 
-    def test_videotoolbox_detected_by_codec_name(self, tmp_path: Path):
-        fake_output = " V..... h264_videotoolbox   VideoToolbox H.264\n"
+    def test_videotoolbox_probed_only_on_macos(self, tmp_path: Path):
+        """VideoToolbox has no driver off macOS — probing it there is a wasted
+        subprocess that then logs a bogus "no driver" miss on every start."""
+        from app.services.ffmpeg_convert_service import _PROBE_CODECS
+
+        keys = {k for k, _ in _PROBE_CODECS}
+        if sys.platform == "darwin":
+            assert keys == {"videotoolbox"}
+        else:
+            assert "videotoolbox" not in keys
+            assert {"nvenc", "qsv", "amf"} <= keys
+
+    def test_videotoolbox_detected_when_probed(self, tmp_path: Path):
         ffmpeg = tmp_path / "ffmpeg"
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-        fake_result.stdout = fake_output
-        fake_result.stderr = ""
-        with patch("subprocess.run", return_value=fake_result):
+        with (
+            patch(
+                "app.services.ffmpeg_convert_service._PROBE_CODECS",
+                [("videotoolbox", "h264_videotoolbox")],
+            ),
+            patch("app.services.ffmpeg_convert_service._validate_encoder_codec", return_value=True),
+        ):
             result = detect_available_encoders(ffmpeg_bin=ffmpeg)
         assert "videotoolbox" in result
 

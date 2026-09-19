@@ -289,6 +289,8 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
         _cached = _cookie_cache.get(_cache_key)
         plaintext: bytes | None = _cached[0] if (_cached and _cached[1] == _enc_mtime) else None
 
+    _from_cache = plaintext is not None
+
     if plaintext is None:
         try:
             ciphertext = enc_path.read_bytes()
@@ -334,7 +336,15 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
         except OSError as exc:
             logger.warning("decrypt_to_tempfile: chmod 0o600 failed for %s — %s", tmp_path.name, exc)
 
-    logger.debug("Decrypted %s → temp %s", enc_path.name, tmp_path.name)
+    # The cache above means DPAPI/Fernet runs once per file, but this line
+    # still claimed "Decrypted" on every hit: 355 of the 3,586 lines in
+    # omnidl_debug.log (2026-09-19) reported a decryption that never ran.
+    logger.debug(
+        "%s %s → temp %s",
+        "Reused cached plaintext of" if _from_cache else "Decrypted",
+        enc_path.name,
+        tmp_path.name,
+    )
     return tmp_path
 
 

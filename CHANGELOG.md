@@ -7,6 +7,105 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## v20.3.3 — 2026-09-19
+
+Log audit of `omnidl_debug.log` (session 04:16:24-09:40:46, 3,586 lines). The
+file holds no ERROR and no WARNING record: both enqueued tasks completed, both
+Taildrop sends succeeded and the app shut down cleanly. Four defects came out of
+the DEBUG traffic itself — one stale import already fixed on `improve`, and three
+that made the log describe work the code was not doing.
+
+### Verified — the Facebook photo album shipped as `Unknown`
+
+At 05:36:28 the album metadata lookup failed with
+`cannot import name 'is_supported' from 'infrastructure.downloader.gallery_dl_engine'`,
+so `extract_info` fell back to the synthetic `MediaInfo` with an empty uploader
+and Taildrop sent the 10-image post as
+`Unknown - 2026-09-19 - Facebook Photo.zip` at 05:37:31.
+
+- The symbol is named `is_gallery_dl_url`; nothing in the tree has ever exported
+  `is_supported`, so the `except Exception` around the import swallowed the
+  `ImportError` on every Facebook photo post.
+- **Already fixed** in `e00e637` (2026-09-19 12:31), after the audited session
+  was recorded. Confirmed on HEAD: `is_gallery_dl_url` resolves and returns
+  `True` for the `/share/p/` URL from the log, and `GalleryDlEngine.extract_info`
+  exists. No further change needed.
+
+### Fixed — VideoToolbox was probed on Windows
+
+```
+09:35:46 _validate_encoder_codec: h264_videotoolbox exited with code -1129203192
+09:35:46 detect_available_encoders: videotoolbox (h264_videotoolbox) listed but
+         failed validation — excluded (missing drivers?)
+```
+
+- **`_PROBE_CODECS` was platform-blind.** VideoToolbox ships only on macOS and
+  NVENC/QSV/AMF have no macOS drivers, yet every key was test-encoded on every
+  OS. The `mf` entry right below already carried this exact reasoning
+  ("probing it elsewhere spends a subprocess to learn nothing") and was gated on
+  `sys.platform == "win32"`; the other four were not.
+- **Cost.** One wasted FFmpeg subprocess per detection pass, plus an INFO record
+  blaming absent drivers for hardware that cannot exist on the platform. The
+  detection block ran 09:35:41-09:35:48 — seven seconds, of which the
+  VideoToolbox probe was pure waste.
+- **Fix.** `_PROBE_CODECS` is now `[videotoolbox]` on `darwin` and
+  `[nvenc, qsv, amf]` elsewhere, with `mf` still appended on Windows only.
+
+### Fixed — the exclusion message pointed at a list that no longer exists
+
+- **`detect_available_encoders` said "listed but failed validation".** That
+  wording dates from when a Phase-1 `ffmpeg -encoders` call built the candidate
+  set. The call was removed (it timed out on the Scoop shim during GPU driver
+  init) and candidates now come straight from `_PROBE_CODECS`, so nothing is
+  "listed" and the reader was sent looking for a list that is gone.
+- **Fix.** The record now reads `test encode failed — excluded (no driver or no
+  supported hardware)`.
+
+### Fixed — pass-4 wrote two records for one verdict
+
+836 of the file's 3,586 lines — 23% — came from `pass4_api_live_room` alone:
+418 `status=4 — marked room <id> ended` paired with 418 `status=4 (not live)`.
+
+- **Marking the room and reporting "not live" are the same event.** They were
+  logged separately, so a finished broadcast polled every 55 s for 5.4 hours
+  doubled its own footprint for no added information.
+- **Fix.** One record per verdict: `pass-4 status=4 (not live) — marked room
+  <id> ended`, with the suffix present only when a stale room id was actually
+  published to the shared ended-room set. The `_mark_room_ended` call and the
+  BUG-TT-PASS4-ENDED behaviour are unchanged.
+
+### Fixed — `decrypt_to_tempfile` claimed a decryption that never ran
+
+355 records read `Decrypted tiktok_brave_cdp_cookies.enc → temp omnidl_dec_*.txt`
+— one per live-monitor poll, 10% of the file.
+
+- **The plaintext cache above that line does its job.** DPAPI runs once per
+  file and every later call reuses the cached bytes, writing only the temp copy.
+  The record still announced a decryption, so the log overstated both the
+  cryptographic work and the number of times the master key was touched — the
+  opposite of what an audit reading this line would conclude.
+- **Fix.** The record now distinguishes the two paths: `Decrypted <file> → temp
+  <tmp>` on a real decryption, `Reused cached plaintext of <file> → temp <tmp>`
+  on a cache hit. The temp file, its `0o600` mode and the caller's `unlink`
+  contract are unchanged.
+
+### Not changed
+
+- **`h264_nvenc` / `h264_amf` exclusion on this machine is correct.** The host
+  has an Intel GPU; `qsv` and `mf` validated, the two vendor encoders did not,
+  and `{mf, qsv, cpu}` is the right answer.
+- **`pass0_webcast_api` and `pass3_user_api` stay disabled and are still probed
+  every 300 s.** The probe is what would re-enable them if TikTok reopened the
+  endpoints, so the 65 probe records per strategy are the feature working. The
+  1800 s back-off inside pass-0 already caps the cost.
+- **`v.douyin.com` has no entry in `_COOKIE_PLATFORM_MAP`.** A URL was analysed
+  at 09:40:12, 34 s before shutdown, and produced no failure record. An unmapped
+  platform falls through to the global cookie, which is what a mapped platform
+  with no per-platform cookie would do anyway, so the entry would change nothing
+  until the Settings tab offers a Douyin cookie slot.
+
+---
+
 ## v20.3.2 — 2026-09-17
 
 Log audit of `omnidl_debug.log` (session 06:00:47-12:51:46, 23,940 lines) and the

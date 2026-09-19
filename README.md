@@ -1,4 +1,4 @@
-# OmniDL v20.3.2
+# OmniDL v20.3.3
 
 A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
 
@@ -9,7 +9,9 @@ A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, 
 - **Special downloads** — Facebook Story, Instagram Live via CDP (Chrome DevTools Protocol); a Story queued from the Download tab is saved into that task's own output folder
 - **Facebook photos, albums and feed posts** — photo posts, `/photo/?fbid=`, `/share/p/` links and full albums (`/media/set/?set=`) download through gallery-dl; each post lands in its own folder. A feed post (`story.php`, `permalink.php`, `/<user>/posts/<id>`) runs both engines: gallery-dl saves the images, then a yt-dlp pass picks up any video or photo-with-music item in the same post
 - **Live stream monitor** — auto-record when a stream goes live; watch Instagram profiles (needs cookie), TikTok profiles (no cookie needed), or Facebook pages / profiles (needs cookie)
-- **Convert** downloaded files to MP4, MP3, MKV, AVI with FFmpeg (GPU-accelerated where available)
+- **Convert** downloaded files to MP4, MP3, MKV, AVI with FFmpeg. Hardware encoders are probed
+  per platform — NVENC / QSV / AMF (plus MediaFoundation on Windows) on Windows and Linux,
+  VideoToolbox on macOS — with a one-frame test encode, and the CPU path is always available
 - **Video editor** — preview, trim, rotate, mute downloaded files
 - **Archive** — compress files to 7z/ZIP (optional password), extract existing archives
 - **Documents** — convert Markdown ↔ PDF, HTML ↔ PDF and Office ↔ PDF (desktop tab + Remote API); see [Document conversion](#document-conversion)

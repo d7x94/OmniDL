@@ -390,12 +390,20 @@ def _crf_to_percent_quality(crf: int, spec: HwEncoderSpec) -> str:
 
 # H.264 probe targets — one per GPU brand; sufficient to populate ENCODER_OPTIONS base keys.
 # HEVC/AV1 variants are looked up from _HW_ENCODER_CATALOG at encode time, not from the available set.
-_PROBE_CODECS: list[tuple[str, str]] = [
-    ("nvenc", "h264_nvenc"),
-    ("qsv", "h264_qsv"),
-    ("amf", "h264_amf"),
-    ("videotoolbox", "h264_videotoolbox"),
-]
+# VideoToolbox ships only on macOS, and NVENC/QSV/AMF have no macOS drivers, so
+# probing across that line spends one subprocess each to learn nothing and then
+# reports the miss as "missing drivers?" on every start (omnidl_debug.log
+# 2026-09-19 09:35:46 — h264_videotoolbox probed on Windows).
+if sys.platform == "darwin":
+    _PROBE_CODECS: list[tuple[str, str]] = [
+        ("videotoolbox", "h264_videotoolbox"),
+    ]
+else:
+    _PROBE_CODECS = [
+        ("nvenc", "h264_nvenc"),
+        ("qsv", "h264_qsv"),
+        ("amf", "h264_amf"),
+    ]
 
 # MediaFoundation exists only on Windows; probing it elsewhere spends a
 # subprocess to learn nothing.  Listed last so a working vendor encoder is
@@ -813,9 +821,14 @@ def detect_available_encoders(
                 available.add(key)
                 logger.debug("detect_available_encoders: %s (%s) OK", key, codec)
             else:
+                # "listed but failed validation" was written when a
+                # `ffmpeg -encoders` list phase still ran.  That phase is gone
+                # (see the Phase-1 comment above), so nothing is listed any
+                # more and the old wording sent the reader looking for a list
+                # that no longer exists.
                 logger.info(
-                    "detect_available_encoders: %s (%s) listed but failed "
-                    "validation — excluded (missing drivers?)",
+                    "detect_available_encoders: %s (%s) test encode failed — "
+                    "excluded (no driver or no supported hardware)",
                     key,
                     codec,
                 )

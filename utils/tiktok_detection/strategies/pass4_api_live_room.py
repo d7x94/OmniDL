@@ -99,6 +99,11 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
             # reported as ended (@tiktok room 7679022730909469458, every 5 min
             # for the whole 10:55-11:26 window of omnidl_debug.log).  Publish
             # the verdict to the shared ended-room set the page passes consult.
+            # One record per verdict.  Marking the room and reporting "not
+            # live" are the same event, but they were logged as two lines, so
+            # a finished broadcast polled every 55s wrote 836 of the 3,586
+            # lines in omnidl_debug.log (2026-09-19) on its own.
+            marked = ""
             if status in (4, 5):
                 stale_room = _valid_room_id(user.get("roomId")) or _valid_room_id(
                     room.get("liveRoom", {}).get("id_str") or room.get("liveRoom", {}).get("id")
@@ -107,13 +112,13 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
                     from utils.tiktok_live_checker import _mark_room_ended
 
                     _mark_room_ended(stale_room)
-                    logger.debug(
-                        "tiktok_detection: @%s pass-4 status=%s — marked room %s ended",
-                        ctx.username,
-                        status,
-                        stale_room,
-                    )
-            logger.debug("tiktok_detection: @%s pass-4 status=%s (not live)", ctx.username, status)
+                    marked = f" — marked room {stale_room} ended"
+            logger.debug(
+                "tiktok_detection: @%s pass-4 status=%s (not live)%s",
+                ctx.username,
+                status,
+                marked,
+            )
             return None
 
         room_id = _valid_room_id(user.get("roomId"))
