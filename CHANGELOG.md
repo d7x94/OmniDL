@@ -1,3 +1,5 @@
+English | [Tiếng Việt](CHANGELOG.vi.md) | [简体中文](CHANGELOG.zh-CN.md)
+
 # Changelog
 
 All notable changes to OmniDL are documented in this file.
@@ -7,1199 +9,285 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## v20.3.7 — 2026-09-20
+## [Unreleased]
 
-Fourth pass over `omnidl_debug.log`, at lines 25215-25243. v20.3.6 made the
-analyse side ask gallery-dl whether a Facebook post holds a photo set before
-accepting a video whose id is not the requested story. The question was right;
-the answer was wrong. gallery-dl was handed a URL form it cannot read for this
-kind of post, said "no photos", and the advert was kept anyway.
+No unreleased changes yet.
 
-### Fixed — gallery-dl was asked the photo question in a form it cannot answer
+---
 
-At 22:06:11 and again at 22:13:28 (after a fresh CDP cookie extraction), the
-same two lines:
+## v20.3.7 - 2026-09-20
 
-```
-gallery-dl: rewrote story.php URL ... -> https://www.facebook.com/61579052360106/posts/122182130744968412
-BUG-FB-ADVID: gallery-dl found no photo set for story 122182130744968412 (...) - keeping yt-dlp video 1789050085345855
-```
+### Fixed
 
-`normalize_gallery_dl_url()` rewrites `story.php?story_fbid=X&id=Y` to
-`/<owner>/posts/<story_fbid>` (BUG-FB-SETID, v19.x). That form routes to
-gallery-dl's `FacebookSetExtractor`, which downloads the post page and calls
-`parse_post_page()`. Facebook serves that page with no photo payload, so
-`post_photo` comes back empty and `items()` dies on `params["fbid"]` with
-`KeyError: 'fbid'` before it ever looks for a set. Reproduced outside OmniDL:
-
-```
-$ python -m gallery_dl --dump-json --no-download \
-    https://www.facebook.com/61579052360106/posts/122182130744968412
-[[-1, {"error": "KeyError", "message": "'fbid'"}]]
-```
-
-The same extractor has a second route. `/media/set/?set=pcb.<story_fbid>` asks
-for the post's photo set directly and never touches the post page:
-
-```
-$ python -m gallery_dl --dump-json --no-download \
-    https://www.facebook.com/media/set/?set=pcb.122182130744968412
-[[-1, {"error": "AuthRequired", "message": "... https://www.facebook.com/photo/?fbid=122182130522968412&set=pcb.122182130744968412&setextract"}]]
-```
-
-`AuthRequired` is the no-cookie answer, and it still resolved the set and its
-first photo — the post *is* a photo post, and this route reaches it.
-
-New `gallery_dl_url_candidates()` returns the `pcb.` set form first and the
-`/<owner>/posts/<id>` form behind it, for any Facebook post URL with a numeric
-story id. `extract_info()` walks the candidates and stops at the first one that
-yields items; `download()` hands gallery-dl the whole list in one run, and the
-duplicate of a form that already worked is skipped because both write
-`{id}.{extension}` into the same directory. The posts form is kept as the
-fallback on purpose: a single-photo post has no `pcb.` set, and there
-`parse_post_page()`'s `post_photo` path is what finds the image.
-`normalize_gallery_dl_url()` itself is unchanged, so the owner and story ids
-that the advert filters derive from its output are unaffected.
-
-### Fixed — a silent gallery-dl no longer licenses an advert
-
-When gallery-dl cannot answer, `YtDlpEngine.extract_info` used to keep the
-yt-dlp video unconditionally. It now also compares `uploader_id` against the
-post owner taken from the URL: a different *numeric* owner is proof the video
-is one of the suggested or sponsored stories Facebook injected into the page,
-and analysis fails with `err.fb_post_advert_only` instead of handing the queue
-an advert. A matching owner, an opaque `pfbid` owner, or a vanity URL with no
-numeric owner still keeps the video, so genuine Facebook video posts are
-unaffected. The probe failure was also raised from DEBUG to WARNING — it is the
-line that explains an advert reaching the queue.
-
-Desktop and the Remote API share `DownloadService.analyse_url` and
-`GalleryDlEngine`, so both paths are covered by the same changes.
+- Facebook posts with several photos no longer download as an unrelated advert video instead of the real photos (BUG-FB-ADVID)
 
 ### Added
 
-- `err.fb_post_advert_only` in all three catalogues (vi / en / zh).
-
-### Tests
-
-`tests/test_bug_fb_advid.py` gains: the candidate order for `story.php` and
-`/posts/` URLs, single-candidate URLs (Instagram, `/photo/?fbid=`, `/watch/`,
-an opaque `pfbid` story), `extract_info` falling back to the second form,
-stopping at the first form that works, raising when neither works, `download()`
-passing every candidate to gallery-dl, and the analyse guard refusing a foreign
-owner when gallery-dl cannot confirm.
+- New error message when a Facebook post can only be confirmed as an advert and cannot be downloaded (`err.fb_post_advert_only`)
 
 ---
 
-## v20.3.6 — 2026-09-20
+## v20.3.6 - 2026-09-20
 
-Third pass over `omnidl_debug.log`, following the same Facebook advert one step
-further back. v20.3.5 fixed the *download* side of the problem and assumed the
-analyse side was safe because a photo post makes yt-dlp raise. At 19:29 it did
-not raise: it returned the advert as a perfectly ordinary video result, so the
-post never reached the photo path at all.
+### Fixed
 
-### Fixed — a multi-photo post analysed as the advert video on its page
-
-Task `b8e31171` requested `facebook.com/share/p/19ZyU5U4JU/`, which resolves to
-`story.php?story_fbid=122230506620352435&id=61560573071079`. It was enqueued as
-*"Migz Casimiro - Camping with biboy"* and completed as
-`NET Việt Nam - 2026-09-18 - Migz Casimiro - Camping with biboy [1767163571189463].mp4`
-— the exact same video id that task `a09e9e9f` had been given ten hours earlier
-for `posts/1750153570452113`, a post with a different owner. One video id, two
-unrelated posts: page furniture, not post content.
-
-`YtDlpEngine.extract_info` now asks gallery-dl whether the post holds a photo
-set whenever a Facebook post URL comes back with an `id` that is not the
-requested `story_fbid`. gallery-dl reading photos off that post is positive
-proof the post is not that video, so its `MediaInfo` (`source_engine`
-`gallery_dl`) is returned instead and the download goes down the photo path.
-When gallery-dl finds nothing the yt-dlp result is kept untouched, so genuine
-Facebook video posts are unaffected. Desktop and the Remote API share
-`DownloadService.analyse_url`, so both are covered by the one change.
-
-### Fixed — the v20.3.5 owner filter could not see the advert it was written for
-
-`_ytdlp_carousel_videos` passed a `match_filter` comparing `uploader_id` against
-the post owner. For a post page with several videos that works: yt-dlp returns a
-playlist and each entry carries its own `owner.id`. For a page with exactly one
-video — which is what a photo post with an injected advert looks like —
-`FacebookIE` returns `merge_dicts(webpage_info, video_info)`, and `webpage_info`
-carries the *post* owner's id, which wins. The advert inherited the owner id and
-walked straight through the filter.
-
-The rescue pass now takes `strict_story_id` as well. It is set only when
-gallery-dl saved no image for a Facebook post — gallery-dl has then proved the
-post holds no photo set, so the only legitimate video is the requested story
-itself and every other id is rejected. The owner comparison still handles the
-multi-video playlist case.
-
-### Fixed — a Facebook group post was never recognised as a post
-
-`_FB_POST_RE` had `(?:groups/[^/?#]+/)?[^/?#]+/posts/`. The optional group
-prefix could never contribute: after `groups/<gid>/` the pattern still demanded
-another `<segment>/posts/`, which a group post URL does not have. So
-`facebook.com/groups/<gid>/posts/<id>` failed `is_facebook_post_url()` and never
-reached gallery-dl or the video rescue pass. It is now `(?:[^/?#]+/)+posts/`.
-
-### Tests
-
-`tests/test_bug_fb_advid.py` covers `facebook_story_id`, the strict filter
-rejecting an advert that wears the post owner's id, the rescue pass switching to
-strict when no image was saved, the analyse guard preferring the photo set,
-keeping the video when there is no photo set, and skipping the gallery-dl probe
-when the returned id *is* the requested story.
+- Facebook posts with several photos no longer analysed as the wrong advert video (BUG-FB-ADVID)
+- Facebook group posts (`facebook.com/groups/.../posts/...`) are now recognized and can be downloaded
 
 ---
 
-## v20.3.5 — 2026-09-20
+## v20.3.5 - 2026-09-20
 
-Second pass over the same `omnidl_debug.log`, this time following the Facebook
-photo path end to end. The v20.3.4 audit dismissed one line as cosmetic —
-`gallery-dl complete: 0 file(s) → ` at 09:05:48 — and recorded that "the BUG-BW
-yt-dlp rescue then recovered the video and the task completed". It did not. The
-post held photos and no video at all; the file the rescue recovered belonged to
-somebody else's advert.
+### Fixed
 
-### Fixed — a multi-photo post was delivered as the advert video from its page
-
-Task `a09e9e9f` requested `facebook.com/100063724590889/posts/1750153570452113`
-and finished, reported as a success, with
-`คุณชายดำ ต๊วดงัด đã thêm  [1767163571189463].mp4` — a different video id, a
-different owner. Taildrop then shipped that file to the phone.
-
-The chain: gallery-dl 1.32.13 dies on this post with `JSONDecodeError - Extra
-data: line 1 column 4 (char 3)` (its own Facebook extractor; both the
-`--dump-json` probe at 09:05:41 and the download at 09:05:48 fail the same way),
-so zero photos are written. `_is_fb_post` holds the error back and runs the
-BUG-BW yt-dlp rescue pass, which uses `noplaylist=False`. yt-dlp's `FacebookIE`
-builds its entry list by walking every relay payload on the page
-(`parse_attachment` over `nodes`), and Facebook injects suggested and sponsored
-story nodes into that same payload. With the requested story yielding nothing,
-the only entry left was the advert, and nothing downstream checked whose video
-it was.
-
-Every entry yt-dlp builds carries `uploader_id` = `owner.id`, and the post owner
-is already in the URL, so the rescue pass now passes a `match_filter` that drops
-any entry owned by somebody else. A `pfbid…` owner id, an incomplete entry and a
-missing id are all let through rather than risk dropping a real video, and
-`/groups/<gid>/posts/` is skipped because the group id sits where the owner id
-would be. With the advert gone the post has nothing left, so the held gallery-dl
-error is raised and the task fails honestly instead of completing with the wrong
-file.
-
-`infrastructure/downloader/gallery_dl_engine.py`
-
-### Fixed — an analyse job that failed left no trace in the log
-
-`facebook.com/share/p/19f6PzzHxW` was analysed at 09:04:06 and again at
-09:04:47, and neither attempt wrote a result line of any kind. `on_error` in the
-SSE analyse handler sent the message to the client and returned, so the log held
-`Analyse cache: new job for …` and then silence — no way to tell a failed
-extraction from one still running. The failure is now logged with its message.
-
-`api/server.py`
-
-### Verified fixed since the log was written
-
-`Facebook photo: gallery-dl metadata lookup failed (cannot import name
-'is_supported' from 'infrastructure.downloader.gallery_dl_engine')` at
-2026-09-19 05:36:28 cost that album its uploader, which is why Taildrop sent it
-as `Unknown - 2026-09-19 - Facebook Photo.zip`. The import is now
-`is_gallery_dl_url as _gdl_supported` and resolves; no change needed.
-
-### Observed, not changed
-
-- **gallery-dl's Facebook extractor is the reason the photos were lost.** The
-  `JSONDecodeError` comes from gallery-dl 1.32.13 itself, on the canonical
-  `/<owner>/posts/<id>` form that OmniDL rewrites to precisely because
-  `story.php` dies with `KeyError - 'set_id'`. The same rewrite worked on
-  2026-09-19 05:36 for post 1693312535097881 (10 photos), so it is post-specific
-  and upstream. OmniDL now reports it instead of hiding it behind a wrong file.
+- Facebook posts with several photos no longer delivered as someone else's advert video (BUG-FB-ADVID)
+- A failed Facebook analyse request now appears in the log instead of leaving no trace
 
 ---
 
-## v20.3.4 — 2026-09-20
+## v20.3.4 - 2026-09-20
 
-Log audit of `omnidl_debug.log` (24,462 lines, 2026-09-19 04:16:24 to
-2026-09-20 14:04:24, two app sessions). No ERROR and no traceback; 5 WARNING
-records, all from TikTok anti-bot pressure. All 24 downloads that started also
-completed, every Taildrop send succeeded, all three RemoteConvert jobs finished
-and both sessions shut down cleanly. Three defects came out of the DEBUG
-traffic, all in the TikTok live-detection path.
+### Fixed
 
-### Fixed — an ended room was blacklisted forever, not for 30 minutes
-
-`_mark_room_ended()` re-stamped `_ENDED_ROOM_IDS[room_id] = now` on every call.
-Pass-4 calls it on every poll (~55s) of an account whose broadcast ended, so
-`_ENDED_ROOM_TTL` (1800s) never elapsed and the roomId stayed blacklisted for
-pass-1 and pass-2 for as long as the monitor ran. That voids the TTL guarantee
-the code documents for a restarted broadcast that reuses the same roomId:
-pass-4 becomes the only pass that can still see it, and pass-0 and pass-3 were
-already disabled by the health daemon in this very session. The mark is now
-written once and reports whether it was the caller that recorded it, which also
-removes 2,866 duplicate `marked room ... ended` lines (984 of them for room
-7687256489811020565 alone) — about 12% of the file.
-
-`utils/tiktok_live_checker.py`, `utils/tiktok_detection/strategies/pass4_api_live_room.py`
-
-### Fixed — a single HTTP 429 resurrected a bot-blocked detection pass
-
-`pass3_user_api` returned a bare `None` on a non-200 response, setting neither
-`ctx.unavailable` nor `ctx.network_error`. `HealthDaemon._probe_all()` read that
-as "the strategy works, the canary is simply not live" and called
-`record_probe_success()`, which cleared the failure counter and re-enabled the
-pass. The log shows the full cycle twice: `pass-3 HTTP 429 (not authoritative,
-returning None)` at 22:19:48 and 10:33:57, each followed immediately by
-`strategy pass3_user_api re-enabled`, each re-disabled about ten minutes later.
-Between those points every user poll ran a pass that could only return empty
-bot-detection bodies, deepening the same rate limit.
-
-A non-200 is now reported as `network_error`, which means "record no verdict":
-it neither resurrects a dead pass nor kills a healthy one on a transient rate
-limit. The same shape existed in `pass0_webcast_api` and `pass4_api_live_room`
-and was fixed at all three call sites.
-
-`utils/tiktok_detection/strategies/pass0_webcast_api.py`,
-`utils/tiktok_detection/strategies/pass3_user_api.py`,
-`utils/tiktok_detection/strategies/pass4_api_live_room.py`,
-`utils/tiktok_detection/health.py`
-
-### Fixed — BUG-TT-29 closed its retry loop with a wasted, misleading call
-
-After the cookie-rotation retries were exhausted, the code called
-`_verify_room_alive()` (a `webcast/room/check_alive` round-trip) and branched on
-the result — but both branches `return None`. The comment still claimed "only
-return () if check_alive also says dead"; that distinction had been lost, so the
-request only ever picked which of two log lines to write, and it picked the
-wrong one: `check_alive` answers `alive=True` for a finished room. The log has
-that exact lie — `check_alive room 7687256489811020565 alive=True` at 22:48:49,
-65 seconds before `room/info status!=2 -- evicting` for the same roomId. The
-verdict now comes from `_room_recently_ended()`, which reads pass-4's
-authoritative answer for free.
-
-`infrastructure/downloader/yt_dlp_engine.py`
-
-### Observed, not changed
-
-- **Pass-0 and pass-3 are blocked, correctly and permanently.** `pass-0` gets
-  `status_code 10013 "Url does not match"` for every param combo (signing is now
-  required) and backs off to the 1800s ceiling; `pass-3` gets empty
-  bot-detection bodies. Both are disabled by the health daemon and only probed
-  once per 300s. This is the design working, not a defect.
-- **Pass-1 cannot report itself broken.** 3,290 lines of `no roomId in profile
-  page (cookies expired or not live)` and zero pass-1 hits. TikTok strips live
-  data from the profile HTML, but pass-1 cannot tell that apart from "this user
-  is not live", so it has no honest way to set `ctx.unavailable`. Detection
-  currently rests on pass-4 alone.
-- **Log volume.** 24,235 of 24,462 lines are DEBUG. After the fixes above, the
-  steady state is still three lines per account per 55s poll (pass-1, pass-2,
-  pass-4) plus the cookie path and its decrypt. That is what `--debug` is for;
-  changing it would remove diagnostics, so it is left to the operator.
-- **`gallery-dl complete: 0 file(s) → `** logs an empty destination when the
-  fallback scan finds nothing (09:05:48). Cosmetic; the BUG-BW yt-dlp rescue
-  then recovered the video and the task completed.
-- **Encoder re-probe.** `detect_available_encoders` re-ran its full test-encode
-  sweep at 14:02:29 inside a session that had already cached the result at
-  20:52:58. That is `_ENCODER_CACHE_TTL_S = 300.0` expiring as designed.
+- TikTok: a broadcast that ended was sometimes still reported as blocked/live for up to 30 minutes afterward
+- TikTok: a single rate-limit error (HTTP 429) no longer re-enables a detection method that TikTok has actually blocked
 
 ---
 
-## v20.3.3 — 2026-09-19
+## v20.3.3 - 2026-09-19
 
-Log audit of `omnidl_debug.log` (session 04:16:24-09:40:46, 3,586 lines). The
-file holds no ERROR and no WARNING record: both enqueued tasks completed, both
-Taildrop sends succeeded and the app shut down cleanly. Four defects came out of
-the DEBUG traffic itself — one stale import already fixed on `improve`, and three
-that made the log describe work the code was not doing.
+### Fixed
 
-### Verified — the Facebook photo album shipped as `Unknown`
-
-At 05:36:28 the album metadata lookup failed with
-`cannot import name 'is_supported' from 'infrastructure.downloader.gallery_dl_engine'`,
-so `extract_info` fell back to the synthetic `MediaInfo` with an empty uploader
-and Taildrop sent the 10-image post as
-`Unknown - 2026-09-19 - Facebook Photo.zip` at 05:37:31.
-
-- The symbol is named `is_gallery_dl_url`; nothing in the tree has ever exported
-  `is_supported`, so the `except Exception` around the import swallowed the
-  `ImportError` on every Facebook photo post.
-- **Already fixed** in `e00e637` (2026-09-19 12:31), after the audited session
-  was recorded. Confirmed on HEAD: `is_gallery_dl_url` resolves and returns
-  `True` for the `/share/p/` URL from the log, and `GalleryDlEngine.extract_info`
-  exists. No further change needed.
-
-### Fixed — VideoToolbox was probed on Windows
-
-```
-09:35:46 _validate_encoder_codec: h264_videotoolbox exited with code -1129203192
-09:35:46 detect_available_encoders: videotoolbox (h264_videotoolbox) listed but
-         failed validation — excluded (missing drivers?)
-```
-
-- **`_PROBE_CODECS` was platform-blind.** VideoToolbox ships only on macOS and
-  NVENC/QSV/AMF have no macOS drivers, yet every key was test-encoded on every
-  OS. The `mf` entry right below already carried this exact reasoning
-  ("probing it elsewhere spends a subprocess to learn nothing") and was gated on
-  `sys.platform == "win32"`; the other four were not.
-- **Cost.** One wasted FFmpeg subprocess per detection pass, plus an INFO record
-  blaming absent drivers for hardware that cannot exist on the platform. The
-  detection block ran 09:35:41-09:35:48 — seven seconds, of which the
-  VideoToolbox probe was pure waste.
-- **Fix.** `_PROBE_CODECS` is now `[videotoolbox]` on `darwin` and
-  `[nvenc, qsv, amf]` elsewhere, with `mf` still appended on Windows only.
-
-### Fixed — the exclusion message pointed at a list that no longer exists
-
-- **`detect_available_encoders` said "listed but failed validation".** That
-  wording dates from when a Phase-1 `ffmpeg -encoders` call built the candidate
-  set. The call was removed (it timed out on the Scoop shim during GPU driver
-  init) and candidates now come straight from `_PROBE_CODECS`, so nothing is
-  "listed" and the reader was sent looking for a list that is gone.
-- **Fix.** The record now reads `test encode failed — excluded (no driver or no
-  supported hardware)`.
-
-### Fixed — pass-4 wrote two records for one verdict
-
-836 of the file's 3,586 lines — 23% — came from `pass4_api_live_room` alone:
-418 `status=4 — marked room <id> ended` paired with 418 `status=4 (not live)`.
-
-- **Marking the room and reporting "not live" are the same event.** They were
-  logged separately, so a finished broadcast polled every 55 s for 5.4 hours
-  doubled its own footprint for no added information.
-- **Fix.** One record per verdict: `pass-4 status=4 (not live) — marked room
-  <id> ended`, with the suffix present only when a stale room id was actually
-  published to the shared ended-room set. The `_mark_room_ended` call and the
-  BUG-TT-PASS4-ENDED behaviour are unchanged.
-
-### Fixed — `decrypt_to_tempfile` claimed a decryption that never ran
-
-355 records read `Decrypted tiktok_brave_cdp_cookies.enc → temp omnidl_dec_*.txt`
-— one per live-monitor poll, 10% of the file.
-
-- **The plaintext cache above that line does its job.** DPAPI runs once per
-  file and every later call reuses the cached bytes, writing only the temp copy.
-  The record still announced a decryption, so the log overstated both the
-  cryptographic work and the number of times the master key was touched — the
-  opposite of what an audit reading this line would conclude.
-- **Fix.** The record now distinguishes the two paths: `Decrypted <file> → temp
-  <tmp>` on a real decryption, `Reused cached plaintext of <file> → temp <tmp>`
-  on a cache hit. The temp file, its `0o600` mode and the caller's `unlink`
-  contract are unchanged.
-
-### Not changed
-
-- **`h264_nvenc` / `h264_amf` exclusion on this machine is correct.** The host
-  has an Intel GPU; `qsv` and `mf` validated, the two vendor encoders did not,
-  and `{mf, qsv, cpu}` is the right answer.
-- **`pass0_webcast_api` and `pass3_user_api` stay disabled and are still probed
-  every 300 s.** The probe is what would re-enable them if TikTok reopened the
-  endpoints, so the 65 probe records per strategy are the feature working. The
-  1800 s back-off inside pass-0 already caps the cost.
-- **`v.douyin.com` has no entry in `_COOKIE_PLATFORM_MAP`.** A URL was analysed
-  at 09:40:12, 34 s before shutdown, and produced no failure record. An unmapped
-  platform falls through to the global cookie, which is what a mapped platform
-  with no per-platform cookie would do anyway, so the entry would change nothing
-  until the Settings tab offers a Douyin cookie slot.
+- Hardware encoder detection no longer wastes time probing macOS-only VideoToolbox on Windows and Linux
+- Clearer error message when a hardware encoder fails detection
 
 ---
 
-## v20.3.2 — 2026-09-17
+## v20.3.2 - 2026-09-17
 
-Log audit of `omnidl_debug.log` (session 06:00:47-12:51:46, 23,940 lines) and the
-INFO sink `omnidl.log` beside it. No ERROR record or traceback in either file:
-all 10 enqueued tasks completed and 9 of 10 Taildrop sends succeeded. Three
-logging-layer defects came out of the 9 warnings that remained.
+### Fixed
 
-### Fixed — `omnidl.log` was 97% one repeated line
-
-`omnidl.log` held 21,141 records, 20,484 of which were
-`Using tiktok cookie: ...\tiktok_brave_cdp_cookies.enc`.
-
-- **`_resolve_cookie()` logged at INFO on every call.** It runs once per
-  live-monitor poll — seven watched accounts at a 60 s interval for the ~7 h
-  session — so a routine path resolution produced 2,931 INFO records in this
-  session alone, while the events the file exists for (10 task completions, 10
-  Taildrop sends, 9 warnings) produced a few dozen. The 5 MB x 3 rotation budget
-  was spent on the noise and evicted the diagnostics.
-- **Fix.** `Using %s cookie` and `Using cookie file` are now DEBUG. The
-  resolution is still fully traceable in `omnidl_debug.log`.
-
-### Fixed — yt-dlp warned `Overwriting params from "color" with "no_color"`
-
-Six occurrences, all on the TikTok `BUG-TT-10231-DL` retry chain.
-
-- **yt-dlp keeps the opts dict we hand it.** `YoutubeDL.__init__` does
-  `self.params = params` with no copy and then writes
-  `params["color"] = "no_color"` into it. The deprecated `"no_color": True`
-  OmniDL passed therefore left *both* keys set, so the next `YoutubeDL(...)`
-  built from those opts hit yt-dlp's conflict branch.
-- **The warning accumulated.** yt-dlp appends it to `params["_warnings"]`, a
-  list that `{**opts}` copies by reference and that is never cleared, so each
-  further retry appended one more copy and replayed all of them.
-- **Fix.** The four extract/download opt builders now pass the non-deprecated
-  `"color": "no_color"` and no `"no_color"` key. ANSI escapes stay out of the
-  log exactly as before; the mutation and the warning are gone.
-
-### Fixed — a Taildrop failure hid its own cause
-
-At 11:06:41 a send to `iphone-12-pro-max` failed and the log said only
-`tailscale exit 1: <ESC>[K# warning: iphone-12-pro-max is reportedly offline;
-trying anyway`.
-
-- **Raw CLI output went straight into the message.** `tailscale file cp` draws a
-  progress bar, so its stderr carries ANSI escapes and CR overwrites, and it
-  prints a `# warning: ... trying anyway` advisory *before* the real error. The
-  embedded newline split the log record in two: the real cause,
-  `502 Bad Gateway:`, landed on the following physical line with no timestamp,
-  no level and no logger name, and the same advisory-only string was what the
-  user saw in the failure event.
-- **Fix.** `_clean_cli_error()` strips ANSI escapes, folds CR/LF into a single
-  line, and drops `#`-prefixed advisories unless they are all tailscale printed.
-  The failure now reads `tailscale exit 1: 502 Bad Gateway:`.
-
-### Tests
-
-`tests/test_log_audit_170926.py` (new) guards the INFO demotion and the
-`color` option. `TestCliErrorSanitiser` in `tests/test_taildrop_service.py`
-replays the exact 11:06:41 stderr. 3,244 passed, 5 skipped.
+- Reduced repetitive log messages so real errors and warnings are easier to find in `omnidl.log`
+- Fixed a yt-dlp warning that repeated on every TikTok retry
+- Taildrop failure messages now show the real error instead of a placeholder warning
 
 ---
 
-## v20.3.1 — 2026-09-10
+## v20.3.1 - 2026-09-10
 
-### Fixed — a finished TikTok broadcast was reported LIVE on every poll
+### Fixed
 
-The 2026-09-10 10:55-11:26 window of `omnidl_debug.log` shows the same account
-answered two ways on every 5-minute cycle: `pass-4 status=4 (not live)`
-followed by `LIVE via pass-2 roomId=7679022730909469458`, seven cycles in a
-row.
-
-- **Pass-4's ended verdict never left pass-4.** `/api-live/user/room/` is the
-  canonical live-status endpoint, and it reported `status=4` (ended). The page
-  passes meanwhile kept reading the finished broadcast's `roomId` out of
-  `SIGI_STATE`, and `webcast/room/check_alive` kept answering `alive=True` for
-  it — the exact stale-room case `BUG-TT-ENDEDROOM` already guards through
-  `_ENDED_ROOM_IDS`. Pass-4 simply never wrote to that set. It now calls
-  `_mark_room_ended()` for the stale `roomId` when the endpoint reports
-  `status` 4 or 5, so pass-1 and pass-2 stop announcing the dead room within
-  one cycle. Pass-4 still never *reads* the set, so a restart that reuses the
-  same `roomId` is detected immediately.
-
-### Fixed — a network outage was recorded as a healthy strategy probe
-
-At 11:11:01 every TikTok request failed with `curl: (7) Failed to connect to
-www.tiktok.com:443`. `HealthDaemon` logged `probe pass4_api_live_room ok` and
-then `strategy pass3_user_api re-enabled` — a connection failure reset the
-failure counter of a pass that had been disabled for being permanently blocked
-by bot-detection.
-
-- **Pass-2, pass-3 and pass-4 returned a bare `None` on a network error**, and
-  `None` means "this account is not live". They now set the new
-  `LiveCheckContext.network_error` flag, and `HealthDaemon._probe_all()`
-  records neither a success nor a failure for a probe that never reached
-  TikTok. Pass-1 was already correct: it raises `RuntimeError`.
-- **A pass-0 cooldown skip counted as a healthy probe.** While the shared
-  10013 backoff is active (`BUG-TT-PASS0-GLOBAL`, up to 30 minutes), `check()`
-  returns before any request is made. That early return now sets
-  `ctx.unavailable`, so a known-blocked endpoint is no longer credited with a
-  passing probe every 5 minutes.
-
-### Fixed — a Facebook photo album was sent as "Unknown - ... .zip"
-
-The photo post at 10:54 landed in `facebook_20260910_122123586303380258` and
-Taildrop shipped it as `Unknown - 2026-09-10 - Facebook Photo.zip`.
-
-- **The synthetic photo `MediaInfo` had `uploader=""`.** Every later name is
-  derived from it: `build_filename_from_task()` falls back to `"Unknown"` and
-  the gallery-dl output folder falls back to `facebook_<date>_<id>`. gallery-dl
-  runs the download anyway and its `--dump-json` already carries the uploader,
-  title and thumbnail, so `yt_dlp_engine.extract_info()` now asks
-  `GalleryDlEngine.extract_info()` on the photo path instead of inventing a
-  blank author. If that lookup fails the old synthetic `MediaInfo` is still
-  returned, so the photo path cannot regress into a hard failure.
+- TikTok: a finished broadcast could still be reported as live on later checks
+- TikTok: a network outage was no longer mistaken for a working, healthy detection check
+- Facebook photo albums sent via Taildrop no longer named "Unknown"
 
 ---
 
-## v20.3.0 — 2026-09-09
-
-### Fixed — Facebook posts containing images could not be downloaded at all
-
-Analysing any Facebook photo post failed, on the desktop app and through the
-Remote API alike. The debug log for the 2026-09-09 17:18-18:05 session shows
-eight attempts across five posts, each stopping after the cookie was decrypted
-and never reaching a queued task (`omnidl_debug.log` 17:24:29 - 18:01:04).
-
-- **A Facebook photo post is not recognised as a photo post.** `FacebookIE`
-  scans the page for `video_data`, finds none on a photo post, and ends at
-  `raise ExtractorError('Cannot parse data')`. Every photo fallback in the app
-  matched only Instagram's wording — `"There is no video in this post"` and
-  `"No video formats found"` — so this error fell through to the generic retry
-  path: three yt-dlp attempts, then a hard failure. The gallery-dl route that
-  handles these posts was never reached. `extract_info()` now treats
-  `Cannot parse data` on a `facebook.com` URL as the photo signal and returns
-  the same synthetic `MediaInfo(source_engine="gallery_dl")` it already returned
-  for Instagram. `DownloadManager._run_task()` and
-  `_should_fallback_to_gallery_dl()` match it too, so a Remote API client that
-  does not forward `source_engine` still lands on gallery-dl.
-- **gallery-dl cannot open a `/share/p/` link.** It has no extractor for that
-  form and exits with `Unsupported URL`. The resolution to the canonical
-  `story.php` URL lived inside `yt_dlp_engine.extract_info()` only, so the
-  Remote API — which submits the URL the user pasted, not the resolved one —
-  handed gallery-dl a link it always rejected. `normalize_gallery_dl_url()`
-  now resolves `/share/{p,v,r}/` before its existing `story.php` rewrite.
-- **A post that mixes images with a video only ever saved the images.**
-  gallery-dl's `FacebookSetExtractor` yields the photo set and skips video
-  items. Facebook feed posts now take the same two-engine path Instagram
-  carousels already used: gallery-dl saves the images, then a yt-dlp pass with
-  `bestvideo+bestaudio/best` fetches the video items into the same folder. The
-  same pass covers a photo-with-music post, which Facebook serves as a video.
-  When gallery-dl finds no photo set at all, its error is held back until that
-  pass has run and only raised if both engines come up empty.
+## v20.3.0 - 2026-09-09
 
 ### Added
 
-- `is_facebook_post_url()` in `gallery_dl_engine` — matches `story.php`,
-  `permalink.php`, `/<user>/posts/<id>` and `/share/p/`, the URL forms that can
-  hold photos, photos with music, or photos plus a video.
-- `tests/test_facebook_post_photo_fix.py` — 19 regression tests covering URL
-  classification, share-link resolution, the `Cannot parse data` route on all
-  three fallbacks, and the two-engine download.
+- Recognize more Facebook photo/album/post URL forms
 
-### Notes
+### Fixed
 
-- Full suite after the change: 3235 passed, 5 skipped (`python -m pytest tests/ -q`).
-- Version bumped 20.2.1 → 20.3.0.
-- A photo-only Facebook post now costs one extra yt-dlp extraction (it returns
-  no items and is ignored), the same trade-off documented for Instagram
-  carousels in v20.1.0.
+- Facebook posts containing images can now be downloaded (previously failed outright)
+- Facebook posts opened via share links (`/share/p/...`) now resolve and download correctly
+- Facebook posts mixing photos and a video now save both instead of only the photos
 
 ---
 
-## v20.2.1 — 2026-09-09
-
-### Fixed — debug-log audit (2026-09-09 15:02-15:31 session)
-
-Reading one 30-minute window of `omnidl_debug.log` end to end turned up four
-defects. Two were silent: they never produced an error line, so no bug report
-would ever have named them.
-
-- **Every TikTok download ran the "audio-only" salvage path (data-loss risk).**
-  `_capturing_pp_hook` recorded the video codec from the *first* postprocessor
-  event that reported `status="finished"`. That first event comes from
-  `_FacebookMetaFixupPP`, which runs at `pre_process` with an info dict that has
-  no `vcodec` key at all, so the recorded value was `""` — and the BUG-TT-EFF
-  audit treats `""` exactly like `"none"`. Consequence: every finished TikTok VOD
-  was re-opened with FFprobe, and when FFprobe was missing or failed
-  (`_probe_result is None` leaves `_probe_confirmed_no_video = True`) the
-  completed file was **deleted** and the BUG-TT-SHOP-3 client ladder ran for
-  nothing. Only the BUG-TT-PROD FFprobe rescue kept this invisible — the log
-  shows it firing on three ordinary videos (15:27:22, 15:28:23, 15:28:39), each
-  labelled "product link video" though none was a product link. Fixed: an event
-  that carries no `vcodec` is no longer treated as a codec reading.
-  (`infrastructure/downloader/yt_dlp_engine.py`)
-
-- **`_FacebookMetaFixupPP` was registered on every platform.** The processor
-  already returns early unless `extractor_key == "Facebook"`, so it was harmless
-  in itself — but registering it is what injected the empty `pre_process` event
-  behind the defect above. It is now added only for Facebook URLs.
-  (`infrastructure/downloader/yt_dlp_engine.py`)
-
-- **Facebook photo posts from `/share/p/` links failed permanently.** A share
-  link resolves to `story.php?story_fbid=X&id=Y`. gallery-dl's `USER_PATTERN`
-  excludes `permalink.php` and `photo.php` but not `story.php`, so it captured
-  `story.php` as a *profile name*, dispatched to `FacebookUserExtractor`, and
-  crashed with `An unexpected error occurred: KeyError - 'set_id'` (task
-  7f2b7e61, both attempts). The URL is now rewritten to the
-  `/<owner_id>/posts/<story_fbid>` form, which routes to `FacebookSetExtractor`
-  — that one parses the post page and falls back to the single-photo path when
-  the post holds no photo set. The rewrite applies only when both ids are
-  numeric; anything else is passed through untouched.
-  (`infrastructure/downloader/gallery_dl_engine.py`)
-
-- **gallery-dl extractor crashes were retried.** `KeyError - 'set_id'` is
-  deterministic, so the second attempt burned another 7 s to reproduce it
-  exactly. `"an unexpected error occurred:"` joins `"extractor error"` in
-  `_HARD_ERROR_KEYWORDS`; transient network failures stay retryable.
-  (`infrastructure/downloader/download_manager.py`)
+## v20.2.1 - 2026-09-09
 
 ### Changed
 
-- **A recovered retry no longer logs at ERROR.** yt-dlp's own error records are
-  demoted to DEBUG whenever DownloadManager still holds a retry, via a new
-  `DownloadTask.has_retry_remaining` flag. A Facebook "Cannot parse data" at
-  15:23:56 was logged at ERROR even though attempt 2 completed the download at
-  15:24:40. The BUG-TT-RETRYNOISE demotion previously covered TikTok VODs only.
-  A download that really fails is still logged at ERROR by DownloadManager
-  ("Task failed after N attempt(s)"). (`domain/models/download_task.py`,
-  `infrastructure/downloader/download_manager.py`,
-  `infrastructure/downloader/yt_dlp_engine.py`)
+- A download that fails once but succeeds on retry is no longer logged as an error
 
-### Tests
+### Fixed
 
-`tests/test_log_audit_20260909.py` — 14 tests covering the URL rewrite (and its
-pass-through cases), gallery-dl extractor dispatch for both URL forms, the
-hard-error classification, and the pp_hook codec capture in all three states
-(no event, empty event, real `vcodec="none"`). Full suite: 3216 passed,
-5 skipped. Version 20.2.0 → 20.2.1.
+- TikTok downloads were sometimes re-checked and deleted right after finishing successfully (data-loss bug)
+- Facebook photo posts opened via share links no longer fail permanently
+- Failed gallery-dl downloads are no longer retried when the failure is not recoverable
 
 ---
 
-## v20.2.0 — 2026-09-09
+## v20.2.0 - 2026-09-09
 
-### Fixed — Facebook audit (desktop + Remote API)
+### Fixed
 
-A full audit of the Facebook surface (Story engine, photo/album routing, Live
-monitoring, and the Remote API endpoints that front them) turned up six defects.
-
-- **Facebook Story: silent files reported as having sound (Windows).**
-  `facebook_story_engine._has_audio_stream()` built the ffprobe path as
-  `Path(ffmpeg_bin).parent / "ffprobe"`, dropping the `.exe` suffix on Windows —
-  the only platform besides macOS where the Story engine runs. The probe raised
-  `FileNotFoundError`, the `except` branch returned `True` ("assume audio
-  present"), and `_ffmpeg_download_with_audio()` accepted a video-only DASH
-  result while logging "Audio captured via ffmpeg DASH demuxer". The helper now
-  takes `FFmpegLocation.ffprobe_bin` directly and short-circuits to `True` only
-  for the explicit `"<not found>"` sentinel.
-- **Facebook Story ignored the per-task download folder.** The Story route in
-  `DownloadManager._run_task()` called `download_story(url, config, …)`, which
-  always wrote to `config.download_dir`. Every other engine honours
-  `DownloadTask.output_dir`, so a Story queued from the Download tab with a
-  custom folder — or any task carrying an explicit `output_dir` — landed in the
-  default directory instead. `download_story()` gained an `output_dir` parameter
-  and the router now forwards `task.output_dir`.
-- **Facebook Live monitoring leaked a libcurl handle per check.**
-  `utils/facebook_live_checker.check_facebook_live()` never closed its curl_cffi
-  session. Each session pins a libcurl easy handle whose native memory CPython's
-  GC thresholds cannot see, and `LiveMonitorService` calls this once per interval
-  per watched page, indefinitely. The two page fetches are now wrapped in
-  `try/finally: session.close()`, matching
-  `tiktok_live_checker._fetch_tiktok_profile_page()`.
-- **Story download leaked a socket on the stream deadline.**
-  `_download_cdn_url()` returned from inside the `iter_content()` loop when the
-  300 s deadline fired, leaving the streaming `requests` response open until the
-  GC ran. It is now held in a `contextlib.closing()` block.
-- **Audio track wrongly rejected as "video-only".** `_derive_audio_url()` was fed
-  the raw captured CDN URL, which for an intercepted DASH *segment* still carries
-  `bytestart`/`byteend`. `_probe_audio_url()` then added its own
-  `Range: bytes=0-8191` header on top of that window, so the CDN could answer
-  with a slice the probe read as "no audio track" and the story was muxed
-  silently. The candidate is now derived from `_full_video_url()` output.
-- **`GET /api/ping` reported the wrong version.** The response hard-coded
-  `"version": "1.0.0"` while the app was at 20.1.0. It now reads
-  `utils/__version__.py`. This is the same response that advertises the
-  `facebook_story` capability, so clients gating on it were reading a stale
-  payload.
-
-### Housekeeping
-
-- `_clear_crashed_flag()` no longer leaves an `omnidl_prefs_*.tmp` file behind in
-  the user's browser profile when the atomic Preferences write fails.
-- New suite: `tests/test_facebook_audit_090926.py` (19 tests).
-- Version bumped 20.1.0 → 20.2.0.
+- Facebook Story: a silent video was sometimes wrongly reported as having audio (Windows)
+- Facebook Story now saves to the task's chosen folder instead of always the default download folder
+- Facebook Live monitoring no longer leaks memory when watching pages for a long time
+- Facebook Story download no longer leaves a network connection open after a timeout
+- Facebook Story audio track no longer wrongly dropped as missing
+- App version reported by `GET /api/ping` corrected
 
 ---
 
-## v20.1.0 — 2026-09-09
-
-### Added — Facebook photos and albums
-
-- **Facebook photo posts and albums now download** on the desktop app and the
-  Remote API. yt-dlp's Facebook extractor matches none of the photo URL forms
-  (`/photo/?fbid=`, `/photo.php?fbid=`, `/media/set/?set=`, `/<user>/photos/…`),
-  so it raised "Unsupported URL" — a hard error that the existing gallery-dl
-  photo fallback never saw. Those URLs are now recognised by
-  `gallery_dl_engine.is_facebook_photo_url()` and routed straight to gallery-dl:
-  - `DownloadService.analyse_url()` short-circuits to `GalleryDlEngine.extract_info()`,
-    so `/api/analyse` and the desktop Home tab both return
-    `source_engine="gallery_dl"` instead of failing.
-  - `DownloadManager._run_task()` forces the gallery engine for these URLs even
-    when the client sent the default `source_engine="yt_dlp"` (the iOS PWA and
-    any third-party Remote API client do).
-  - `_should_fallback_to_gallery_dl()` also accepts "Unsupported URL" for a
-    Facebook photo URL, so any path that still reaches yt-dlp first recovers.
-- **Albums get their own folder.** `GalleryDlEngine.download()` isolated output
-  only for Instagram posts, so a 60-photo Facebook album emptied into the
-  download root. Facebook photo/album downloads now land in
-  `<uploader>_<YYYYMMDD>_<fbid|set-id>/`, which also lets Taildrop send the set
-  as a unit.
-- `GalleryDlEngine.extract_info()` no longer titles every untitled single-item
-  gallery "Instagram Photo" — it uses the detected platform.
-- `--dump-json` timeout raised from 30 s to 90 s; large albums emit one JSON
-  line per photo and were being cut off.
-
-### Added — Facebook live monitoring
-
-- **The Live Monitor watches Facebook pages and profiles** on the desktop tab
-  and through the Remote API / PWA (`POST /api/monitor` — no new endpoint
-  needed). Paste `facebook.com/<page>`, `facebook.com/<page>/live`,
-  `facebook.com/profile.php?id=<id>` or a `/people/<name>/<id>/` link; when the
-  page goes live OmniDL records it with the existing Facebook live pipeline.
-- New `utils/facebook_live_checker.py` — `is_facebook_profile_url()`,
-  `extract_facebook_username()` and `check_facebook_live()`. The checker probes
-  the page's `/live/` tab first (Facebook redirects it to the running broadcast)
-  and falls back to the profile HTML, matching `"is_live_streaming":true`,
-  `"broadcast_status":"LIVE"` and friends. Requests use the same curl_cffi
-  Chrome TLS impersonation as the TikTok checker, because plain-requests traffic
-  is served a logged-out shell.
-- The live URL handed to the recorder is always `/<page>/videos/<id>` — the form
-  yt-dlp's `FacebookIE` can resolve. A live marker with no resolvable video id
-  reports "not live" instead of queueing a task that could only fail.
-- A Facebook cookie is required and checked before the watch is accepted
-  (`c_user` + `xs`), the same way the Instagram profile watcher checks its
-  cookie: logged-out page HTML carries no live markers at all, so without one
-  every check would silently report "not live".
-- Rate-limit errors carry `429` in the message so `LiveMonitorService`'s
-  exponential backoff triggers in every UI language, not only English.
-- New keys in all three languages (`err.fb_*`, `err.profile_watch_needs_fb_cookie`,
-  `err.no_username_from_facebook_url`).
-
----
-
-## v20.0.0 — 2026-06-22 to 2026-09-04
-
-### Added — 2026-09-04 batch conversion
-
-- **Convert several files in one go, with a configurable parallel limit.**
-  The desktop Convert tab now has a checkbox on every file card plus a
-  "Select all" toggle, so Convert acts on the files you picked instead of
-  everything in the list (nothing ticked still means "all pending", so the
-  old behaviour is what you get if you never touch a checkbox). A "Parallel"
-  spinner (1-8) sets how many FFmpeg processes run at once and is persisted as
-  `convert_max_concurrent`.
-- **Remote API: `POST /api/files/convert/batch`** queues up to 100 files with
-  one set of encode settings and reports partial success — a missing path
-  lands in `errors` while the rest still start. `GET`/`POST
-  /api/convert/concurrency` read and set the same parallel limit, shared with
-  the desktop tab. The web UI grew a "Select many" mode in the Files tab.
-- The post-download auto-convert queue in `download_service` read a hard-coded 2
-  as well; all three queues now share `convert_max_concurrent`.
-- `ConvertQueue.set_max_concurrent()` swaps the semaphore; each worker captures
-  the semaphore it will wait on at submit time, so a resize mid-batch cannot
-  leave a slot permanently held.
-
-### Fixed — 2026-09-04 Facebook Story reliability and safety
-
-- **Story capture refused to work while the browser was open, without saying so.**
-  Chromium is single-instance per profile: launching a second copy forwarded the
-  command line to the running browser and dropped `--remote-debugging-port`, so
-  CDP never came up, the connect loop burned 30 s, and the failure surfaced as a
-  vague connection error. The engine (and the Special tab's new pre-flight check)
-  now detects a running Brave/Chrome up-front and says which browser to close.
-  `_is_browser_running()` gained a macOS branch (`pgrep -x`).
-- **Launch hardening:** the debug endpoint is pinned with an explicit
-  `--remote-debugging-address=127.0.0.1`, and `--user-data-dir` is now stated
-  rather than inherited — the same directory, but the single-instance rule is
-  visible at the call site.
-- **The desktop timeout (45 s) was below the 40 s audio wait**, so stories often
-  downloaded silent from the Special tab while the same URL worked from the
-  queue. Both paths use the 90 s default now.
-- **`/api/analyse` accepted Story permalinks that `/api/download` would reject**
-  on a Linux server. One `cdp_only_reason()` helper now gates both, and
-  `GET /api/ping` reports `facebook_story` so a client can hide the option.
-- `_normalize_url` / `_full_video_url` no longer drop repeated query parameters.
-
-### Added — 2026-09-03 multi-language engine errors
-
-- **Engine and download errors are translated.** Download engines used to raise
-  hard-coded Vietnamese text, and `download_manager` decided "retry or give up" by
-  substring-matching that text — so an English or Chinese user read Vietnamese error
-  messages, and translating them would have silently broken the retry and gallery-dl
-  fallback paths. Every engine error now carries a stable `err.*` key
-  (`_error_key`/`_keyed_exc` in `yt_dlp_engine.py`); retry and fallback classification
-  reads the key, and the UI renders the message in the active language
-  (`en` / `vi` / `zh`). `tests/test_i18n_engine_messages.py` fails the build if a
-  user-facing Vietnamese literal creeps back into the engine layer.
-
-### Added — 2026-08 TikTok Accounts Pool usability
-
-- **One account per browser profile.** `list_browser_profiles()` enumerates the Chrome /
-  Edge / Brave profiles on the machine, so a browser can now yield more than one TikTok
-  account. The add-account form picks the profile, and the account name is suggested from
-  browser + profile.
-- **Cookies are health-checked before they are accepted.** `inspect_tiktok_cookie()`
-  returns `ok` / `not_logged_in` / `expired` / `unreadable` / `missing` plus a
-  session fingerprint. An anonymous jar (only `ttwid`/`tt_csrf_token`) is no longer
-  accepted as a login, an expired jar is rejected with a reason, and a jar whose
-  fingerprint matches an existing account is reported as a duplicate instead of being
-  added twice.
-- **Accounts can be renamed and refreshed in place,** and deleting one deletes its
-  cookie file instead of leaving it in `cookies/`.
-
-### Fixed — 2026-08-31 logging feature audit
-
-- **Every log line was attributed to the module `logging`.** `logging.currentframe()` is
-  `sys._getframe(1)` on CPython 3.11+, i.e. `_InterceptHandler.emit`'s own frame, so the
-  frame walk never started and all 119 named lines in `report.log` read
-  `[INFO    ] logging - ...`. The handler now walks up from `sys._getframe(0)` until it
-  leaves `logging/__init__.py`.
-- **`setup_logging()` crashed a windowed build.** `logger.add(sys.stderr)` ran
-  unconditionally, but `sys.stderr` is `None` in a PyInstaller `--windowed` build (both
-  the Windows and macOS releases) and loguru raises
-  `TypeError: Cannot log to objects of type 'NoneType'` — startup aborted before any log
-  file existed. The stderr sink is now conditional.
-- **The Verbose-logging toggle raised out of the Settings slot.** `logger.remove()` in
-  `setup_logging()` drops every sink including an earlier debug sink, but
-  `_debug_sink_id` kept the dead id: turning verbose logging off raised `ValueError`, and
-  turning it on again was a silent no-op that left `omnidl_debug.log` empty. The id is
-  reset on setup and its removal is guarded.
-- Turning verbose logging off restored the root level to a hardcoded `INFO` instead of
-  the level `setup_logging()` was configured with; `log_dir.mkdir()` ran outside the
-  `try/except OSError` that guards the file sink, so an unwritable log directory crashed
-  startup instead of degrading to stderr-only logging.
-
-### Fixed — 2026-08-30 debug-log audit
-
-- **An ended TikTok room was re-detected as live forever.** `webcast/room/info` answered
-  `status=4` (ended) 641 times for one room, but the live page kept serving that same
-  stale `roomId` in `SIGI_STATE` and `check_alive` kept answering `alive=True`, so pass-1
-  and pass-2 logged "LIVE" for 9.5 hours after the stream finished. Ended rooms are now
-  remembered in a TTL-bounded set (`_mark_room_ended`, 30 min) that pass-1/pass-2 consult
-  before paying for a `check_alive` call; the mark is cleared as soon as `room/info`
-  reports `status=2` again, and pass-4 never consults it, so a restart that reuses the
-  roomId is still detected immediately.
-- **Pass-0's 10013 cooldown was keyed per username.** TikTok's `10013` (signature
-  required) is a property of the endpoint, not of an account, but the cooldown expired
-  after a flat 120s while the monitor polls every ~70s — 1,395 calls with zero successes
-  over 33 hours. It is now one shared deadline with exponential backoff (2 min → 30 min),
-  reset the moment the endpoint answers anything but 10013.
-- **The health daemon counted a blocked endpoint as a working strategy.** A strategy that
-  returned `None` because it could not reach its API at all was recorded as a probe
-  success, so it was never disabled. `LiveCheckContext.unavailable` now separates "not
-  live" from "could not function", and each probe gets its own context.
-- **`DELETE /api/convert/{job_id}/file` answered 500 on a locked file.** The queue routes
-  already mapped `OSError` to `409`; the convert route was missed.
-- **yt-dlp's own ERROR lines were reported for recoverable retries.** The TikTok fallback
-  ladders build a `YoutubeDL` per attempt and inherit the diagnostic logger, so every
-  attempt that was *expected* to fail wrote an ERROR record — 39 ERROR lines in a window
-  where 41/41 downloads completed. Errors are demoted to DEBUG for the duration of a
-  ladder (a genuinely failed download is still logged at ERROR by `DownloadManager`), and
-  raw ANSI colour escapes are stripped from yt-dlp messages before they reach the log.
-- **Windows exit codes were printed unsigned** — "ffmpeg exited with error 4294967256"
-  instead of `-40`.
-
-### Fixed — 2026-08-30 Facebook Live follow-ups
-
-- **DASH-only broadcasts (BUG-FB-LIVE-DASH/FMT/HDR).** The live probe only inspected HLS
-  formats, so `story.php` and `/<page>/videos/<id>` broadcasts (served as DASH) fell back
-  to the VOD path and were captured as truncated clips reported as completed.
-  `_facebook_live_manifest_url` now also fetches the DASH manifest and treats
-  `MPD@type="dynamic"` as the counterpart of a missing `#EXT-X-ENDLIST`; the recorder
-  accepts an `.mpd` URL and drops `-http_persistent` (HLS-demuxer-only, and it aborts
-  FFmpeg on a DASH input). The yt-dlp fallback selector gained a `/bv*+ba` tail, because
-  a bare `best` means "best *muxed*" and a DASH broadcast has no muxed format — it
-  aborted the fallback with "Requested format is not available". The `-headers` builder
-  no longer filters cookies to `tiktok` domains, which had dropped the Facebook Referer.
-
-### Fixed — 2026-08 cookie / account-pool audit
-
-- An all-paused account pool hard-failed every TikTok download instead of falling back to
-  the global cookie (`has_usable_account()`).
-- Extracted cookie jars leaked on rejection or cancel; the 30-day cleanup deleted cookie
-  files the config still referenced; the health check missed the `.txt` → `.enc` rename;
-  a pool rebuild reset live slot counters (`adopt_state()`); the plaintext cookie cache
-  was unbounded and never invalidated (`_COOKIE_CACHE_MAX`, `invalidate_cookie_cache()`).
-
-### Fixed — 2026-08 Taildrop filenames (BUG-TD-NAME)
-
-- Taildrop used to force an ASCII name on **every** send, because older iOS/macOS
-  receivers answer `400 Bad Request: invalid filename` for non-ASCII names. That
-  flattening deleted Vietnamese diacritics, CJK and emoji outright, so the phone received
-  "YUSUKI cu y tht ng yu" or a name starting with a bare " - ". The full Unicode name is
-  now attempted first and `to_ascii_filename()` is used only as a retry, so a modern
-  receiver keeps the complete name and an old one still gets a readable fallback.
-  Transliteration keeps what has an ASCII equivalent (`đ` → `d`, `ø` → `o`, `ß` → `ss`),
-  drops segments it emptied out, and never returns an empty stem.
-- **Invisible Unicode TAG characters** (U+E0000-U+E007F — the payload of emoji flag
-  sequences) are stripped from filenames: they are legal on disk but Taildrop peers
-  reject them, and the ASCII retry then dropped the whole name segment around them.
-- `build_filename_from_task()` no longer reuses a directory output (gallery-dl albums are
-  named after the account only, with no date/title/id) and no longer discards every title
-  when `uploader` is empty.
-
-### Testing — 2026-08-30 to 2026-09-03
-
-- New regression suites: `test_log_audit_300826.py`, `test_log_feature_audit_310826.py`,
-  `test_cookie_account_audit_2026.py`, `test_tiktok_account_pool_ux.py`,
-  `test_i18n_engine_messages.py`, `test_api_file_lock_409.py`, `test_api_doc_convert.py`,
-  `test_doc_convert_service.py`, `test_soffice_locator.py`.
-
-### Added — 2026-08-28 document conversion
-
-- **Documents tab + `/api/docs/*` — Markdown ↔ PDF, HTML ↔ PDF, Office ↔ PDF.**
-  New `app/services/doc_convert_service.py` with seven routes: `md→pdf`, `md→html`,
-  `html→pdf`, `pdf→md`, `pdf→html`, `pdf→docx`, `office→pdf`. Markdown is rendered by
-  `markdown`, HTML→PDF by WeasyPrint, PDF text extraction by `pypdf`, and the Office
-  routes shell out to a headless LibreOffice located by the new
-  `utils/soffice_locator.py`. LibreOffice is optional: `capabilities()` reports which
-  back-ends the host has, the desktop tab greys out what is unavailable, and the API
-  answers 503 with a plain-language reason instead of an opaque traceback.
-  Desktop UI is `ui/tabs/doc_convert_tab.py` (nav key `docs`, batch queue, per-file
-  progress, cancel); the PWA gains a matching "Tài liệu" tab; the Remote API gains
-  `GET /api/docs/capabilities` and `POST /api/docs/convert`.
-- Output files never overwrite: a name collision becomes `name (1).pdf`.
-
-### Security — 2026-08-28 document conversion
-
-- **HTML→PDF resource sandbox.** An HTML or Markdown document can reference
-  `file:///etc/passwd` or `http://internal-host/` through `<img>`, `<link>`, `@import`
-  or a CSS `url()`, and WeasyPrint would fetch both — local file disclosure plus SSRF
-  from whatever machine runs OmniDL, which on the Remote API path is reachable by any
-  client. Every render now uses a `URLFetcher` subclass that permits only `data:` URIs
-  and `file:` URLs inside the source document's own folder; anything else is refused,
-  logged, and skipped (the page still renders, minus that resource). Confinement uses
-  exact path-component matching, so `/docs` does not accept `/docs_evil`.
-- **`GET /api/files/serve` no longer renders active content inline.** `.html`, `.htm`,
-  `.xhtml`, `.svg`, `.xml`, `.xsl`, `.xslt`, `.mhtml` and `.mht` are now sent as
-  `application/octet-stream` with `Content-Disposition: attachment`. Served inline they
-  execute in the API's own origin, where the PWA keeps the bearer token — a stored XSS
-  for any such file in `download_dir`, now including the `.html` the document converter
-  can write from an arbitrary Markdown source. Video/audio/image previews are unchanged.
-- **`POST /api/docs/convert` input limits.** `source_path` and `out_dir` are both
-  confined to `download_dir`; a source over 200 MiB is rejected with 413; concurrent
-  conversions are bounded by a semaphore of 2, matching the archive endpoints, so a
-  burst of calls cannot fork an unbounded number of `soffice` processes.
-
-
-### Fixed — 2026-08-26 log review (follow-up)
-
-- **Facebook Live on DASH-only pages (BUG-FB-LIVE-DASH)** — the live probe only inspected
-  HLS formats, but `story.php` and `/<page>/videos/<id>` broadcasts are served as DASH
-  (`dash-lp-pst-v`, bare representation ids). Every such stream fell through to the VOD
-  path again and was captured as a truncated clip reported as a completed download.
-  `_facebook_live_hls_url` is now `_facebook_live_manifest_url` and also fetches the DASH
-  manifest, treating `MPD@type="dynamic"` as the DASH counterpart of a missing
-  `#EXT-X-ENDLIST`. The direct-FFmpeg recorder accepts the `.mpd` URL, dropping
-  `-http_persistent` (an HLS-demuxer-only option that aborts FFmpeg on a DASH input) and
-  opening the dash demuxer's extension allow-list instead.
-- **Locked output file returned HTTP 500** — `DELETE /api/queue/{id}/file` and
-  `POST /api/queue/{id}/rename` let Windows' `PermissionError` (file still open in FFmpeg,
-  a Taildrop transfer, or a player) escape as an unhandled ASGI exception with a full
-  traceback in the debug log. Both now answer `409` with the OS message.
-
-### Fixed — 2026-08-26 audit pass (v19.6.0)
-
-- **Facebook Live recording (BUG-FB-LIVE)** — yt-dlp's `FacebookIE` never reports an
-  in-progress broadcast as live, so OmniDL downloaded a short VOD clip instead of the
-  stream. Added an HLS `#EXT-X-ENDLIST` probe (`_facebook_live_hls_url`) and a direct-FFmpeg
-  recording path shared with TikTok Live. Side fixes surfaced by this: a plaintext session
-  cookie left on disk after a hard analyse error (BUG-FB-COOKIE-LEAK), and failed Facebook
-  downloads leaving no trace in the debug log (BUG-FB-DIAG).
-- **Pause/resume state machine** — `DownloadTask.pause()`/`resume()` now refuse invalid
-  state transitions at the domain layer instead of silently no-opping; a paused
-  `PROCESSING`/terminal task could previously become un-clearable and later resumable from
-  the dead. The REST API now returns `409` instead of a silent success.
-- **Task/record lifecycle** — a new `EventBus.DOWNLOAD_REMOVED` event and
-  `DownloadService.clear_file_record()` keep Queue widgets, History rows, and the web UI in
-  sync when tasks are purged or a file is deleted/renamed elsewhere.
-- **Files tab (Remote API)** — `GET /api/files/browse` no longer 404s when `download_dir`
-  doesn't exist yet; broken symlinks are listed via an `lstat()` fallback instead of being
-  dropped; `DELETE /api/files/delete` deletes a symlink as itself instead of following it;
-  `POST /api/files/rename` no longer drops the file extension when the new name omits one.
-- **Live Monitor** — `cancel()`/`check_now()` no longer zero `last_check`, which used to
-  restart a just-stopped recording within seconds or kill an in-flight check; the
-  `MAX_MONITOR_URLS` cap now counts only active watches, not finished history rows (was
-  silently blocking new watches after ~20 recordings); progress SSE no longer fires on
-  every poll tick while merely recording.
-- **Queue / Batch tab** — desktop select-mode checkboxes now reach tasks that finish
-  mid-poll and untick on exit; the Pause button is hidden for `gallery_dl` tasks (no pause
-  hook); the batch status line survives a language switch; "Select all" skips `ERROR` rows;
-  a batch where every submission fails now reports it instead of looking like a no-op.
-- **History tab** — download history is now sorted newest-first on load (the on-disk JSONL
-  file is append-only/oldest-last); the previous unsorted read showed the oldest downloads
-  first and the over-limit trim deleted the newest records instead of the oldest.
-- **Web UI / i18n** — editing the URL box after "Analyse" no longer silently redownloads
-  the previous video (most visible on Kuaishou); remaining hard-coded English strings in
-  the analyse/preview flow and queue status badges are now translated; error toasts get a
-  readable multi-line style; the monitor's "paused" tag no longer reuses the Pause button's
-  own label; the monitor interval picker now offers 60/180/300/600s, matching the
-  server-side range.
-- **Settings tab** — the Remote API server now always gets the real `DownloadService`
-  (never the desktop facade, which lacked `clear_file_record` and broke Files-tab delete
-  after any Tailscale/HTTPS toggle); a TikTok cookie the config layer silently rejected no
-  longer shows a false success toast.
-
-### Testing — 2026-08-26
-
-- Added 7 new regression suites for the audit above: `test_bug_fb_live.py`,
-  `test_api_files_tab_audit.py`, `test_history_tab_audit.py`, `test_live_monitor_audit2.py`,
-  `test_queue_batch_audit.py`, `test_interface_audit_2026.py`,
-  `test_settings_tab_audit_2026.py`. Full suite: 2782 passed, 5 skipped.
+## v20.1.0 - 2026-09-09
 
 ### Added
 
-- **Archive feature** (`app/services/archive_service.py`, `ui/tabs/archive_tab.py`) — compress files to password-protected `.zip`/`.7z`, extract and preview existing archives. Guards against zip-slip/7z-slip and decompression bombs; stages extraction before committing to disk. Remote API endpoints at `POST /api/archive/{compress,extract,contents}`.
-- **`waaw_engine.py`** — new downloader for waaw.ac, reusing the CDP-interception pattern from `facebook_story_engine.py`.
-- **`instagram_cdn_engine.py` / `utils/instagram_http.py`** — download a pasted, pre-signed Instagram/Facebook CDN URL anonymously, sharing one client identity with the Instagram live checker/engine.
-- **`utils/memtrace.py`** — opt-in memory sampler (`OMNIDL_MEMTRACE=1`), no-op by default.
-- **`app/services/live_monitor_service.py`** — headless port of the Live Monitor tab for the Remote API.
-- **TikTok live detection, pass 4** (`utils/tiktok_detection/strategies/pass4_api_live_room.py`) — a `/api-live/user/room/` strategy added after passes 0-3 were all defeated by the same anti-bot change at once.
-
-### Fixed
-
-- **Archive tab** — password-toggle buttons were invisible (missing fixed size/stylesheet); "use original name" checkbox now actually disables the archive-name field instead of being ignored.
-- **waaw.ac** — CDN-URL capture hardened against obfuscated links and a race where concurrent CDP mutation corrupted request-ID tracking.
-- **Linux build** — FFmpeg download switched off johnvansickle.com, which stopped serving a valid tarball.
-- Facebook Story's CMD-window flash is fully resolved — all 5 subprocess calls now pass `creationflags=_WIN_NO_WINDOW`.
-- Live recording's final output filename corrected across all platforms.
-
-### Testing
-
-- Raised test coverage back above the CI's 80% gate; suppressed a bandit B108 false positive on a `/tmp` test fixture.
+- Download Facebook photo posts and albums (desktop app and Remote API)
+- Facebook albums now save into their own folder
+- Live Monitor can watch Facebook pages and profiles and record when they go live
 
 ---
 
-## v19.0.0 — 2026-05-31
-
-### Changed
-
-- **PySide6 migration** — GUI rewritten from CustomTkinter to PySide6 (Qt6), with a linear design language and QSS dark/light theming.
-- **TikTok detection refactor** (`utils/tiktok_detection/`) — 4-pass strategy dispatcher runs concurrently; first successful result wins.
-- **Vietnamese localization** — the Remote App (`api/static/index.html`) UI is fully translated to Vietnamese.
+## v20.0.0 - 2026-09-04
 
 ### Added
 
-- **TikTok account pool** (`infrastructure/downloader/account_pool.py`) — thread-safe multi-account pool, picks the least-loaded account per download.
-- **Network panel** (`ui/tabs/settings/network_panel.py`) — proxy configuration for yt-dlp and gallery-dl.
+- Convert several files at once, with a configurable parallel-conversion limit
+- Remote API: batch file-conversion endpoint
+- Engine and download error messages are now translated (English / Vietnamese / Chinese)
+- TikTok account pool: one account per browser profile, health-checked before being accepted, with safe rename/refresh and automatic cleanup of removed accounts' cookie files
+- Document conversion: Markdown, HTML and Office files to PDF and back (Documents tab + Remote API)
+- Archive feature: compress to ZIP/7z (optional password), extract and preview archives
+- New downloader for waaw.ac
+- Download a pasted, pre-signed Instagram/Facebook CDN link anonymously
+- TikTok live detection: added a 4th detection method after anti-bot changes defeated the previous three
 
 ### Fixed
 
-- **BUG-TT-25/26** — `tiktok_room_id` now forwarded through the Remote API so fallback strategies can use it.
-- **Rate limiter** — added a per-request delay to the TikTok Live checker to avoid HTTP 429.
-
-### Performance
-
-- **Cookie cache** — decrypted cookie kept in memory after first read, avoiding repeated Credential Manager calls.
-
----
-
-## v18.0.0 — 2026-04-30
-
-### Added
-
-- **`utils/__version__.py`** — single source of truth for the app version string.
-- **Instagram Live recorder** (`infrastructure/downloader/instagram_live_engine.py`) — CDP-based recorder using Playwright, supports HLS and DASH streams. Windows/macOS only.
-- **Tailscale HTTPS proxy** (`api/tailscale_https.py`) — serves the Remote API PWA over HTTPS via Tailscale funnel.
-- **TikTok profile live checker** (`utils/tiktok_live_checker.py`) — checks if a TikTok profile is live, no cookie required.
-
-### Fixed
-
-- **BUG-TT-08** — TikTok Live falsely reported "not live": TLS fingerprinting was stripping `roomId` from responses, `roomId="0"` wasn't rejected, and checker failures still triggered pointless yt-dlp retries. Fixed with `curl_cffi` Chrome impersonation, `roomId` validation, and proper error propagation.
-- **BUG-TT-09** — TikTok omits `roomId` from HTML for some IPs; added a `webcast/room/list/` API pass before the HTML-scrape fallbacks.
-- **BUG-TT-10** — `curl_cffi >= 0.15` API mismatch between yt-dlp's `ImpersonateTarget` object and `curl_cffi`'s expected string; split into two separate variables.
-- **BUG-IG-01** — Instagram Live moved to DASH streaming; added `.mpd` matching, Service Worker interception, and a longer timeout.
-- **BUG-KS-01** — Kuaishou CDN probe timeouts incorrectly triggered re-extraction; now only real URL-expiry errors (403/404/410) do.
-- **BUG-KS-02** — Kuaishou sessions were missing cookies, causing silent HTML responses instead of video; cookies now attached to every session, with HTML responses detected and retried.
-- **GPU encoder stall** — the encoder-availability cache wasn't invalidated after a watchdog kill, causing repeat stalls; now invalidated on any GPU conversion error.
-- **CMD window flash (Windows)** — `facebook_story_engine.py` subprocess calls were missing `CREATE_NO_WINDOW`; fixed across all calls.
-
-### Coverage
-
-- Playwright-CDP files (`instagram_live_engine.py`, `cookie_extractor.py`, `cookie_storage.py`) excluded from coverage — can't run headlessly in CI.
-
----
-
-## v16.3.1 — 2026-03-22
-
-### Fixed
-
-- Corrected the hardcoded app version in `main.py` (was stuck at an old value, breaking version-change detection).
-- Added `playwright` to the startup dependency check.
-- Dependency install strings now use versioned lower bounds instead of exact pins.
-- Sidebar version label and `config.json` sample brought back in sync with the actual release.
-
----
-
-## v16.3.0 — 2026-03-21
-
-### Added
-
-- Toolbar migrated to the `_ui_queue` pattern for thread-safe UI updates, consistent with the rest of the app.
-
-### Removed
-
-- **Video Editor tab** — removed to keep OmniDL focused on downloading; lacked realtime preview compared to dedicated editors.
-- **Threads engine** — removed due to high maintenance cost from frequent, undocumented API changes.
-
-### Fixed
-
-- Coverage config updated after removals; dead code in the Special Downloads tab cleaned up.
-
----
-
-## v16.2.1 — 2026-03-21
-
-### Fixed
-
-- **Threads engine** — wrong API endpoint and app ID corrected, stale `lsd` token refreshed dynamically, missing headers added, and a GraphQL fallback strategy added.
-
----
-
-## v16.2.0 — 2026-03-21
-
-### Added
-
-- **Threads engine** (`infrastructure/downloader/threads_engine.py`) — downloads Threads posts (video, image, carousel) via a 4-strategy cascade, no browser required.
-- **macOS support for Facebook Story**.
-- **Resolution picker in Video Editor** — 480p to 4K, with auto CRF and bitrate estimate.
-
-### Fixed
-
-- Minor Video Editor bugs: a `Path` type error, UI thread blocking during encoder detection, an incorrect blur filter graph, and a falsy-zero bug in CRF handling.
-
----
-
-## v16.1.0 — 2026-03-20
-
-### Added
-
-- **Special Downloads tab** — for platforms outside the main yt-dlp/gallery-dl pipeline. Starts with Facebook Story, fully isolated from the rest of the app.
-
-### Changed
-
-- **Facebook Story engine rewritten** to use Playwright's `connect_over_cdp()` instead of hand-rolled WebSocket code, still using the user's own logged-in browser.
-
-### Fixed
-
-- Duplicate downloads no longer overwrite existing files.
-- Long downloads now have a hard 300-second deadline with fallback.
-- Post-download buttons no longer stay hidden after a successful download.
-- Removed unused dead code left over from the pre-CDP implementation.
-
-### Dependencies
-
-- Added `playwright>=1.40` (runtime only, no browser binary bundling needed).
-
----
-
-## v16.0.0 — 2026-03-07
+- Facebook Story: clearer error when the browser is already open, instead of a vague connection timeout
+- Facebook Story: audio is no longer intermittently dropped on slow downloads
+- Facebook Story: analysing a link and downloading it no longer behave differently on a Linux server
+- Facebook Live broadcasts served only over DASH (not HLS) now record correctly instead of a truncated clip
+- An ended TikTok broadcast could be re-detected as live for hours after it finished
+- TikTok's rate-limit cooldown is now shared across accounts instead of per account, avoiding wasted requests
+- A locked or open output file now reports a clear "file in use" message instead of a server error
+- Several cookie/account-pool bugs fixed: fallback to the shared cookie when all accounts are paused, leaked cookie files, stale account state after a pool rebuild
+- File names with Vietnamese diacritics, Chinese characters or emoji are now sent to modern devices as-is instead of always being flattened to plain ASCII (BUG-TD-NAME)
+- Facebook Live recording added (previously downloaded a short clip instead of the live stream)
+- Several smaller fixes: pause/resume state, queue/history sync, Files tab, Live Monitor, and Settings tab
+- Archive tab: password-toggle buttons were invisible; "use original name" option now works correctly
+- Facebook Story: command-window flash on Windows fully resolved
+- Live-recording output file names corrected across platforms
+- Fixed a crash on startup in windowed (no console) builds, and a broken "verbose logging" toggle in Settings
 
 ### Security
 
-- **Path traversal (cookie files, `safe_path()`)** — replaced a bypassable `str.startswith()` check with proper `Path.parents` containment.
-- **Shell injection** — removed `shell=True` from `reveal_in_explorer()`.
-- **User data in executable directory** — config/history/logs moved to the platform-appropriate writable directory via `platformdirs`.
-- **SSRF via thumbnail URL** — added scheme allowlist, private-IP blocking, and DNS resolution checks.
-- **Unsanitised browser name** — cookie extraction now validates against a known-browser allowlist.
-- **yt-dlp extra args injection** — user-supplied extra args filtered through a strict allowlist.
+- Document conversion: blocked local-file and network access from untrusted HTML/Markdown content (path confinement, size limit, bounded concurrency)
+- File-preview endpoint no longer renders HTML/SVG files inline, preventing stored cross-site scripting
 
-### Architecture
+---
 
-- Thumbnail fetching/decoding logic extracted out of the UI layer into `app/services/thumbnail_service.py`.
-- One-time migration of old config/history files to the new data directory on first launch.
+## v19.0.0 - 2026-05-31
 
-### Infrastructure
+### Changed
 
-- CI runs pytest (3.11-3.13), ruff, mypy, bandit, and pip-audit on every push/PR.
-- Tagged builds (`v*.*.*`) trigger PyInstaller builds for Windows and macOS, published as a GitHub Release.
+- Desktop UI rewritten in PySide6 (Qt6) with a new visual theme
+- TikTok live detection rewritten to run multiple detection strategies concurrently
+- Remote App (PWA) UI fully translated into Vietnamese
+- Decrypted cookies are now cached in memory to avoid repeated system keychain calls
 
-### Stability
+### Added
 
-- Config and history writes are now atomic (temp file + rename) and debounced.
-- History storage switched to append-only JSONL instead of full-file rewrites.
-- Task state transitions are now lock-protected to prevent the UI from reading half-updated state.
-- Live-stream cancel now responds within ~10s instead of up to 90s.
+- TikTok account pool: use multiple accounts, automatically balanced by load
+- Network settings panel: proxy configuration for downloads
 
-### Dependencies
+### Fixed
 
-- Raised minimum versions for `yt-dlp`, `Pillow` (security patch), added `platformdirs`; moved `pyinstaller` to dev-only.
+- TikTok room ID now passed through the Remote API so fallback strategies work correctly
+- Reduced TikTok Live rate-limit errors by pacing requests
+
+---
+
+## v18.0.0 - 2026-04-30
+
+### Added
+
+- Instagram Live recording (Windows/macOS only)
+- Remote API access over HTTPS via Tailscale
+- TikTok profile live checker (no cookie required)
+
+### Fixed
+
+- TikTok Live falsely reported as not live in several cases (BUG-TT-08/09/10)
+- Instagram Live switched to DASH streaming after Instagram changed formats (BUG-IG-01)
+- Kuaishou: fixed false re-extraction on temporary network errors and a missing-cookie failure (BUG-KS-01/02)
+- Fixed a GPU encoder stall that could repeat after a failed conversion
+- Fixed a command-window flash on Windows during Facebook Story downloads
+
+---
+
+## v16.3.1 - 2026-03-22
+
+### Fixed
+
+- Corrected the app version shown in the sidebar and sample config file
+- Startup dependency check now includes Playwright
+
+---
+
+## v16.3.0 - 2026-03-21
+
+### Removed
+
+- Video Editor tab (removed to keep the app focused on downloading)
+- Threads downloader (removed due to high maintenance cost from frequent API changes)
+
+### Fixed
+
+- Cleaned up leftover code after the removals above
+
+---
+
+## v16.2.1 - 2026-03-21
+
+### Fixed
+
+- Threads downloader: fixed a wrong API endpoint and app ID, and a stale authentication token
+
+---
+
+## v16.2.0 - 2026-03-21
+
+### Added
+
+- Threads downloader (video, image, carousel posts)
+- Facebook Story support on macOS
+- Resolution picker in the Video Editor (480p to 4K)
+
+### Fixed
+
+- Several Video Editor bugs: a crash, UI freezing during encoder detection, an incorrect blur effect, and a CRF setting bug
+
+---
+
+## v16.1.0 - 2026-03-20
+
+### Added
+
+- Special Downloads tab, starting with Facebook Story
+
+### Changed
+
+- Facebook Story engine rewritten to use the browser's own login session instead of custom connection code
+
+### Fixed
+
+- Duplicate downloads no longer overwrite existing files
+- Long downloads now time out safely after 5 minutes instead of hanging
+- Post-download buttons no longer stay hidden after a successful download
+
+---
+
+## v16.0.0 - 2026-03-07
+
+### Security
+
+- Fixed a path-traversal vulnerability in cookie file handling
+- Removed a shell-injection risk in "reveal in file explorer"
+- User data (config, history, logs) moved out of the install directory into a writable per-user location
+- Fixed a server-side request forgery (SSRF) risk via thumbnail URLs
+- Cookie extraction now validates the browser name against an allowlist
+- Custom yt-dlp arguments are now filtered through a strict allowlist
+- Updated dependencies, including a security patch for Pillow
+
+### Changed
+
+- Config and history writes are now atomic, reducing the risk of corruption
+- History storage switched to an append-only format for reliability
+- Live-stream cancel now responds within about 10 seconds instead of up to 90

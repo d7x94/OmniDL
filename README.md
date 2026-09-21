@@ -1,3 +1,5 @@
+English | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md)
+
 # OmniDL v20.3.7
 
 A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
@@ -6,36 +8,122 @@ A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, 
 
 - **Download** video, audio, and images from 1000+ platforms via yt-dlp and gallery-dl
 - **Batch download** — paste multiple URLs; per-platform delays avoid rate-limiting
-- **Special downloads** — Facebook Story, Instagram Live via CDP (Chrome DevTools Protocol); a Story queued from the Download tab is saved into that task's own output folder
-- **Facebook photos, albums and feed posts** — photo posts, `/photo/?fbid=`, `/share/p/` links and full albums (`/media/set/?set=`) download through gallery-dl; each post lands in its own folder. A feed post (`story.php`, `permalink.php`, `/<user>/posts/<id>`, `/groups/<id>/posts/<id>`) runs both engines: gallery-dl saves the images, then a yt-dlp pass picks up any video or photo-with-music item in the same post. gallery-dl is asked for the post's photo set two ways - `/media/set/?set=pcb.<story_fbid>` first, `/<owner>/posts/<id>` behind it - because Facebook serves some post pages with no photo payload and only the set form reaches those. Suggested and sponsored videos that Facebook injects into the post page are rejected, so a photo post is never delivered as somebody else's advert; when gallery-dl cannot confirm the post at all, a video owned by anybody other than the post owner is refused rather than queued
-- **Live stream monitor** — auto-record when a stream goes live; watch Instagram profiles (needs cookie), TikTok profiles (no cookie needed), or Facebook pages / profiles (needs cookie)
-- **Convert** downloaded files to MP4, MP3, MKV, AVI with FFmpeg. Hardware encoders are probed
-  per platform — NVENC / QSV / AMF (plus MediaFoundation on Windows) on Windows and Linux,
-  VideoToolbox on macOS — with a one-frame test encode, and the CPU path is always available
+- **Special downloads** — Facebook Story, Instagram Live via CDP (Chrome DevTools Protocol, the browser debugging interface Playwright drives)
+- **Facebook photos, albums and posts** — photo posts, albums and mixed photo+video feed posts download through gallery-dl and yt-dlp together, each post landing in its own folder; suggested/sponsored videos Facebook injects into a post page are filtered out so a photo post is never delivered as somebody else's advert
+- **Live stream monitor** — auto-record when a stream goes live; watch Instagram profiles (needs cookie), TikTok profiles (no cookie needed), or Facebook pages/profiles (needs cookie)
+- **Convert** downloaded files to MP4, MP3, MKV, AVI with FFmpeg. Hardware encoders (NVENC/QSV/AMF/VideoToolbox) are probed automatically, with a CPU fallback always available
 - **Video editor** — preview, trim, rotate, mute downloaded files
 - **Archive** — compress files to 7z/ZIP (optional password), extract existing archives
 - **Documents** — convert Markdown ↔ PDF, HTML ↔ PDF and Office ↔ PDF (desktop tab + Remote API); see [Document conversion](#document-conversion)
-- **TikTok account pool** — add several TikTok cookies, one per browser profile; each is health-checked (signed in / expired / duplicate) before it is accepted, and can be renamed or refreshed in place
-- **Multi-language UI** — English, Vietnamese and Chinese, in both the desktop app and the PWA; engine and download errors are translated too
+- **TikTok account pool** — add several TikTok cookies, one per browser profile; each is health-checked before it is accepted, and can be renamed or refreshed in place
+- **Multi-language UI** — English, Vietnamese and Chinese, in both the desktop app and the PWA (Progressive Web App — the Remote UI installed like a native app); engine and download errors are translated too
 - **Cookie management** per platform — browser import, yt-dlp extraction, or CDP extraction (Brave/Chrome 127+); encrypted at rest; orphan cleanup on method switch
 - **Taildrop file transfer** — send files to iPhone or any Tailscale node, multi-device
 - **Post-download actions** — convert, send via Taildrop, or delete directly from the queue
-- **Remote API** (optional) — control OmniDL from iPhone via a built-in PWA at `http://localhost:8765`
+- **Remote API** (optional) — control OmniDL from iPhone or any browser on the network via a built-in PWA
 
-## Architecture
+## System Requirements
+
+- Python 3.11 or later
+- Windows, macOS, or Linux
+- FFmpeg is bundled in release builds; a source checkout needs FFmpeg on `PATH` for Convert/Editor/Documents features
+- [Tailscale](https://tailscale.com) — only if using the Remote API from outside your own machine
+
+## Installation
+
+```bash
+uv sync --extra dev
+```
+
+With Remote API support:
+
+```bash
+uv sync --extra api --extra dev
+```
+
+## Quick Start
+
+### Desktop
+
+```bash
+uv run python main.py
+```
+
+### Remote UI / Web API
+
+1. Open **Settings → Remote API** in the desktop app and turn it on. OmniDL generates an API token and stores it in the system keyring (never in a config file).
+2. The server starts on `http://0.0.0.0:8765`. Every request needs the `X-API-Token` header.
+3. Open `http://<computer-name-or-IP>:8765` in a browser on the same network and enter the token.
+
+Keep the API token secret — anyone with it can control OmniDL and read your download history. Don't expose port 8765 to the public internet; use [Tailscale](#remote-control-from-iphone-remote-api--taildrop) to reach it securely from outside your LAN.
+
+## Basic Configuration
+
+Settings are edited from the desktop **Settings** tab (download folder, max concurrent downloads, retries, theme, language, cookie files, Remote API, Taildrop). They are stored in `config.json` inside the [Data Directory](#data-directory) — the file is written automatically by the app and is not meant to be hand-edited.
+
+Key settings:
+
+| Setting | Where | Purpose |
+|---|---|---|
+| Download folder | Settings → File Location | Where finished downloads are saved |
+| Max concurrent downloads | Settings → Download Behaviour | How many downloads run in parallel |
+| UI language | Settings → Appearance | `en` / `vi` / `zh` |
+| Cookie files | Settings → Network | Per-platform cookies for login-gated content |
+| Remote API | Settings → Remote API | Enable/disable the remote-control server and token |
+
+## Common Issues
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Safari/browser can't load `http://my-laptop:8765` | Tailscale off, or devices on different accounts | Check the Tailscale app, confirm same tailnet |
+| "Unauthorized" in the Remote App | Wrong or missing token | Settings → Remote API → copy token, re-enter it |
+| iPhone missing from Detect nodes | iPhone's Tailscale is off or offline | Open Tailscale on iPhone, confirm connected |
+| Taildrop fails with `400 Bad Request` | Unusual characters in filename | OmniDL sends the full Unicode name first and retries once with an ASCII transliteration; if it still fails, update Tailscale on iPhone |
+| File sent but no notification | iOS notifications disabled for Tailscale | iPhone Settings → Notifications → Tailscale → allow |
+| Remote App slow / SSE (Server-Sent Events, used for live progress) drops | Unstable Tailscale connection | Switch to relay mode in Tailscale settings |
+
+## Directory Structure
 
 ```
 domain/          Pure business models (DownloadTask, MediaInfo, enums). No external deps.
 app/             Use-cases, EventBus, DownloadService. Orchestration only.
-infrastructure/  yt-dlp engine, download manager, account_pool, config, history. Side effects here.
+infrastructure/  yt-dlp engine, download manager, account_pool, config, history.
 ui/              PySide6 tabs and widgets. Consumes app/service layer only.
-utils/           Pure helpers — ffmpeg_locator, helpers, logger, tiktok_live_checker,
-                 instagram_live_checker, facebook_live_checker, tiktok_detection/.
-                 No omnidl imports.
+utils/           Pure helpers — ffmpeg_locator, logger, live checkers, tiktok_detection/.
 tests/           pytest unit tests. Mock-only — no real network or subprocess.
 ```
 
-**Layer rule:** `ui` → `app` → `domain`. `infrastructure` → `domain`. `utils` imported by all. `ui` never imports `infrastructure` directly.
+Dependency direction: `ui -> app -> domain`, `infrastructure -> domain`, `utils` usable everywhere.
+
+## Development and Testing
+
+```bash
+uv sync --extra dev
+uv run python main.py
+uv run pytest --cov=. --cov-report=term-missing
+```
+
+Coverage threshold: `fail_under = 80` — must not be lowered.
+
+CI runs on every push/PR: `ruff check → mypy → pytest` (Python 3.11/3.12/3.13) plus a parallel `bandit -ll → pip-audit` security job.
+
+### Building
+
+Release builds run automatically in CI (`.github/workflows/build.yml`) when a `v*.*.*` tag is pushed: PyInstaller builds for Windows and macOS, plus a Linux tarball, all published to a GitHub Release.
+
+To build locally (Python 3.13):
+
+```bash
+uv sync --extra build --extra dev
+# Windows: dist\OmniDL\OmniDL.exe
+# macOS:   dist/OmniDL/OmniDL
+```
+
+Distribute the entire `dist/OmniDL/` folder, not just the executable.
+
+## License
+
+[MIT](LICENSE)
 
 ---
 
@@ -51,7 +139,7 @@ Control OmniDL from an iPhone, and send finished downloads straight to it, over 
 
 ### 1. Connect both devices with Tailscale
 
-Install Tailscale on both devices, sign in with the same account, and confirm the computer shows up in the iPhone's Tailscale app. Note the computer's MagicDNS name (e.g. `my-laptop`) — it stays stable even if the IP changes.
+Install Tailscale on both devices, sign in with the same account, and confirm the computer shows up in the iPhone's Tailscale app. Note the computer's MagicDNS name (Tailscale's automatic hostname for a device, e.g. `my-laptop`) — it stays stable even if the IP changes.
 
 ### 2. Enable the Remote API in OmniDL
 
@@ -108,66 +196,15 @@ iPhone (Safari/PWA)                     Computer (OmniDL)
 
 Create a shortcut to `OmniDL.exe`, press `Win + R`, type `shell:startup`, and drop the shortcut into that folder. OmniDL will launch with Windows and the Remote API / Taildrop will be ready if they were enabled before.
 
-### Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| Safari can't load `http://my-laptop:8765` | Tailscale off, or devices on different accounts | Check the Tailscale app, confirm same tailnet |
-| "Unauthorized" in the Remote App | Wrong or missing token | Settings → Remote API → copy token, re-enter it |
-| iPhone missing from Detect nodes | iPhone's Tailscale is off or offline | Open Tailscale on iPhone, confirm connected |
-| Taildrop fails with `400 Bad Request` | Unusual characters in filename | OmniDL sends the full Unicode name first and retries once with an ASCII transliteration; if it still fails, update Tailscale on iPhone |
-| File sent but no notification | iOS notifications disabled for Tailscale | iPhone Settings → Notifications → Tailscale → allow |
-| Remote App slow / SSE drops | Unstable Tailscale connection | Switch to relay mode in Tailscale settings |
-
 ---
-
-## Setup (Development)
-
-```bash
-uv sync --extra dev
-```
-
-With Remote API support:
-
-```bash
-uv sync --extra api --extra dev
-```
-
-## Running
-
-```bash
-uv run python main.py
-```
-
-## Testing
-
-```bash
-uv run pytest --cov=. --cov-report=term-missing
-```
-
-Coverage threshold: `fail_under = 80` — must not be lowered.
-
-## Building (Windows / macOS EXE)
-
-Builds run automatically via CI (`.github/workflows/build.yml`). Pushing a `v*.*.*` tag triggers PyInstaller builds for Windows and macOS and publishes a GitHub Release with both binaries attached.
-
-To build locally (Python 3.13 + dev dependencies):
-
-```bash
-uv sync --extra build --extra dev
-# Output: dist\OmniDL\OmniDL.exe  (Windows)
-#         dist/OmniDL/OmniDL      (macOS bundle via ditto)
-```
-
-Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 
 ## Dependencies
 
 | Package | Version | Purpose |
 |---|---|---|
 | pyside6 | >=6.7 | GUI framework |
-| yt-dlp | >=2025.1.1 | Download engine (video / live) |
-| gallery-dl | >=1.32.1 | Image/gallery download engine (Instagram photos, Facebook photos/albums, Twitter images) |
+| yt-dlp | >=2026.7.4 | Download engine (video / live) |
+| gallery-dl | >=1.32.12 | Image/gallery download engine (Instagram photos, Facebook photos/albums, Twitter images) |
 | requests | >=2.31.0 | HTTP client |
 | packaging | >=23.0 | Version utilities |
 | playwright | >=1.40 | Facebook Story + Instagram Live CDP via `connect_over_cdp()` |
@@ -176,11 +213,11 @@ Distribute the entire `dist\OmniDL\` folder, not just the `.exe`.
 | Pillow | >=10.3.0 | Thumbnail decoding/resizing, frame effects |
 | platformdirs | >=4.0.0 | Platform-appropriate data directory resolution |
 | PySocks | >=1.7.1 | SOCKS proxy support for yt-dlp/gallery-dl |
-| curl-cffi | >=0.15.0 | Chrome TLS impersonation for TikTok/Kuaishou requests |
+| curl-cffi | >=0.16.0 | Chrome TLS impersonation for TikTok/Kuaishou requests |
 | loguru | >=0.7.3 | Application logging |
 | ffmpeg-python | >=0.2.0 | FFmpeg command construction |
-| py7zr | >=0.21.0 | 7z archive compression/extraction |
-| pyzipper | >=0.3.6 | Password-protected ZIP compression/extraction |
+| py7zr | >=1.1.3 | 7z archive compression/extraction |
+| pyzipper | >=0.4.0 | Password-protected ZIP compression/extraction |
 | weasyprint | >=69.0 | HTML → PDF rendering for the Documents tab |
 | markdown | >=3.6 | Markdown → HTML for the Documents tab |
 | pypdf | >=4.2.0 | PDF text extraction (PDF → Markdown/HTML) |
@@ -240,13 +277,11 @@ are rejected, and concurrency is bounded to 2.
 | macOS | `~/Library/Application Support/OmniDL/` |
 | Linux | `~/.local/share/OmniDL/` |
 
-Cookie files live in `<data_dir>/cookies/` and are encrypted at rest (DPAPI on Windows, Fernet on macOS).
+Cookie files live in `<data_dir>/cookies/` and are encrypted at rest (DPAPI, Windows' built-in per-user encryption, on Windows; Fernet on macOS).
 Logs go to the platform log directory (`%LOCALAPPDATA%\OmniDL\Logs\` on Windows,
 `~/Library/Logs/OmniDL/` on macOS, `~/.local/state/OmniDL/log/` on Linux):
 `omnidl.log` at INFO always, plus `omnidl_debug.log` at DEBUG when *Verbose logging*
-is on in Settings. Both rotate at 5 MB with 3 files kept. `omnidl.log` is reserved for
-events worth keeping (tasks, transfers, errors); per-poll chatter such as cookie
-resolution only goes to `omnidl_debug.log`, so the rotation budget is not spent on it.
+is on in Settings. Both rotate at 5 MB with 3 files kept.
 
 ## Remote API Endpoints
 
@@ -312,25 +347,6 @@ When `api_enabled=True`, the server runs at `http://0.0.0.0:8765`. Every request
 | POST | `/api/settings/language` | Set the UI language (`en` / `vi` / `zh`) |
 | GET | `/api/events` | SSE stream — real-time progress/status |
 | GET | `/` | PWA (iPhone web app) |
-
-## CI Pipeline
-
-Two parallel GitHub Actions jobs on every push/PR:
-
-**Job 1 — `test`** (Python 3.11, 3.12, 3.13 matrix):
-```
-ruff check → mypy → pytest (--cov, fail_under=80)
-```
-
-**Job 2 — `security`** (Python 3.13):
-```
-bandit -ll → pip-audit
-```
-
-**Build job** (triggered by `v*.*.*` tags only):
-```
-PyInstaller (Python 3.13) → GitHub Release
-```
 
 ## Changelog
 
