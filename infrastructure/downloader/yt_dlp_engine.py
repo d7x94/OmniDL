@@ -1551,6 +1551,71 @@ class YtDlpEngine:
             _drop_temp_cookie()  # BUG-FB-COOKIE-LEAK FIX
             raise _friendly_exc(msg) from last_exc
 
+        # BUG-FB-ADVID FIX: FacebookIE harvests every `Video` node in the post
+        # page's relay payload (parse_attachment over `nodes`), and Facebook
+        # injects suggested / sponsored stories into that same payload.  On a
+        # photo post the requested story contributes no video, so the only entry
+        # left is the advert — and yt-dlp returns it as though it were the post.
+        # Log evidence (omnidl_debug.log 2026-09-20): posts 1750153570452113 and
+        # 122230506620352435, two unrelated owners, both analysed as video
+        # 1767163571189463, which was then downloaded and sent over Taildrop.
+        #
+        # uploader_id cannot tell them apart: a single-video result is
+        # merge_dicts(webpage_info, video_info) and webpage_info carries the
+        # *post* owner, so the advert inherits it.  gallery-dl reading a photo
+        # set off the same post is positive proof the post is not that video,
+        # so ask gallery-dl whenever the returned id is not the requested story.
+        if platform_for_url(url) == "facebook":
+            from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                GalleryDlEngine,
+                facebook_owner_id,
+                facebook_story_id,
+            )
+            from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                is_gallery_dl_url as _gdl_supported,
+            )
+
+            _fb_story_id = facebook_story_id(url)
+            if _fb_story_id and str(info.get("id") or "") != _fb_story_id and _gdl_supported(url):
+                try:
+                    _photo_info = GalleryDlEngine(self._config).extract_info(url)
+                except Exception as _gdl_exc:  # noqa: BLE001
+                    # BUG-FB-ADVID-2: gallery-dl could not confirm the post either
+                    # way.  The video is still not the requested story, so hand it
+                    # over only while it belongs to the post owner — a different
+                    # numeric owner is proof it is one of the suggested /
+                    # sponsored stories Facebook injected into the same page, and
+                    # returning it means the queue downloads an advert.
+                    _fb_owner_id = facebook_owner_id(url)
+                    _fb_uploader_id = str(info.get("uploader_id") or info.get("channel_id") or "")
+                    if _fb_owner_id and _fb_uploader_id.isdigit() and _fb_uploader_id != _fb_owner_id:
+                        logger.warning(
+                            "BUG-FB-ADVID: story %s — yt-dlp returned video %s owned by %s, "
+                            "not by the post owner %s; refusing the advert",
+                            _fb_story_id,
+                            info.get("id"),
+                            _fb_uploader_id,
+                            _fb_owner_id,
+                        )
+                        _drop_temp_cookie()
+                        raise _friendly_exc(t("err.fb_post_advert_only")) from _gdl_exc
+                    logger.warning(
+                        "BUG-FB-ADVID: gallery-dl found no photo set for story %s (%s) — "
+                        "keeping yt-dlp video %s",
+                        _fb_story_id,
+                        _gdl_exc,
+                        info.get("id"),
+                    )
+                else:
+                    logger.info(
+                        "BUG-FB-ADVID: story %s is a photo post — yt-dlp returned foreign "
+                        "video %s, using the gallery-dl photo set instead",
+                        _fb_story_id,
+                        info.get("id"),
+                    )
+                    _drop_temp_cookie()
+                    return _photo_info
+
         # Single-video path — profile URLs were already handled above by
         # _extract_playlist_flat() and returned early.  At this point info
         # is always a single-video dict (not a playlist).
@@ -3866,7 +3931,7 @@ class YtDlpEngine:
                     from utils.tiktok_live_checker import (  # noqa: PLC0415
                         _fetch_hls_from_live_page,
                         _fetch_hls_from_webcast_room_info,
-                        _verify_room_alive,
+                        _room_recently_ended,
                     )
 
                     if room_id:
@@ -3980,17 +4045,20 @@ class YtDlpEngine:
                                         Path(_r29_txt).unlink(missing_ok=True)
                                     except OSError:
                                         pass
-                        # Final check: only return () if check_alive also says dead.
-                        _final29 = _verify_room_alive(room_id, _u25, proxy=_proxy29, cookie_file="")
-                        if not _final29:
-                            logger.debug(
-                                "BUG-TT-29: check_alive confirms room %s ended -- confirmed ended",
-                                room_id,
-                            )
-                            return None
+                        # BUG-TT-29-FINAL FIX: both outcomes of the old
+                        # check_alive gate returned None, so the extra webcast
+                        # round-trip only ever picked a log line -- and it picked
+                        # the wrong one, because check_alive answers alive=True
+                        # for a finished room (room 7687256489811020565 at
+                        # 22:48:49 in omnidl_debug.log, 65s before room/info
+                        # evicted the same roomId).  _room_recently_ended reads
+                        # pass-4's authoritative verdict for free.
                         logger.debug(
-                            "BUG-TT-29: room %s still alive after retries -- letting yt-dlp try",
+                            "BUG-TT-29: room %s %s -- letting yt-dlp try",
                             room_id,
+                            "already reported ended by room/info"
+                            if _room_recently_ended(room_id)
+                            else "still alive after retries",
                         )
                         return None
             logger.debug("BUG-TT-16: HLS extract failed: %s", exc)

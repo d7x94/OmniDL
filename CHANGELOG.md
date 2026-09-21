@@ -7,6 +7,304 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## v20.3.7 — 2026-09-20
+
+Fourth pass over `omnidl_debug.log`, at lines 25215-25243. v20.3.6 made the
+analyse side ask gallery-dl whether a Facebook post holds a photo set before
+accepting a video whose id is not the requested story. The question was right;
+the answer was wrong. gallery-dl was handed a URL form it cannot read for this
+kind of post, said "no photos", and the advert was kept anyway.
+
+### Fixed — gallery-dl was asked the photo question in a form it cannot answer
+
+At 22:06:11 and again at 22:13:28 (after a fresh CDP cookie extraction), the
+same two lines:
+
+```
+gallery-dl: rewrote story.php URL ... -> https://www.facebook.com/61579052360106/posts/122182130744968412
+BUG-FB-ADVID: gallery-dl found no photo set for story 122182130744968412 (...) - keeping yt-dlp video 1789050085345855
+```
+
+`normalize_gallery_dl_url()` rewrites `story.php?story_fbid=X&id=Y` to
+`/<owner>/posts/<story_fbid>` (BUG-FB-SETID, v19.x). That form routes to
+gallery-dl's `FacebookSetExtractor`, which downloads the post page and calls
+`parse_post_page()`. Facebook serves that page with no photo payload, so
+`post_photo` comes back empty and `items()` dies on `params["fbid"]` with
+`KeyError: 'fbid'` before it ever looks for a set. Reproduced outside OmniDL:
+
+```
+$ python -m gallery_dl --dump-json --no-download \
+    https://www.facebook.com/61579052360106/posts/122182130744968412
+[[-1, {"error": "KeyError", "message": "'fbid'"}]]
+```
+
+The same extractor has a second route. `/media/set/?set=pcb.<story_fbid>` asks
+for the post's photo set directly and never touches the post page:
+
+```
+$ python -m gallery_dl --dump-json --no-download \
+    https://www.facebook.com/media/set/?set=pcb.122182130744968412
+[[-1, {"error": "AuthRequired", "message": "... https://www.facebook.com/photo/?fbid=122182130522968412&set=pcb.122182130744968412&setextract"}]]
+```
+
+`AuthRequired` is the no-cookie answer, and it still resolved the set and its
+first photo — the post *is* a photo post, and this route reaches it.
+
+New `gallery_dl_url_candidates()` returns the `pcb.` set form first and the
+`/<owner>/posts/<id>` form behind it, for any Facebook post URL with a numeric
+story id. `extract_info()` walks the candidates and stops at the first one that
+yields items; `download()` hands gallery-dl the whole list in one run, and the
+duplicate of a form that already worked is skipped because both write
+`{id}.{extension}` into the same directory. The posts form is kept as the
+fallback on purpose: a single-photo post has no `pcb.` set, and there
+`parse_post_page()`'s `post_photo` path is what finds the image.
+`normalize_gallery_dl_url()` itself is unchanged, so the owner and story ids
+that the advert filters derive from its output are unaffected.
+
+### Fixed — a silent gallery-dl no longer licenses an advert
+
+When gallery-dl cannot answer, `YtDlpEngine.extract_info` used to keep the
+yt-dlp video unconditionally. It now also compares `uploader_id` against the
+post owner taken from the URL: a different *numeric* owner is proof the video
+is one of the suggested or sponsored stories Facebook injected into the page,
+and analysis fails with `err.fb_post_advert_only` instead of handing the queue
+an advert. A matching owner, an opaque `pfbid` owner, or a vanity URL with no
+numeric owner still keeps the video, so genuine Facebook video posts are
+unaffected. The probe failure was also raised from DEBUG to WARNING — it is the
+line that explains an advert reaching the queue.
+
+Desktop and the Remote API share `DownloadService.analyse_url` and
+`GalleryDlEngine`, so both paths are covered by the same changes.
+
+### Added
+
+- `err.fb_post_advert_only` in all three catalogues (vi / en / zh).
+
+### Tests
+
+`tests/test_bug_fb_advid.py` gains: the candidate order for `story.php` and
+`/posts/` URLs, single-candidate URLs (Instagram, `/photo/?fbid=`, `/watch/`,
+an opaque `pfbid` story), `extract_info` falling back to the second form,
+stopping at the first form that works, raising when neither works, `download()`
+passing every candidate to gallery-dl, and the analyse guard refusing a foreign
+owner when gallery-dl cannot confirm.
+
+---
+
+## v20.3.6 — 2026-09-20
+
+Third pass over `omnidl_debug.log`, following the same Facebook advert one step
+further back. v20.3.5 fixed the *download* side of the problem and assumed the
+analyse side was safe because a photo post makes yt-dlp raise. At 19:29 it did
+not raise: it returned the advert as a perfectly ordinary video result, so the
+post never reached the photo path at all.
+
+### Fixed — a multi-photo post analysed as the advert video on its page
+
+Task `b8e31171` requested `facebook.com/share/p/19ZyU5U4JU/`, which resolves to
+`story.php?story_fbid=122230506620352435&id=61560573071079`. It was enqueued as
+*"Migz Casimiro - Camping with biboy"* and completed as
+`NET Việt Nam - 2026-09-18 - Migz Casimiro - Camping with biboy [1767163571189463].mp4`
+— the exact same video id that task `a09e9e9f` had been given ten hours earlier
+for `posts/1750153570452113`, a post with a different owner. One video id, two
+unrelated posts: page furniture, not post content.
+
+`YtDlpEngine.extract_info` now asks gallery-dl whether the post holds a photo
+set whenever a Facebook post URL comes back with an `id` that is not the
+requested `story_fbid`. gallery-dl reading photos off that post is positive
+proof the post is not that video, so its `MediaInfo` (`source_engine`
+`gallery_dl`) is returned instead and the download goes down the photo path.
+When gallery-dl finds nothing the yt-dlp result is kept untouched, so genuine
+Facebook video posts are unaffected. Desktop and the Remote API share
+`DownloadService.analyse_url`, so both are covered by the one change.
+
+### Fixed — the v20.3.5 owner filter could not see the advert it was written for
+
+`_ytdlp_carousel_videos` passed a `match_filter` comparing `uploader_id` against
+the post owner. For a post page with several videos that works: yt-dlp returns a
+playlist and each entry carries its own `owner.id`. For a page with exactly one
+video — which is what a photo post with an injected advert looks like —
+`FacebookIE` returns `merge_dicts(webpage_info, video_info)`, and `webpage_info`
+carries the *post* owner's id, which wins. The advert inherited the owner id and
+walked straight through the filter.
+
+The rescue pass now takes `strict_story_id` as well. It is set only when
+gallery-dl saved no image for a Facebook post — gallery-dl has then proved the
+post holds no photo set, so the only legitimate video is the requested story
+itself and every other id is rejected. The owner comparison still handles the
+multi-video playlist case.
+
+### Fixed — a Facebook group post was never recognised as a post
+
+`_FB_POST_RE` had `(?:groups/[^/?#]+/)?[^/?#]+/posts/`. The optional group
+prefix could never contribute: after `groups/<gid>/` the pattern still demanded
+another `<segment>/posts/`, which a group post URL does not have. So
+`facebook.com/groups/<gid>/posts/<id>` failed `is_facebook_post_url()` and never
+reached gallery-dl or the video rescue pass. It is now `(?:[^/?#]+/)+posts/`.
+
+### Tests
+
+`tests/test_bug_fb_advid.py` covers `facebook_story_id`, the strict filter
+rejecting an advert that wears the post owner's id, the rescue pass switching to
+strict when no image was saved, the analyse guard preferring the photo set,
+keeping the video when there is no photo set, and skipping the gallery-dl probe
+when the returned id *is* the requested story.
+
+---
+
+## v20.3.5 — 2026-09-20
+
+Second pass over the same `omnidl_debug.log`, this time following the Facebook
+photo path end to end. The v20.3.4 audit dismissed one line as cosmetic —
+`gallery-dl complete: 0 file(s) → ` at 09:05:48 — and recorded that "the BUG-BW
+yt-dlp rescue then recovered the video and the task completed". It did not. The
+post held photos and no video at all; the file the rescue recovered belonged to
+somebody else's advert.
+
+### Fixed — a multi-photo post was delivered as the advert video from its page
+
+Task `a09e9e9f` requested `facebook.com/100063724590889/posts/1750153570452113`
+and finished, reported as a success, with
+`คุณชายดำ ต๊วดงัด đã thêm  [1767163571189463].mp4` — a different video id, a
+different owner. Taildrop then shipped that file to the phone.
+
+The chain: gallery-dl 1.32.13 dies on this post with `JSONDecodeError - Extra
+data: line 1 column 4 (char 3)` (its own Facebook extractor; both the
+`--dump-json` probe at 09:05:41 and the download at 09:05:48 fail the same way),
+so zero photos are written. `_is_fb_post` holds the error back and runs the
+BUG-BW yt-dlp rescue pass, which uses `noplaylist=False`. yt-dlp's `FacebookIE`
+builds its entry list by walking every relay payload on the page
+(`parse_attachment` over `nodes`), and Facebook injects suggested and sponsored
+story nodes into that same payload. With the requested story yielding nothing,
+the only entry left was the advert, and nothing downstream checked whose video
+it was.
+
+Every entry yt-dlp builds carries `uploader_id` = `owner.id`, and the post owner
+is already in the URL, so the rescue pass now passes a `match_filter` that drops
+any entry owned by somebody else. A `pfbid…` owner id, an incomplete entry and a
+missing id are all let through rather than risk dropping a real video, and
+`/groups/<gid>/posts/` is skipped because the group id sits where the owner id
+would be. With the advert gone the post has nothing left, so the held gallery-dl
+error is raised and the task fails honestly instead of completing with the wrong
+file.
+
+`infrastructure/downloader/gallery_dl_engine.py`
+
+### Fixed — an analyse job that failed left no trace in the log
+
+`facebook.com/share/p/19f6PzzHxW` was analysed at 09:04:06 and again at
+09:04:47, and neither attempt wrote a result line of any kind. `on_error` in the
+SSE analyse handler sent the message to the client and returned, so the log held
+`Analyse cache: new job for …` and then silence — no way to tell a failed
+extraction from one still running. The failure is now logged with its message.
+
+`api/server.py`
+
+### Verified fixed since the log was written
+
+`Facebook photo: gallery-dl metadata lookup failed (cannot import name
+'is_supported' from 'infrastructure.downloader.gallery_dl_engine')` at
+2026-09-19 05:36:28 cost that album its uploader, which is why Taildrop sent it
+as `Unknown - 2026-09-19 - Facebook Photo.zip`. The import is now
+`is_gallery_dl_url as _gdl_supported` and resolves; no change needed.
+
+### Observed, not changed
+
+- **gallery-dl's Facebook extractor is the reason the photos were lost.** The
+  `JSONDecodeError` comes from gallery-dl 1.32.13 itself, on the canonical
+  `/<owner>/posts/<id>` form that OmniDL rewrites to precisely because
+  `story.php` dies with `KeyError - 'set_id'`. The same rewrite worked on
+  2026-09-19 05:36 for post 1693312535097881 (10 photos), so it is post-specific
+  and upstream. OmniDL now reports it instead of hiding it behind a wrong file.
+
+---
+
+## v20.3.4 — 2026-09-20
+
+Log audit of `omnidl_debug.log` (24,462 lines, 2026-09-19 04:16:24 to
+2026-09-20 14:04:24, two app sessions). No ERROR and no traceback; 5 WARNING
+records, all from TikTok anti-bot pressure. All 24 downloads that started also
+completed, every Taildrop send succeeded, all three RemoteConvert jobs finished
+and both sessions shut down cleanly. Three defects came out of the DEBUG
+traffic, all in the TikTok live-detection path.
+
+### Fixed — an ended room was blacklisted forever, not for 30 minutes
+
+`_mark_room_ended()` re-stamped `_ENDED_ROOM_IDS[room_id] = now` on every call.
+Pass-4 calls it on every poll (~55s) of an account whose broadcast ended, so
+`_ENDED_ROOM_TTL` (1800s) never elapsed and the roomId stayed blacklisted for
+pass-1 and pass-2 for as long as the monitor ran. That voids the TTL guarantee
+the code documents for a restarted broadcast that reuses the same roomId:
+pass-4 becomes the only pass that can still see it, and pass-0 and pass-3 were
+already disabled by the health daemon in this very session. The mark is now
+written once and reports whether it was the caller that recorded it, which also
+removes 2,866 duplicate `marked room ... ended` lines (984 of them for room
+7687256489811020565 alone) — about 12% of the file.
+
+`utils/tiktok_live_checker.py`, `utils/tiktok_detection/strategies/pass4_api_live_room.py`
+
+### Fixed — a single HTTP 429 resurrected a bot-blocked detection pass
+
+`pass3_user_api` returned a bare `None` on a non-200 response, setting neither
+`ctx.unavailable` nor `ctx.network_error`. `HealthDaemon._probe_all()` read that
+as "the strategy works, the canary is simply not live" and called
+`record_probe_success()`, which cleared the failure counter and re-enabled the
+pass. The log shows the full cycle twice: `pass-3 HTTP 429 (not authoritative,
+returning None)` at 22:19:48 and 10:33:57, each followed immediately by
+`strategy pass3_user_api re-enabled`, each re-disabled about ten minutes later.
+Between those points every user poll ran a pass that could only return empty
+bot-detection bodies, deepening the same rate limit.
+
+A non-200 is now reported as `network_error`, which means "record no verdict":
+it neither resurrects a dead pass nor kills a healthy one on a transient rate
+limit. The same shape existed in `pass0_webcast_api` and `pass4_api_live_room`
+and was fixed at all three call sites.
+
+`utils/tiktok_detection/strategies/pass0_webcast_api.py`,
+`utils/tiktok_detection/strategies/pass3_user_api.py`,
+`utils/tiktok_detection/strategies/pass4_api_live_room.py`,
+`utils/tiktok_detection/health.py`
+
+### Fixed — BUG-TT-29 closed its retry loop with a wasted, misleading call
+
+After the cookie-rotation retries were exhausted, the code called
+`_verify_room_alive()` (a `webcast/room/check_alive` round-trip) and branched on
+the result — but both branches `return None`. The comment still claimed "only
+return () if check_alive also says dead"; that distinction had been lost, so the
+request only ever picked which of two log lines to write, and it picked the
+wrong one: `check_alive` answers `alive=True` for a finished room. The log has
+that exact lie — `check_alive room 7687256489811020565 alive=True` at 22:48:49,
+65 seconds before `room/info status!=2 -- evicting` for the same roomId. The
+verdict now comes from `_room_recently_ended()`, which reads pass-4's
+authoritative answer for free.
+
+`infrastructure/downloader/yt_dlp_engine.py`
+
+### Observed, not changed
+
+- **Pass-0 and pass-3 are blocked, correctly and permanently.** `pass-0` gets
+  `status_code 10013 "Url does not match"` for every param combo (signing is now
+  required) and backs off to the 1800s ceiling; `pass-3` gets empty
+  bot-detection bodies. Both are disabled by the health daemon and only probed
+  once per 300s. This is the design working, not a defect.
+- **Pass-1 cannot report itself broken.** 3,290 lines of `no roomId in profile
+  page (cookies expired or not live)` and zero pass-1 hits. TikTok strips live
+  data from the profile HTML, but pass-1 cannot tell that apart from "this user
+  is not live", so it has no honest way to set `ctx.unavailable`. Detection
+  currently rests on pass-4 alone.
+- **Log volume.** 24,235 of 24,462 lines are DEBUG. After the fixes above, the
+  steady state is still three lines per account per 55s poll (pass-1, pass-2,
+  pass-4) plus the cookie path and its decrypt. That is what `--debug` is for;
+  changing it would remove diagnostics, so it is left to the operator.
+- **`gallery-dl complete: 0 file(s) → `** logs an empty destination when the
+  fallback scan finds nothing (09:05:48). Cosmetic; the BUG-BW yt-dlp rescue
+  then recovered the video and the task completed.
+- **Encoder re-probe.** `detect_available_encoders` re-ran its full test-encode
+  sweep at 14:02:29 inside a session that had already cached the result at
+  20:52:58. That is `_ENCODER_CACHE_TTL_S = 300.0` expiring as designed.
+
+---
+
 ## v20.3.3 — 2026-09-19
 
 Log audit of `omnidl_debug.log` (session 04:16:24-09:40:46, 3,586 lines). The

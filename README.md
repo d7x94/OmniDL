@@ -1,4 +1,4 @@
-# OmniDL v20.3.3
+# OmniDL v20.3.7
 
 A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
 
@@ -7,7 +7,7 @@ A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, 
 - **Download** video, audio, and images from 1000+ platforms via yt-dlp and gallery-dl
 - **Batch download** — paste multiple URLs; per-platform delays avoid rate-limiting
 - **Special downloads** — Facebook Story, Instagram Live via CDP (Chrome DevTools Protocol); a Story queued from the Download tab is saved into that task's own output folder
-- **Facebook photos, albums and feed posts** — photo posts, `/photo/?fbid=`, `/share/p/` links and full albums (`/media/set/?set=`) download through gallery-dl; each post lands in its own folder. A feed post (`story.php`, `permalink.php`, `/<user>/posts/<id>`) runs both engines: gallery-dl saves the images, then a yt-dlp pass picks up any video or photo-with-music item in the same post
+- **Facebook photos, albums and feed posts** — photo posts, `/photo/?fbid=`, `/share/p/` links and full albums (`/media/set/?set=`) download through gallery-dl; each post lands in its own folder. A feed post (`story.php`, `permalink.php`, `/<user>/posts/<id>`, `/groups/<id>/posts/<id>`) runs both engines: gallery-dl saves the images, then a yt-dlp pass picks up any video or photo-with-music item in the same post. gallery-dl is asked for the post's photo set two ways - `/media/set/?set=pcb.<story_fbid>` first, `/<owner>/posts/<id>` behind it - because Facebook serves some post pages with no photo payload and only the set form reaches those. Suggested and sponsored videos that Facebook injects into the post page are rejected, so a photo post is never delivered as somebody else's advert; when gallery-dl cannot confirm the post at all, a video owned by anybody other than the post owner is refused rather than queued
 - **Live stream monitor** — auto-record when a stream goes live; watch Instagram profiles (needs cookie), TikTok profiles (no cookie needed), or Facebook pages / profiles (needs cookie)
 - **Convert** downloaded files to MP4, MP3, MKV, AVI with FFmpeg. Hardware encoders are probed
   per platform — NVENC / QSV / AMF (plus MediaFoundation on Windows) on Windows and Linux,

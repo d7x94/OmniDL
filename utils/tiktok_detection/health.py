@@ -87,11 +87,12 @@ class HealthDaemon:
             try:
                 result = strategy.check(ctx)
                 if ctx.network_error:
-                    # Never reached TikTok — no evidence either way about this
-                    # strategy.  Recording a success here reset the failure
-                    # counter of an endpoint that is permanently blocked.
+                    # Never got a usable answer — the request never reached
+                    # TikTok, or it came back non-200.  No evidence either way
+                    # about this strategy.  Recording a success here reset the
+                    # failure counter of an endpoint that is permanently blocked.
                     logger.debug(
-                        "tiktok_detection: probe %s skipped (network unreachable)",
+                        "tiktok_detection: probe %s skipped (no usable answer)",
                         strategy.name,
                     )
                 elif ctx.unavailable:

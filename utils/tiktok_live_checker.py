@@ -65,15 +65,30 @@ _ENDED_ROOM_TTL = 1800.0  # 30 minutes
 _ENDED_ROOM_LOCK = threading.Lock()
 
 
-def _mark_room_ended(room_id: str) -> None:
+def _mark_room_ended(room_id: str) -> bool:
+    """Record room_id as finished.  Return True only on the first mark.
+
+    BUG-TT-PASS4-REMARK FIX: pass-4 calls this on every poll of an account whose
+    broadcast already ended, and re-stamping the timestamp each time meant
+    _ENDED_ROOM_TTL never elapsed.  The room stayed blacklisted for pass-1 and
+    pass-2 for as long as the monitor ran, which voids the TTL guarantee stated
+    above for a restarted broadcast that reuses the same roomId -- pass-4 is
+    then the only pass that can still see it, and pass-0/pass-3 were already
+    disabled by the health daemon in the same session.  The repeated mark also
+    wrote 2,866 duplicate "marked room ... ended" lines into omnidl_debug.log
+    (984 of them for room 7687256489811020565 alone).
+    """
     if not room_id:
-        return
+        return False
     now = time.monotonic()
     with _ENDED_ROOM_LOCK:
         for rid, ts in list(_ENDED_ROOM_IDS.items()):
             if now - ts >= _ENDED_ROOM_TTL:
                 del _ENDED_ROOM_IDS[rid]
+        if room_id in _ENDED_ROOM_IDS:
+            return False
         _ENDED_ROOM_IDS[room_id] = now
+        return True
 
 
 def _clear_room_ended(room_id: str) -> None:

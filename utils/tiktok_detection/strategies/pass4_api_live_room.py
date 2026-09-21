@@ -70,6 +70,10 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
             session.close()
 
         if resp.status_code != 200:
+            # BUG-TT-PROBE-429 FIX: see pass3_user_api — a non-200 is not an
+            # answer about live status, so HealthDaemon must record no verdict
+            # rather than a probe success.
+            ctx.network_error = True
             logger.debug("tiktok_detection: @%s pass-4 HTTP %s", ctx.username, resp.status_code)
             return None
 
@@ -111,8 +115,12 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
                 if stale_room:
                     from utils.tiktok_live_checker import _mark_room_ended
 
-                    _mark_room_ended(stale_room)
-                    marked = f" — marked room {stale_room} ended"
+                    # _mark_room_ended is idempotent and reports whether this
+                    # poll is the one that recorded the verdict, so the suffix
+                    # stays truthful instead of claiming a fresh mark on every
+                    # poll of a broadcast that ended hours ago.
+                    if _mark_room_ended(stale_room):
+                        marked = f" — marked room {stale_room} ended"
             logger.debug(
                 "tiktok_detection: @%s pass-4 status=%s (not live)%s",
                 ctx.username,

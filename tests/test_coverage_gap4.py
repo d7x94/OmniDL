@@ -111,10 +111,15 @@ class TestTrimVideoWorker:
 
         loc = MagicMock()
         loc.ffmpeg_bin = "ffmpeg"
-        with patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc), \
-             patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)):
+        with (
+            patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc),
+            patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)),
+        ):
             trim_video(
-                src, out, 0, 2000,
+                src,
+                out,
+                0,
+                2000,
                 on_done=lambda p: (results.append(p), done.set()),
                 on_error=lambda m: (results.append(m), done.set()),
             )
@@ -137,8 +142,10 @@ class TestTrimVideoWorker:
 
         loc = MagicMock()
         loc.ffmpeg_bin = "ffmpeg"
-        with patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc), \
-             patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)):
+        with (
+            patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc),
+            patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)),
+        ):
             trim_video(src, out, 0, 4000, speed=2.0, on_done=lambda p: done.set())
             self._wait(done)
 
@@ -172,8 +179,10 @@ class TestTrimVideoWorker:
 
         loc = MagicMock()
         loc.ffmpeg_bin = "ffmpeg"
-        with patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc), \
-             patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)):
+        with (
+            patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc),
+            patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)),
+        ):
             cancel = trim_video(src, out, 0, 1000, on_error=lambda m: (errors.append(m), done.set()))
             cancel()  # cancel handle is callable
             self._wait(done)
@@ -194,8 +203,10 @@ class TestTrimVideoWorker:
 
         loc = MagicMock()
         loc.ffmpeg_bin = "ffmpeg"
-        with patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc), \
-             patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)):
+        with (
+            patch("app.services.ffmpeg_trim_service.locate_ffmpeg", return_value=loc),
+            patch.object(FfmpegConvertService, "_run_ffmpeg", staticmethod(fake_run)),
+        ):
             trim_video(src, out, 0, 1000, on_error=lambda m: (errors.append(m), done.set()))
             self._wait(done)
 
@@ -281,55 +292,68 @@ class TestExtractHlsNotLiveFallbacks:
 
     def test_tt25_webcast_room_info_direct_hit(self, tmp_path):
         engine = self._engine(tmp_path)
-        with patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL), \
-             patch.object(mod, "_TT_RL", MagicMock()), \
-             patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=("https://hls/x.m3u8", "r1")), \
-             patch(f"{_TLC}._fetch_hls_from_live_page", return_value=None), \
-             patch(f"{_TLC}._verify_room_alive", return_value=False):
+        with (
+            patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL),
+            patch.object(mod, "_TT_RL", MagicMock()),
+            patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=("https://hls/x.m3u8", "r1")),
+            patch(f"{_TLC}._fetch_hls_from_live_page", return_value=None),
+            patch(f"{_TLC}._verify_room_alive", return_value=False),
+        ):
             result = engine._extract_tiktok_live_hls_url(self.URL, room_id="r1")
 
         assert result == ("https://hls/x.m3u8", "r1", "someuser", "")
 
     def test_tt26_live_page_scrape_without_room_id(self, tmp_path):
         engine = self._engine(tmp_path)
-        with patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL), \
-             patch.object(mod, "_TT_RL", MagicMock()), \
-             patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=None), \
-             patch(f"{_TLC}._fetch_hls_from_live_page", return_value=("https://hls/y.m3u8", "r2")), \
-             patch(f"{_TLC}._verify_room_alive", return_value=False):
+        with (
+            patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL),
+            patch.object(mod, "_TT_RL", MagicMock()),
+            patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=None),
+            patch(f"{_TLC}._fetch_hls_from_live_page", return_value=("https://hls/y.m3u8", "r2")),
+            patch(f"{_TLC}._verify_room_alive", return_value=False),
+        ):
             result = engine._extract_tiktok_live_hls_url(self.URL)
 
         assert result == ("https://hls/y.m3u8", "r2", "someuser", "")
 
     def test_tt29_retry_loop_room_confirmed_ended(self, tmp_path):
+        # BUG-TT-29-FINAL: the old code closed the retry loop with a
+        # check_alive round-trip whose two branches both returned None, so the
+        # call only picked a log line -- and check_alive answers alive=True for
+        # a finished room.  The verdict now comes from _room_recently_ended,
+        # which is free, so no extra webcast request may be made here.
         engine = self._engine(tmp_path)
-        with patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL), \
-             patch.object(mod, "_TT_RL", MagicMock()), \
-             patch.object(mod.time, "sleep"), \
-             patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=None), \
-             patch(f"{_TLC}._fetch_hls_from_live_page", return_value=None), \
-             patch(f"{_TLC}._verify_room_alive", return_value=False) as verify:
+        with (
+            patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL),
+            patch.object(mod, "_TT_RL", MagicMock()),
+            patch.object(mod.time, "sleep"),
+            patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=None),
+            patch(f"{_TLC}._fetch_hls_from_live_page", return_value=None),
+            patch(f"{_TLC}._room_recently_ended", return_value=True),
+            patch(f"{_TLC}._verify_room_alive", return_value=False) as verify,
+        ):
             result = engine._extract_tiktok_live_hls_url(self.URL, room_id="r3")
 
         assert result is None
-        verify.assert_called_once()
+        verify.assert_not_called()
 
     def test_tt29_room_still_alive_returns_none(self, tmp_path):
         engine = self._engine(tmp_path)
-        with patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL), \
-             patch.object(mod, "_TT_RL", MagicMock()), \
-             patch.object(mod.time, "sleep"), \
-             patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=None), \
-             patch(f"{_TLC}._fetch_hls_from_live_page", return_value=None), \
-             patch(f"{_TLC}._verify_room_alive", return_value=True):
+        with (
+            patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL),
+            patch.object(mod, "_TT_RL", MagicMock()),
+            patch.object(mod.time, "sleep"),
+            patch(f"{_TLC}._fetch_hls_from_webcast_room_info", return_value=None),
+            patch(f"{_TLC}._fetch_hls_from_live_page", return_value=None),
+            patch(f"{_TLC}._room_recently_ended", return_value=False),
+        ):
             result = engine._extract_tiktok_live_hls_url(self.URL, room_id="r4")
 
         assert result is None
 
     def test_no_username_falls_through_to_none(self, tmp_path):
         engine = self._engine(tmp_path)
-        with patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL), \
-             patch.object(mod, "_TT_RL", MagicMock()):
+        with patch.object(mod.yt_dlp, "YoutubeDL", _RaisingYDL), patch.object(mod, "_TT_RL", MagicMock()):
             result = engine._extract_tiktok_live_hls_url("https://vt.tiktok.com/ZS9/")
 
         assert result is None
@@ -349,12 +373,12 @@ class TestDownloadTiktokLiveDirect:
     def test_ffmpeg_not_found_raises_runtime_error(self, tmp_path):
         engine = self._engine(tmp_path)
         task = _make_live_task()
-        with patch.object(mod, "get_ffmpeg_path", return_value=""), \
-             patch("subprocess.Popen", side_effect=FileNotFoundError()):
+        with (
+            patch.object(mod, "get_ffmpeg_path", return_value=""),
+            patch("subprocess.Popen", side_effect=FileNotFoundError()),
+        ):
             with pytest.raises(RuntimeError, match="FFmpeg"):
-                engine._download_live_hls_direct(
-                    self.HLS, str(tmp_path / "o.ts"), task, "", None
-                )
+                engine._download_live_hls_direct(self.HLS, str(tmp_path / "o.ts"), task, "", None)
 
     def _proc(self, returncode, stderr_lines=b""):
         import io
@@ -369,8 +393,10 @@ class TestDownloadTiktokLiveDirect:
         engine = self._engine(tmp_path)
         task = _make_live_task()
         progressed = []
-        with patch.object(mod, "get_ffmpeg_path", return_value=""), \
-             patch("subprocess.Popen", return_value=self._proc(0)):
+        with (
+            patch.object(mod, "get_ffmpeg_path", return_value=""),
+            patch("subprocess.Popen", return_value=self._proc(0)),
+        ):
             engine._download_live_hls_direct(
                 self.HLS, str(tmp_path / "o.ts"), task, "", lambda t: progressed.append(t)
             )
@@ -381,37 +407,37 @@ class TestDownloadTiktokLiveDirect:
     def test_nonzero_exit_raises_with_stderr_tail(self, tmp_path):
         engine = self._engine(tmp_path)
         task = _make_live_task()
-        with patch.object(mod, "get_ffmpeg_path", return_value=""), \
-             patch("subprocess.Popen", return_value=self._proc(1, b"404 Not Found\n")):
+        with (
+            patch.object(mod, "get_ffmpeg_path", return_value=""),
+            patch("subprocess.Popen", return_value=self._proc(1, b"404 Not Found\n")),
+        ):
             with pytest.raises(RuntimeError, match="exited with code 1"):
-                engine._download_live_hls_direct(
-                    self.HLS, str(tmp_path / "o.ts"), task, "", None
-                )
+                engine._download_live_hls_direct(self.HLS, str(tmp_path / "o.ts"), task, "", None)
 
     def test_cancel_kills_process_and_raises_download_error(self, tmp_path):
         engine = self._engine(tmp_path)
         task = _make_live_task()
         task.cancel()
         proc = self._proc(None)
-        with patch.object(mod, "get_ffmpeg_path", return_value=""), \
-             patch("subprocess.Popen", return_value=proc):
+        with (
+            patch.object(mod, "get_ffmpeg_path", return_value=""),
+            patch("subprocess.Popen", return_value=proc),
+        ):
             with pytest.raises(yt_dlp.utils.DownloadError, match="Cancelled"):
-                engine._download_live_hls_direct(
-                    self.HLS, str(tmp_path / "o.ts"), task, "", None
-                )
+                engine._download_live_hls_direct(self.HLS, str(tmp_path / "o.ts"), task, "", None)
         proc.kill.assert_called()
 
     def test_stall_watchdog_kills_after_no_data(self, tmp_path):
         engine = self._engine(tmp_path)
         task = _make_live_task()
         proc = self._proc(None)
-        with patch.object(mod, "get_ffmpeg_path", return_value=""), \
-             patch.object(mod.time, "sleep"), \
-             patch("subprocess.Popen", return_value=proc):
+        with (
+            patch.object(mod, "get_ffmpeg_path", return_value=""),
+            patch.object(mod.time, "sleep"),
+            patch("subprocess.Popen", return_value=proc),
+        ):
             with pytest.raises(RuntimeError, match="stall watchdog"):
-                engine._download_live_hls_direct(
-                    self.HLS, str(tmp_path / "o.ts"), task, "", None
-                )
+                engine._download_live_hls_direct(self.HLS, str(tmp_path / "o.ts"), task, "", None)
         proc.kill.assert_called()
 
 
@@ -430,8 +456,10 @@ class TestDownloadTiktokLiveHlsCurl:
 
     def _run(self, engine, tmp_path, task, session, on_progress=None):
         out = tmp_path / "o.ts"
-        with patch(f"{_TLC}._get_impersonate_session", return_value=session), \
-             patch(f"{_TLC}._load_cookie_jar", return_value=None):
+        with (
+            patch(f"{_TLC}._get_impersonate_session", return_value=session),
+            patch(f"{_TLC}._load_cookie_jar", return_value=None),
+        ):
             engine._download_tiktok_live_hls_curl(self.HLS, str(out), task, "", on_progress)
         return out
 

@@ -98,6 +98,9 @@ class Pass0WebcastApi(LiveDetectionStrategy):
                 if resp.status_code != 200:
                     # Webcast API errors are not authoritative (user may still exist).
                     # Only Pass-1 (profile page) raises hard 404/429 errors.
+                    # BUG-TT-PROBE-429 FIX: see pass3_user_api — HealthDaemon must
+                    # record no verdict for a non-200, not a probe success.
+                    ctx.network_error = True
                     logger.debug(
                         "tiktok_detection: @%s pass-0 HTTP %s (params=%s)",
                         ctx.username,

@@ -1209,6 +1209,11 @@ VI: dict[str, str] = {
         "gallery-dl không tìm thấy nội dung tại URL này.\n"
         "Kiểm tra URL hoặc thử refresh cookie."
     ),
+    "err.fb_post_advert_only": (
+        "Bài viết Facebook này chỉ chứa ảnh.\n"
+        "Video duy nhất yt-dlp thấy là quảng cáo Facebook chèn vào trang, không phải nội dung của bài viết.\n"
+        "Hãy refresh cookie Facebook trong Cài đặt → Mạng rồi thử lại."
+    ),
     "err.gdl_timeout": "gallery-dl hết thời gian khi lấy thông tin URL.",
     "err.gdl_missing_binary": "Không tìm thấy gallery-dl.\nCài đặt: pip install gallery-dl",
     "gdl.photo_count": "{count} ảnh",
@@ -2601,6 +2606,12 @@ EN: dict[str, str] = {
         "Then restart OmniDL."
     ),
     "err.gdl_no_content": "gallery-dl found no content at this URL.\nCheck the URL, or refresh the cookie.",
+    "err.fb_post_advert_only": (
+        "This Facebook post holds photos only.\n"
+        "The one video yt-dlp found is an advert Facebook injected into the page, "
+        "not the post itself.\n"
+        "Refresh the Facebook cookie in Settings -> Network and try again."
+    ),
     "err.gdl_timeout": "gallery-dl timed out while reading the URL info.",
     "err.gdl_missing_binary": "gallery-dl was not found.\nInstall it with: pip install gallery-dl",
     "gdl.photo_count": "{count} photos",
@@ -3861,6 +3872,11 @@ ZH: dict[str, str] = {
     "err.gdl_unknown": "gallery-dl 失败，原因未知。",
     "err.gdl_not_installed": "尚未安装 gallery-dl。\n请运行：pip install gallery-dl\n然后重启 OmniDL。",
     "err.gdl_no_content": "gallery-dl 在该 URL 未找到任何内容。\n请检查 URL，或刷新 Cookie。",
+    "err.fb_post_advert_only": (
+        "该 Facebook 帖子只包含图片。\n"
+        "yt-dlp 找到的唯一视频是 Facebook 注入页面的广告，并非帖子本身的内容。\n"
+        "请在设置 → 网络中刷新 Facebook Cookie 后重试。"
+    ),
     "err.gdl_timeout": "gallery-dl 读取 URL 信息时超时。",
     "err.gdl_missing_binary": "找不到 gallery-dl。\n请安装：pip install gallery-dl",
     "gdl.photo_count": "{count} 张图片",

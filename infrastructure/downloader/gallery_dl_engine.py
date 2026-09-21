@@ -98,7 +98,7 @@ _FB_POST_RE = re.compile(
     r"facebook\.com/(?:"
     r"story\.php\?[^#]*\bstory_fbid=|"
     r"permalink\.php\?[^#]*\bstory_fbid=|"
-    r"(?:groups/[^/?#]+/)?[^/?#]+/posts/|"
+    r"(?:[^/?#]+/)+posts/|"
     r"share/p/"
     r")",
     re.I,
@@ -108,6 +108,49 @@ _FB_POST_RE = re.compile(
 def is_facebook_post_url(url: str) -> bool:
     """True for a Facebook feed post that may mix photos, music and video."""
     return bool(_FB_POST_RE.search(url))
+
+
+# BUG-FB-ADVID: yt-dlp's FacebookIE builds its entry list from every relay
+# payload on the post page (parse_attachment over `nodes`), and Facebook injects
+# suggested / sponsored story nodes into that same payload.  On a photo-only post
+# the requested story yields nothing, so the rescue pass below happily returned
+# the *advert* video instead of the photos.  Log evidence (omnidl_debug.log,
+# 2026-09-20): the same advert 1767163571189463 came back for two unrelated
+# posts -- 1750153570452113 owned by 100063724590889 (09:06:01, task a09e9e9f)
+# and 122230506620352435 owned by 61560573071079 (19:29:48, task b8e31171).
+#
+# A *playlist* entry carries uploader_id = owner.id, so the post owner taken from
+# the URL discriminates those.  A lone entry does NOT: FacebookIE returns
+# merge_dicts(webpage_info, video_info) for a single result and webpage_info
+# carries the *post* owner, which wins -- so the advert inherits the post owner's
+# id and slips past an owner-only filter.  strict_story_id below covers that case.
+_FB_OWNER_POSTS_RE = re.compile(r"facebook\.com/(\d+)/posts/", re.I)
+_FB_OWNER_QUERY_RE = re.compile(r"facebook\.com/[^#]*[?&]id=(\d+)", re.I)
+_FB_STORY_POSTS_RE = re.compile(r"facebook\.com/(?:[^/?#]+/)+posts/(\d+)", re.I)
+_FB_STORY_QUERY_RE = re.compile(r"facebook\.com/[^#]*[?&]story_fbid=(\d+)", re.I)
+
+
+def facebook_owner_id(url: str) -> str:
+    """Numeric owner id of a Facebook post URL, or "" when it cannot be derived.
+
+    Group posts are excluded: /groups/<gid>/posts/<id> puts the group id where
+    the owner id would be, and the real owner is the posting member.
+    """
+    if re.search(r"facebook\.com/groups/", url, re.I):
+        return ""
+    m = _FB_OWNER_POSTS_RE.search(url) or _FB_OWNER_QUERY_RE.search(url)
+    return m.group(1) if m else ""
+
+
+def facebook_story_id(url: str) -> str:
+    """Numeric story id of a Facebook post URL, or "" when there is none.
+
+    An opaque "pfbid..." story token is deliberately not returned: yt-dlp's
+    info["id"] is always numeric, so such a token can neither confirm nor deny
+    a match and a strict comparison against it would reject every video.
+    """
+    m = _FB_STORY_QUERY_RE.search(url) or _FB_STORY_POSTS_RE.search(url)
+    return m.group(1) if m else ""
 
 
 def normalize_gallery_dl_url(url: str) -> str:
@@ -130,6 +173,56 @@ def normalize_gallery_dl_url(url: str) -> str:
         logger.debug("gallery-dl: rewrote story.php URL %s -> %s", url, rewritten)
         return rewritten
     return url
+
+
+# BUG-FB-PCB: gallery-dl's FacebookSetExtractor reaches a feed post by two
+# different routes, and only one of them works for a multi-photo post.
+#
+#   "/<owner>/posts/<story_fbid>"  -> parses the post page itself.  Facebook
+#       serves that page without any photo payload, so parse_post_page() finds
+#       no '"__isMedia":"Photo"' block, post_photo stays empty and items()
+#       dies on `params["fbid"]` with KeyError 'fbid'.
+#   "/media/set/?set=pcb.<story_fbid>" -> asks for the post's photo set
+#       directly and never needs the post page.
+#
+# Log evidence (omnidl_debug.log 2026-09-20 22:06:11 and 22:13:28, story
+# 122182130744968412): the posts route returned no content on both attempts,
+# so the BUG-FB-ADVID guard in yt_dlp_engine had nothing to compare against
+# and kept the injected advert video 1789050085345855.  The pcb route resolves
+# the same story to set pcb.122182130744968412 / first photo
+# 122182130522968412.
+#
+# Try the set route first and keep the posts route behind it: a single-photo
+# post has no pcb set, and there parse_post_page's post_photo fallback is what
+# finds the image.
+def gallery_dl_url_candidates(url: str) -> list[str]:
+    """URL forms to hand gallery-dl for *url*, best first (never empty)."""
+    primary = normalize_gallery_dl_url(url)
+    story_id = facebook_story_id(primary)
+    if not story_id:
+        return [primary]
+    return [f"https://www.facebook.com/media/set/?set=pcb.{story_id}", primary]
+
+
+def _parse_dump_json(stdout: str) -> list[dict[str, Any]]:
+    """Collect the image entries from gallery-dl ``--dump-json`` output.
+
+    gallery-dl emits one JSON array per line:
+        [1, "url", {metadata}]  → type 1 = image URL
+        [0, {...}]              → type 0 = message / count info
+    """
+    items: list[dict[str, Any]] = []
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, list) and len(obj) >= 3 and obj[0] == 1:
+            items.append(obj[2])
+    return items
 
 
 def _find_executable() -> Optional[str]:
@@ -272,6 +365,8 @@ def _ytdlp_carousel_videos(
     ffmpeg_dir: Optional[str] = None,
     max_retries: int = 0,
     rescue_dir: Optional[Path] = None,
+    owner_id: str = "",
+    strict_story_id: str = "",
 ) -> list[str]:
     """Download all VIDEO items in an Instagram carousel with proper audio.
 
@@ -325,6 +420,34 @@ def _ytdlp_carousel_videos(
         opts["proxy"] = proxy
     if ffmpeg_dir:
         opts["ffmpeg_location"] = ffmpeg_dir
+
+    # BUG-FB-ADVID: drop the suggested / sponsored videos Facebook injects into
+    # the post page (see the comment on _FB_OWNER_POSTS_RE above).
+    #
+    # strict_story_id is set only when gallery-dl saved no image for a Facebook
+    # post — the post is then known to hold no photo set, so the sole legitimate
+    # video is the requested story itself and anything else is page furniture.
+    # Otherwise fall back to the owner comparison, which is what discriminates
+    # the entries of a multi-video post.
+    # ponytail: a profile owner can surface as an opaque "pfbid..." uploader_id
+    # that no numeric post URL can be compared against, so those are let through
+    # rather than risk dropping a real video.
+    if owner_id or strict_story_id:
+
+        def _reject_advert(info: dict, *, incomplete: bool = False) -> Optional[str]:
+            if incomplete:
+                return None
+            vid = str(info.get("id") or "")
+            if strict_story_id:
+                if vid == strict_story_id:
+                    return None
+                return f"not this post's video (id {vid} != story {strict_story_id})"
+            uid = str(info.get("uploader_id") or info.get("channel_id") or "")
+            if not uid.isdigit() or uid == owner_id:
+                return None
+            return f"not part of this post (uploader {uid} != {owner_id})"
+
+        opts["match_filter"] = _reject_advert
 
     # BUG-BT: when rescue_dir is provided, scan only that directory with a tight
     # window (dl_start_ts, no -5s offset) so gallery-dl's just-written silent
@@ -473,26 +596,33 @@ class GalleryDlEngine:
         Raises RuntimeError on failure.
         """
         base_cmd, cookie_temp = self._base_cmd(url=url)
-        _gdl_url = normalize_gallery_dl_url(url)
-        cmd = base_cmd + ["--dump-json", "--no-download", _gdl_url]
-        logger.debug("gallery-dl extract_info: %s", cmd)
-
+        # BUG-FB-PCB: walk the candidate forms until one yields items.
+        items: list[dict[str, Any]] = []
+        result: subprocess.CompletedProcess[str] | None = None
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                # 30 s was enough for a single Instagram post but truncated
-                # --dump-json on large Facebook albums (one JSON line per photo).
-                timeout=90,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=_WIN_NO_WINDOW,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(t("err.gdl_timeout")) from None
-        except FileNotFoundError:
-            raise RuntimeError(t("err.gdl_missing_binary")) from None
+            for _gdl_url in gallery_dl_url_candidates(url):
+                cmd = base_cmd + ["--dump-json", "--no-download", _gdl_url]
+                logger.debug("gallery-dl extract_info: %s", cmd)
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        # 30 s was enough for a single Instagram post but truncated
+                        # --dump-json on large Facebook albums (one JSON line per photo).
+                        timeout=90,
+                        encoding="utf-8",
+                        errors="replace",
+                        creationflags=_WIN_NO_WINDOW,
+                    )
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(t("err.gdl_timeout")) from None
+                except FileNotFoundError:
+                    raise RuntimeError(t("err.gdl_missing_binary")) from None
+                items = _parse_dump_json(result.stdout)
+                if items:
+                    break
+                logger.debug("gallery-dl extract_info: no items for %s", _gdl_url)
         finally:
             # Always clean up decrypted temp cookie file, even on error.
             if cookie_temp:
@@ -505,24 +635,9 @@ class GalleryDlEngine:
                 except Exception:
                     pass
 
-        # gallery-dl --dump-json emits one JSON array per line:
-        # [1, "url", {metadata}]  → type 1 = image URL
-        # [0, {...}]              → type 0 = message / count info
-        items: list[dict[str, Any]] = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line.startswith("["):
-                continue
-            try:
-                obj = json.loads(line)
-                if isinstance(obj, list) and len(obj) >= 3 and obj[0] == 1:
-                    items.append(obj[2])
-            except json.JSONDecodeError:
-                continue
-
         if not items:
-            stderr = result.stderr.strip()
-            if result.returncode != 0 or stderr:
+            stderr = result.stderr.strip() if result else ""
+            if (result is not None and result.returncode != 0) or stderr:
                 raise RuntimeError(_friendly_error(stderr or "No items found"))
             raise RuntimeError(t("err.gdl_no_content"))
 
@@ -655,6 +770,10 @@ class GalleryDlEngine:
 
         base_cmd, cookie_temp = self._base_cmd(url=task.url)
         _gdl_url = normalize_gallery_dl_url(task.url)
+        # BUG-FB-PCB: hand gallery-dl every candidate form in one run — it walks
+        # them in order and the duplicate of a form that already worked is
+        # skipped, since both write "{id}.{extension}" into the same directory.
+        _gdl_urls = gallery_dl_url_candidates(task.url)
         if _is_ig_carousel:
             cmd = base_cmd + [
                 "--filter",
@@ -663,7 +782,7 @@ class GalleryDlEngine:
                 str(output_dir),
                 "--directory",
                 ".",
-                _gdl_url,
+                *_gdl_urls,
             ]
         else:
             cmd = base_cmd + [
@@ -671,9 +790,9 @@ class GalleryDlEngine:
                 str(output_dir),
                 "--directory",
                 ".",
-                _gdl_url,
+                *_gdl_urls,
             ]
-        logger.info("gallery-dl download: %s → %s", _gdl_url, output_dir)
+        logger.info("gallery-dl download: %s → %s", _gdl_urls, output_dir)
 
         # BUG-BV: capture wall-clock time before the subprocess starts so the
         # fallback scan can scope results to files created in THIS session only.
@@ -967,6 +1086,15 @@ class GalleryDlEngine:
                     ffmpeg_dir=_ffmpeg_dir,
                     max_retries=0,
                     rescue_dir=_video_out_dir,
+                    owner_id=(facebook_owner_id(_gdl_url) or facebook_owner_id(task.url))
+                    if _is_fb_post
+                    else "",
+                    # BUG-FB-ADVID: no image saved => gallery-dl proved the post
+                    # holds no photo set, so only the requested story's own video
+                    # may be rescued.
+                    strict_story_id=(facebook_story_id(_gdl_url) or facebook_story_id(task.url))
+                    if (_is_fb_post and not _image_files)
+                    else "",
                 )
             finally:
                 if _vid_cookie_is_temp and _vid_cookie:
@@ -990,8 +1118,7 @@ class GalleryDlEngine:
                 )
             else:
                 logger.info(
-                    "%s: no video items rescued for %s — "
-                    "post is image-only, or the video download failed",
+                    "%s: no video items rescued for %s — post is image-only, or the video download failed",
                     "Facebook post" if _is_fb_post else "Instagram carousel",
                     _gdl_url,
                 )

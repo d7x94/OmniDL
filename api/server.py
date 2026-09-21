@@ -719,6 +719,10 @@ def create_app(
             entry["done"].set()
 
         def on_error(err: str) -> None:
+            # Logged because the outcome of an analyse job was otherwise absent
+            # from the log: a failing URL showed only "new job for ..." and then
+            # nothing, leaving no way to tell a failure from a hang.
+            logger.info("Analyse failed for %s — %s", clean_url[:80], err)
             with _analyse_cache_lock:
                 entry["result"]["error"] = err
                 entry["ts"] = time.monotonic()
