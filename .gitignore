@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 *.egg
+*.bak
 
 # Ruff / type checker
 .ruff_cache/
