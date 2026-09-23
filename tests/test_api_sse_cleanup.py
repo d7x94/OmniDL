@@ -121,6 +121,61 @@ class TestAnalyseCacheEviction:
         asyncio.run(_run())
 
 
+    def test_disconnect_mid_analysis_keeps_the_running_job(self):
+        """A reconnecting client must attach to the running job, not start a second one.
+
+        omnidl_debug.log 2026-09-22 18:50:27 / 18:51:15: the PWA's EventSource
+        dropped mid-analysis, the finally block evicted the still-running entry,
+        and the reconnect spawned a duplicate yt-dlp + gallery-dl extraction.
+        """
+        calls = []
+        callbacks = {}
+
+        def _analyse(url, on_done, on_error):
+            calls.append(url)
+            callbacks["on_done"] = on_done
+
+        service = SimpleNamespace(get_all_tasks=lambda: [], analyse_url=_analyse)
+        app = srv.create_app(service, SimpleNamespace(api_token=""))  # type: ignore[arg-type]
+        endpoint = _endpoint(app, "/api/analyse/stream")
+        url = "https://example.com/video"
+
+        async def _run():
+            response = await endpoint(url=url, _=None)
+            task = asyncio.ensure_future(response.body_iterator.__anext__())
+            await asyncio.sleep(0.1)
+            task.cancel()  # client disconnects while the job is still running
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await response.body_iterator.aclose()
+
+            assert url in srv._analyse_cache, "running job was evicted on disconnect"
+
+            await endpoint(url=url, _=None)  # client reconnects
+            assert len(calls) == 1, "reconnect spawned a duplicate extraction"
+
+        asyncio.run(_run())
+
+    def test_error_after_all_clients_left_is_not_cached(self):
+        """An error that lands with no listener is dropped, so a retry starts fresh."""
+        callbacks = {}
+
+        def _analyse(url, on_done, on_error):
+            callbacks["on_error"] = on_error
+
+        service = SimpleNamespace(get_all_tasks=lambda: [], analyse_url=_analyse)
+        app = srv.create_app(service, SimpleNamespace(api_token=""))  # type: ignore[arg-type]
+        endpoint = _endpoint(app, "/api/analyse/stream")
+        url = "https://example.com/video"
+
+        async def _run():
+            await endpoint(url=url, _=None)  # generator never started: refs == 0
+            callbacks["on_error"]("boom")
+            assert url not in srv._analyse_cache
+
+        asyncio.run(_run())
+
+
 class TestBroadcastSkipsSerialisation:
     def test_no_clients_means_no_json_dump(self, monkeypatch):
         srv._sse_clients.clear()
