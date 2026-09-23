@@ -15,6 +15,15 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.8 - 2026-09-23
+
+### Fixed
+
+- Remote App: when the phone's connection dropped during analysis and reconnected, the same link was analysed a second time from scratch instead of waiting for the running job
+- Taildrop: a transfer that failed for a reason other than the filename (for example `502 Bad Gateway`, iPhone unreachable) no longer re-uploads the whole file under an ASCII name
+
+---
+
 ## v20.3.7 - 2026-09-20
 
 ### Fixed

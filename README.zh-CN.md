@@ -1,6 +1,6 @@
 [English](README.md) | [Tiếng Việt](README.vi.md) | 简体中文
 
-# OmniDL v20.3.7
+# OmniDL v20.3.8
 
 一款桌面媒体下载工具，支持 YouTube、TikTok、Instagram、Twitter/X、Facebook 及 1000 多个网站——基于 Python、PySide6、yt-dlp 和 gallery-dl 构建。
 
@@ -79,6 +79,7 @@ uv run python main.py
 | Remote App 中出现 "Unauthorized" | 令牌错误或缺失 | Settings → Remote API → 复制令牌并重新输入 |
 | iPhone 未出现在 Detect nodes 中 | iPhone 的 Tailscale 未开启或离线 | 打开 iPhone 上的 Tailscale，确认已连接 |
 | Taildrop 报错 `400 Bad Request` | 文件名含特殊字符 | OmniDL 会先尝试发送完整 Unicode 文件名，失败后自动重试转换为 ASCII 的名称；若仍失败，请更新 iPhone 上的 Tailscale |
+| Taildrop 报错 `502 Bad Gateway` | 无法连接 iPhone（Tailscale 休眠或离线） | 在 iPhone 上打开 Tailscale 后重新发送；OmniDL 遇到此错误不会自动重试 |
 | 文件已发送但没有通知 | iOS 未开启 Tailscale 通知 | iPhone Settings → Notifications → Tailscale → 允许 |
 | Remote App 变慢 / SSE（Server-Sent Events，用于实时进度推送）中断 | Tailscale 连接不稳定 | 在 Tailscale 设置中切换为中继模式 |
 
