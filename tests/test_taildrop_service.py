@@ -244,6 +244,31 @@ class TestSendFileNameFlag:
         assert r.sent_name == ""
         svc.close()
 
+    def test_non_filename_error_does_not_retry_ascii(self, tmp_path):
+        """A 502 says the peer is unreachable, not that the name is bad - no ASCII retry.
+
+        omnidl_debug.log 2026-09-22 18:23:36: a 706 MiB live recording was
+        uploaded twice because every failure triggered the ASCII fallback.
+        """
+        f = tmp_path / "_ongchu18tuoi_ - Cf thủ đức đê [7688293123251915521].ts"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = "502 Bad Gateway:"
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=fail) as mock_run,
+        ):
+            r = svc.send_file(f, "iphone")
+
+        assert not r.success
+        assert mock_run.call_count == 1
+        assert "502 Bad Gateway" in r.error
+        svc.close()
+
     def test_timeout_does_not_retry(self, tmp_path):
         """A timeout says nothing about the filename — no second attempt."""
         f = tmp_path / "phim tiếng Việt.mp4"

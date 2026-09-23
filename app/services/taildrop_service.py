@@ -741,6 +741,10 @@ class TaildropService:
                     dest_node=node,
                     error=f"tailscale exit {result.returncode}: {stderr}",
                 )
+                # Only a filename rejection is worth an ASCII retry; a 502/offline
+                # peer would just re-upload the whole file and fail again.
+                if "invalid filename" not in stderr.lower():
+                    break
                 if index + 1 < len(attempts):
                     logger.info(
                         "Taildrop: peer rejected %r (%s) — retrying as %r",
