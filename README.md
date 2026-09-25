@@ -1,6 +1,6 @@
 English | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md)
 
-# OmniDL v20.3.7
+# OmniDL v20.3.8
 
 A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
 
@@ -79,6 +79,7 @@ Key settings:
 | "Unauthorized" in the Remote App | Wrong or missing token | Settings → Remote API → copy token, re-enter it |
 | iPhone missing from Detect nodes | iPhone's Tailscale is off or offline | Open Tailscale on iPhone, confirm connected |
 | Taildrop fails with `400 Bad Request` | Unusual characters in filename | OmniDL sends the full Unicode name first and retries once with an ASCII transliteration; if it still fails, update Tailscale on iPhone |
+| Taildrop fails with `502 Bad Gateway` | iPhone unreachable (Tailscale asleep or offline) | Open Tailscale on the iPhone, then send the file again; OmniDL does not retry this error automatically |
 | File sent but no notification | iOS notifications disabled for Tailscale | iPhone Settings → Notifications → Tailscale → allow |
 | Remote App slow / SSE (Server-Sent Events, used for live progress) drops | Unstable Tailscale connection | Switch to relay mode in Tailscale settings |
 

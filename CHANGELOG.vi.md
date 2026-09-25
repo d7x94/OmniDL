@@ -15,6 +15,15 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.8 - 2026-09-23
+
+### Đã sửa
+
+- Remote App: khi điện thoại mất kết nối giữa lúc phân tích rồi nối lại, cùng một link không còn bị phân tích lại từ đầu mà chờ kết quả của lần đang chạy
+- Taildrop: khi gửi thất bại vì lý do khác tên file (ví dụ `502 Bad Gateway`, không liên lạc được iPhone), không còn gửi lại cả file dưới tên ASCII
+
+---
+
 ## v20.3.7 - 2026-09-20
 
 ### Đã sửa

@@ -726,6 +726,10 @@ def create_app(
             with _analyse_cache_lock:
                 entry["result"]["error"] = err
                 entry["ts"] = time.monotonic()
+                # Nobody is listening (every client dropped mid-analysis): do not
+                # keep the error, or a retry within the TTL gets it back instantly.
+                if entry["refs"] == 0 and _analyse_cache.get(clean_url) is entry:
+                    _analyse_cache.pop(clean_url, None)
             entry["done"].set()
 
         if is_new_job:
@@ -744,6 +748,7 @@ def create_app(
             # never iterate this generator when the client drops early, and the
             # matching decrement lives in the finally below.  Registering
             # outside would leave refs stuck above zero and pin the MediaInfo.
+            timed_out = False
             with _analyse_cache_lock:
                 entry["refs"] += 1
             try:
@@ -757,6 +762,7 @@ def create_app(
                 while not done.is_set():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        timed_out = True
                         break
                     # Poll the threading.Event — awaiting keeps this off the
                     # threadpool (sync generators pin a thread per connection).
@@ -808,9 +814,13 @@ def create_app(
                     # over-age / overflowing entries even while refs > 0, so this
                     # key may already hold a *newer* in-flight job.  Popping by
                     # key alone would evict that one and force a duplicate extract.
+                    # A job that is still running is kept: the PWA reconnects after
+                    # an EventSource drop and must attach to it, not start a
+                    # duplicate extract.
                     if (
                         entry["refs"] == 0
                         and "info" not in entry.get("result", {})
+                        and (entry["done"].is_set() or timed_out)
                         and _analyse_cache.get(clean_url) is entry
                     ):
                         # Error or timeout — evict so next request spawns a fresh job.
