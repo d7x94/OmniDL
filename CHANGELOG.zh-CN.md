@@ -15,6 +15,21 @@
 
 ---
 
+## v20.3.10 - 2026-09-28
+
+### 修复
+
+- 图片帖子从 yt-dlp 回退到 gallery-dl 后，清理步骤不再删除其他下载任务正在写入同一文件夹的文件；现在只删除以本任务 yt-dlp 所写媒体 ID 命名的文件（BUG-BU-SWEEP）
+- 直播监控的录制任务在队列中被取消并保留部分文件（`PARTIAL_SAVED`）后，监控条目不再永远停在"录制中"；该条目会结束，账号监控继续（BUG-MON-PARTIAL）
+- 获取 TikTok、Instagram 或 X 主页列表时，解密后的 Cookie 不再在 yt-dlp 读取之前被删除，因此私密主页会以登录状态读取，也不会再写回明文 Cookie 文件（BUG-PROFILE-COOKIE）
+- 取消 gallery-dl 下载（Instagram、Facebook、X 图片）时会立即停止 gallery-dl，而不是等它下载完（BUG-GDL-CANCEL）
+- 被取消或失败的 gallery-dl 下载不再在磁盘上留下解密后的会话 Cookie 文件（BUG-GDL-COOKIE-LEAK）
+- gallery-dl 无法下载的 Instagram 帖子（需要登录、私密、限流）现在会报告失败，而不是显示完成却没有文件（BUG-GDL-IG-SILENT）
+- 仅含图片的 X 帖子现在改用 gallery-dl 下载，不再重试 3 次后以 "No video could be found in this tweet" 失败（BUG-X-PHOTO）
+- 向 Remote API 重复发送同一个 TikTok 短链接不再为同一场直播开始第二个录制（BUG-DUP-CANONICAL）
+
+---
+
 ## v20.3.9 - 2026-09-28
 
 ### 修复

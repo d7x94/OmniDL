@@ -86,6 +86,10 @@ class DownloadTask:
     # gallery-dl image downloads).  Used by TaildropService to zip only the
     # newly-downloaded files instead of the entire account directory.
     gallery_dl_files: list = field(default_factory=list)  # list[str]
+    # Media ids yt-dlp wrote files for in this task.  Every yt-dlp VOD
+    # filename carries "[<id>]", so the BUG-BU orphan sweep matches on these
+    # instead of deleting every new file in a folder other tasks share.
+    ytdlp_ids: list = field(default_factory=list)  # list[str]
 
     # ── Timing ────────────────────────────────────────────────────────────
     created_at: float = field(default_factory=time.time)

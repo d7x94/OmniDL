@@ -1,6 +1,6 @@
 [project]
 name = "omnidl"
-version = "20.3.9"
+version = "20.3.10"
 description = "Ultimate Media Downloader"
 requires-python = ">=3.11"
 dependencies = [

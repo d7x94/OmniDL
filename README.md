@@ -1,6 +1,6 @@
 English | [Tiếng Việt](README.vi.md) | [简体中文](README.zh-CN.md)
 
-# OmniDL v20.3.9
+# OmniDL v20.3.10
 
 A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, and 1000+ sites — built with Python, PySide6, yt-dlp, and gallery-dl.
 

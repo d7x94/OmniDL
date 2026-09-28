@@ -849,7 +849,8 @@ class LiveMonitorTab(QWidget):
                 continue
             snap = task.snapshot()
             status = snap.get("status")
-            if status == DownloadStatus.COMPLETED:
+            # BUG-MON-PARTIAL: see LiveMonitorService._refresh_recording_items.
+            if status in (DownloadStatus.COMPLETED, DownloadStatus.PARTIAL_SAVED):
                 item.state = _MonitorState.ENDED
                 item.filename = snap.get("filename", "") or ""
                 if item.is_profile_watch:

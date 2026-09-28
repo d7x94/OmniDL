@@ -15,6 +15,21 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.10 - 2026-09-28
+
+### Đã sửa
+
+- Khi bài ảnh chuyển từ yt-dlp sang gallery-dl, bước dọn dẹp không còn xoá file mà các lượt tải khác đang ghi vào cùng thư mục; giờ chỉ xoá file mang mã media mà yt-dlp đã ghi cho chính task này (BUG-BU-SWEEP)
+- Bản ghi của Theo dõi live bị huỷ từ hàng đợi nhưng giữ file dở (`PARTIAL_SAVED`) không còn làm dòng theo dõi kẹt mãi ở "Đang ghi"; dòng đó kết thúc và việc theo dõi tài khoản tiếp tục (BUG-MON-PARTIAL)
+- Khi lấy danh sách video của trang cá nhân TikTok, Instagram hoặc X, cookie đã giải mã không còn bị xoá trước khi yt-dlp đọc, nên trang riêng tư được đọc khi đã đăng nhập và không còn file cookie dạng chữ thường bị ghi lại (BUG-PROFILE-COOKIE)
+- Huỷ một lượt tải bằng gallery-dl (ảnh Instagram, Facebook, X) giờ dừng gallery-dl ngay thay vì chờ nó tải xong (BUG-GDL-CANCEL)
+- Lượt tải gallery-dl bị huỷ hoặc lỗi không còn để lại file cookie phiên đã giải mã trên ổ đĩa (BUG-GDL-COOKIE-LEAK)
+- Bài Instagram mà gallery-dl không tải được (cần đăng nhập, riêng tư, bị giới hạn) giờ báo lỗi thay vì báo hoàn tất mà không có file (BUG-GDL-IG-SILENT)
+- Bài X chỉ có ảnh giờ được tải bằng gallery-dl thay vì thất bại sau 3 lần thử với lỗi "No video could be found in this tweet" (BUG-X-PHOTO)
+- Gửi cùng một link rút gọn TikTok tới Remote API hai lần không còn tạo bản ghi thứ hai cho cùng một buổi live (BUG-DUP-CANONICAL)
+
+---
+
 ## v20.3.9 - 2026-09-28
 
 ### Đã sửa

@@ -351,6 +351,9 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("m.ok.ru", "ok_ru"),
 ]
 
+# yt-dlp TwitterIE's raise_no_formats() text for a tweet that holds only photos.
+_X_PHOTO_ONLY_MSG = "no video could be found in this tweet"
+
 _IG_RL = _PlatformRateLimiter(1.5)
 _FB_RL = _PlatformRateLimiter(1.0)
 _TW_RL = _PlatformRateLimiter(0.8)
@@ -1327,13 +1330,13 @@ class YtDlpEngine:
         # Profile / channel fast-path (after opts are built so cookie/proxy
         # are included in the flat playlist fetch).
         if _PROFILE_URL_RE.search(url):
-            # Clean temp cookie before early return (playlist path)
-            if _cookie_temp_ei:
-                try:
-                    Path(_cookie_temp_ei).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return self._extract_playlist_flat(url, opts)
+            # BUG-PROFILE-COOKIE: delete only after the flat extract -- opts
+            # still points yt-dlp at this file, and YoutubeDL.close() saves
+            # the jar back to it.
+            try:
+                return self._extract_playlist_flat(url, opts)
+            finally:
+                _drop_temp_cookie()
 
         # Rate-limit per-platform to reduce HTTP 429 risk when analyse and download
         # fire concurrently (shared per-platform limiter with _extract_tiktok_live_hls_url).
@@ -1401,10 +1404,16 @@ class YtDlpEngine:
                 # same URL into a photo set, so treat it as the photo signal.
                 if _photo_platform == "facebook" and "cannot parse data" in msg_l:
                     _is_photo_error = True
-                if _is_photo_error and _photo_platform in ("instagram", "facebook"):
+                # BUG-X-PHOTO: TwitterIE drops photo media and ends an image-only
+                # tweet with this message; gallery-dl downloads the images.
+                if _photo_platform == "twitter" and _X_PHOTO_ONLY_MSG in msg_l:
+                    _is_photo_error = True
+                if _is_photo_error and _photo_platform in ("instagram", "facebook", "twitter"):
                     m = _ig_photo_re.search(url)
                     shortcode = m.group(1) if m else ""
-                    _photo_label = "Instagram" if _photo_platform == "instagram" else "Facebook"
+                    _photo_label = {"instagram": "Instagram", "facebook": "Facebook"}.get(
+                        _photo_platform, "Twitter/X"
+                    )
                     logger.info(
                         "%s photo detected (no video stream) — "
                         "returning synthetic MediaInfo for photo path: %s",
@@ -4542,6 +4551,9 @@ class YtDlpEngine:
                 raise yt_dlp.utils.DownloadError("Cancelled by user")
 
             status = d.get("status", "")
+            _vid = str((d.get("info_dict") or {}).get("id") or "")
+            if _vid and _vid not in task.ytdlp_ids:
+                task.ytdlp_ids.append(_vid)
             if status == "downloading":
                 task.status = DownloadStatus.DOWNLOADING
                 task.downloaded_bytes = d.get("downloaded_bytes") or 0

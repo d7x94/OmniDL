@@ -551,19 +551,6 @@ class DownloadService:
         existing task is returned immediately — no duplicate is created.
         Re-downloading a COMPLETED/FAILED/CANCELLED URL always starts a new job.
         """
-        # Duplicate guard: only block active (not terminal) duplicates.
-        for existing in self._manager.get_all_tasks():
-            if existing.url == url and existing.status in DownloadStatus.active_states():
-                logger.info(
-                    "Duplicate URL ignored — task %s already active: %s",
-                    existing.id,
-                    url,
-                )
-                return existing
-
-        resolved_dir = output_dir or self._config.download_dir
-        resolved_dir.mkdir(parents=True, exist_ok=True)
-
         # If media_info carries a resolved canonical URL (e.g. TikTok short-link
         # resolved to /@user/live during analyse), use it as task.url so yt-dlp
         # receives the canonical URL directly instead of re-resolving the short
@@ -576,6 +563,21 @@ class DownloadService:
             and media_info.url.startswith("http")
         ):
             task_url = media_info.url
+
+        # Duplicate guard: only block active (not terminal) duplicates.
+        # BUG-DUP-CANONICAL: tasks are stored under task_url, so compare that
+        # too -- the same short link posted twice was never caught.
+        for existing in self._manager.get_all_tasks():
+            if existing.url in (url, task_url) and existing.status in DownloadStatus.active_states():
+                logger.info(
+                    "Duplicate URL ignored — task %s already active: %s",
+                    existing.id,
+                    url,
+                )
+                return existing
+
+        resolved_dir = output_dir or self._config.download_dir
+        resolved_dir.mkdir(parents=True, exist_ok=True)
 
         task = DownloadTask(
             url=task_url,

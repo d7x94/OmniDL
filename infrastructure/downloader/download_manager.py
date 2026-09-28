@@ -729,6 +729,8 @@ class DownloadManager:
                     # yt_dlp_engine.extract_info.  Without it a Remote API task
                     # that did not forward source_engine never reached gallery-dl.
                     or ("cannot parse data" in msg and "facebook.com" in task.url.lower())
+                    # BUG-X-PHOTO: TwitterIE's wording for an image-only tweet.
+                    or "no video could be found in this tweet" in msg
                 )
                 if (
                     _is_photo_error
@@ -871,10 +873,14 @@ class DownloadManager:
                 Path(f).resolve() for f in (getattr(task, "gallery_dl_files", None) or [])
             }
             _deleted_parents: set[Path] = set()
+            # BUG-BU-SWEEP: the root is the shared download folder, so only a
+            # file named after a media id this task's yt-dlp run wrote is ours.
+            _own_marks = [f"[{_i[:30]}]" for _i in task.ytdlp_ids if _i]
             try:
-                for _f in list(_orphan_cleanup_root.rglob("*")):
+                for _f in list(_orphan_cleanup_root.rglob("*")) if _own_marks else []:
                     if (
                         _f.is_file()
+                        and any(_m in _f.name for _m in _own_marks)
                         and _f.resolve() not in _gdl_files_set
                         and _f.stat().st_mtime >= _attempt_start_ts
                     ):

@@ -827,6 +827,25 @@ class GalleryDlEngine:
         if on_progress:
             on_progress(task)
 
+        def _drop_cookie_temp() -> None:
+            if cookie_temp:
+                try:
+                    Path(cookie_temp).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        # BUG-GDL-CANCEL: -q leaves stdout empty, so the kill in the stdout
+        # loop below never runs.  Watch the cancel flag on its own thread.
+        _proc_done = threading.Event()
+
+        def _kill_on_cancel() -> None:
+            while not _proc_done.wait(0.5):
+                if task.is_cancellation_requested:
+                    proc.kill()
+                    return
+
+        threading.Thread(target=_kill_on_cancel, daemon=True).start()
+
         # Drain stderr in a daemon thread to prevent pipe deadlock
         stderr_lines: deque[str] = deque(maxlen=200)
 
@@ -883,12 +902,14 @@ class GalleryDlEngine:
                     logger.debug("gallery-dl downloaded: %s", fp.name)
 
         proc.wait()
+        _proc_done.set()
         stderr_thread.join(timeout=5.0)
 
         # ── Cancel handling ───────────────────────────────────────────────
         if task.is_cancellation_requested:
             from yt_dlp.utils import DownloadError
 
+            _drop_cookie_temp()  # BUG-GDL-COOKIE-LEAK
             raise DownloadError("Cancelled by user")
 
         # ── Error handling ────────────────────────────────────────────────
@@ -898,11 +919,15 @@ class GalleryDlEngine:
         # BUG-FB-POST: for a Facebook feed post this is not yet a failure — the
         # post may hold a video and no photo set at all.  Hold the message and
         # raise it after the yt-dlp pass below only if that finds nothing either.
+        # BUG-GDL-IG-SILENT: a carousel is deferred too, not skipped -- a
+        # login/429 failure with no video rescued below was reported COMPLETED
+        # with nothing saved.
         _deferred_err = ""
-        if proc.returncode != 0 and not downloaded_files and not _is_ig_carousel:
+        if proc.returncode != 0 and not downloaded_files:
             err = "\n".join(ln for ln in stderr_lines if ln and not ln.startswith("[debug]"))
             _deferred_err = _friendly_error(err or "gallery-dl exit code non-zero")
-            if not _is_fb_post:
+            if not (_is_fb_post or _is_ig_carousel):
+                _drop_cookie_temp()  # BUG-GDL-COOKIE-LEAK
                 raise RuntimeError(_deferred_err)
             logger.info("gallery-dl found no photo set for %s — trying the yt-dlp video pass", _gdl_url)
 

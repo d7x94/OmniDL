@@ -15,6 +15,21 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.10 - 2026-09-28
+
+### Fixed
+
+- When a photo post fell back from yt-dlp to gallery-dl, the cleanup step no longer deletes files that other downloads are writing to the same folder; it now removes only files named after media ids that yt-dlp wrote for this task (BUG-BU-SWEEP)
+- A live monitor recording that is cancelled from the queue with its partial file kept (`PARTIAL_SAVED`) no longer leaves the monitor row stuck on "Recording" forever; it ends and the profile watch continues (BUG-MON-PARTIAL)
+- Listing a TikTok, Instagram or X profile no longer deletes the decrypted cookie before yt-dlp reads it, so private profiles are listed logged in and no plaintext cookie file is written back (BUG-PROFILE-COOKIE)
+- Cancelling a gallery-dl download (Instagram, Facebook or X photos) now stops gallery-dl straight away instead of waiting for it to finish (BUG-GDL-CANCEL)
+- A cancelled or failed gallery-dl download no longer leaves the decrypted session cookie file on disk (BUG-GDL-COOKIE-LEAK)
+- An Instagram post that gallery-dl cannot download (login required, private, rate limit) is now reported as failed instead of completed with no file (BUG-GDL-IG-SILENT)
+- Image-only X posts are now downloaded with gallery-dl instead of failing after three retries with "No video could be found in this tweet" (BUG-X-PHOTO)
+- Sending the same TikTok short link to the Remote API twice no longer starts a second recording of the same live (BUG-DUP-CANONICAL)
+
+---
+
 ## v20.3.9 - 2026-09-28
 
 ### Fixed
