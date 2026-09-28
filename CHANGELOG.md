@@ -15,6 +15,15 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.9 - 2026-09-28
+
+### Fixed
+
+- Instagram Live recording no longer logs two asyncio `CancelledError` tracebacks each time the browser closes after capturing the stream URL; stream routes are now removed before Playwright shuts down (BUG-IG-ROUTE-TEARDOWN)
+- When FFmpeg fails on an Instagram Live stream, the log now keeps the last 40 error lines whole instead of the last 600 characters, which cut off the line naming the real error (BUG-IG-STDERR-TAIL)
+
+---
+
 ## v20.3.7 - 2026-09-20
 
 ### Fixed

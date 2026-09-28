@@ -15,6 +15,15 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.9 - 2026-09-28
+
+### Đã sửa
+
+- Ghi livestream Instagram không còn ghi hai traceback asyncio `CancelledError` vào log mỗi khi đóng trình duyệt sau khi lấy được URL stream; các route chặn stream được gỡ trước khi Playwright tắt (BUG-IG-ROUTE-TEARDOWN)
+- Khi FFmpeg lỗi với livestream Instagram, log giờ giữ nguyên vẹn tối đa 40 dòng lỗi cuối thay vì 600 ký tự cuối, vốn cắt mất đúng dòng nêu nguyên nhân (BUG-IG-STDERR-TAIL)
+
+---
+
 ## v20.3.7 - 2026-09-20
 
 ### Đã sửa

@@ -15,6 +15,15 @@
 
 ---
 
+## v20.3.9 - 2026-09-28
+
+### 修复
+
+- 录制 Instagram 直播时，捕获到直播流 URL 后关闭浏览器不再在日志中留下两段 asyncio `CancelledError` 堆栈；现在会在 Playwright 关闭前移除直播流拦截路由（BUG-IG-ROUTE-TEARDOWN）
+- Instagram 直播的 FFmpeg 出错时，日志现在完整保留最后 40 行错误输出，而不是只保留最后 600 个字符（那样会截掉说明真正错误原因的那一行）（BUG-IG-STDERR-TAIL）
+
+---
+
 ## v20.3.7 - 2026-09-20
 
 ### 修复
