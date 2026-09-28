@@ -167,8 +167,7 @@ graphify-out/
 .claude/
 .mcp.json
 
-OmniDL_Skill/
-omnidl_skill_090526_0705/
+omnidl_skill/
 Vande.md
 Claude.md
 .python-version
