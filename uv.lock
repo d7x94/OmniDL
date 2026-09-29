@@ -1396,7 +1396,7 @@ wheels = [
 
 [[package]]
 name = "omnidl"
-version = "20.3.11"
+version = "20.3.12"
 source = { virtual = "." }
 dependencies = [
     { name = "cryptography" },
