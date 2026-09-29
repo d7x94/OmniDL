@@ -15,6 +15,14 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.12 - 2026-09-29
+
+### Đã sửa
+
+- Lấy cookies trong Cài đặt, mục Mạng giờ đọc đúng hồ sơ trình duyệt bạn chọn ở ô Hồ sơ mới, cạnh ô chọn trình duyệt. Trước đây CDP theo nền tảng luôn mở hồ sơ `Default`, nên Instagram nhận cookies của tài khoản khác. Hồ sơ không tồn tại, tên hiển thị thay cho tên thư mục hồ sơ, hoặc cổng đã bị phiên trình duyệt khác chiếm giờ đều báo lỗi rõ ràng. Lần lấy CDP thất bại không còn giữ file cookie cũ và báo thành công (BUG-CDP-PROFILE)
+
+---
+
 ## v20.3.11 - 2026-09-29
 
 ### Đã sửa

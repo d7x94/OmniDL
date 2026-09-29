@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import http.cookiejar
 import logging
+import re
 from pathlib import Path
 
 from utils.i18n import t
@@ -299,6 +300,11 @@ _MAC_PROCESS_NAMES: dict[str, str] = {
 }
 
 _CDP_DEFAULT_PORT = 9223  # avoid clashing with user's own debugging session on 9222
+
+# Chromium profile directory names. Display names ("Personal", "A1") are not
+# accepted: --profile-directory with an unknown name silently opens a new
+# empty profile instead of failing.
+_PROFILE_DIR_RE = re.compile(r"Default|Profile \d+")
 
 # Known user-data directories per Chromium family on Windows.
 _BRAVE_PROFILE_CANDIDATES: list[str] = [
@@ -723,58 +729,65 @@ def extract_via_cdp(
         except Exception:
             pass
 
+    # A browser already listening on the port was not launched by us: it may be
+    # a session of another profile, so reading its cookies could return the
+    # wrong account (BUG-CDP-PROFILE).
+    if port_busy:
+        return 0, t("cookie.err.cdp_port_busy", port=port)
+
     proc = None
     try:
-        if not port_busy:
-            # ── Check if browser is already running ───────────────────────
-            # If running → must close it first so we can launch with the real
-            # profile without file-lock conflicts.
-            # If not running → launch with the real profile dir so CDP reads
-            # the actual cookies (not an empty fresh profile).
-            if _is_browser_running(browser):
-                return 0, t("cookie.err.browser_running", browser=browser.title())
+        # ── Check if browser is already running ───────────────────────────
+        # If running → must close it first so we can launch with the real
+        # profile without file-lock conflicts.
+        # If not running → launch with the real profile dir so CDP reads
+        # the actual cookies (not an empty fresh profile).
+        if _is_browser_running(browser):
+            return 0, t("cookie.err.browser_running", browser=browser.title())
 
-            # ── Find real profile directory ───────────────────────────────
-            profile_dir = _find_browser_profile(browser)
-            if profile_dir is None:
-                return 0, t("cookie.err.profile_dir_missing", browser=browser.title())
+        # ── Find real profile directory ───────────────────────────────────
+        profile_dir = _find_browser_profile(browser)
+        if profile_dir is None:
+            return 0, t("cookie.err.profile_dir_missing", browser=browser.title())
+        if profile and not (_PROFILE_DIR_RE.fullmatch(profile) and (profile_dir / profile).is_dir()):
+            return 0, t("cookie.err.profile_not_found", profile=profile, browser=browser.title())
 
-            cmd = [
-                str(exe),
-                f"--remote-debugging-port={port}",
-                "--remote-debugging-address=127.0.0.1",  # bind to localhost only
-                f"--user-data-dir={profile_dir}",  # real profile with actual cookies
-                "--no-first-run",
-                "--no-default-browser-check",
-                # Chromium keeps a separate cookie jar per profile directory.
-                # Without this flag every extraction returns the *default*
-                # profile's cookies, so a second TikTok account was impossible
-                # to register without logging out in the browser first.
-                f"--profile-directory={profile or 'Default'}",
-                "--disable-extensions-except=",
-                "--disable-background-networking",
-                "--disable-sync",
-                "--window-size=1,1",
-                "--window-position=-32000,-32000",
-                "about:blank",
-            ]
-            logger.info(
-                "Launching %s (profile=%s) for CDP extraction on port %d",
-                browser,
-                profile or "Default",
-                port,
-            )
-            # CREATE_NO_WINDOW suppresses the console window that Brave/Chrome
-            # would briefly create and show to the user.
-            # DETACHED_PROCESS (0x00000008) was previously used but is wrong:
-            # it detaches from the console without preventing a new one from
-            # appearing, causing a CMD flash during each CDP extraction.
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+        cmd = [
+            str(exe),
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1",  # bind to localhost only
+            f"--user-data-dir={profile_dir}",  # real profile with actual cookies
+            "--no-first-run",
+            "--no-default-browser-check",
+            # Chromium keeps a separate cookie jar per profile directory.
+            # Without this flag every extraction returns the *default*
+            # profile's cookies, so a second TikTok account was impossible
+            # to register without logging out in the browser first.
+            f"--profile-directory={profile or 'Default'}",
+            "--disable-extensions-except=",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--window-size=1,1",
+            "--window-position=-32000,-32000",
+            "about:blank",
+        ]
+        logger.info(
+            "Launching %s (profile=%s) for CDP extraction on port %d",
+            browser,
+            profile or "Default",
+            port,
+        )
+        # CREATE_NO_WINDOW suppresses the console window that Brave/Chrome
+        # would briefly create and show to the user.
+        # DETACHED_PROCESS (0x00000008) was previously used but is wrong:
+        # it detaches from the console without preventing a new one from
+        # appearing, causing a CMD flash during each CDP extraction.
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
         if not _cdp_wait_ready(port, timeout=20.0):
             return 0, t("cookie.err.cdp_timeout", browser=browser.title())

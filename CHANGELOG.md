@@ -15,6 +15,14 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.12 - 2026-09-29
+
+### Fixed
+
+- Cookie extraction in Settings, Network now reads the browser profile you pick in the new Profile box, next to the browser box. Per-platform CDP always opened the `Default` profile, so Instagram got the cookies of another account. An unknown profile, a display name instead of a profile folder, or a port already held by another browser session now fails with a clear error. A failed CDP run no longer keeps the old cookie file and reports success (BUG-CDP-PROFILE)
+
+---
+
 ## v20.3.11 - 2026-09-29
 
 ### Fixed

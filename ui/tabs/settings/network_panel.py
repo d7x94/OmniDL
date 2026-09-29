@@ -132,6 +132,17 @@ class NetworkPanel(_BasePanel):
         self._browser_combo.setFixedWidth(120)
         self._browser_combo.currentTextChanged.connect(lambda v: cfg.set("cookies_browser", v))
         brhl.addWidget(self._browser_combo)
+        brhl.addWidget(QLabel(t("settings.network.profile_label")))
+        self._cookie_profile_combo = QComboBox()
+        self._cookie_profile_combo.setMinimumWidth(150)
+        self._cookie_profile_combo.setToolTip(t("settings.network.profile_tip"))
+        self._cookie_profile_combo.currentIndexChanged.connect(
+            lambda _: cfg.set("cookies_profile", self._selected_profile())
+        )
+        brhl.addWidget(self._cookie_profile_combo)
+        self._reload_cookie_profiles(cfg.cookies_profile)
+        # A profile dir of one browser means nothing in another: start from its default.
+        self._browser_combo.currentTextChanged.connect(lambda _: self._reload_cookie_profiles(""))
         brhl.addStretch()
         use_lbl = QLabel(t("settings.network.use_cookies_label"))
         use_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; background: transparent;")
@@ -567,6 +578,36 @@ class NetworkPanel(_BasePanel):
         for dir_name, label in profiles:
             shown = label if label == dir_name else f"{label} — {dir_name}"
             self._tt_add_profile.addItem(shown, dir_name)
+
+    def _reload_cookie_profiles(self, selected: str) -> None:
+        """Refill the Network cookie profile picker and select *selected*."""
+        from infrastructure.downloader.cookie_extractor import list_browser_profiles
+
+        combo = self._cookie_profile_combo
+        browser = self._browser_combo.currentText()
+        try:
+            profiles = list_browser_profiles(browser)
+        except Exception as exc:
+            logger.warning("list_browser_profiles(%s) failed: %s", browser, exc)
+            profiles = []
+        combo.blockSignals(True)
+        combo.clear()
+        if not profiles:
+            combo.addItem(t("settings.network.profile_default"), "")
+        for dir_name, label in profiles:
+            combo.addItem(label if label == dir_name else f"{label} - {dir_name}", dir_name)
+        # Keep a saved profile that vanished so extraction reports it instead
+        # of silently reading another profile (BUG-CDP-PROFILE).
+        if selected and combo.findData(selected) < 0:
+            combo.addItem(selected, selected)
+        combo.setCurrentIndex(max(combo.findData(selected), 0) if selected else 0)
+        combo.setEnabled(bool(profiles) or bool(selected))
+        combo.blockSignals(False)
+        self._app.config.set("cookies_profile", self._selected_profile())
+
+    def _selected_profile(self) -> str:
+        data = self._cookie_profile_combo.currentData()
+        return str(data) if data else ""
 
     def _add_form_profile(self) -> str:
         data = self._tt_add_profile.currentData()
@@ -1207,12 +1248,17 @@ class NetworkPanel(_BasePanel):
         busy_btns = (self._extract_global_btn, self._extract_cdp_btn)
         status = self._extract_global_status
         old_path_str = self._app.config.get("cookie_file", "")
+        profile = self._selected_profile()
 
         def _worker():
             try:
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
 
-                count, error = extract_via_cdp(output_path, platform_key=None, browser=browser)
+                count, error = extract_via_cdp(
+                    output_path, platform_key=None, browser=browser, profile=profile or None
+                )
+                if error:
+                    raise RuntimeError(error)
             except Exception as exc:
                 err_msg = str(exc)
                 ui_bridge.post(
@@ -1272,12 +1318,15 @@ class NetworkPanel(_BasePanel):
         busy_btns = (self._extract_global_btn, self._extract_cdp_btn)
         status = self._extract_global_status
         old_path_str = self._app.config.get("cookie_file", "")
+        profile = self._selected_profile()
 
         def _worker():
             try:
                 from infrastructure.downloader.cookie_extractor import extract_browser_cookies
 
-                count, error = extract_browser_cookies(browser, output_path, platform_key=None)
+                count, error = extract_browser_cookies(
+                    browser, output_path, platform_key=None, profile=profile or None
+                )
             except Exception as exc:
                 error = str(exc)
                 count = 0
@@ -1376,6 +1425,7 @@ class NetworkPanel(_BasePanel):
         output_path = safe_dir / f"{platform_key}_{browser}_cookies.txt"
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
+        profile = self._selected_profile()
         for btn in self._pc_extract_btns:
             btn.setEnabled(False)
 
@@ -1383,7 +1433,9 @@ class NetworkPanel(_BasePanel):
             try:
                 from infrastructure.downloader.cookie_extractor import extract_browser_cookies
 
-                count, error = extract_browser_cookies(browser, output_path, platform_key=platform_key)
+                count, error = extract_browser_cookies(
+                    browser, output_path, platform_key=platform_key, profile=profile or None
+                )
             except Exception as exc:
                 error = str(exc)
                 count = 0
@@ -1456,6 +1508,7 @@ class NetworkPanel(_BasePanel):
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
+        profile = self._selected_profile()
         for btn in self._pc_extract_btns:
             btn.setEnabled(False)
 
@@ -1463,7 +1516,13 @@ class NetworkPanel(_BasePanel):
             try:
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
 
-                count, error = extract_via_cdp(output_path, platform_key=platform_key, browser=browser)
+                count, error = extract_via_cdp(
+                    output_path, platform_key=platform_key, browser=browser, profile=profile or None
+                )
+                # A failed run must not re-register the previous jar, which may
+                # come from another profile (BUG-CDP-PROFILE).
+                if error:
+                    raise RuntimeError(error)
             except Exception as exc:
                 err_msg = str(exc)
                 ui_bridge.post(

@@ -1190,6 +1190,14 @@ VI: dict[str, str] = {
         "Không tìm thấy thư mục profile của {browser}.\n"
         "Kiểm tra Brave/Chrome đã được cài và đăng nhập ít nhất 1 lần."
     ),
+    "cookie.err.profile_not_found": (
+        "Không tìm thấy profile \"{profile}\" của {browser}.\n"
+        "Chọn lại hồ sơ trong Cài đặt, mục Mạng. OmniDL không dùng profile khác thay thế."
+    ),
+    "cookie.err.cdp_port_busy": (
+        "Cổng CDP {port} đang có một phiên trình duyệt khác (có thể là profile khác).\n"
+        "OmniDL không đọc cookies từ phiên này. Hãy thử lại."
+    ),
     "err.gdl_login_required": (
         "gallery-dl yêu cầu đăng nhập.\n"
         "Kiểm tra cookie file trong Settings → Network → Cookie file.\n"
@@ -2590,6 +2598,14 @@ EN: dict[str, str] = {
         "No profile directory found for {browser}.\n"
         "Check that Brave/Chrome is installed and has been logged in at least once."
     ),
+    "cookie.err.profile_not_found": (
+        "{browser} profile \"{profile}\" was not found.\n"
+        "Pick the profile again in Settings, Network. OmniDL never falls back to another profile."
+    ),
+    "cookie.err.cdp_port_busy": (
+        "CDP port {port} is already used by another browser session (possibly another profile).\n"
+        "OmniDL will not read cookies from it. Please try again."
+    ),
     "err.gdl_login_required": (
         "gallery-dl requires a login.\n"
         "Check the cookie file in Settings → Network → Cookie file.\n"
@@ -3862,6 +3878,14 @@ ZH: dict[str, str] = {
     "cookie.err.profile_dir_missing": (
         "找不到 {browser} 的配置文件目录。\n"
         "请检查 Brave/Chrome 是否已安装并至少登录过一次。"
+    ),
+    "cookie.err.profile_not_found": (
+        "找不到 {browser} 的配置文件 \"{profile}\"。\n"
+        "请在设置的网络页面重新选择配置文件。OmniDL 不会改用其他配置文件。"
+    ),
+    "cookie.err.cdp_port_busy": (
+        "CDP 端口 {port} 已被另一个浏览器会话占用（可能是其他配置文件）。\n"
+        "OmniDL 不会从该会话读取 Cookie。请重试。"
     ),
     "err.gdl_login_required": (
         "gallery-dl 需要登录。\n"
