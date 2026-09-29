@@ -15,6 +15,28 @@
 
 ---
 
+## v20.3.11 - 2026-09-29
+
+### 修复
+
+- Facebook 和 Instagram 图片帖子现在会在下载前显示真实的作者和标题，gallery-dl 的登录失败也会报告为登录错误，而不是"没有内容"。元数据探测读取的是 gallery-dl 从不输出的 `--dump-json` 格式，因此什么也找不到（BUG-GDL-DUMP）
+- 以 `/photo/N` 结尾的 X 图片链接现在用 gallery-dl 下载，而不是重试三次后报 "Media #N is not a video"（BUG-X-PHOTO-N）
+- 需要登录的 X 推文（NSFW 或受保护）立即失败并给出 cookie 提示，不再重试三次（BUG-X-AUTH）
+- `t.co` 短链接现在使用 X 的 cookie 和限速（BUG-X-TCO）
+- 点击取消现在会立即停止粘贴的 Instagram CDN 链接下载（BUG-IG-CDN-CANCEL）
+- 下载 Facebook Story 时的网络错误不再留下被截断的视频，而是转到下一个捕获路径（BUG-FB-STORY-TRUNC）
+- 网页界面的分析流和剪贴板分析路由现在会在没有可控浏览器的主机上拒绝 Facebook Story 和 waaw 链接，与 `/api/analyse` 一致（BUG-API-CDP-GUARD）
+- Facebook 主页监控在取消或直播已结束后保留主页 URL，下次轮询不再报 "no username"（BUG-MON-URL）
+- gallery-dl 调试日志不再打印代理密码和临时 cookie 路径（BUG-GDL-LOG-ARGV）
+- 仅包含 "generate" 之类单词的 gallery-dl 错误不再被报告为限速（BUG-GDL-RATE-SUBSTR）
+- 等待账号名额时被取消的 TikTok 任务现在会以已取消结束，而不是一直排队（BUG-TT-POOL-CANCEL）
+- FFmpeg 停滞提示现在写明真实的 20 秒限制，而不是 120 秒（BUG-TT-STALL-TEXT）
+- 分析阶段已找到视频格式的 Facebook 视频，若出现一次 "Cannot parse data" 会重试，而不是转交 gallery-dl（BUG-FB-PARSE-VIDEO）
+- 错误信息中的 `Retry-After` 值上限为 120 秒，一个很大的值不再让工作线程停摆数小时（BUG-RETRY-AFTER-CAP）
+- 主页标签在无法开始下载时（例如文件夹不可写）现在会显示错误，而不是静默失败（BUG-HOME-START-ERROR）
+
+---
+
 ## v20.3.10 - 2026-09-28
 
 ### 修复

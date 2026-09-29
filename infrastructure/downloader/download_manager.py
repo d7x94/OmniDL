@@ -285,6 +285,12 @@ class DownloadManager:
         except _AcquireAborted:
             logger.info("Task %s cancelled while waiting for a TikTok pool slot", task.id)
             task.cancel()
+            # BUG-TT-POOL-CANCEL: _run_task never ran, so nothing else resolves
+            # the task; without this it stays QUEUED for ever.
+            with task._lock:
+                task.status = DownloadStatus.CANCELLED
+                task.finished_at = time.time()
+            self._bus.publish(EventBus.DOWNLOAD_CANCELLED, task=task)
         except RuntimeError:
             # Every account was paused (or lost its cookie file) between the
             # enqueue check and here.  Falling back to the shared TikTok cookie
@@ -349,6 +355,9 @@ class DownloadManager:
         "login",
         "unsupported url",
         "cancelled by user",
+        # BUG-X-AUTH: X login walls (NSFW / protected tweet) carry no "login".
+        "requires authentication",
+        "not authorized to view",
         # BUG-TT-11 FIX: bare "age" matched "webpage" in every network error
         # "Unable to download webpage: ..." causing timeouts/transport errors to
         # be classified as hard errors (no retry). Use specific yt-dlp patterns.
@@ -483,7 +492,8 @@ class DownloadManager:
                 if last_exc is not None:
                     _m = re.search(r"retry.after[:\s]+(\d+)", str(last_exc), re.I)
                     if _m:
-                        _retry_after = int(_m.group(1))
+                        # BUG-RETRY-AFTER-CAP: same order of magnitude as the default back-off
+                        _retry_after = min(int(_m.group(1)), 120)
                 wait_s = (
                     float(_retry_after)
                     if _retry_after
@@ -676,6 +686,7 @@ class DownloadManager:
                         output_dir=_ig_cdn_output_dir,
                         filename_hint=_ig_cdn_hint,
                         on_progress=_ig_cdn_progress,
+                        should_cancel=lambda: task.is_cancellation_requested,
                     )
                     with task._lock:
                         task.filename = str(result_path)
@@ -728,9 +739,17 @@ class DownloadManager:
                     # post is "Cannot parse data" — see the matching branch in
                     # yt_dlp_engine.extract_info.  Without it a Remote API task
                     # that did not forward source_engine never reached gallery-dl.
-                    or ("cannot parse data" in msg and "facebook.com" in task.url.lower())
+                    # BUG-FB-PARSE-VIDEO: not when analyse already found video formats;
+                    # there it is a transient failure that a retry recovers from.
+                    or (
+                        "cannot parse data" in msg
+                        and "facebook.com" in task.url.lower()
+                        and not (task.media_info and task.media_info.formats)
+                    )
                     # BUG-X-PHOTO: TwitterIE's wording for an image-only tweet.
                     or "no video could be found in this tweet" in msg
+                    # BUG-X-PHOTO-N: same, for a /photo/N URL.
+                    or ("[twitter]" in msg and "is not a video" in msg)
                 )
                 if (
                     _is_photo_error

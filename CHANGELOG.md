@@ -15,6 +15,28 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.11 - 2026-09-29
+
+### Fixed
+
+- Facebook and Instagram photo posts now show their real uploader and title before download, and a gallery-dl login failure is reported as a login error instead of "no content". The metadata probe read a `--dump-json` format that gallery-dl never writes, so it found nothing (BUG-GDL-DUMP)
+- X photo links that end in `/photo/N` are downloaded with gallery-dl instead of failing after three retries with "Media #N is not a video" (BUG-X-PHOTO-N)
+- X tweets that need a login (NSFW or protected) fail at once with the cookie hint instead of being retried three times (BUG-X-AUTH)
+- `t.co` short links now use the X cookie and rate limit (BUG-X-TCO)
+- Cancel now stops a pasted Instagram CDN link download straight away (BUG-IG-CDN-CANCEL)
+- A network error while streaming a Facebook Story no longer leaves a truncated video and now falls through to the next capture path (BUG-FB-STORY-TRUNC)
+- The web UI analyse stream and the clipboard analyse route now refuse Facebook Story and waaw links on hosts without a browser to drive, like `/api/analyse` already did (BUG-API-CDP-GUARD)
+- A Facebook profile watch keeps its page URL after Cancel or a live that is already over, so the next poll no longer fails with "no username" (BUG-MON-URL)
+- The gallery-dl debug log no longer prints the proxy password or the temporary cookie path (BUG-GDL-LOG-ARGV)
+- A gallery-dl error that only contains a word like "generate" is no longer reported as a rate limit (BUG-GDL-RATE-SUBSTR)
+- A TikTok task cancelled while waiting for an account slot now ends as cancelled instead of staying queued forever (BUG-TT-POOL-CANCEL)
+- The FFmpeg stall message names the real 20 second limit instead of 120 (BUG-TT-STALL-TEXT)
+- A Facebook video that fails once with "Cannot parse data" is retried instead of being sent to gallery-dl, when analyse had already found its video formats (BUG-FB-PARSE-VIDEO)
+- A `Retry-After` value in an error message is capped at 120 seconds, so one large value no longer parks a worker for hours (BUG-RETRY-AFTER-CAP)
+- The Home tab now shows the error when a download cannot be started (for example an unwritable folder) instead of failing silently (BUG-HOME-START-ERROR)
+
+---
+
 ## v20.3.10 - 2026-09-28
 
 ### Fixed

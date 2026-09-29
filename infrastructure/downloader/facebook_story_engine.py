@@ -1267,26 +1267,33 @@ def _download_cdn_url(
 
     # closing(resp): the deadline branch below returns mid-iteration, which
     # left the socket open until the GC ran.
-    with contextlib.closing(resp), open(dest, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=256 * 1024):
-            if time.monotonic() > stream_deadline:
-                logger.warning("_download_cdn_url: stream deadline exceeded (300s)")
-                dest.unlink(missing_ok=True)
-                return None
-            if chunk:
-                f.write(chunk)
-                done += len(chunk)
-                elapsed = time.monotonic() - start
-                speed = done / elapsed if elapsed > 0.1 else 0
-                pct = min(95, 50 + int(done / total * 44)) if total else 70
-                s_str = (
-                    f"{speed / 1048576:.1f} MB/s"
-                    if speed > 1_048_576
-                    else f"{speed / 1024:.0f} KB/s"
-                    if speed > 0
-                    else ""
-                )
-                _prog(pct, s_str, t("progress.downloading_kb", kb=done // 1024))
+    try:
+        with contextlib.closing(resp), open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=256 * 1024):
+                if time.monotonic() > stream_deadline:
+                    logger.warning("_download_cdn_url: stream deadline exceeded (300s)")
+                    dest.unlink(missing_ok=True)
+                    return None
+                if chunk:
+                    f.write(chunk)
+                    done += len(chunk)
+                    elapsed = time.monotonic() - start
+                    speed = done / elapsed if elapsed > 0.1 else 0
+                    pct = min(95, 50 + int(done / total * 44)) if total else 70
+                    s_str = (
+                        f"{speed / 1048576:.1f} MB/s"
+                        if speed > 1_048_576
+                        else f"{speed / 1024:.0f} KB/s"
+                        if speed > 0
+                        else ""
+                    )
+                    _prog(pct, s_str, t("progress.downloading_kb", kb=done // 1024))
+    except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+        # BUG-FB-STORY-TRUNC: fall through to the caller's next path instead
+        # of leaving a truncated mp4 behind.
+        logger.warning("_download_cdn_url: stream failed (%s)", exc)
+        dest.unlink(missing_ok=True)
+        return None
 
     if _validate_mp4(dest):
         return dest

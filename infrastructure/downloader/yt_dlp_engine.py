@@ -342,6 +342,7 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("fb.watch", "facebook"),
     ("twitter.com", "twitter"),
     ("x.com", "twitter"),
+    ("t.co", "twitter"),  # X link shortener; yt-dlp resolves it (TwitterShortenerIE)
     ("threads.net", "threads"),
     ("threads.com", "threads"),  # new domain (2024+)
     ("kuaishou.com", "kuaishou"),
@@ -351,8 +352,9 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("m.ok.ru", "ok_ru"),
 ]
 
-# yt-dlp TwitterIE's raise_no_formats() text for a tweet that holds only photos.
-_X_PHOTO_ONLY_MSG = "no video could be found in this tweet"
+# yt-dlp TwitterIE texts for a tweet that holds only photos: raise_no_formats()
+# on a plain /status/ URL, "Media #N is not a video" on a /photo/N URL.
+_X_PHOTO_ONLY_MSGS = ("no video could be found in this tweet", "is not a video")
 
 _IG_RL = _PlatformRateLimiter(1.5)
 _FB_RL = _PlatformRateLimiter(1.0)
@@ -1406,7 +1408,7 @@ class YtDlpEngine:
                     _is_photo_error = True
                 # BUG-X-PHOTO: TwitterIE drops photo media and ends an image-only
                 # tweet with this message; gallery-dl downloads the images.
-                if _photo_platform == "twitter" and _X_PHOTO_ONLY_MSG in msg_l:
+                if _photo_platform == "twitter" and any(m in msg_l for m in _X_PHOTO_ONLY_MSGS):
                     _is_photo_error = True
                 if _is_photo_error and _photo_platform in ("instagram", "facebook", "twitter"):
                     m = _ig_photo_re.search(url)
@@ -1491,6 +1493,8 @@ class YtDlpEngine:
                     "curl: (35)",  # BUG-CC: curl SSL connect error code
                     "is not available",  # BUG-CD: impersonate target missing in EXE
                     "not currently live",  # TikTok/IG channel is offline — not an error
+                    "requires authentication",  # BUG-X-AUTH: X NSFW tweet, needs cookies
+                    "not authorized to view",  # BUG-X-AUTH: X protected tweet
                 )
                 if any(k in msg_l for k in _hard):
                     # BUG-FB-COOKIE-LEAK FIX: this raise used to skip the
@@ -4356,7 +4360,7 @@ class YtDlpEngine:
                         task.eta = f"⏺ {elapsed}"
                     if _stall_seconds >= _STALL_LIMIT_S:
                         proc.kill()
-                        raise _keyed_exc("err.ffmpeg_stall")
+                        raise _keyed_exc("err.ffmpeg_stall", seconds=_STALL_LIMIT_S)
 
                 if on_progress:
                     on_progress(task)

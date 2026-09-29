@@ -547,13 +547,17 @@ class HomeTab(QWidget):
     def _add_to_queue(self) -> None:
         if not self._media_info:
             return
-        self._app.service.start_download(
-            url=self._media_info.url,
-            media_info=self._media_info,
-            format_id=self._selected_quality,
-            output_ext=self._format_combo.currentText(),
-            output_dir=self._custom_output_dir,
-        )
+        try:
+            self._app.service.start_download(
+                url=self._media_info.url,
+                media_info=self._media_info,
+                format_id=self._selected_quality,
+                output_ext=self._format_combo.currentText(),
+                output_dir=self._custom_output_dir,
+            )
+        except Exception as exc:  # BUG-HOME-START-ERROR: e.g. unwritable download folder
+            self._app.toast(str(exc)[:80], "error")
+            return
         self._app.toast(t("home.added_toast", title=self._media_info.title[:40]), "success")
         self._app.navigate_to("queue")
         self._result_card.hide()

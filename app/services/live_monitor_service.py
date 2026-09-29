@@ -269,6 +269,7 @@ class LiveMonitorService:
                 except Exception as exc:
                     logger.warning("LiveMonitor: cancel failed: %s", exc)
             item.task_id = None
+            item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
             item.state = WAITING
             # Wait a full interval before re-checking: zeroing this made the
             # next poll (<=5s) re-detect the still-running stream and restart
@@ -558,6 +559,7 @@ class LiveMonitorService:
             item.media_info = info
             item.url = live_url
             if not info.is_live:
+                item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
                 item.state = WAITING
                 self._emit(item)
                 return

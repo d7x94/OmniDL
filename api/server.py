@@ -674,10 +674,14 @@ def create_app(
         then sends a single "result" or "error_result" event and closes.
         """
         # Validate + normalise URL (strips share text, trailing punctuation).
+        # BUG-API-CDP-GUARD: same CDP-only check as POST /api/analyse, reported
+        # as an error_result frame like every other analyse failure here.
         try:
             req = AnalyseRequest(url=url)
+            _exc_msg = cdp_only_reason(req.url)
         except Exception as exc:
             _exc_msg = str(exc)
+        if _exc_msg:
 
             def _invalid() -> Generator[str, None, None]:
                 payload = json.dumps({"detail": _exc_msg})
@@ -840,6 +844,10 @@ def create_app(
         the client can distinguish clipboard-triggered requests from manual
         ones (e.g. to show a different toast or auto-queue immediately).
         """
+        _cdp_reason = cdp_only_reason(body.url)  # BUG-API-CDP-GUARD
+        if _cdp_reason:
+            raise HTTPException(status_code=400, detail=_cdp_reason)
+
         result: dict = {}
         done = threading.Event()
 

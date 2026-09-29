@@ -204,25 +204,55 @@ def gallery_dl_url_candidates(url: str) -> list[str]:
     return [f"https://www.facebook.com/media/set/?set=pcb.{story_id}", primary]
 
 
+_DUMP_VIDEO_EXTS = frozenset({"mp4", "webm", "mov", "m4v", "mkv"})
+
+
+def _dump_entries(stdout: str) -> list[list[Any]]:
+    """Message arrays from ``--dump-json``.
+
+    gallery-dl's DataJob writes ONE indented JSON array at exit (each message
+    is ``[type, ...]``); with ``output.jsonl`` it writes one message per line.
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        data = []
+        for raw in stdout.splitlines():
+            try:
+                data.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+    if isinstance(data, list) and data and not isinstance(data[0], list):
+        data = [data]
+    return [e for e in data if isinstance(e, list) and e]
+
+
 def _parse_dump_json(stdout: str) -> list[dict[str, Any]]:
     """Collect the image entries from gallery-dl ``--dump-json`` output.
 
-    gallery-dl emits one JSON array per line:
-        [1, "url", {metadata}]  → type 1 = image URL
-        [0, {...}]              → type 0 = message / count info
+    Message types (extractor/message.py): 2 = directory, 3 = URL
+    (``[3, url, {metadata}]``), -1 = extractor error (see _dump_json_error).
+    Videos (video extension, ``ytdl:`` URL, ``type == "video"``) are skipped: this
+    is the photo-set probe, the yt-dlp pass owns videos.
     """
     items: list[dict[str, Any]] = []
-    for raw in stdout.splitlines():
-        line = raw.strip()
-        if not line.startswith("["):
+    for e in _dump_entries(stdout):
+        if e[0] != 3 or len(e) < 3 or not isinstance(e[2], dict):
             continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
+        url = str(e[1])
+        ext = str(e[2].get("extension") or "").lower() or Path(url.split("?", 1)[0]).suffix[1:].lower()
+        if ext in _DUMP_VIDEO_EXTS or url.startswith("ytdl:") or e[2].get("type") == "video":
             continue
-        if isinstance(obj, list) and len(obj) >= 3 and obj[0] == 1:
-            items.append(obj[2])
+        items.append(e[2])
     return items
+
+
+def _dump_json_error(stdout: str) -> str:
+    """Message of the first ``[-1, {"error", "message"}]`` entry, or ""."""
+    for e in _dump_entries(stdout):
+        if e[0] == -1 and isinstance(e[-1], dict):
+            return str(e[-1].get("message") or e[-1].get("error") or "")
+    return ""
 
 
 def _find_executable() -> Optional[str]:
@@ -303,7 +333,7 @@ def _friendly_error(msg: str) -> str:
         return "login: " + t("err.gdl_login_required")
     if "404" in m or "not found" in m:
         return "not found: " + t("err.not_found")
-    if "429" in m or "rate" in m or "too many" in m:
+    if "429" in m or re.search(r"\brate\b", m) or "too many" in m:  # BUG-GDL-RATE-SUBSTR
         return "blocked: " + t("err.gdl_rate_limited")
     if "gallery-dl" in m and ("not found" in m or "no such" in m):
         return "unsupported url: " + t("err.gdl_not_installed_short")
@@ -602,7 +632,8 @@ class GalleryDlEngine:
         try:
             for _gdl_url in gallery_dl_url_candidates(url):
                 cmd = base_cmd + ["--dump-json", "--no-download", _gdl_url]
-                logger.debug("gallery-dl extract_info: %s", cmd)
+                # BUG-GDL-LOG-ARGV: not the argv, it holds --proxy user:pass and the cookie temp path
+                logger.debug("gallery-dl extract_info: %s", _gdl_url)
                 try:
                     result = subprocess.run(
                         cmd,
@@ -637,6 +668,11 @@ class GalleryDlEngine:
 
         if not items:
             stderr = result.stderr.strip() if result else ""
+            # BUG-GDL-DUMP: DataJob reports an extractor failure as a [-1, {...}]
+            # entry with exit code 0 and empty stderr.
+            dump_err = _dump_json_error(result.stdout) if result else ""
+            if dump_err:
+                raise RuntimeError(_friendly_error(dump_err))
             if (result is not None and result.returncode != 0) or stderr:
                 raise RuntimeError(_friendly_error(stderr or "No items found"))
             raise RuntimeError(t("err.gdl_no_content"))

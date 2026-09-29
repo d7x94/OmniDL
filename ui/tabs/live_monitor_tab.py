@@ -1025,6 +1025,7 @@ class LiveMonitorTab(QWidget):
         item.media_info = info
         item.url = live_url
         if not info.is_live:
+            item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
             item.state = _MonitorState.WAITING
             self._refresh_item_ui(item)
             return
@@ -1180,6 +1181,7 @@ class LiveMonitorTab(QWidget):
             except Exception as exc:
                 logger.warning("LiveMonitor: cancel failed: %s", exc)
         item.task_id = None
+        item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
         item.state = _MonitorState.WAITING
         item.last_check = time.time()
         self._refresh_item_ui(item)

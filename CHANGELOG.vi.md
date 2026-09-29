@@ -15,6 +15,28 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.11 - 2026-09-29
+
+### Đã sửa
+
+- Bài ảnh Facebook và Instagram giờ hiện đúng tên tác giả và tiêu đề trước khi tải, và lỗi đăng nhập của gallery-dl được báo là lỗi đăng nhập thay vì "không có nội dung". Bước dò metadata đọc một định dạng `--dump-json` mà gallery-dl không bao giờ ghi ra nên không tìm được gì (BUG-GDL-DUMP)
+- Link ảnh X có đuôi `/photo/N` được tải bằng gallery-dl thay vì thất bại sau ba lần thử với "Media #N is not a video" (BUG-X-PHOTO-N)
+- Tweet X cần đăng nhập (NSFW hoặc riêng tư) báo lỗi ngay kèm gợi ý cookie thay vì bị thử lại ba lần (BUG-X-AUTH)
+- Link rút gọn `t.co` giờ dùng cookie và giới hạn tốc độ của X (BUG-X-TCO)
+- Bấm Hủy giờ dừng ngay việc tải link CDN Instagram được dán vào (BUG-IG-CDN-CANCEL)
+- Lỗi mạng khi đang tải Facebook Story không còn để lại video bị cụt mà chuyển sang cách bắt tiếp theo (BUG-FB-STORY-TRUNC)
+- Luồng phân tích của giao diện web và route phân tích clipboard giờ từ chối link Facebook Story và waaw trên máy không có trình duyệt để điều khiển, giống `/api/analyse` (BUG-API-CDP-GUARD)
+- Mục theo dõi trang Facebook giữ lại URL trang sau khi Hủy hoặc khi buổi live đã kết thúc, nên lần kiểm tra sau không còn lỗi "no username" (BUG-MON-URL)
+- Log debug của gallery-dl không còn in mật khẩu proxy và đường dẫn file cookie tạm (BUG-GDL-LOG-ARGV)
+- Lỗi gallery-dl chỉ chứa từ như "generate" không còn bị báo là bị giới hạn tốc độ (BUG-GDL-RATE-SUBSTR)
+- Task TikTok bị hủy khi đang chờ slot tài khoản giờ kết thúc ở trạng thái đã hủy thay vì nằm chờ mãi (BUG-TT-POOL-CANCEL)
+- Thông báo FFmpeg không có dữ liệu nêu đúng giới hạn 20 giây thay vì 120 (BUG-TT-STALL-TEXT)
+- Video Facebook lỗi "Cannot parse data" một lần được thử lại thay vì chuyển sang gallery-dl, khi bước phân tích đã tìm thấy định dạng video (BUG-FB-PARSE-VIDEO)
+- Giá trị `Retry-After` trong thông báo lỗi được giới hạn tối đa 120 giây, nên một giá trị lớn không còn giữ một worker hàng giờ (BUG-RETRY-AFTER-CAP)
+- Tab Trang chủ giờ hiện lỗi khi không thể bắt đầu tải (ví dụ thư mục không ghi được) thay vì im lặng thất bại (BUG-HOME-START-ERROR)
+
+---
+
 ## v20.3.10 - 2026-09-28
 
 ### Đã sửa

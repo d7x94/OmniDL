@@ -1012,7 +1012,9 @@ VI: dict[str, str] = {
         "Có thể tài khoản private hoặc cần cookie file."
     ),
     "err.ffmpeg_not_found": "Không tìm thấy FFmpeg. Kiểm tra cài đặt FFmpeg.",
-    "err.ffmpeg_stall": "FFmpeg stall watchdog: không có dữ liệu trong 120 giây — stream có thể đã kết thúc.",
+    "err.ffmpeg_stall": (
+        "FFmpeg stall watchdog: không có dữ liệu trong {seconds} giây — stream có thể đã kết thúc."
+    ),
     "err.no_error_detail": "Không có thông tin lỗi.",
     "err.hls_stall": (
         "Stall watchdog: curl_cffi HLS không có segment mới trong {seconds}s — stream có thể đã kết thúc."
@@ -2407,7 +2409,7 @@ EN: dict[str, str] = {
         "The account may be private, or a cookie file may be required."
     ),
     "err.ffmpeg_not_found": "FFmpeg not found. Check your FFmpeg installation.",
-    "err.ffmpeg_stall": "FFmpeg stall watchdog: no data for 120 seconds — the stream may have ended.",
+    "err.ffmpeg_stall": "FFmpeg stall watchdog: no data for {seconds} seconds — the stream may have ended.",
     "err.no_error_detail": "No error details available.",
     "err.hls_stall": (
         "Stall watchdog: curl_cffi HLS received no new segment for {seconds}s — the stream may have ended."
@@ -3730,7 +3732,7 @@ ZH: dict[str, str] = {
     "err.no_data": "该 URL 未返回数据。请检查 URL，或在设置中添加 Cookie 文件。",
     "err.playlist_empty": "该播放列表/主页没有可用视频。\n账号可能为私密，或需要 Cookie 文件。",
     "err.ffmpeg_not_found": "找不到 FFmpeg。请检查 FFmpeg 安装。",
-    "err.ffmpeg_stall": "FFmpeg 停滞监控：120 秒无数据——直播可能已结束。",
+    "err.ffmpeg_stall": "FFmpeg 停滞监控：{seconds} 秒无数据——直播可能已结束。",
     "err.no_error_detail": "没有可用的错误信息。",
     "err.hls_stall": "停滞监控：curl_cffi HLS 已 {seconds} 秒未收到新分片——直播可能已结束。",
     "err.livestream_ended_relink": "直播已结束，或 HLS 链接已失效。\n可重新添加链接以监控下一次直播。",
