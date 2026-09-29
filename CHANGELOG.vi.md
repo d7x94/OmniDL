@@ -15,6 +15,15 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.13 - 2026-09-29
+
+### Đã sửa
+
+- Cài đặt, Cookies theo nền tảng, CDP giờ báo lỗi rõ ràng khi không xác định được hồ sơ trình duyệt, thay vì mở hồ sơ `Default` và lưu cookies của tài khoản khác. Hãy chọn hồ sơ ở ô Hồ sơ cạnh ô trình duyệt trước. Nút CDP của Cookie chung, mục tài khoản TikTok và các nút yt-dlp giữ nguyên hành vi cũ (BUG-CDP-NO-PROFILE)
+- Lấy cookies OK.ru theo nền tảng đã hoạt động. OK.ru có trong Cài đặt nhưng thiếu danh sách domain cookie, nên mọi lần lấy, cả CDP và yt-dlp, đều lọc sạch cookies và báo "không có cookies cho nền tảng này" (BUG-COOKIE-OKRU)
+
+---
+
 ## v20.3.12 - 2026-09-29
 
 ### Đã sửa

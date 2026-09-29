@@ -1504,11 +1504,22 @@ class NetworkPanel(_BasePanel):
             self._app.toast(t("settings.network.cdp_unsupported_use_browser", browser=browser), "error")
             return
         platform_name = _PLATFORM_NAMES.get(platform_key, platform_key.title())
+        profile = self._selected_profile()
+        # CDP launches the browser itself, and Chromium silently opens "Default"
+        # for an unknown --profile-directory.  Without a resolved profile dir we
+        # cannot promise the cookies come from the account the user picked, so
+        # refuse instead of reading someone else's session (BUG-CDP-NO-PROFILE).
+        if not profile:
+            self._app.toast(t("settings.network.cdp_no_profile", browser=browser), "error")
+            self._pc_extract_status.setText(t("settings.network.cdp_no_profile_status"))
+            self._pc_extract_status.setStyleSheet(
+                f"color: {T.error}; font-size: 11px; background: transparent;"
+            )
+            return
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
-        profile = self._selected_profile()
         for btn in self._pc_extract_btns:
             btn.setEnabled(False)
 

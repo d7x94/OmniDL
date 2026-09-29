@@ -55,6 +55,9 @@ _PLATFORM_DOMAINS: dict[str, tuple[str, ...]] = {
     "twitter": ("twitter.com", "x.com"),
     "threads": ("threads.net", "threads.com", "instagram.com"),  # threads.com = new domain
     "kuaishou": ("kuaishou.com", "kwai.com"),
+    # Settings offers OK.ru per-platform cookies; without this entry the filter
+    # dropped every cookie and reported "no cookies for this platform".
+    "ok_ru": ("ok.ru", "odnoklassniki.ru"),
 }
 
 

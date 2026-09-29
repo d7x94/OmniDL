@@ -15,6 +15,15 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.13 - 2026-09-29
+
+### Fixed
+
+- Settings, Cookies per platform, CDP now refuses with a clear message when no browser profile can be resolved, instead of opening the `Default` profile and saving another account's cookies. Pick a profile in the Profile box next to the browser box first. The Global Cookie CDP button, the TikTok account pool and the yt-dlp buttons keep their previous behaviour (BUG-CDP-NO-PROFILE)
+- OK.ru per-platform cookie extraction works. OK.ru was offered in Settings but had no cookie domain list, so every extraction, CDP and yt-dlp alike, filtered all cookies away and failed with "no cookies for this platform" (BUG-COOKIE-OKRU)
+
+---
+
 ## v20.3.12 - 2026-09-29
 
 ### Fixed

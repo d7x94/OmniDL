@@ -15,6 +15,15 @@
 
 ---
 
+## v20.3.13 - 2026-09-29
+
+### 修复
+
+- 设置、按平台 Cookie、CDP 在无法确定浏览器配置文件时会给出明确错误，而不再打开 `Default` 配置文件并保存其他账号的 Cookie。请先在浏览器框旁边的配置文件框中选择配置文件。全局 Cookie 的 CDP 按钮、TikTok 账号池以及 yt-dlp 按钮行为不变（BUG-CDP-NO-PROFILE）
+- OK.ru 的按平台 Cookie 提取已可用。设置中提供了 OK.ru，但缺少 Cookie 域名列表，因此 CDP 和 yt-dlp 的每次提取都会过滤掉所有 Cookie 并报告“该平台没有 Cookie”（BUG-COOKIE-OKRU）
+
+---
+
 ## v20.3.12 - 2026-09-29
 
 ### 修复
