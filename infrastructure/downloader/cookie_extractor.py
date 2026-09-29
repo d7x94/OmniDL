@@ -367,6 +367,9 @@ def list_browser_profiles(browser: str) -> "list[tuple[str, str]]":
     """
     import json
 
+    # _find_browser_profile maps every non-Chromium browser to Chrome's dir.
+    if not any(f in (browser or "").lower() for f in _PROFILE_CANDIDATES):
+        return []
     user_data = _find_browser_profile(browser)
     if user_data is None:
         return []

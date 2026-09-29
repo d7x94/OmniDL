@@ -268,3 +268,11 @@ def test_new_i18n_keys_exist_in_every_language():
     for lang in CATALOG.values():
         assert "cookie.err.profile_not_found" in lang
         assert "cookie.err.cdp_port_busy" in lang
+
+
+@pytest.mark.parametrize("browser", ["firefox", "opera", "safari"])
+def test_non_chromium_browser_lists_no_profiles(user_data, monkeypatch, browser):
+    # _find_browser_profile maps unknown browsers to Chrome's dir; listing those
+    # would send a Chrome profile name to yt-dlp's Firefox/Opera reader.
+    monkeypatch.setattr(ce, "_find_browser_profile", lambda b: user_data)
+    assert ce.list_browser_profiles(browser) == []
