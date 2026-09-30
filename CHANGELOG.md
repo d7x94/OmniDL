@@ -15,6 +15,19 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.14 - 2026-09-30
+
+### Fixed
+
+- "Use cookies from browser" now reads the browser profile picked in Settings > Network for yt-dlp and gallery-dl downloads. Before, yt-dlp read the most recently used profile and gallery-dl its own pick, so a download could run as another account (BUG-COOKIE-PROFILE-DL)
+- Facebook Story capture launches the browser on the profile picked in Settings when the same browser is selected, and refuses with a clear message if that profile no longer exists (BUG-COOKIE-PROFILE-DL)
+- Cookie files exported by browser extensions keep their `#HttpOnly_` lines: the TikTok account pool no longer rejects a signed-in jar as "not logged in", and TikTok/Facebook Live FFmpeg recordings send the session cookie again (BUG-COOKIE-HTTPONLY)
+- Kuaishou downloads attach the session cookie only to Kuaishou hosts. A Remote API download could send it to whatever host its URL named (BUG-KS-COOKIE-HOST)
+- A cookie extraction interrupted by a crash no longer leaves the full browser cookie jar (`_tmp_*`) in the cookies folder forever; it is removed at the next start (BUG-COOKIE-TMP-JAR)
+- While a cookie extraction runs, Choose and Delete for the same cookie slot are disabled, so the finished extraction cannot overwrite a file just chosen or re-register a slot just cleared (BUG-COOKIE-EXTRACT-RACE)
+
+---
+
 ## v20.3.13 - 2026-09-29
 
 ### Fixed

@@ -15,12 +15,25 @@
 
 ---
 
+## v20.3.14 - 2026-09-30
+
+### 修复
+
+- "使用浏览器 Cookie"在 yt-dlp 和 gallery-dl 下载时现在读取"设置 > 网络"中所选的浏览器配置文件。此前 yt-dlp 读取最近使用的配置文件，gallery-dl 自行选择，下载可能使用其他账号（BUG-COOKIE-PROFILE-DL）
+- Facebook Story 抓取在选择同一浏览器时使用设置中所选的配置文件启动浏览器；若该配置文件已不存在，会给出明确提示（BUG-COOKIE-PROFILE-DL）
+- 浏览器扩展导出的 Cookie 文件保留 `#HttpOnly_` 行：TikTok 账号池不再把已登录的 Cookie 误判为"未登录"，TikTok/Facebook 直播的 FFmpeg 录制重新携带会话 Cookie（BUG-COOKIE-HTTPONLY）
+- 快手下载只向快手自己的域名附加会话 Cookie。此前通过 Remote API 的下载可能把 Cookie 发送到 URL 中的任意域名（BUG-KS-COOKIE-HOST）
+- 因崩溃中断的 Cookie 提取不再在 cookies 文件夹中永久留下完整的浏览器 Cookie（`_tmp_*`），下次启动时会被删除（BUG-COOKIE-TMP-JAR）
+- Cookie 提取进行中时，同一 Cookie 栏的"选择"和"删除"按钮被禁用，提取结果不会覆盖刚选择的文件或重新登记刚清除的栏（BUG-COOKIE-EXTRACT-RACE）
+
+---
+
 ## v20.3.13 - 2026-09-29
 
 ### 修复
 
 - 设置、按平台 Cookie、CDP 在无法确定浏览器配置文件时会给出明确错误，而不再打开 `Default` 配置文件并保存其他账号的 Cookie。请先在浏览器框旁边的配置文件框中选择配置文件。全局 Cookie 的 CDP 按钮、TikTok 账号池以及 yt-dlp 按钮行为不变（BUG-CDP-NO-PROFILE）
-- OK.ru 的按平台 Cookie 提取已可用。设置中提供了 OK.ru，但缺少 Cookie 域名列表，因此 CDP 和 yt-dlp 的每次提取都会过滤掉所有 Cookie 并报告“该平台没有 Cookie”（BUG-COOKIE-OKRU）
+- OK.ru 的按平台 Cookie 提取已可用。设置中提供了 OK.ru，但缺少 Cookie 域名列表，因此 CDP 和 yt-dlp 的每次提取都会过滤掉所有 Cookie 并报告"该平台没有 Cookie"（BUG-COOKIE-OKRU）
 
 ---
 

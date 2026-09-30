@@ -1,6 +1,6 @@
 [English](README.md) | [Tiếng Việt](README.vi.md) | 简体中文
 
-# OmniDL v20.3.13
+# OmniDL v20.3.14
 
 一款桌面媒体下载工具，支持 YouTube、TikTok、Instagram、Twitter/X、Facebook 及 1000 多个网站——基于 Python、PySide6、yt-dlp 和 gallery-dl 构建。
 

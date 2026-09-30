@@ -15,6 +15,19 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.14 - 2026-09-30
+
+### Đã sửa
+
+- "Dùng cookies từ trình duyệt" giờ đọc đúng hồ sơ trình duyệt đã chọn ở Cài đặt > Mạng khi tải bằng yt-dlp và gallery-dl. Trước đây yt-dlp đọc hồ sơ dùng gần nhất, gallery-dl tự chọn hồ sơ, nên có thể tải bằng tài khoản khác (BUG-COOKIE-PROFILE-DL)
+- Tải Facebook Story mở trình duyệt đúng hồ sơ đã chọn trong Cài đặt khi chọn cùng trình duyệt, và báo lỗi rõ nếu hồ sơ đó không còn (BUG-COOKIE-PROFILE-DL)
+- File cookie xuất từ tiện ích trình duyệt giữ lại các dòng `#HttpOnly_`: kho tài khoản TikTok không còn từ chối nhầm là "chưa đăng nhập", và ghi live TikTok/Facebook bằng FFmpeg gửi lại cookie phiên (BUG-COOKIE-HTTPONLY)
+- Tải Kuaishou chỉ gắn cookie phiên cho host của Kuaishou. Trước đây lệnh tải qua Remote API có thể gửi cookie tới bất kỳ host nào ghi trong URL (BUG-KS-COOKIE-HOST)
+- Lần lấy cookies bị ngắt do lỗi không còn để lại vĩnh viễn toàn bộ cookies trình duyệt (`_tmp_*`) trong thư mục cookies; file được xoá ở lần mở app sau (BUG-COOKIE-TMP-JAR)
+- Trong lúc đang lấy cookies, nút Chọn và Xoá của cùng ô cookie bị khoá, nên kết quả lấy xong không ghi đè file vừa chọn hoặc đăng ký lại ô vừa xoá (BUG-COOKIE-EXTRACT-RACE)
+
+---
+
 ## v20.3.13 - 2026-09-29
 
 ### Đã sửa
