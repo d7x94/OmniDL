@@ -698,6 +698,17 @@ def _is_ks_cdn_url(url: str) -> bool:
     return bool(_KS_CDN_RE.search(url))
 
 
+# BUG-KS-COOKIE-HOST: a Remote API download passes the CDN URL from the request
+# body, so the session cookie is only attached for Kuaishou's own hosts.
+# alicdn.com / acfun.cn are shared CDNs and deliberately not listed.
+_KS_COOKIE_HOSTS = ("kuaishou.com", "kwaicdn.com", "ksapisrv.com", "ks-cdn.com", "yximgs.com", "kwai.com")
+
+
+def _is_ks_cookie_host(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in _KS_COOKIE_HOSTS)
+
+
 def _inject_cookies_cdp(ctx, config: Optional[ConfigManager]) -> None:
     """Inject Kuaishou cookies from the .enc cookie file into a Playwright browser context.
 
@@ -1685,7 +1696,7 @@ class KuaishouEngine:
                     "Referer": "https://www.kuaishou.com/",
                     "Range": "bytes=0-11",
                 }
-                if cookie_str:
+                if cookie_str and _is_ks_cookie_host(cdn_url):
                     _probe_headers["Cookie"] = cookie_str
                 # BUG-KS-PROBE-MEM FIX: stream=True + reading a single bounded
                 # chunk means at most `chunk_size` bytes ever come over the
@@ -1828,7 +1839,7 @@ class KuaishouEngine:
         # that issued them; downloading without the same cookies causes the
         # CDN to return an HTML error page (HTTP 200, <!DOCTYPE html> body)
         # instead of the MP4.
-        if cookie_str:
+        if cookie_str and _is_ks_cookie_host(cdn_url):
             _CDN_HEADERS["Cookie"] = cookie_str
         session = _make_session()
         try:
@@ -1895,7 +1906,7 @@ class KuaishouEngine:
                     task.filename = str(filename)
                 cookie_str = _load_cookie_str(self._config)
                 _CDN_HEADERS = dict(_CDN_HEADERS)
-                if cookie_str:
+                if cookie_str and _is_ks_cookie_host(cdn_url):
                     _CDN_HEADERS["Cookie"] = cookie_str
                 else:
                     _CDN_HEADERS.pop("Cookie", None)
@@ -1967,8 +1978,10 @@ class KuaishouEngine:
                         task.filename = str(filename)
 
                     _retry_headers = {**_CDN_HEADERS, "Accept": "*/*"}
-                    if cookie_str:
+                    if cookie_str and _is_ks_cookie_host(cdn_url):
                         _retry_headers["Cookie"] = cookie_str
+                    else:
+                        _retry_headers.pop("Cookie", None)
                     _retry_sess = _make_session()
                     try:
                         resp2 = _retry_sess.get(
