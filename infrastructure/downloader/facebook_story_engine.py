@@ -1614,8 +1614,9 @@ def download_story(
     # fallback that already carries sound.
     # BUG-COOKIE-PROFILE-DL: the Settings profile is a directory of the Settings
     # browser; the Special tab may pick another browser, which keeps its default.
+    # Only brave/chrome: _cdp_intercept maps every other browser to Chrome's User Data.
     profile = ""
-    if browser.lower() == getattr(config, "cookies_browser", ""):
+    if browser.lower() in ("brave", "chrome") and browser.lower() == getattr(config, "cookies_browser", ""):
         profile = getattr(config, "cookies_profile", "") or ""
     cdn_url, audio_url, progressive_url = _cdp_intercept(url, browser, timeout, on_progress, profile=profile)
 

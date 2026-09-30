@@ -62,3 +62,12 @@ def test_story_without_profile_keeps_old_launch(tmp_path, monkeypatch):
     with pytest.raises(_Stop):
         eng.download_story(URL, cfg, browser="chrome", timeout=1)
     assert not any(a.startswith("--profile-directory") for a in seen[0]), seen[0]
+
+
+def test_story_edge_settings_profile_not_checked_against_chrome_dir(tmp_path, monkeypatch):
+    # The Story engine maps every non-brave browser to Chrome's exe and User Data,
+    # so an Edge/Chromium profile name must not be applied (or refused) there.
+    cfg, seen = _launch(tmp_path, monkeypatch, cfg_browser="edge", profile="Profile 7")
+    with pytest.raises(_Stop):
+        eng.download_story(URL, cfg, browser="edge", timeout=1)
+    assert not any(a.startswith("--profile-directory") for a in seen[0]), seen[0]
