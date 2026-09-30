@@ -537,7 +537,8 @@ def _build_ffmpeg_cookie_header(cookie_file: str, domain_keyword: str = "tiktok"
 
         pairs: list[str] = []
         for line in _P(cookie_file).read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
+            # BUG-COOKIE-HTTPONLY: "#HttpOnly_" marks a cookie (sessionid), not a comment.
+            line = line.strip().removeprefix("#HttpOnly_")
             if not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
