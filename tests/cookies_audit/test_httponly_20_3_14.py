@@ -23,3 +23,13 @@ def test_ffmpeg_header_still_skips_comments(tmp_path):
     jar = tmp_path / "tt.txt"
     jar.write_text(_JAR, encoding="utf-8")
     assert "comment" not in _build_ffmpeg_cookie_header(str(jar), "tiktok")
+
+
+def test_pool_health_reads_httponly_session(tmp_path):
+    import infrastructure.downloader.account_pool as pool
+
+    jar = tmp_path / "tiktok_pool_x.txt"
+    jar.write_text(_JAR, encoding="utf-8")
+    health = pool.inspect_tiktok_cookie(str(jar))
+    assert health.status == "ok", health
+    assert health.count == 2

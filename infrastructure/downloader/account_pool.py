@@ -334,7 +334,8 @@ def inspect_tiktok_cookie(cookie_file: str) -> CookieHealth:
     # the right one (log in to TikTok in that browser profile first).
     is_netscape = "Netscape HTTP Cookie File" in body[:200]
     for line in body.splitlines():
-        line = line.strip()
+        # BUG-COOKIE-HTTPONLY: extension exports write sessionid as "#HttpOnly_...".
+        line = line.strip().removeprefix("#HttpOnly_")
         if not line or line.startswith("#"):
             continue
         parts = line.split("\t")
