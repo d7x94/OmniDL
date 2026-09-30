@@ -1327,7 +1327,9 @@ class YtDlpEngine:
             if _is_temp:
                 _cookie_temp_ei = _usable
         if not opts.get("cookiefile") and self._config.use_cookies:
-            opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+            # BUG-COOKIE-PROFILE-DL: without a profile yt-dlp reads the newest
+            # Cookies DB of any profile, not the one picked in Settings.
+            opts["cookiesfrombrowser"] = (self._config.cookies_browser, self._config.cookies_profile or None)
 
         # Profile / channel fast-path (after opts are built so cookie/proxy
         # are included in the flat playlist fetch).
@@ -2405,7 +2407,9 @@ class YtDlpEngine:
                 # Erased by download()'s finally, so a raising path cannot leak it.
                 _temp_cookies.append(_usable)
         if not opts.get("cookiefile") and self._config.use_cookies:
-            opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+            # BUG-COOKIE-PROFILE-DL: without a profile yt-dlp reads the newest
+            # Cookies DB of any profile, not the one picked in Settings.
+            opts["cookiesfrombrowser"] = (self._config.cookies_browser, self._config.cookies_profile or None)
 
         # Rate-limit per-platform on the download path too — extract_info()
         # already acquires this; without it here, an analyse+download pair
