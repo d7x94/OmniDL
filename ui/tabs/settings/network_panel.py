@@ -1246,6 +1246,8 @@ class NetworkPanel(_BasePanel):
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{browser}_cdp_cookies.txt"
         busy_btns = (self._extract_global_btn, self._extract_cdp_btn)
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Clear stay locked until the worker has registered its jar.
+        busy_btns += (self._browse_cf_btn, self._clear_cf_btn)
         status = self._extract_global_status
         old_path_str = self._app.config.get("cookie_file", "")
         profile = self._selected_profile()
@@ -1316,6 +1318,8 @@ class NetworkPanel(_BasePanel):
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{browser}_global_cookies.txt"
         busy_btns = (self._extract_global_btn, self._extract_cdp_btn)
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Clear stay locked until the worker has registered its jar.
+        busy_btns += (self._browse_cf_btn, self._clear_cf_btn)
         status = self._extract_global_status
         old_path_str = self._app.config.get("cookie_file", "")
         profile = self._selected_profile()
@@ -1426,7 +1430,8 @@ class NetworkPanel(_BasePanel):
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
         profile = self._selected_profile()
-        for btn in self._pc_extract_btns:
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Delete stay locked until the worker has registered its jar.
+        for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns:
             btn.setEnabled(False)
 
         def _worker():
@@ -1489,7 +1494,7 @@ class NetworkPanel(_BasePanel):
                         ),
                     )
                 )
-            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns])
+            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns])
 
         status.setText(t("settings.network.reading_platform_status", platform=platform_name, browser=browser))
         threading.Thread(
@@ -1520,7 +1525,8 @@ class NetworkPanel(_BasePanel):
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
-        for btn in self._pc_extract_btns:
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Delete stay locked until the worker has registered its jar.
+        for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns:
             btn.setEnabled(False)
 
         def _worker():
@@ -1556,7 +1562,7 @@ class NetworkPanel(_BasePanel):
                         ),
                     )
                 )
-                ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns])
+                ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns])
                 return
             path_str = self._resolve_saved_cookie_path(output_path)
             self._app.config.set_cookie_for_platform(platform_key, path_str)
@@ -1581,7 +1587,7 @@ class NetworkPanel(_BasePanel):
                     ),
                 )
             )
-            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns])
+            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns])
 
         status.setText(
             t(
