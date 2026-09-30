@@ -688,6 +688,7 @@ def _cdp_intercept(
     browser: str,
     timeout: float,
     on_progress: Optional[Callable],
+    profile: str = "",
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Launch browser, navigate to story_url; return (video_cdn_url, audio_cdn_url, progressive_cdn_url).
 
@@ -764,6 +765,11 @@ def _cdp_intercept(
     else:
         profile_base = Path()
 
+    # BUG-COOKIE-PROFILE-DL: Chromium opens a new empty profile for an unknown
+    # --profile-directory, so a vanished profile is refused, never replaced.
+    if profile and not (profile_base / profile).is_dir():
+        raise RuntimeError(t("cookie.err.profile_not_found", profile=profile, browser=browser.title()))
+
     if profile_base.exists():
         _clear_crashed_flag(profile_base)
 
@@ -815,6 +821,8 @@ def _cdp_intercept(
     # cookie_extractor.extract_via_cdp launches the same browsers.
     if profile_base.exists():
         cmd.append(f"--user-data-dir={profile_base}")
+        if profile:
+            cmd.append(f"--profile-directory={profile}")
     _prog(8, t("progress.browser_start_named", browser=browser.title()))
     proc = subprocess.Popen(
         cmd,
@@ -1604,7 +1612,12 @@ def download_story(
     # tracks; we mux them with FFmpeg to produce a file with sound. When the
     # audio-DASH URL is never intercepted, the progressive URL is a robust
     # fallback that already carries sound.
-    cdn_url, audio_url, progressive_url = _cdp_intercept(url, browser, timeout, on_progress)
+    # BUG-COOKIE-PROFILE-DL: the Settings profile is a directory of the Settings
+    # browser; the Special tab may pick another browser, which keeps its default.
+    profile = ""
+    if browser.lower() == getattr(config, "cookies_browser", ""):
+        profile = getattr(config, "cookies_profile", "") or ""
+    cdn_url, audio_url, progressive_url = _cdp_intercept(url, browser, timeout, on_progress, profile=profile)
 
     if not cdn_url and progressive_url:
         logger.info("CDP: no DASH video URL — falling back to progressive URL as primary source")
