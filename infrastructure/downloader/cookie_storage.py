@@ -398,7 +398,7 @@ def encrypt_plaintext_cookies(safe_dir: Path) -> int:
         return 0
     encrypted_count = 0
     for f in safe_dir.glob("*.txt"):
-        if f.name.startswith(_TEMP_PREFIX):
+        if f.name.startswith(_TEMP_PREFIX) or f.name.startswith("_tmp_"):
             continue
         try:
             result = encrypt_cookie_file(f)
@@ -431,7 +431,9 @@ def cleanup_leftover_temp_files(safe_dir: Path) -> None:
 
     atexit.register(_atexit_cleanup)
 
-    for f in safe_dir.glob(f"{_TEMP_PREFIX}*.txt"):
+    # BUG-COOKIE-TMP-JAR: "_tmp_*" is the full browser jar extract_browser_cookies()
+    # writes before filtering. Nothing extracts at startup, so any copy is a leftover.
+    for f in [*safe_dir.glob(f"{_TEMP_PREFIX}*.txt"), *safe_dir.glob("_tmp_*")]:
         try:
             f.unlink()
             logger.info("Cleaned up leftover temp cookie file: %s", f.name)
