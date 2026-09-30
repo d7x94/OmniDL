@@ -598,8 +598,13 @@ class GalleryDlEngine:
             # never saw this setting at all, so users who chose "cookies
             # from browser" (no cookie file) got logged-out gallery-dl runs
             # for Instagram/Twitter/Facebook photo posts.
-            cmd += ["--cookies-from-browser", self._config.cookies_browser]
-            logger.debug("gallery-dl using cookies from browser: %s", self._config.cookies_browser)
+            # BUG-COOKIE-PROFILE-DL: BROWSER[:PROFILE], otherwise gallery-dl
+            # picks a profile itself instead of the one chosen in Settings.
+            _browser_spec = self._config.cookies_browser
+            if self._config.cookies_profile:
+                _browser_spec += f":{self._config.cookies_profile}"
+            cmd += ["--cookies-from-browser", _browser_spec]
+            logger.debug("gallery-dl using cookies from browser: %s", _browser_spec)
 
         if self._config.proxy:
             cmd += ["--proxy", self._config.proxy]
