@@ -217,6 +217,7 @@ class QueueTab(QWidget):
         w = self._widgets.get(task_id)
         task = self._app.service.get_task(task_id)
         if w and task:
+            w._completed_path = ""  # rename changed task.filename, drop the stale snapshot
             w.refresh(task)
 
     def _on_pause(self, task_id: str) -> None:

@@ -8,6 +8,7 @@ standing in for self.
 from __future__ import annotations
 
 import types
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Fix 1 — live_monitor_tab: _remove_item / _clear_all must keep_partial=True
@@ -161,3 +162,41 @@ class TestToolbarCancelAnalyseClearsHome:
         Toolbar._cancel_analyse(tb)
 
         assert home.cleared is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 5 — queue_tab: after a successful rename, _on_rename must drop the
+# DownloadItemWidget's stale _completed_path snapshot so Open/Preview/
+# Convert/Edit/Send pick up the renamed file.
+# ---------------------------------------------------------------------------
+
+
+class TestQueueTabRenameRefreshesCompletedPath:
+    def test_on_rename_clears_stale_completed_path(self):
+        from ui.tabs.queue_tab import QueueTab
+
+        old_path = "/downloads/old_name.mp4"
+        new_path = "/downloads/new_name.mp4"
+
+        widget = types.SimpleNamespace()
+        widget._completed_path = old_path
+        refreshed_with = []
+        widget.refresh = lambda task: refreshed_with.append((widget._completed_path, task.filename))
+
+        task = types.SimpleNamespace(filename=new_path)
+        service = types.SimpleNamespace(
+            rename_download=lambda tid, name: new_path,
+            get_task=lambda tid: task,
+        )
+
+        qt = types.SimpleNamespace()
+        qt._app = types.SimpleNamespace(service=service)
+        qt._widgets = {"t1": widget}
+
+        with patch(
+            "ui.tabs.queue_tab.QInputDialog.getText",
+            return_value=("new_name.mp4", True),
+        ):
+            QueueTab._on_rename(qt, "t1", old_path)
+
+        assert refreshed_with == [("", new_path)]
