@@ -235,6 +235,8 @@ class Toolbar(QWidget):
     # ── Analysis flow ─────────────────────────────────────────────────────
 
     def _start_analyse(self) -> None:
+        if self._analysing:
+            return
         raw = self.get_url()
         if not raw:
             return
@@ -277,6 +279,8 @@ class Toolbar(QWidget):
             self._current_cancel = cancel_event
         except Exception:
             self._reset_btn()
+            if home:
+                home.clear_result()
 
     def _cancel_analyse(self) -> None:
         if self._current_cancel is not None:
@@ -285,6 +289,9 @@ class Toolbar(QWidget):
         self._analyse_token += 1
         self._set_status(t("toolbar.status.cancelled"), T.text3)
         self._reset_btn()
+        home = self._app.get_tab("home")
+        if home:
+            home.clear_result()
 
     def _on_done(self, info) -> None:
         self._spinner_timer.stop()
@@ -324,7 +331,7 @@ class Toolbar(QWidget):
             self._spinner_timer.stop()
             return
         frame = _SPINNER[self._spinner_idx % len(_SPINNER)]
-        self._analyse_btn.setText(f'{frame} {t("toolbar.analysing")}')
+        self._analyse_btn.setText(f"{frame} {t('toolbar.analysing')}")
         self._spinner_idx += 1
 
     # ── Helpers ───────────────────────────────────────────────────────────

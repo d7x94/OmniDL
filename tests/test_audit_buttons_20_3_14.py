@@ -107,3 +107,57 @@ class TestForceCheckNowResetsUrl:
 
         assert item.url == "https://www.tiktok.com/@u"
         assert item.state == _MonitorState.WAITING
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — toolbar: _start_analyse must not launch a second analyse while one
+# is already running (Enter / Paste bypass the disabled Analyse button).
+# ---------------------------------------------------------------------------
+
+
+class TestToolbarStartAnalyseGuard:
+    def test_second_call_while_analysing_is_a_noop(self):
+        from ui.components.toolbar import Toolbar
+
+        calls = []
+        tb = types.SimpleNamespace()
+        tb._analysing = True
+        tb._current_cancel = "old-event"
+        tb._analyse_token = 1
+        tb.get_url = lambda: "https://example.com/v"
+        tb._app = types.SimpleNamespace(
+            service=types.SimpleNamespace(analyse_url=lambda **kw: calls.append(kw)),
+            navigate_to=lambda *a: None,
+            get_tab=lambda *a: None,
+        )
+
+        Toolbar._start_analyse(tb)
+
+        assert calls == []
+        assert tb._current_cancel == "old-event"
+        assert tb._analyse_token == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — toolbar: _cancel_analyse must clear HomeTab's loading state, or
+# Stop leaves HomeTab stuck showing the loading view.
+# ---------------------------------------------------------------------------
+
+
+class TestToolbarCancelAnalyseClearsHome:
+    def test_cancel_analyse_calls_home_clear_result(self):
+        from ui.components.toolbar import Toolbar
+
+        home = types.SimpleNamespace(cleared=False)
+        home.clear_result = lambda: setattr(home, "cleared", True)
+
+        tb = types.SimpleNamespace()
+        tb._current_cancel = None
+        tb._analyse_token = 0
+        tb._set_status = lambda *a: None
+        tb._reset_btn = lambda: None
+        tb._app = types.SimpleNamespace(get_tab=lambda name: home if name == "home" else None)
+
+        Toolbar._cancel_analyse(tb)
+
+        assert home.cleared is True
