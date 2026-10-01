@@ -167,6 +167,7 @@ graphify-out/
 .claude/
 .mcp.json
 
+Prompt/
 omnidl_skill/
 Vande.md
 Claude.md
