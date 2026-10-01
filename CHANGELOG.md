@@ -15,6 +15,21 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.15 - 2026-10-01
+
+### Fixed
+
+- Live Monitor's Clear All and per-row remove no longer delete the partial file of a recording still in progress; they now keep it the same way Stop already did
+- Live Monitor's Check Now button resets a row's URL back to the watch page before polling again, so a row that went to an error state no longer gets polled against a stale video URL
+- Pasting or pressing Enter with the same URL while an analysis is already running is now a no-op instead of launching a second request; a different URL still cancels the old one and starts over, same as before
+- Stopping an analysis in progress now also clears the Home tab's loading view, instead of leaving it stuck
+- Renaming a file from the Queue tab now updates Open/Preview/Convert/Edit/Send to the new path instead of the old one
+- Batch tab's Retry now also resets a row stuck mid-analysis back to pending, instead of leaving it stuck forever
+- Batch tab's Queue All button stays disabled while an analysis or a sequential download run is in progress, instead of re-enabling itself on a checkbox toggle
+- Home tab's folder label keeps showing the custom output folder you picked instead of being overwritten by the default download folder on tab refresh
+
+---
+
 ## v20.3.14 - 2026-09-30
 
 ### Fixed
