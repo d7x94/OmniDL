@@ -442,6 +442,9 @@ class LiveMonitorTab(QWidget):
             self._checking_item = None
         if item.task_id:
             try:
+                task = self._app.service.get_task(item.task_id)
+                if task is not None:
+                    task.keep_partial = True
                 self._app.service.cancel_download(item.task_id)
             except Exception:
                 pass
@@ -456,6 +459,9 @@ class LiveMonitorTab(QWidget):
         for item in list(self._items):
             if item.task_id:
                 try:
+                    task = self._app.service.get_task(item.task_id)
+                    if task is not None:
+                        task.keep_partial = True
                     self._app.service.cancel_download(item.task_id)
                 except Exception:
                     pass
@@ -662,9 +668,7 @@ class LiveMonitorTab(QWidget):
             )
 
         if item.platform_lbl:
-            platform = (
-                item.media_info.platform if item.media_info else ""
-            ) or item.profile_platform
+            platform = (item.media_info.platform if item.media_info else "") or item.profile_platform
             if platform:
                 item.platform_lbl.setText(f"  {platform}  ")
                 item.platform_lbl.show()
