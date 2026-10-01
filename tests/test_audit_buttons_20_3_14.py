@@ -295,3 +295,47 @@ class TestBatchQueueAllStaysDisabledDuringRun:
         BatchTab._update_queue_btn_count(bt)
 
         assert calls["enabled"] == [True]
+
+
+# ---------------------------------------------------------------------------
+# Fix 8 — home_tab: refresh() must keep showing the user's custom output
+# folder instead of overwriting the label with the default download dir.
+# ---------------------------------------------------------------------------
+
+
+class TestHomeTabRefreshKeepsCustomDir:
+    def test_refresh_shows_custom_dir_when_set(self):
+        from pathlib import Path
+
+        from ui.tabs.home_tab import HomeTab
+
+        ht = types.SimpleNamespace()
+        ht._custom_output_dir = Path("/custom/pick")
+        ht._app = types.SimpleNamespace(
+            service=types.SimpleNamespace(get_download_dir=lambda: Path("/default/downloads"))
+        )
+        ht._short_path = lambda p: str(p)
+        shown = []
+        ht._folder_lbl = types.SimpleNamespace(setText=lambda v: shown.append(v))
+
+        HomeTab.refresh(ht)
+
+        assert shown == ["/custom/pick"]
+
+    def test_refresh_shows_default_dir_when_no_custom(self):
+        from pathlib import Path
+
+        from ui.tabs.home_tab import HomeTab
+
+        ht = types.SimpleNamespace()
+        ht._custom_output_dir = None
+        ht._app = types.SimpleNamespace(
+            service=types.SimpleNamespace(get_download_dir=lambda: Path("/default/downloads"))
+        )
+        ht._short_path = lambda p: str(p)
+        shown = []
+        ht._folder_lbl = types.SimpleNamespace(setText=lambda v: shown.append(v))
+
+        HomeTab.refresh(ht)
+
+        assert shown == ["/default/downloads"]

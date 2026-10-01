@@ -464,7 +464,8 @@ class HomeTab(QWidget):
         self._set_status("", T.text3)
 
     def refresh(self) -> None:
-        self._folder_lbl.setText(self._short_path(self._app.service.get_download_dir()))
+        shown_dir = self._custom_output_dir or self._app.service.get_download_dir()
+        self._folder_lbl.setText(self._short_path(shown_dir))
 
     # ── Internal ──────────────────────────────────────────────────────────
 
