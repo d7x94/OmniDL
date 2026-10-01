@@ -758,6 +758,10 @@ class BatchTab(QWidget):
         if ready == 0:
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.queue_all"))
+        elif self._analysing_count > 0 or self._seq_queue:
+            # Analysing or a sequential run is in progress: don't let a checkbox
+            # toggle re-enable Queue All out from under it.
+            self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))
         else:
             self._queue_all_btn.setEnabled(True)
             self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))

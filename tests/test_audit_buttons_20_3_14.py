@@ -233,3 +233,65 @@ class TestBatchRetryErrorsResetsAnalysing:
 
         assert analysing_item.state == _ItemState.PENDING
         assert error_item.state == _ItemState.PENDING
+
+
+# ---------------------------------------------------------------------------
+# Fix 7 — batch_tab: _update_queue_btn_count must not re-enable Queue All
+# while an analyse pass or a sequential run is in progress.
+# ---------------------------------------------------------------------------
+
+
+class TestBatchQueueAllStaysDisabledDuringRun:
+    def test_disabled_while_analysing(self):
+        from ui.tabs.batch_tab import BatchTab, _ItemState
+
+        ready_item = types.SimpleNamespace(state=_ItemState.READY, checked=True)
+        bt = types.SimpleNamespace()
+        bt._items = [ready_item]
+        bt._analysing_count = 1
+        bt._seq_queue = []
+        calls = {"enabled": []}
+        bt._queue_all_btn = types.SimpleNamespace(
+            setEnabled=lambda v: calls["enabled"].append(v),
+            setText=lambda v: None,
+        )
+
+        BatchTab._update_queue_btn_count(bt)
+
+        assert calls["enabled"] == []
+
+    def test_disabled_during_sequential_run(self):
+        from ui.tabs.batch_tab import BatchTab, _ItemState
+
+        ready_item = types.SimpleNamespace(state=_ItemState.READY, checked=True)
+        bt = types.SimpleNamespace()
+        bt._items = [ready_item]
+        bt._analysing_count = 0
+        bt._seq_queue = [ready_item]
+        calls = {"enabled": []}
+        bt._queue_all_btn = types.SimpleNamespace(
+            setEnabled=lambda v: calls["enabled"].append(v),
+            setText=lambda v: None,
+        )
+
+        BatchTab._update_queue_btn_count(bt)
+
+        assert calls["enabled"] == []
+
+    def test_enabled_when_idle(self):
+        from ui.tabs.batch_tab import BatchTab, _ItemState
+
+        ready_item = types.SimpleNamespace(state=_ItemState.READY, checked=True)
+        bt = types.SimpleNamespace()
+        bt._items = [ready_item]
+        bt._analysing_count = 0
+        bt._seq_queue = []
+        calls = {"enabled": []}
+        bt._queue_all_btn = types.SimpleNamespace(
+            setEnabled=lambda v: calls["enabled"].append(v),
+            setText=lambda v: None,
+        )
+
+        BatchTab._update_queue_btn_count(bt)
+
+        assert calls["enabled"] == [True]
