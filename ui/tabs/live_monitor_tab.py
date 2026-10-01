@@ -1170,6 +1170,7 @@ class LiveMonitorTab(QWidget):
         item.last_check = 0.0
         item.consecutive_failures = 0
         item.error_msg = ""
+        item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
         item.state = _MonitorState.WAITING
         self._refresh_item_ui(item)
         if self._checking_item is None and not self._paused and not item.paused:

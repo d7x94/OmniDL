@@ -80,3 +80,30 @@ class TestLiveMonitorKeepPartialOnDiscard:
 
         assert task.keep_partial is True
         assert tab._app.service.cancelled == ["t1"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — live_monitor_tab: _force_check_now must reset item.url back to
+# watch_url (BUG-MON-URL), same as _cancel_item already does.
+# ---------------------------------------------------------------------------
+
+
+class TestForceCheckNowResetsUrl:
+    def test_error_row_url_reset_to_watch_url(self):
+        from ui.tabs.live_monitor_tab import LiveMonitorTab, _MonitorItem, _MonitorState
+
+        tab = types.SimpleNamespace()
+        tab._refresh_item_ui = lambda item: None
+        tab._checking_item = None
+        tab._paused = False
+        tab._trigger_check = lambda item: None
+        item = _MonitorItem(
+            url="https://www.tiktok.com/@u/video/123",
+            watch_url="https://www.tiktok.com/@u",
+        )
+        item.state = _MonitorState.ERROR
+
+        LiveMonitorTab._force_check_now(tab, item)
+
+        assert item.url == "https://www.tiktok.com/@u"
+        assert item.state == _MonitorState.WAITING
