@@ -117,26 +117,51 @@ class TestForceCheckNowResetsUrl:
 
 
 class TestToolbarStartAnalyseGuard:
-    def test_second_call_while_analysing_is_a_noop(self):
-        from ui.components.toolbar import Toolbar
-
-        calls = []
+    def _tb(self, calls):
         tb = types.SimpleNamespace()
         tb._analysing = True
         tb._current_cancel = "old-event"
+        tb._current_analysing_url = "https://example.com/v"
         tb._analyse_token = 1
-        tb.get_url = lambda: "https://example.com/v"
+        tb._analyse_btn = types.SimpleNamespace(setText=lambda v: None, setEnabled=lambda v: None)
+        tb._stop_btn = types.SimpleNamespace(show=lambda: None)
+        tb._set_status = lambda *a: None
+        tb._spinner_timer = types.SimpleNamespace(start=lambda: None)
         tb._app = types.SimpleNamespace(
             service=types.SimpleNamespace(analyse_url=lambda **kw: calls.append(kw)),
             navigate_to=lambda *a: None,
             get_tab=lambda *a: None,
         )
+        return tb
+
+    def test_same_url_while_analysing_is_a_noop(self):
+        from ui.components.toolbar import Toolbar
+
+        calls = []
+        tb = self._tb(calls)
+        tb.get_url = lambda: "https://example.com/v"
 
         Toolbar._start_analyse(tb)
 
         assert calls == []
         assert tb._current_cancel == "old-event"
         assert tb._analyse_token == 1
+
+    def test_different_url_while_analysing_cancels_and_restarts(self):
+        from ui.components.toolbar import Toolbar
+
+        calls = []
+        tb = self._tb(calls)
+        tb.get_url = lambda: "https://example.com/other"
+        cancelled = []
+        tb._current_cancel = types.SimpleNamespace(set=lambda: cancelled.append(True))
+
+        Toolbar._start_analyse(tb)
+
+        assert cancelled == [True]
+        assert tb._current_analysing_url == "https://example.com/other"
+        assert tb._analyse_token == 2
+        assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

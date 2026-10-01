@@ -39,6 +39,7 @@ class Toolbar(QWidget):
         self._spinner_idx = 0
         self._analyse_token = 0
         self._current_cancel: Optional[threading.Event] = None
+        self._current_analysing_url = ""
 
         self.setFixedHeight(68)
         self._build()
@@ -235,19 +236,21 @@ class Toolbar(QWidget):
     # ── Analysis flow ─────────────────────────────────────────────────────
 
     def _start_analyse(self) -> None:
-        if self._analysing:
-            return
         raw = self.get_url()
         if not raw:
             return
         _m = _CLIPBOARD_URL_RE.search(raw)
         url = _m.group(0).rstrip("".join(_URL_TRAILING_JUNK)) if _m else raw
 
+        if self._analysing and url == self._current_analysing_url:
+            return
+
         if self._current_cancel is not None:
             self._current_cancel.set()
             self._current_cancel = None
 
         self._analysing = True
+        self._current_analysing_url = url
         self._analyse_token += 1
         my_token = self._analyse_token
 
