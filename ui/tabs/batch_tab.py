@@ -466,9 +466,7 @@ class BatchTab(QWidget):
         pending.state = _ItemState.ANALYSING
         self._refresh_item_ui(pending)
         self._analysing_count += 1
-        _done = sum(
-            1 for i in self._items if i.state not in (_ItemState.PENDING, _ItemState.ANALYSING)
-        )
+        _done = sum(1 for i in self._items if i.state not in (_ItemState.PENDING, _ItemState.ANALYSING))
         _total = len(self._items)
         self._set_status(
             lambda d=_done, tot=_total: (
@@ -897,6 +895,11 @@ class BatchTab(QWidget):
         self._stop_seq_timer()
         self._seq_queue.clear()
 
+        for item in self._items:
+            if item.state == _ItemState.ANALYSING:
+                item.state = _ItemState.PENDING
+                self._refresh_item_ui(item)
+
         for item in error_items:
             item.state = _ItemState.PENDING
             item.error_msg = ""
@@ -942,9 +945,7 @@ class BatchTab(QWidget):
 
         errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
         self._retry_btn.setEnabled(errors > 0)
-        self._retry_btn.setText(
-            t("batch.retry_count", count=errors) if errors else t("batch.retry_errors")
-        )
+        self._retry_btn.setText(t("batch.retry_count", count=errors) if errors else t("batch.retry_errors"))
 
         self._set_status(lambda: (t("batch.analyse_stopped"), T.text3))
         self._update_queue_btn_count()

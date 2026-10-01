@@ -200,3 +200,36 @@ class TestQueueTabRenameRefreshesCompletedPath:
             QueueTab._on_rename(qt, "t1", old_path)
 
         assert refreshed_with == [("", new_path)]
+
+
+# ---------------------------------------------------------------------------
+# Fix 6 — batch_tab: _retry_errors must also move any still-ANALYSING row
+# back to PENDING, or a stale callback leaves it stuck forever.
+# ---------------------------------------------------------------------------
+
+
+class TestBatchRetryErrorsResetsAnalysing:
+    def test_retry_resets_analysing_row_to_pending(self):
+        from ui.tabs.batch_tab import BatchTab, _ItemState
+
+        analysing_item = types.SimpleNamespace(state=_ItemState.ANALYSING)
+        error_item = types.SimpleNamespace(state=_ItemState.ERROR, error_msg="boom", checked=False)
+
+        bt = types.SimpleNamespace()
+        bt._items = [analysing_item, error_item]
+        bt._batch_token = 0
+        bt._stop_seq_timer = lambda: None
+        bt._seq_queue = types.SimpleNamespace(clear=lambda: None)
+        bt._refresh_item_ui = lambda item: None
+        bt._analysing_count = 1
+        bt._retry_btn = types.SimpleNamespace(setEnabled=lambda v: None, setText=lambda v: None)
+        bt._analyse_btn = types.SimpleNamespace(setEnabled=lambda v: None, setText=lambda v: None)
+        bt._cancel_btn = types.SimpleNamespace(setVisible=lambda v: None)
+        bt._queue_all_btn = types.SimpleNamespace(setEnabled=lambda v: None)
+        bt._set_status = lambda *a: None
+        bt._analyse_next = lambda token: None
+
+        BatchTab._retry_errors(bt)
+
+        assert analysing_item.state == _ItemState.PENDING
+        assert error_item.state == _ItemState.PENDING
