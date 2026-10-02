@@ -402,7 +402,7 @@ class MainWindow(QMainWindow):
             if inner is not None:
                 inner.setText(f"∨  {label}")
 
-        for widget in (self._toolbar, self._status_bar, *self._tabs.values()):
+        for widget in (self._toolbar, self._status_bar, self._notification_panel, *self._tabs.values()):
             retranslate = getattr(widget, "retranslate", None)
             if callable(retranslate):
                 try:

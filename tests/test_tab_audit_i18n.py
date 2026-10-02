@@ -83,7 +83,7 @@ def test_surface_exposes_retranslate(module, cls):
 
 def test_main_window_retranslates_the_status_bar_too():
     src = (_ROOT / "ui/main_window.py").read_text(encoding="utf-8")
-    assert "self._status_bar, *self._tabs.values()" in src
+    assert "self._status_bar, self._notification_panel, *self._tabs.values()" in src
 
 
 def test_queue_tab_retranslates_its_item_widgets():
