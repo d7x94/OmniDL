@@ -70,6 +70,7 @@ _QUALITY_KEYS = [
     ("custom", "convert.quality.custom.label", "convert.quality.custom.desc"),
 ]
 
+
 class FileState(Enum):
     PENDING = auto()
     QUEUED = auto()
@@ -162,6 +163,48 @@ class FileCard(QFrame):
             }}
         """)
         self._build()
+        self._theme_cb = self._on_theme
+        T.register(self._theme_cb)
+
+    def _on_theme(self) -> None:
+        self.setStyleSheet(f"""
+            FileCard {{
+                background-color: {T.surface};
+                border: 1px solid {T.border};
+                border-radius: 10px;
+            }}
+        """)
+        self._name_lbl.setStyleSheet(
+            f"color: {T.text}; font-size: 13px; font-weight: bold; background: transparent;"
+        )
+        self._ext_badge.setStyleSheet(
+            f"color: {T.text3}; background-color: {T.surface3}; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 2px 4px;"
+        )
+        self._cancel_btn.setStyleSheet(
+            f"background: {T.warning_bg}; color: {T.warning}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
+        )
+        self._open_btn.setStyleSheet(
+            f"background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
+        )
+        self._preview_btn.setStyleSheet(
+            f"background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
+        )
+        self._delete_output_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error_text}; border: none; border-radius: 6px; font-size: 10px; font-weight: bold; padding: 0;"
+        )
+        self._info_lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px; background: transparent;")
+        self._remove_btn.setStyleSheet(
+            f"background: {T.surface2}; color: {T.text3}; border: none; border-radius: 6px;"
+            f" padding: 0; font-size: 13px; font-weight: bold;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self.refresh()
+
+    def deleteLater(self) -> None:
+        # T._callbacks holds a strong ref to the bound method, which pins
+        # this card for the process lifetime otherwise.
+        T.unregister(self._theme_cb)
+        super().deleteLater()
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)
@@ -1082,7 +1125,7 @@ class ConvertTab(QWidget):
         self._subs_lang_combo.setEnabled(supported)
         self._subs_model_combo.setEnabled(supported)
         self._whisper_ok = supported
-        self._subs_btn.setEnabled(supported)
+        self._subs_btn.setEnabled(supported and self._active_count == 0)
         if not supported:
             self._subs_btn.setToolTip(t("convert.no_whisper_tip"))
             self._subs_check.setChecked(False)
@@ -1148,7 +1191,7 @@ class ConvertTab(QWidget):
             self,
             t("convert.choose_videos_title"),
             "",
-            f"Video files ({ext_filter});;All files (*.*)",
+            f"{t('convert.file_filter_video', ext_filter=ext_filter)};;{t('convert.file_filter_all')}",
         )
         self._add_files([Path(p) for p in paths])
         self._refresh_ui()
