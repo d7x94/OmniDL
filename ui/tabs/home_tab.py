@@ -235,7 +235,7 @@ class HomeTab(QWidget):
         self._duration_lbl = QLabel("")
         self._duration_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         meta_sub.addWidget(self._duration_lbl)
-        self._live_badge = QLabel("  🔴 LIVE  ")
+        self._live_badge = QLabel(f"  🔴 {t('home.live')}  ")
         self._live_badge.setStyleSheet(
             f"background-color: {T.error}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 0;"
         )
@@ -323,6 +323,7 @@ class HomeTab(QWidget):
         self._browse_btn = QPushButton(t("home.browse"))
         browse_btn = self._browse_btn
         browse_btn.setFixedSize(72, 34)
+        browse_btn.setToolTip(t("home.browse_tooltip"))
         browse_btn.clicked.connect(self._browse_folder)
         opts.addWidget(browse_btn)
 
@@ -332,6 +333,7 @@ class HomeTab(QWidget):
         self._download_btn.setObjectName("primary")
         self._download_btn.setFixedHeight(48)
         self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._download_btn.setToolTip(t("home.add_to_queue_tooltip"))
         self._download_btn.clicked.connect(self._add_to_queue)
         opts.addWidget(self._download_btn)
 
@@ -455,6 +457,9 @@ class HomeTab(QWidget):
         self._loading.hide()
         self._welcome.show()
         self._set_status(f"  {err[:120]}", T.error)
+        # _status_lbl lives inside _result_card, which is hidden here (welcome
+        # is shown instead), so the status text alone is never visible.
+        self._app.toast(err[:120], "error")
 
     def clear_result(self) -> None:
         self._result_card.hide()
@@ -605,6 +610,7 @@ class HomeTab(QWidget):
         self._folder_title_lbl.setText(t("home.folder_label"))
         self._browse_btn.setText(t("home.browse"))
         self._download_btn.setText(f"↓  {t('home.add_to_queue')}")
+        self._live_badge.setText(f"  🔴 {t('home.live')}  ")
         # The status line carries transient, already-formatted text; only the
         # thumbnail placeholder is safe to rewrite here.
         if not self._thumb_lbl.pixmap() or self._thumb_lbl.pixmap().isNull():
