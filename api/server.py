@@ -2201,6 +2201,14 @@ def create_app(
             else:
                 shutil.rmtree(target)
         except OSError as exc:
+            # shutil.rmtree() can fail partway through a directory: most
+            # files are already gone by the time it hits one Windows still
+            # has locked. Clear records for whatever was actually removed
+            # before re-raising, or every task/history entry under target
+            # keeps pointing at a path that's gone — same dead-404 problem
+            # this whole block exists to prevent, just silently on the
+            # failure path.
+            service.clear_file_record(target)
             # Same file-lock case as DELETE /api/queue/{task_id}/file: Windows
             # keeps a hard lock while another process still has the file
             # open, so this is a transient 409, not an unhandled 500.

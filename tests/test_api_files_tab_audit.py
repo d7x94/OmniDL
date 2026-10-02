@@ -228,6 +228,37 @@ class TestDeleteSyncsDownloadRecords:
 
         assert service.tasks[0].filename == str(keeper)
 
+    def test_partial_rmtree_failure_still_clears_records(self, tmp_path: Path, monkeypatch) -> None:
+        """shutil.rmtree() can fail partway through (a locked file inside the
+        directory). Records for files already removed before the failure
+        must not be left pointing at a dead path just because the whole
+        operation ends in a 409."""
+        import shutil as shutil_mod
+
+        from fastapi import HTTPException
+
+        root = tmp_path / "dl"
+        root.mkdir()
+        folder = root / "album"
+        folder.mkdir()
+        inner = folder / "a.mp4"
+        inner.write_bytes(b"x")
+        service = _FakeService()
+        service.history = [{"id": "H1", "filename": str(inner)}]
+        app, _ = _make_app(root, service)
+
+        monkeypatch.setattr(
+            shutil_mod,
+            "rmtree",
+            lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "used by another process")),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _call(_endpoint(app, "/api/files/delete", "DELETE"), FileDeleteRequest(path=str(folder)), None)
+
+        assert exc.value.status_code == 409
+        assert service.history[0]["filename"] == ""
+
     def test_response_reports_the_resolved_path(self, tmp_path: Path) -> None:
         root = tmp_path / "dl"
         root.mkdir()

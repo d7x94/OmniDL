@@ -310,11 +310,12 @@ class TestCodecsRoute:
 
 class TestSrtDownloadRoute:
     def _job(self, tmp_path, srt: str = ""):
-        return SimpleNamespace(
-            status="COMPLETED",
-            output_filename=str(tmp_path / "o.mp4"),
-            subtitle_filename=srt,
-        )
+        snap = {
+            "status": "COMPLETED",
+            "output_filename": str(tmp_path / "o.mp4"),
+            "subtitle_filename": srt,
+        }
+        return SimpleNamespace(**snap, snapshot=lambda: snap)
 
     def test_kind_param_is_constrained_to_video_or_srt(self, tmp_path):
         """kind reaches a filesystem read — it must be an enum, not free text."""
