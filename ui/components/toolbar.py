@@ -266,14 +266,15 @@ class Toolbar(QWidget):
             home.on_analysis_start()
 
         def _safe_done(info) -> None:
+            # A stale callback must not touch shared state — a newer analysis
+            # (different token) may already be in flight and owns _analysing /
+            # _current_cancel / _stop_btn now.
             if my_token != self._analyse_token:
-                ui_bridge.post(self._reset_btn)
                 return
             ui_bridge.post(lambda: self._on_done(info))
 
         def _safe_error(err: str) -> None:
             if my_token != self._analyse_token:
-                ui_bridge.post(self._reset_btn)
                 return
             ui_bridge.post(lambda: self._on_error(err))
 

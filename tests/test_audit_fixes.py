@@ -335,48 +335,94 @@ class TestHistoryDiskPruning:
 
 class TestAnalyzeButtonRace:
     """
-    When a stale _safe_done fires, _reset_btn() must be scheduled —
-    not a no-op lambda — so the Analyze button is re-enabled.
+    A stale _safe_done/_safe_error (token from a superseded analysis) must
+    not touch any shared state — a newer analysis may already own
+    _analysing / _current_cancel / _stop_btn.
     """
 
-    def test_stale_safe_done_schedules_reset_btn(self):
+    def _make_toolbar(self):
+        from unittest.mock import MagicMock
+
+        from ui.components.toolbar import Toolbar
+
+        tb = Toolbar.__new__(Toolbar)
+        tb._app = MagicMock()
+        tb._app.get_tab.return_value = None
+        tb._url_entry = MagicMock()
+        tb._analyse_btn = MagicMock()
+        tb._stop_btn = MagicMock()
+        tb._status_lbl = MagicMock()
+        tb._spinner_timer = MagicMock()
+        tb._analysing = False
+        tb._spinner_idx = 0
+        tb._analyse_token = 0
+        tb._current_cancel = None
+        tb._current_analysing_url = ""
+        return tb
+
+    def test_stale_safe_done_does_not_touch_newer_analysis_state(self, monkeypatch):
         """
-        Simulate the race: token advances before _safe_done fires.
-        The button's configure() must be called with state='normal'.
+        Analysis A starts, then analysis B supersedes it (new token, new
+        cancel handle). A's worker finally calls its on_done — this must be
+        a no-op: B's _analysing/_current_cancel/_stop_btn must be untouched.
         """
-        # _safe_done, _safe_error, and _reset_btn live in the Toolbar component,
-        # not in HomeTab — inspect the correct module.
+        from unittest.mock import MagicMock
+
+        import ui.components.toolbar as toolbar_module
+
+        # Run ui_bridge.post() synchronously — no Qt event loop in this test.
+        monkeypatch.setattr(toolbar_module.ui_bridge, "post", lambda fn: fn())
+
+        tb = self._make_toolbar()
+        captured = {}
+
+        def fake_cancel_event(url):
+            m = MagicMock()
+            m.set = lambda: captured[url].setdefault("cancelled", True)
+            return m
+
+        def fake_analyse_url(url, on_done, on_error):
+            captured.setdefault(url, {})["on_done"] = on_done
+            captured[url]["on_error"] = on_error
+            return fake_cancel_event(url)
+
+        tb._app.service.analyse_url.side_effect = fake_analyse_url
+
+        # Analysis A
+        tb._url_entry.text.return_value = "https://example.com/a"
+        tb._start_analyse()
+        token_a = tb._analyse_token
+        cancel_a = tb._current_cancel
+
+        # Analysis B supersedes A (different URL -> cancels A, starts B)
+        tb._url_entry.text.return_value = "https://example.com/b"
+        tb._start_analyse()
+        token_b = tb._analyse_token
+        cancel_b = tb._current_cancel
+        assert token_b != token_a
+        assert cancel_b is not cancel_a
+
+        # A's stale worker callback finally arrives
+        captured["https://example.com/a"]["on_done"](None)
+
+        # B's state must be completely unaffected by A's stale callback
+        assert tb._analysing is True
+        assert tb._current_cancel is cancel_b
+        tb._stop_btn.hide.assert_not_called()
+
+    def test_no_background_thread_tkinter_call(self):
+        """UI must never be touched directly from a background thread."""
         import inspect
 
         import ui.components.toolbar as toolbar_module
 
-        # We can't instantiate the real CTk widget without a display.
-        # Instead we inspect the source to confirm the fix is applied.
         src = inspect.getsource(toolbar_module)
-
-        # The no-op lambda must be gone
-        assert "lambda: None" not in src or src.count("lambda: None") == 0, (
-            "_safe_done must not contain a no-op 'lambda: None'"
+        assert src.count("after(0, self._reset_btn)") == 0, (
+            "after(0, self._reset_btn) is a Tkinter call from a background thread — illegal."
         )
-
-        # BUG-CRITICAL-1 FIX VERIFICATION: UI must not be called from a
-        # background thread. The PySide6 port replaced _ui_queue.put() with
-        # ui_bridge.post() which routes calls to the main thread via a signal.
-        # Assert the forbidden direct call is GONE.
-        reset_count = src.count("after(0, self._reset_btn)")
-        assert reset_count == 0, (
-            f"after(0, self._reset_btn) is a Tkinter call from a background "
-            f"thread — illegal. Found {reset_count} occurrence(s)."
-        )
-        # Verify thread-safe reset is present (either PySide6 ui_bridge or
-        # CTK _ui_queue variant).
-        bridge_count = src.count("ui_bridge.post(self._reset_btn)")
-        queue_count = src.count("_ui_queue.put(self._reset_btn)")
-        assert bridge_count >= 2 or queue_count >= 2, (
-            f"Expected thread-safe _reset_btn dispatch in both _safe_done and "
-            f"_safe_error. Found ui_bridge.post: {bridge_count}, "
-            f"_ui_queue.put: {queue_count}."
-        )
+        # The current (non-stale) callback must still dispatch thread-safely.
+        assert src.count("ui_bridge.post(lambda: self._on_done(info))") == 1
+        assert src.count("ui_bridge.post(lambda: self._on_error(err))") == 1
 
 
 # ===========================================================================
