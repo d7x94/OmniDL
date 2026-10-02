@@ -358,14 +358,6 @@ class SpecialDlTab(QWidget):
         )
         browser = self._browser_combo.currentText()
 
-        # Pre-flight: report the three things that make a Story capture
-        # impossible before spending 90 s on a browser launch.
-        if platform_key == "facebook_story":
-            err = self._preflight_facebook_story(url, browser)
-            if err:
-                self._set_status("error", err)
-                return
-
         self._running = True
         self._dl_btn.setEnabled(False)
         self._dl_btn.setText(t("special.downloading"))
@@ -381,6 +373,15 @@ class SpecialDlTab(QWidget):
         self._last_dest = None
         try:
             if platform_key == "facebook_story":
+                # Pre-flight: report the three things that make a Story
+                # capture impossible before spending 90 s on a browser
+                # launch. Runs here (worker thread), not in _on_download,
+                # because _is_browser_running() shells out with a 5 s
+                # subprocess timeout and must never block the UI thread.
+                err = self._preflight_facebook_story(url, browser)
+                if err:
+                    ui_bridge.post(lambda m=err: self._set_status("error", m))
+                    return
                 results = [self._run_facebook_story(url, browser)]
             else:
                 results = []

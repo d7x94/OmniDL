@@ -272,3 +272,61 @@ class TestOnPostSendValidation:
         restore = MagicMock()
         self._call(tab, Path("/tmp/f.mp4"), restore)  # nosec B108
         tab._app.taildrop.send_file_to_nodes.assert_called_once()
+
+
+class TestFacebookStoryPreflightRunsOffUIThread:
+    """_preflight_facebook_story shells out (tasklist/pgrep, 5 s timeout) via
+    _is_browser_running, so it must run on the worker thread, not in
+    _on_download on the UI thread."""
+
+    def _tab(self):
+
+        recorded = []
+        tab = SimpleNamespace(
+            _running=False,
+            _url_entry=_W(text="https://www.facebook.com/story.php?story_fbid=1&id=2"),
+            _platform_combo=MagicMock(currentText=MagicMock(return_value="Facebook Story")),
+            _browser_combo=MagicMock(currentText=MagicMock(return_value="chrome")),
+            _dl_btn=MagicMock(),
+            _worker=MagicMock(),
+            _set_status=lambda kind, msg, *a, **k: recorded.append((kind, msg)),
+            _recorded=recorded,
+        )
+        tab._set_status = MagicMock(side_effect=tab._set_status)
+        return tab
+
+    def test_on_download_does_not_call_preflight_before_starting_thread(self):
+        from ui.tabs.special_dl_tab import SpecialDlTab
+
+        tab = self._tab()
+        tab._preflight_facebook_story = MagicMock(return_value="")
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ui.tabs.special_dl_tab._PLATFORMS",
+                {"facebook_story": {"label": "Facebook Story"}},
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch("threading.Thread") as thread_cls,
+        ):
+            thread_cls.return_value = MagicMock()
+            SpecialDlTab._on_download(tab)
+
+        tab._preflight_facebook_story.assert_not_called()
+        thread_cls.return_value.start.assert_called_once()
+
+    def test_worker_posts_preflight_error_without_running_download(self):
+        from ui.tabs.special_dl_tab import SpecialDlTab
+
+        tab = self._tab()
+        tab._preflight_facebook_story = MagicMock(return_value="browser is running")
+        tab._run_facebook_story = MagicMock()
+        posted = []
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+            "ui.tabs.special_dl_tab.ui_bridge"
+        ) as ui_bridge:
+            ui_bridge.post.side_effect = lambda fn: posted.append(fn)
+            SpecialDlTab._worker(tab, "facebook_story", "https://fb.com/x", "chrome")
+
+        tab._run_facebook_story.assert_not_called()
+        assert posted
+        posted[0]()
+        tab._set_status.assert_any_call("error", "browser is running")
