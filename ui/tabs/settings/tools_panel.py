@@ -583,8 +583,26 @@ class ToolsPanel(_BasePanel):
             return
 
         try:
+            from api.server import is_api_running, stop_api_server
+            from api.tailscale_https import stop_tailscale_serve
+
+            api_was_running = is_api_running()
+            old_ts_port = getattr(self._app.config, "api_ts_https_internal_port", 0) or 0
+
             self._app.service.clear_history()
             self._app.config.reset_to_defaults()
+
+            # Config is now reset (api_enabled/api_ts_https_enabled back to
+            # False), so any service still running on the old config must be
+            # stopped explicitly — reset_to_defaults() only touches the saved
+            # config, it never reaches into already-running services.
+            if api_was_running:
+                stop_api_server()
+            if old_ts_port:
+                stop_tailscale_serve(old_ts_port)
+            self._app.stop_clipboard_monitor()
+            self._app.rebuild_tiktok_pool()
+
             self._app.navigate_to("home")
             self._clear_data_status.setText(t("settings.tools.data_cleared_status"))
             self._clear_data_status.setStyleSheet(
