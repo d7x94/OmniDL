@@ -206,3 +206,135 @@ def test_failed_api_start_turns_the_switch_back_off():
 
     switch.setChecked.assert_called_once_with(False)
     assert ("api_enabled", False) in [c[0] for c in cfg.set.call_args_list]
+
+
+def _sync_thread(target=None, **_kw):
+    """Fake threading.Thread that runs target() synchronously on .start()."""
+    th = MagicMock()
+    th.start.side_effect = target
+    return th
+
+
+def test_api_start_returning_none_is_treated_as_a_failure():
+    """start_api_server() returning None (soft failure) used to be read as
+    success: the switch stayed on and the user got a success toast even
+    though no server was actually listening."""
+    import api.server as api_server
+    from ui.tabs.settings.remote_api_panel import RemoteApiPanel
+
+    cfg = MagicMock(api_enabled=False)
+    switch = MagicMock()
+    panel = SimpleNamespace(
+        _api_switch=switch,
+        _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
+        _refresh_api_status_label=MagicMock(),
+    )
+
+    original = api_server.start_api_server
+    api_server.start_api_server = MagicMock(return_value=None)
+    api_server.is_api_running = MagicMock(return_value=False)
+    try:
+        RemoteApiPanel._on_api_toggle(panel, True)
+    finally:
+        api_server.start_api_server = original
+
+    switch.setChecked.assert_called_once_with(False)
+    assert ("api_enabled", False) in [c[0] for c in cfg.set.call_args_list]
+    kinds = [c[0][1] for c in panel._app.toast.call_args_list]
+    assert "error" in kinds
+
+
+def test_api_switch_is_re_enabled_after_toggle_either_way():
+    import api.server as api_server
+    from ui.tabs.settings.remote_api_panel import RemoteApiPanel
+
+    cfg = MagicMock(api_enabled=True)
+    switch = MagicMock()
+    panel = SimpleNamespace(
+        _api_switch=switch,
+        _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
+        _refresh_api_status_label=MagicMock(),
+    )
+
+    # Success path (enable): setEnabled(False) then setEnabled(True) around
+    # the synchronous start_api_server() call — this is the busy-lock that
+    # stops a fast Off->On click from racing a still-running stop thread.
+    original_start = api_server.start_api_server
+    api_server.start_api_server = MagicMock(return_value=MagicMock())
+    api_server.is_api_running = MagicMock(return_value=False)
+    try:
+        RemoteApiPanel._on_api_toggle(panel, True)
+    finally:
+        api_server.start_api_server = original_start
+    assert switch.setEnabled.call_args_list[0][0] == (False,)
+    assert switch.setEnabled.call_args_list[-1][0] == (True,)
+
+    # Disable path: stop_api_server runs in a background thread; forcing it
+    # to run synchronously must still leave the switch re-enabled afterward.
+    switch.reset_mock()
+    original_stop = api_server.stop_api_server
+    api_server.stop_api_server = MagicMock()
+    with (
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "ui.tabs.settings.remote_api_panel.threading.Thread", side_effect=_sync_thread
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "ui.tabs.settings.remote_api_panel.ui_bridge.post", side_effect=lambda fn: fn()
+        ),
+    ):
+        try:
+            RemoteApiPanel._on_api_toggle(panel, False)
+        finally:
+            api_server.stop_api_server = original_stop
+    assert switch.setEnabled.call_args_list[0][0] == (False,)
+    assert switch.setEnabled.call_args_list[-1][0] == (True,)
+
+
+def test_ts_https_restart_failure_after_serve_rolls_back():
+    """A restart_api_server() failure AFTER start_tailscale_serve() already
+    succeeded used to only be logged, leaving api_ts_https_enabled=True and
+    the new port persisted with nothing actually serving them."""
+    from ui.tabs.settings.remote_api_panel import RemoteApiPanel
+
+    cfg = MagicMock(api_enabled=True, api_ts_https_enabled=False)
+    switch = MagicMock()
+    panel = SimpleNamespace(
+        _ts_https_switch=switch,
+        _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
+        _refresh_ts_https_status=MagicMock(),
+    )
+
+    import api.tailscale_https as ts_https
+
+    original_get_dns = ts_https.get_tailscale_dns_name
+    original_start = ts_https.start_tailscale_serve
+    ts_https.get_tailscale_dns_name = MagicMock(return_value="x.ts.net")
+    ts_https.start_tailscale_serve = MagicMock(return_value=True)
+
+    import api.server as api_server
+
+    original_restart = api_server.restart_api_server
+    api_server.restart_api_server = MagicMock(side_effect=RuntimeError("boom"))
+
+    with (
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "ui.tabs.settings.remote_api_panel.threading.Thread", side_effect=_sync_thread
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "ui.tabs.settings.remote_api_panel.ui_bridge.post", side_effect=lambda fn: fn()
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "ui.tabs.settings.remote_api_panel.shutil.which", return_value="/usr/bin/tailscale"
+        ),
+    ):
+        try:
+            RemoteApiPanel._on_ts_https_toggle(panel, True)
+        finally:
+            ts_https.get_tailscale_dns_name = original_get_dns
+            ts_https.start_tailscale_serve = original_start
+            api_server.restart_api_server = original_restart
+
+    assert ("api_ts_https_enabled", False) in [c[0] for c in cfg.set.call_args_list]
+    switch.setChecked.assert_called_with(False)
+    kinds = [c[0][1] for c in panel._app.toast.call_args_list]
+    assert "error" in kinds
