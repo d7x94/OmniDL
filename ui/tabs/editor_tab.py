@@ -132,6 +132,7 @@ class EditorTab(QWidget):
         self._preview_temp: Optional[Path] = None
         self._cancel_preview: Optional[Callable[[], None]] = None
         self._preview_gen: int = 0
+        self._export_gen: int = 0
         self._frame_processor = FrameProcessor()
         self._saved_effect_params: EffectParams = EffectParams()
         self._file_path: str = ""
@@ -664,9 +665,7 @@ class EditorTab(QWidget):
             logger.warning("editor_tab: file not found: %s", path)
             return
         self._cleanup_preview()
-        if self._cancel_trim is not None:
-            self._cancel_trim()
-            self._cancel_trim = None
+        self._cleanup_export()
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(p)))
         self._file_path = str(p)
@@ -713,9 +712,7 @@ class EditorTab(QWidget):
 
     def _clear_file(self) -> None:
         self._cleanup_preview()
-        if self._cancel_trim is not None:
-            self._cancel_trim()
-            self._cancel_trim = None
+        self._cleanup_export()
         self._player.stop()
         self._player.setSource(QUrl())
         self._file_path = ""
@@ -748,6 +745,12 @@ class EditorTab(QWidget):
             self._preview_temp = None
         self._preview_mode = False
 
+    def _cleanup_export(self) -> None:
+        self._export_gen += 1
+        if self._cancel_trim is not None:
+            self._cancel_trim()
+            self._cancel_trim = None
+
     # ── Toggle controls ───────────────────────────────────────────────────────
 
     def _toggle_controls(self) -> None:
@@ -759,6 +762,8 @@ class EditorTab(QWidget):
 
     def _on_preview_click(self) -> None:
         if self._cancel_trim is not None:
+            self._export_status.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+            self._export_status.setText(t("editor.preview_blocked_by_export"))
             return
         if self._preview_mode:
             self._back_to_original()
@@ -931,8 +936,14 @@ class EditorTab(QWidget):
 
     def _export(self) -> None:
         if self._cancel_trim is not None:
-            self._cancel_trim()
-            self._cancel_trim = None
+            self._cleanup_export()
+            self._export_btn.setText(t("editor.export_btn"))
+            self._export_status.setText("")
+            return
+
+        if self._cancel_preview is not None or self._preview_mode:
+            self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
+            self._export_status.setText(t("editor.export_blocked_by_preview"))
             return
 
         src_text = self._file_path
@@ -954,14 +965,16 @@ class EditorTab(QWidget):
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         self._export_status.setText(t("editor.exporting_status"))
 
+        gen = self._export_gen
+
         def _on_progress(pct: float) -> None:
-            ui_bridge.post(lambda p=pct: self._export_status.setText(f"{p:.0f}%"))
+            ui_bridge.post(lambda p=pct, g=gen: self._on_export_progress(p, g))
 
         def _on_done(path: Path) -> None:
-            ui_bridge.post(lambda p=path: self._finish_export(p))
+            ui_bridge.post(lambda p=path, g=gen: self._finish_export(p, g))
 
         def _on_error(msg: str) -> None:
-            ui_bridge.post(lambda m=msg: self._fail_export(m))
+            ui_bridge.post(lambda m=msg, g=gen: self._fail_export(m, g))
 
         self._cancel_trim = trim_video(
             source,
@@ -974,13 +987,22 @@ class EditorTab(QWidget):
             on_error=_on_error,
         )
 
-    def _finish_export(self, path: Path) -> None:
+    def _on_export_progress(self, pct: float, gen: int) -> None:
+        if gen != self._export_gen:
+            return
+        self._export_status.setText(f"{pct:.0f}%")
+
+    def _finish_export(self, path: Path, gen: int) -> None:
+        if gen != self._export_gen:
+            return
         self._cancel_trim = None
         self._export_btn.setText(t("editor.export_btn"))
         self._export_status.setStyleSheet(f"color: {T.success}; font-size: 11px;")
         self._export_status.setText(t("editor.export_saved", name=path.name))
 
-    def _fail_export(self, msg: str) -> None:
+    def _fail_export(self, msg: str, gen: int) -> None:
+        if gen != self._export_gen:
+            return
         self._cancel_trim = None
         self._export_btn.setText(t("editor.export_btn"))
         self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
@@ -1042,7 +1064,7 @@ class EditorTab(QWidget):
     def _on_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
         if error != QMediaPlayer.Error.NoError:
             logger.error("QMediaPlayer error: %s - %s", error, error_string)
-            self._info_lbl.setText(t("editor.export_error", msg=error_string))
+            self._info_lbl.setText(t("editor.playback_error", msg=error_string))
 
     def _on_video_frame(self, frame: "QVideoFrame") -> None:
         pixmap = self._frame_processor.process(frame, self._preview_label.size())
