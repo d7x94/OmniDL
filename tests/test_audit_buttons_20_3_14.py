@@ -364,3 +364,58 @@ class TestHomeTabRefreshKeepsCustomDir:
         HomeTab.refresh(ht)
 
         assert shown == ["/default/downloads"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 7 (021026 audit) — queue_tab: Clear must not drop a task that still
+# has an active (PENDING/CONVERTING) remote-convert job, or the FFmpeg job
+# is orphaned with no queue entry left to show/cancel it.
+# ---------------------------------------------------------------------------
+
+
+class TestQueueClearExcludesActiveConvertTasks:
+    def test_clear_finished_passes_exclude_ids(self):
+        from ui.tabs.queue_tab import QueueTab
+
+        calls = []
+        service = types.SimpleNamespace(
+            clear_finished=lambda exclude_ids=None: calls.append(("finished", exclude_ids)),
+        )
+        qt = types.SimpleNamespace()
+        qt._app = types.SimpleNamespace(service=service)
+        qt._select_mode = False
+        qt._selected_ids = set()
+
+        with patch(
+            "api.server.tasks_with_active_convert",
+            return_value=frozenset({"t-converting"}),
+        ):
+            QueueTab._clear_finished(qt)
+
+        assert calls == [("finished", frozenset({"t-converting"}))]
+
+    def test_clear_selected_skips_active_convert_task(self):
+        from ui.tabs.queue_tab import QueueTab
+
+        calls = []
+        service = types.SimpleNamespace(
+            clear_specific=lambda ids: calls.append(ids),
+        )
+        qt = types.SimpleNamespace()
+        qt._app = types.SimpleNamespace(service=service)
+        qt._select_mode = True
+        qt._selected_ids = {"t-done", "t-converting"}
+        qt._update_clear_btn_label = lambda: None
+
+        with patch(
+            "api.server.tasks_with_active_convert",
+            return_value=frozenset({"t-converting"}),
+        ):
+            QueueTab._clear_finished(qt)
+
+        assert calls == [["t-done"]]
+
+    def test_tasks_with_active_convert_empty_when_api_not_running(self):
+        from api.server import tasks_with_active_convert
+
+        assert tasks_with_active_convert() == frozenset()

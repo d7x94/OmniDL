@@ -246,6 +246,7 @@ def _analyse_cache_cleanup() -> None:
 _active_server: "uvicorn.Server | None" = None  # type: ignore[name-defined]
 _active_thread: threading.Thread | None = None
 _active_monitor: "LiveMonitorService | None" = None  # stopped on restart/shutdown
+_active_remote_convert: "RemoteConvertService | None" = None  # stopped on restart/shutdown
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
 _bus_wired = False  # BUG-CB: prevent duplicate subscriptions on restart
 # (bus, event, handler) recorded by _wire_event_bus so _unwire_bus can undo it.
@@ -2846,6 +2847,22 @@ def is_api_running() -> bool:
         return _active_thread is not None and _active_thread.is_alive()
 
 
+def tasks_with_active_convert() -> frozenset[str]:
+    """Task IDs that still have a PENDING / CONVERTING remote convert job.
+
+    Safe to call whether or not the API server is running — returns an empty
+    set when it isn't. Shared by the API's own clear routes and the desktop
+    QueueTab, so clearing a task from either side never orphans a running
+    FFmpeg job started through the Remote API.
+    """
+    with _server_lock:
+        rc = _active_remote_convert
+    if rc is None:
+        return frozenset()
+    _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
+    return frozenset(j.source_task_id for j in rc.get_all_jobs() if j.status in _ACTIVE)
+
+
 def stop_api_server(timeout: float = 8.0) -> None:
     """Gracefully stop the running API server.
 
@@ -2858,7 +2875,7 @@ def stop_api_server(timeout: float = 8.0) -> None:
     # take >4s to drain its completion queue during shutdown, causing the
     # socket to remain bound when restart_api_server() tries to rebind
     # immediately after → [Errno 10048] address already in use.
-    global _active_server, _active_thread, _active_monitor
+    global _active_server, _active_thread, _active_monitor, _active_remote_convert
 
     with _server_lock:
         srv = _active_server
@@ -2867,6 +2884,7 @@ def stop_api_server(timeout: float = 8.0) -> None:
         _active_server = None
         _active_thread = None
         _active_monitor = None
+        _active_remote_convert = None
 
     if mon is not None:
         mon.stop()
@@ -2987,6 +3005,9 @@ def start_api_server(
         _bus_wired = True
 
     app = create_app(service, config, remote_convert=remote_convert, live_monitor=live_monitor)
+
+    global _active_remote_convert
+    _active_remote_convert = remote_convert
 
     try:
         import uvicorn

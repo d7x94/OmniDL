@@ -254,12 +254,16 @@ class QueueTab(QWidget):
             self._clear_btn.setText(t("queue.clear_finished"))
 
     def _clear_finished(self) -> None:
+        from api.server import tasks_with_active_convert
+
+        exclude = tasks_with_active_convert()
         if self._select_mode and self._selected_ids:
-            self._app.service.clear_specific(list(self._selected_ids))
+            wanted = [tid for tid in self._selected_ids if tid not in exclude]
+            self._app.service.clear_specific(wanted)
             self._selected_ids.clear()
             self._update_clear_btn_label()
         else:
-            self._app.service.clear_finished()
+            self._app.service.clear_finished(exclude_ids=exclude or None)
 
     def _on_send(self, file_path, restore_btn, task=None, specific_files=None) -> None:
         nodes = self._app.config.taildrop_target_nodes
