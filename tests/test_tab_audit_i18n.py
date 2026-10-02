@@ -169,9 +169,10 @@ def test_removing_an_item_mid_analysis_keeps_the_counter_sane():
     tab._items = [item]
     tab._analysing_count = 1
 
-    # User removes the row while its analysis is still in flight.
+    # User removes the row while its analysis is still in flight. The
+    # worker thread still owns this slot, so removal alone must not touch
+    # the counter — only the analysis result landing (below) may.
     tab._items.remove(item)
-    tab._analysing_count -= 1
 
     # …and the analysis result lands afterwards.
     BatchTab._on_item_error(tab, item, "boom", tab._batch_token)

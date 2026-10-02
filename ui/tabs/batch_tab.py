@@ -446,6 +446,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setText(t("batch.analysing_dots"))
         self._cancel_btn.setVisible(True)
         self._queue_all_btn.setEnabled(False)
+        self._retry_btn.setEnabled(False)
         self._set_status(None)
 
         self._rebuild_results_ui()
@@ -514,9 +515,9 @@ class BatchTab(QWidget):
         if token != self._batch_token:
             return
         if item not in self._items:
-            # Removed mid-analysis: _remove_item already gave the slot back, so
-            # decrementing again would push the count negative and leave
-            # _tick_spinner rescheduling itself every 100 ms forever.
+            # Removed mid-analysis: _remove_item left the count untouched, so the
+            # real completion (here) is what frees the slot.
+            self._analysing_count -= 1
             self._analyse_next(token)
             return
         self._analysing_count -= 1
@@ -530,6 +531,9 @@ class BatchTab(QWidget):
         if token != self._batch_token:
             return
         if item not in self._items:
+            # Removed mid-analysis: _remove_item left the count untouched, so the
+            # real completion (here) is what frees the slot.
+            self._analysing_count -= 1
             self._analyse_next(token)
             return
         self._analysing_count -= 1
@@ -658,6 +662,7 @@ class BatchTab(QWidget):
             f"background: transparent; color: {T.text3}; border: none; border-radius: 6px;"
         )
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setToolTip(t("batch.remove_item_tooltip"))
         remove_btn.clicked.connect(lambda _=False, i=item: self._remove_item(i))
         row_layout.addWidget(remove_btn)
         item.remove_btn = remove_btn
@@ -767,8 +772,12 @@ class BatchTab(QWidget):
             self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))
 
     def _remove_item(self, item: _BatchItem) -> None:
-        if item.state == _ItemState.ANALYSING and self._analysing_count > 0:
-            self._analysing_count -= 1
+        # Don't touch _analysing_count here even if item.state is ANALYSING: its
+        # worker thread is still running and will call _on_item_done/_on_item_error
+        # once it finishes, which is where the count must actually drop (see the
+        # "item not in self._items" branch there). Decrementing here too would
+        # make the count hit 0 while the analysis is still in flight, so Cancel
+        # would look like a no-op and Queue All would re-enable mid-pass.
         if item.row_frame:
             self._items_layout.removeWidget(item.row_frame)
             item.row_frame.deleteLater()

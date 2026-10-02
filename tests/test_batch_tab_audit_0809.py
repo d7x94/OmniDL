@@ -372,3 +372,65 @@ def test_batch_item_still_accepts_a_normal_request():
         ]
     )
     assert req.items[0].url == "https://www.tiktok.com/@u/video/1"
+
+
+# ── BA-08: removing the ANALYSING row must not free its slot early ────────────
+# (v20.3.16 audit) Removing the row currently being analysed used to decrement
+# _analysing_count immediately, before its worker thread actually finished.
+# That made Cancel look like a no-op and let Queue All re-enable mid-pass.
+
+
+def test_removing_the_analysing_row_does_not_free_its_slot_early():
+    from ui.tabs.batch_tab import BatchTab, _BatchItem, _ItemState
+
+    tab = _batch_stub()
+    running = _BatchItem(url="https://example.com/a", state=_ItemState.ANALYSING)
+    waiting = _BatchItem(url="https://example.com/b", state=_ItemState.PENDING)
+    tab._items = [running, waiting]
+    tab._analysing_count = 1
+
+    BatchTab._remove_item(tab, running)
+
+    assert running not in tab._items
+    assert tab._analysing_count == 1, (
+        "the slot must stay held until the real worker callback arrives, "
+        "not freed the instant the row is removed"
+    )
+
+
+def test_the_orphaned_callback_frees_the_slot_removing_left_held():
+    from ui.tabs.batch_tab import BatchTab, _BatchItem, _ItemState
+
+    tab = _batch_stub()
+    running = _BatchItem(url="https://example.com/a", state=_ItemState.ANALYSING)
+    tab._items = [running]
+    tab._analysing_count = 1
+    tab._batch_token = 7
+
+    BatchTab._remove_item(tab, running)
+    assert tab._analysing_count == 1
+
+    # The worker's callback fires after the row is gone -> this must be the
+    # single point that actually frees the slot.
+    BatchTab._on_item_error(tab, running, "boom", 7)
+
+    assert tab._analysing_count == 0
+    tab._analyse_next.assert_called_once_with(7)
+
+
+# ── BA-09: Analyse again must reset a stale Retry button ───────────────────────
+
+
+def test_start_batch_analyse_disables_the_stale_retry_button():
+    from ui.tabs.batch_tab import BatchTab
+
+    tab = _batch_stub()
+    tab._retry_btn = MagicMock()
+    tab._analyse_btn = MagicMock()
+    tab._cancel_btn = MagicMock()
+    tab._parse_textarea.return_value = ["https://example.com/a"]
+    tab._batch_token = 0
+
+    BatchTab._start_batch_analyse(tab)
+
+    tab._retry_btn.setEnabled.assert_called_with(False)

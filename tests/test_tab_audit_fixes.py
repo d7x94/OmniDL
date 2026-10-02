@@ -236,7 +236,11 @@ def test_batch_remove_item_releases_analysing_slot():
 
     tab._remove_item(item)
 
-    assert tab._analysing_count == 0
+    # The in-flight worker thread owns this slot and will decrement
+    # _analysing_count itself in _on_item_done/_on_item_error once it
+    # finishes; _remove_item must leave the count untouched here, or the
+    # count would hit 0 while the analysis is still running.
+    assert tab._analysing_count == 1
     assert item not in tab._items
 
 
@@ -465,3 +469,89 @@ def test_download_service_rename_still_works(tmp_path):
     assert Path(new_path).name == "new.mp4"
     assert (downloads / "new.mp4").is_file()
     assert not src_file.exists()
+
+
+# ── Fix: whisper probe must not re-enable Subtitles mid-run ──────────────────
+
+
+def test_whisper_probe_does_not_reenable_subs_btn_mid_run():
+    """A late whisper-support probe result must not re-enable _subs_btn
+    while a convert/subtitles batch is still running (_active_count > 0),
+    or the user can start a second batch on the remaining PENDING files."""
+    from unittest.mock import MagicMock
+
+    from ui.tabs.convert_tab import ConvertTab
+
+    tab = ConvertTab.__new__(ConvertTab)
+    tab._subs_btn = MagicMock()
+    tab._subs_check = MagicMock()
+    tab._subs_lang_combo = MagicMock()
+    tab._subs_model_combo = MagicMock()
+    tab._active_count = 2  # a batch is running
+
+    tab._apply_whisper_support(True)
+
+    tab._subs_btn.setEnabled.assert_called_with(False)
+    assert tab._whisper_ok is True
+
+
+def test_whisper_probe_enables_subs_btn_when_idle():
+    from unittest.mock import MagicMock
+
+    from ui.tabs.convert_tab import ConvertTab
+
+    tab = ConvertTab.__new__(ConvertTab)
+    tab._subs_btn = MagicMock()
+    tab._subs_check = MagicMock()
+    tab._subs_lang_combo = MagicMock()
+    tab._subs_model_combo = MagicMock()
+    tab._active_count = 0
+
+    tab._apply_whisper_support(True)
+
+    tab._subs_btn.setEnabled.assert_called_with(True)
+
+
+# ── Fix: FileCard must restyle on theme change ────────────────────────────────
+
+
+def test_filecard_registers_and_restyles_on_theme_change():
+    from PySide6.QtWidgets import QApplication
+
+    import ui.tabs.convert_tab as ct_mod
+    from ui.tabs.convert_tab import FileCard, FileJob, FileState
+    from ui.themes.tokens import THEME_NAMES
+
+    # Use the exact T instance convert_tab.py holds: other tests reload
+    # ui.themes.tokens and rebind its module-level T, which would leave a
+    # freshly-imported T here pointing at a different singleton than the
+    # one FileCard actually registers with.
+    T = ct_mod.T
+
+    if QApplication.instance() is None:
+        try:
+            QApplication([])
+        except Exception:
+            pytest.skip("Qt cannot create a QApplication in this environment")
+
+    job = FileJob(source=Path("a.mp4"), state=FileState.CONVERTING)
+    card = FileCard(
+        None,
+        job,
+        on_remove=lambda jid: None,
+        on_open_folder=lambda jid: None,
+        on_cancel=lambda jid: None,
+        on_delete_output=lambda jid: None,
+    )
+
+    assert card._theme_cb in T._callbacks
+
+    old_mode = T.mode
+    try:
+        other = next(m for m in THEME_NAMES if m != old_mode)
+        T.set_mode(other)
+        assert T.warning in card._cancel_btn.styleSheet()
+    finally:
+        T.set_mode(old_mode)
+        card.deleteLater()
+    assert card._theme_cb not in T._callbacks
