@@ -27,6 +27,7 @@ class _StubApp:
     def __init__(self):
         self.toasts = []
         self.config = types.SimpleNamespace(proxy="", cookie_file="")
+        self.service = types.SimpleNamespace(has_cookie_for=lambda url: True)
 
     def toast(self, msg, level="info"):
         self.toasts.append((msg, level))

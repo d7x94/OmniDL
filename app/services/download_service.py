@@ -773,6 +773,14 @@ class DownloadService:
             on_error=on_error,
         )
 
+    def has_cookie_for(self, platform_url: str) -> bool:
+        """True if a usable cookie resolves for the given platform URL.
+
+        Thin wrapper so UI code never has to import infrastructure/ directly
+        just to check cookie presence (see BUG-LM-INFRA-IMPORT).
+        """
+        return bool(_resolve_cookie(platform_url, self._config))
+
     def check_profile_live(
         self,
         url: str,

@@ -407,16 +407,12 @@ class LiveMonitorTab(QWidget):
                 return
 
         if is_ig_profile:
-            from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
-
-            if not _resolve_cookie("https://www.instagram.com/", self._app.config):
+            if not self._app.service.has_cookie_for("https://www.instagram.com/"):
                 self._app.toast(t("live.ig_cookie_needed"), "error")
                 return
 
         if is_fb_profile:
-            from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
-
-            if not _resolve_cookie("https://www.facebook.com/", self._app.config):
+            if not self._app.service.has_cookie_for("https://www.facebook.com/"):
                 self._app.toast(t("err.profile_watch_needs_fb_cookie"), "error")
                 return
 
@@ -588,6 +584,7 @@ class LiveMonitorTab(QWidget):
         )
         pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         pause_btn.clicked.connect(lambda _=False, i=item: self._toggle_item_pause(i))
+        pause_btn.setToolTip(t("live.pause"))
         right_layout.addWidget(pause_btn)
         item.pause_btn = pause_btn
 
@@ -599,6 +596,7 @@ class LiveMonitorTab(QWidget):
         )
         check_now_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         check_now_btn.clicked.connect(lambda _=False, i=item: self._force_check_now(i))
+        check_now_btn.setToolTip(t("live.check_now"))
         right_layout.addWidget(check_now_btn)
         item.check_now_btn = check_now_btn
 
@@ -611,6 +609,7 @@ class LiveMonitorTab(QWidget):
         )
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(lambda _=False, i=item: self._cancel_item(i))
+        cancel_btn.setToolTip(t("toolbar.stop"))
         right_layout.addWidget(cancel_btn)
         item.cancel_btn = cancel_btn
 
@@ -622,6 +621,7 @@ class LiveMonitorTab(QWidget):
         )
         open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_folder_btn.clicked.connect(lambda _=False, i=item: self._open_folder_for_item(i))
+        open_folder_btn.setToolTip(t("live.open"))
         open_folder_btn.hide()
         right_layout.addWidget(open_folder_btn)
         item.open_folder_btn = open_folder_btn
@@ -634,6 +634,7 @@ class LiveMonitorTab(QWidget):
         )
         send_to_conv_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_to_conv_btn.clicked.connect(lambda _=False, i=item: self._send_to_convert_tab(i))
+        send_to_conv_btn.setToolTip(t("live.convert_btn"))
         send_to_conv_btn.hide()
         right_layout.addWidget(send_to_conv_btn)
         item.send_to_conv_btn = send_to_conv_btn
@@ -646,6 +647,7 @@ class LiveMonitorTab(QWidget):
         )
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remove_btn.clicked.connect(lambda _=False, i=item: self._remove_item(i))
+        remove_btn.setToolTip(t("live.remove_tooltip"))
         right_layout.addWidget(remove_btn)
         item.remove_btn = remove_btn
 
@@ -1142,6 +1144,7 @@ class LiveMonitorTab(QWidget):
                 and existing.url == item.url
                 and existing.state == _MonitorState.RECORDING
             ):
+                item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
                 item.state = _MonitorState.WAITING
                 self._refresh_item_ui(item)
                 return
@@ -1166,6 +1169,21 @@ class LiveMonitorTab(QWidget):
     def _force_check_now(self, item: _MonitorItem) -> None:
         if item.state not in (_MonitorState.WAITING, _MonitorState.ERROR):
             return
+        if item.state == _MonitorState.ERROR:
+            if _active_count(self._items) >= MAX_MONITOR_URLS:
+                self._app.toast(t("live.limit_reached", max=MAX_MONITOR_URLS), "error")
+                return
+            for other in self._items:
+                if (
+                    other is not item
+                    and other.state in _ACTIVE_STATES
+                    and item.is_profile_watch
+                    and other.is_profile_watch
+                    and other.profile_platform == item.profile_platform
+                    and other.username == item.username
+                ):
+                    self._app.toast(t("live.already_watching"), "info")
+                    return
         item.rate_limited_until = 0.0
         item.last_check = 0.0
         item.consecutive_failures = 0
@@ -1204,6 +1222,8 @@ class LiveMonitorTab(QWidget):
                 open_folder(p.parent)
         elif p.parent.is_dir():
             open_folder(p.parent)
+        else:
+            self._app.toast(t("live.file_not_found"), "error")
 
     def _send_to_convert_tab(self, item: _MonitorItem) -> None:
         if not item.filename:

@@ -669,6 +669,9 @@ class ServiceFacade:
     def rebuild_tiktok_pool(self) -> None:
         self._svc.rebuild_tiktok_pool()
 
+    def has_cookie_for(self, platform_url: str) -> bool:
+        return self._svc.has_cookie_for(platform_url)
+
     def get_all_tasks(self):
         return self._svc.get_all_tasks()
 
