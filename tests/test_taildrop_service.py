@@ -217,9 +217,7 @@ class TestSendFileNameFlag:
             r = svc.send_file(f, "iphone")
 
         assert r.success
-        safe_name = mock_run.call_args_list[1][0][0][
-            mock_run.call_args_list[1][0][0].index("--name") + 1
-        ]
+        safe_name = mock_run.call_args_list[1][0][0][mock_run.call_args_list[1][0][0].index("--name") + 1]
         assert safe_name == "2026-06-10 - Video [1661273081771069].mp4"
         svc.close()
 
@@ -1012,6 +1010,50 @@ class TestSendNow:
         svc.close()
 
 
+class TestSendFileToNodesEarlyReturnsReportFailure:
+    """Every early-return path in send_file_to_nodes (file missing, no
+    valid nodes, service closed) must still call on_node_error for every
+    intended target. Without it, the Remote API's taildrop_failed SSE event
+    never fires and the client's transfer UI stays in "sending…" forever."""
+
+    def test_missing_file_calls_on_node_error_for_every_node(self, tmp_path):
+        svc = _make_svc()
+        errors = []
+        svc.send_file_to_nodes(
+            tmp_path / "ghost.mp4",
+            ["iphone", "ipad"],
+            on_node_error=lambda node, msg: errors.append((node, msg)),
+        )
+        assert {n for n, _ in errors} == {"iphone", "ipad"}
+        svc.close()
+
+    def test_all_nodes_invalid_calls_on_node_error_for_every_node(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        errors = []
+        svc.send_file_to_nodes(
+            f,
+            ["bad node!", "also bad!"],
+            on_node_error=lambda node, msg: errors.append((node, msg)),
+        )
+        assert {n for n, _ in errors} == {"bad node!", "also bad!"}
+        svc.close()
+
+    def test_closed_service_calls_on_node_error_for_every_node(self, tmp_path):
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc()
+        svc.close()
+        errors = []
+        svc.send_file_to_nodes(
+            f,
+            ["iphone"],
+            on_node_error=lambda node, msg: errors.append((node, msg)),
+        )
+        assert {n for n, _ in errors} == {"iphone"}
+
+
 class TestCliErrorSanitiser:
     """Log audit 2026-09-17: `tailscale file cp` stderr went into the log raw.
 
@@ -1021,8 +1063,7 @@ class TestCliErrorSanitiser:
     """
 
     _REAL_STDERR = (
-        "\x1b[K# warning: iphone-12-pro-max is reportedly offline; trying anyway\r\n"
-        "502 Bad Gateway:\r\n"
+        "\x1b[K# warning: iphone-12-pro-max is reportedly offline; trying anyway\r\n502 Bad Gateway:\r\n"
     )
 
     def test_strips_ansi_and_keeps_real_cause(self):

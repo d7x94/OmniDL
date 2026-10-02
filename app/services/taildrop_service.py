@@ -331,8 +331,23 @@ class TaildropService:
             provided.  Used when the user explicitly picks which files to send
             from a directory (e.g. after an ambiguous single-task download).
         """
+
+        def _fail_all(nodes_: list, reason: str) -> None:
+            # Every early-return path below used to leave the caller's
+            # on_node_error uncalled, so the Remote API's taildrop_failed SSE
+            # event never fired — the client's transfer UI stayed in
+            # "sending…" forever with no terminal signal.
+            if not on_node_error:
+                return
+            for n in nodes_:
+                try:
+                    on_node_error(n, reason)
+                except Exception as exc:
+                    logger.warning("on_node_error raised: %s", exc)
+
         if not file_path.exists():
             logger.warning("send_file_to_nodes: file not found: %s", file_path)
+            _fail_all(nodes, "File not found")
             return
 
         safe_nodes = [n for n in nodes if _NODE_RE.match(n)]
@@ -342,6 +357,7 @@ class TaildropService:
 
         if not safe_nodes:
             logger.warning("send_file_to_nodes: no valid nodes — nothing to send")
+            _fail_all(nodes, "No valid target node")
             return
 
         # Build specific_files — user's picker selection takes priority over
@@ -359,9 +375,7 @@ class TaildropService:
         def _send_one(node: str) -> None:
             result = self._do_send(file_path, node, specific_files=specific_files, display_name=safe_display)
             if result.success:
-                logger.info(
-                    "send_file_to_nodes: ✓ '%s' → %s", result.sent_name or file_path.name, node
-                )
+                logger.info("send_file_to_nodes: ✓ '%s' → %s", result.sent_name or file_path.name, node)
                 if on_node_done:
                     try:
                         on_node_done(node)
@@ -383,6 +397,7 @@ class TaildropService:
         with self._lock:
             if self._closed:
                 logger.warning("send_file_to_nodes: service is closed — skipping")
+                _fail_all(safe_nodes, "Taildrop service is shutting down")
                 return
             for node in safe_nodes:
                 self._executor.submit(_send_one, node)
@@ -564,9 +579,7 @@ class TaildropService:
         """
         result = self._do_send(out_path, node, display_name=sanitise_for_filesystem(out_path.name))
         if result.success:
-            logger.info(
-                "Taildrop convert: ✅ sent '%s' → %s", result.sent_name or out_path.name, node
-            )
+            logger.info("Taildrop convert: ✅ sent '%s' → %s", result.sent_name or out_path.name, node)
             self._bus.publish_convert_taildrop_completed(out_path=out_path, dest_node=node)
         else:
             logger.warning(
@@ -749,9 +762,7 @@ class TaildropService:
                         attempts[index + 1],
                     )
 
-            return last or TransferResult(
-                success=False, dest_node=node, error="no transfer attempt was made"
-            )
+            return last or TransferResult(success=False, dest_node=node, error="no transfer attempt was made")
 
         finally:
             if tmp_zip is not None and tmp_zip.exists():
