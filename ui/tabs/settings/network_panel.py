@@ -636,6 +636,7 @@ class NetworkPanel(_BasePanel):
         # Rows are recreated below, so any button kept from the previous build
         # is about to be deleted — drop the references before they go stale.
         self._tt_refresh_btns: dict[str, QPushButton] = {}
+        refreshing = getattr(self, "_tt_refreshing", set())
         # Clear existing rows
         while self._tt_list_vbox.count():
             item = self._tt_list_vbox.takeAt(0)
@@ -704,6 +705,7 @@ class NetworkPanel(_BasePanel):
             refresh_btn.setToolTip(t("settings.network.refresh_tip"))
             refresh_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
             refresh_btn.clicked.connect(lambda _, aid=acc_id: self._refresh_tiktok_account_cookie(aid))
+            refresh_btn.setEnabled(acc_id not in refreshing)
             hl.addWidget(refresh_btn)
             self._tt_refresh_btns[acc_id] = refresh_btn
 
@@ -1041,6 +1043,17 @@ class NetworkPanel(_BasePanel):
         Sessions expire; before this the only cure was Delete + Add again,
         retyping the name and slot count.
         """
+        refreshing = getattr(self, "_tt_refreshing", None)
+        if refreshing is None:
+            refreshing = set()
+            self._tt_refreshing = refreshing
+        if account_id in refreshing:
+            # Already extracting for this account (e.g. the row was rebuilt by
+            # an unrelated _refresh_tiktok_accounts_list() call mid-extraction,
+            # which would otherwise swap in a fresh, enabled button). A second
+            # concurrent extraction would race set_tiktok_account_pool() in
+            # _apply_refreshed_cookie and leak the loser's cookie file.
+            return
         acc = next((a for a in self._app.config.tiktok_account_pool if a.get("id") == account_id), None)
         if acc is None:
             return
@@ -1055,6 +1068,7 @@ class NetworkPanel(_BasePanel):
         safe_dir = self._cookies_dir()
         output_path = safe_dir / f"tiktok_pool_{_uuid.uuid4().hex[:6]}_{browser}_refresh.txt"
 
+        refreshing.add(account_id)
         btn = getattr(self, "_tt_refresh_btns", {}).get(account_id)
         if btn is not None:
             btn.setEnabled(False)
@@ -1494,7 +1508,12 @@ class NetworkPanel(_BasePanel):
                         ),
                     )
                 )
-            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns])
+            ui_bridge.post(
+                lambda: [
+                    btn.setEnabled(True)
+                    for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns
+                ]
+            )
 
         status.setText(t("settings.network.reading_platform_status", platform=platform_name, browser=browser))
         threading.Thread(
@@ -1562,7 +1581,12 @@ class NetworkPanel(_BasePanel):
                         ),
                     )
                 )
-                ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns])
+                ui_bridge.post(
+                    lambda: [
+                        btn.setEnabled(True)
+                        for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns
+                    ]
+                )
                 return
             path_str = self._resolve_saved_cookie_path(output_path)
             self._app.config.set_cookie_for_platform(platform_key, path_str)
@@ -1587,7 +1611,12 @@ class NetworkPanel(_BasePanel):
                     ),
                 )
             )
-            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns])
+            ui_bridge.post(
+                lambda: [
+                    btn.setEnabled(True)
+                    for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns
+                ]
+            )
 
         status.setText(
             t(
