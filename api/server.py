@@ -1234,8 +1234,11 @@ def create_app(
                 except OSError as exc:
                     errors.append(f"{fp.name}: {exc.strerror}")
             if errors:
+                # Same file-lock case as the single-file branch below: Windows
+                # keeps a hard lock while another process still has a file
+                # open, so this is a transient 409, not an unhandled 500.
                 raise HTTPException(
-                    status_code=500,
+                    status_code=409,
                     detail=f"Partial delete — could not remove: {'; '.join(errors[:3])}",
                 )
             # Remove directory only if now empty
@@ -2179,7 +2182,10 @@ def create_app(
             else:
                 shutil.rmtree(target)
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=exc.strerror) from exc
+            # Same file-lock case as DELETE /api/queue/{task_id}/file: Windows
+            # keeps a hard lock while another process still has the file
+            # open, so this is a transient 409, not an unhandled 500.
+            raise HTTPException(status_code=409, detail=exc.strerror or str(exc)) from exc
 
         # A queued task or a history entry may point at what we just removed.
         # Leaving those records on a dead path makes the Queue / History cards
@@ -2266,7 +2272,10 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except OSError as exc:
-                raise HTTPException(status_code=500, detail=exc.strerror) from exc
+                # Same file-lock case as POST /api/queue/{task_id}/rename.
+                raise HTTPException(
+                    status_code=409, detail=f"Could not rename: {exc.strerror or exc}"
+                ) from exc
             logger.info("Remote API: renamed '%s' to '%s'", old_path.name, Path(new_name_str).name)
             return FileRenameByPathResponse(
                 path=new_name_str,
@@ -2288,7 +2297,10 @@ def create_app(
             try:
                 old_path.rename(new_path)
             except OSError as exc:
-                raise HTTPException(status_code=500, detail=exc.strerror) from exc
+                # Same file-lock case as above.
+                raise HTTPException(
+                    status_code=409, detail=f"Could not rename: {exc.strerror or exc}"
+                ) from exc
 
         logger.info("Remote API: renamed '%s' to '%s'", old_path.name, new_path.name)
         return FileRenameByPathResponse(

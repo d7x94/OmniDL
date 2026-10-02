@@ -91,3 +91,69 @@ def test_successful_delete_still_clears_the_filename(tmp_path, locked_task):
     assert result.action == "deleted"
     assert locked_task.filename == ""
     assert not (tmp_path / "live.mp4").exists()
+
+
+def test_gallery_dir_delete_of_a_locked_file_returns_409(tmp_path, monkeypatch):
+    """A gallery-dl multi-file task deletes each known file individually; a
+    lock on any of them (AUDIT-02) must answer 409, not 500."""
+    f1 = tmp_path / "album"
+    f1.mkdir()
+    (f1 / "a.jpg").write_bytes(b"x")
+    task = SimpleNamespace(
+        id="gdl1",
+        filename=str(f1),
+        gallery_dl_files=[str(f1 / "a.jpg")],
+        status=SimpleNamespace(name="COMPLETED"),
+    )
+    app, _ = _make_app(tmp_path, task)
+    delete_task_file = _endpoint(app, "/api/queue/{task_id}/file", "DELETE")
+
+    monkeypatch.setattr(Path, "unlink", lambda self, **kw: (_ for _ in ()).throw(_LOCKED))
+
+    with pytest.raises(HTTPException) as exc:
+        delete_task_file(task.id)
+
+    assert exc.value.status_code == 409
+
+
+def test_files_delete_of_a_locked_file_returns_409(tmp_path, monkeypatch):
+    from api.models import FileDeleteRequest
+
+    target = tmp_path / "locked.mp4"
+    target.write_bytes(b"data")
+    service = SimpleNamespace(
+        get_all_tasks=lambda: [],
+        get_history=lambda: [],
+        clear_file_record=lambda p: 0,
+    )
+    config = SimpleNamespace(api_token="", download_dir=tmp_path, taildrop_target_nodes=[])
+    app = srv.create_app(service, config)  # type: ignore[arg-type]
+    delete_file = _endpoint(app, "/api/files/delete", "DELETE")
+
+    monkeypatch.setattr(Path, "unlink", lambda self, **kw: (_ for _ in ()).throw(_LOCKED))
+
+    with pytest.raises(HTTPException) as exc:
+        delete_file(FileDeleteRequest(path=str(target)))
+
+    assert exc.value.status_code == 409
+
+
+def test_files_rename_by_path_of_a_locked_file_returns_409(tmp_path, monkeypatch):
+    from api.models import FileRenameByPathRequest
+
+    target = tmp_path / "locked.mp4"
+    target.write_bytes(b"data")
+    service = SimpleNamespace(
+        get_all_tasks=lambda: [],
+        get_history=lambda: [],
+    )
+    config = SimpleNamespace(api_token="", download_dir=tmp_path, taildrop_target_nodes=[])
+    app = srv.create_app(service, config)  # type: ignore[arg-type]
+    rename_file_by_path = _endpoint(app, "/api/files/rename", "POST")
+
+    monkeypatch.setattr(Path, "rename", lambda self, target_: (_ for _ in ()).throw(_LOCKED))
+
+    with pytest.raises(HTTPException) as exc:
+        rename_file_by_path(FileRenameByPathRequest(path=str(target), new_name="renamed.mp4"))
+
+    assert exc.value.status_code == 409
