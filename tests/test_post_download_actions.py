@@ -410,6 +410,7 @@ class TestPostDownloadActionsLogic:
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._converting = True
+        obj._pending_conversions = 1
         obj._compact = False
         obj._convert_btn = MagicMock()
         obj._gallery_dl_files = None
@@ -427,6 +428,7 @@ class TestPostDownloadActionsLogic:
 
         obj = MagicMock(spec=PostDownloadActions)
         obj._converting = True
+        obj._pending_conversions = 1
         obj._compact = False
         obj._convert_btn = MagicMock()
         obj.winfo_exists = MagicMock(return_value=True)
@@ -496,3 +498,131 @@ class TestPostDownloadActionsLogic:
 
         for ext, label in CONVERT_FORMATS:
             assert ext and label, f"Empty ext or label for entry ({ext!r}, {label!r})"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1 audit fixes (v20.3.16): encoder probe off-thread, batch-convert
+# pending-count tracking, empty video_files no-op.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCustomEncodePanelProbeOffThread:
+    """_CustomEncodePanel must not block widget construction on the
+    encoder-detection subprocess probe; it populates the combo later via
+    ui_bridge.post once _detect_encoders_async finishes."""
+
+    def test_detect_encoders_async_posts_result_via_ui_bridge(self):
+        import ui.components.post_download_actions as pda_mod
+
+        fake_opts = [("cpu", "CPU (libx264)"), ("nvenc", "NVIDIA NVENC")]
+        posted = []
+
+        with (
+            patch(
+                "app.services.ffmpeg_convert_service.get_available_encoder_options",
+                return_value=fake_opts,
+            ),
+            patch.object(pda_mod.ui_bridge, "post", side_effect=posted.append),
+        ):
+            obj = MagicMock()
+            pda_mod._CustomEncodePanel._detect_encoders_async(obj)
+
+        # The probe result must be handed to the UI thread via ui_bridge.post,
+        # not applied directly on whatever thread ran the probe.
+        assert len(posted) == 1
+        obj._apply_available_encoders.assert_not_called()
+        posted[0]()  # simulate the main thread running the queued callback
+        obj._apply_available_encoders.assert_called_once_with(fake_opts)
+
+    def test_apply_available_encoders_enables_combo_and_sets_keys(self):
+        import ui.components.post_download_actions as pda_mod
+
+        obj = MagicMock()
+        obj._encoder_combo = MagicMock()
+        fake_opts = [("cpu", "CPU (libx264)"), ("nvenc", "NVIDIA NVENC")]
+
+        pda_mod._CustomEncodePanel._apply_available_encoders(obj, fake_opts)
+
+        obj._encoder_combo.clear.assert_called_once()
+        obj._encoder_combo.addItems.assert_called_once_with(["CPU (libx264)", "NVIDIA NVENC"])
+        obj._encoder_combo.setEnabled.assert_called_once_with(True)
+        assert obj._encoder_keys == ["cpu", "nvenc"]
+
+
+class TestBatchConvertPendingCount:
+    """A gallery-dl multi-file convert batch must only flip the button back
+    to its idle/error state once every submitted file has reported done or
+    error — not on the first one to finish."""
+
+    def _make_obj(self, gallery_dl_files=None, on_convert=None):
+        from ui.components.post_download_actions import PostDownloadActions
+
+        obj = MagicMock(spec=PostDownloadActions)
+        obj._file_path = Path("/tmp/fake_dir")
+        obj._gallery_dl_files = gallery_dl_files
+        obj._converting = False
+        obj._pending_conversions = 0
+        obj._compact = False
+        obj._convert_btn = MagicMock()
+        obj._on_convert = on_convert
+        obj._set_status = MagicMock()
+        obj._format_panel = MagicMock()
+        return obj
+
+    def test_multi_file_batch_tracks_pending_count(self, tmp_path):
+        from ui.components.post_download_actions import PostDownloadActions
+
+        v1 = _make_tmp_file(tmp_path, "a.mp4")
+        v2 = _make_tmp_file(tmp_path, "b.mp4")
+        obj = self._make_obj(gallery_dl_files=[str(v1), str(v2)], on_convert=MagicMock())
+
+        PostDownloadActions._on_format_confirmed(obj, "mp4", None)
+
+        assert obj._pending_conversions == 2
+        assert obj._converting is True
+        assert obj._on_convert.call_count == 2
+
+        # First file finishes: button must stay in the "converting" state.
+        PostDownloadActions.notify_convert_done(obj, v1)
+        assert obj._pending_conversions == 1
+        assert obj._converting is True
+
+        # Second (last) file finishes: now the button may flip to done.
+        PostDownloadActions.notify_convert_done(obj, v2)
+        assert obj._pending_conversions == 0
+        assert obj._converting is False
+
+    def test_multi_file_batch_one_error_keeps_waiting_for_the_rest(self, tmp_path):
+        from ui.components.post_download_actions import PostDownloadActions
+
+        v1 = _make_tmp_file(tmp_path, "a.mp4")
+        v2 = _make_tmp_file(tmp_path, "b.mp4")
+        obj = self._make_obj(gallery_dl_files=[str(v1), str(v2)], on_convert=MagicMock())
+
+        PostDownloadActions._on_format_confirmed(obj, "mp4", None)
+        assert obj._pending_conversions == 2
+
+        PostDownloadActions.notify_convert_error(obj, "boom")
+        # One of two failed — the other is still converting, button must
+        # not be re-enabled yet (a re-submit mid-batch would be a bug).
+        assert obj._pending_conversions == 1
+        assert obj._converting is True
+
+        PostDownloadActions.notify_convert_done(obj, v2)
+        assert obj._pending_conversions == 0
+        assert obj._converting is False
+
+    def test_empty_video_files_resets_immediately_instead_of_sticking(self, tmp_path):
+        """When every gallery-dl file listed is missing on disk (or not a
+        video), the batch must reset the button right away instead of
+        leaving it stuck on 'Converting...' forever."""
+        from ui.components.post_download_actions import PostDownloadActions
+
+        ghost = tmp_path / "ghost.mp4"  # never created
+        obj = self._make_obj(gallery_dl_files=[str(ghost)], on_convert=MagicMock())
+
+        PostDownloadActions._on_format_confirmed(obj, "mp4", None)
+
+        obj._on_convert.assert_not_called()
+        assert obj._converting is False
+        obj._convert_btn.setEnabled.assert_called_with(True)
