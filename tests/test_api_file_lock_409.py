@@ -138,6 +138,51 @@ def test_files_delete_of_a_locked_file_returns_409(tmp_path, monkeypatch):
     assert exc.value.status_code == 409
 
 
+def test_queue_file_preview_of_active_content_is_served_as_attachment(tmp_path):
+    """Stored-XSS guard (same as GET /api/files/serve): an .html/.svg/.xml
+    output must never render in the API's own origin, where the PWA keeps
+    the bearer token."""
+    f = tmp_path / "page.html"
+    f.write_text("<script>alert(1)</script>", encoding="utf-8")
+    task = SimpleNamespace(
+        id="xss1",
+        filename=str(f),
+        status=SimpleNamespace(name="COMPLETED"),
+    )
+    app, _ = _make_app(tmp_path, task)
+    preview_task_file = _endpoint(app, "/api/queue/{task_id}/file", "GET")
+
+    import asyncio
+    import inspect
+
+    result = preview_task_file(task.id)
+    resp = asyncio.run(result) if inspect.iscoroutine(result) else result
+
+    assert resp.media_type == "application/octet-stream"
+    assert resp.headers["content-disposition"].startswith("attachment")
+
+
+def test_queue_file_preview_media_is_still_served_inline(tmp_path):
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    task = SimpleNamespace(
+        id="media1",
+        filename=str(f),
+        status=SimpleNamespace(name="COMPLETED"),
+    )
+    app, _ = _make_app(tmp_path, task)
+    preview_task_file = _endpoint(app, "/api/queue/{task_id}/file", "GET")
+
+    import asyncio
+    import inspect
+
+    result = preview_task_file(task.id)
+    resp = asyncio.run(result) if inspect.iscoroutine(result) else result
+
+    assert resp.media_type == "video/mp4"
+    assert resp.headers["content-disposition"].startswith("inline")
+
+
 def test_files_rename_by_path_of_a_locked_file_returns_409(tmp_path, monkeypatch):
     from api.models import FileRenameByPathRequest
 

@@ -1347,11 +1347,21 @@ def create_app(
             or mimetypes.guess_type(file_path.name)[0]
             or "application/octet-stream"
         )
+        # Active content (HTML/SVG/XML) served inline would execute in the
+        # API's own origin, where the PWA keeps the bearer token — a stored
+        # XSS for any such file (e.g. the .html the document converter
+        # writes from an arbitrary Markdown/PDF source). Same guard as
+        # GET /api/files/serve; hand those over as an opaque download
+        # instead, media previews are unaffected.
+        disposition = "inline"
+        if file_path.suffix.lower() in _ACTIVE_CONTENT_EXTS:
+            media_type = "application/octet-stream"
+            disposition = "attachment"
         return FileResponse(
             path=str(file_path),
             media_type=media_type,
             filename=file_path.name,
-            content_disposition_type="inline",
+            content_disposition_type=disposition,
             headers={"Accept-Ranges": "bytes"},
         )
 
