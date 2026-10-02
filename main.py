@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OmniDL — Ultimate Media Downloader
+OmniDL v17 — Ultimate Media Downloader
 Entry point: wires all layers together and launches the UI.
 
 multiprocessing.freeze_support() MUST be called before any other code
