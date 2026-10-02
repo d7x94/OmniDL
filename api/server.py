@@ -237,7 +237,17 @@ def _analyse_cache_cleanup() -> None:
 
     overflow = len(_analyse_cache) - _ANALYSE_CACHE_MAX_ENTRIES
     if overflow > 0:
-        oldest = sorted(_analyse_cache, key=lambda k: _analyse_cache[k].get("created", 0.0))
+        # Only evict completed, unreferenced entries here — an in-flight job
+        # (refs > 0, or still running) must not be evicted just for being
+        # the oldest: a concurrent SSE stream already holds a direct
+        # reference to its entry and keeps working, but removing it from
+        # the dict breaks deduplication, so the next request for the same
+        # URL spawns a duplicate extract instead of attaching to this one.
+        # _ANALYSE_CACHE_MAX_AGE above already bounds a stuck entry's
+        # lifetime regardless of refs, so it's fine to stay over the soft
+        # cap while every entry is still in flight.
+        evictable = [k for k, v in _analyse_cache.items() if v["done"].is_set() and v.get("refs", 0) == 0]
+        oldest = sorted(evictable, key=lambda k: _analyse_cache[k].get("created", 0.0))
         for k in oldest[:overflow]:
             del _analyse_cache[k]
 
