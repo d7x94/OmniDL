@@ -52,6 +52,9 @@ class _FakeService:
     def get_history(self) -> list[dict]:
         return self.history
 
+    def delete_history_entry(self, task_id: str) -> None:
+        self.history = [e for e in self.history if e.get("id") != task_id]
+
     def clear_file_record(self, deleted_path: Path) -> int:
         self.cleared_with.append(deleted_path)
         count = 0
@@ -430,3 +433,15 @@ class TestDeleteHandlesSymlinks:
             == 400
         )
         assert root.exists()
+
+
+class TestDeleteHistoryEntryOffloadsDiskWrite:
+    def test_delete_still_removes_the_entry(self, tmp_path: Path) -> None:
+        service = _FakeService()
+        service.history = [{"id": "a"}, {"id": "b"}]
+        app, _ = _make_app(tmp_path, service)
+
+        result = _call(_endpoint(app, "/api/history/{task_id}", "DELETE"), "a", None)
+
+        assert result == {"deleted": "a"}
+        assert [e["id"] for e in service.history] == ["b"]

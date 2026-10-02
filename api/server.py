@@ -1883,7 +1883,10 @@ def create_app(
 
     @app.delete("/api/history/{task_id}", summary="Delete a single history entry")
     async def delete_history_entry(task_id: str, _: None = Depends(_require_auth)):
-        service.delete_history_entry(task_id)
+        # HistoryRepository.remove() rewrites the whole history file to disk
+        # synchronously (temp file + backup + atomic replace) — offload so it
+        # cannot stall the event loop for every other connected client.
+        await asyncio.to_thread(service.delete_history_entry, task_id)
         return {"deleted": task_id}
 
     # ── File Browser ──────────────────────────────────────────────────────
