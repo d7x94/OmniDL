@@ -1736,16 +1736,22 @@ def create_app(
         job = remote_convert.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Convert job not found")
-        if job.status != "COMPLETED":
+        # Atomic read: the conversion worker thread mutates status,
+        # output_filename and subtitle_filename together (e.g. clearing
+        # output_filename back out on a concurrent delete). Reading them as
+        # separate unguarded attribute accesses could observe a status from
+        # one moment and a filename from another.
+        snap = job.snapshot()
+        if snap["status"] != "COMPLETED":
             raise HTTPException(status_code=400, detail="Conversion not completed yet")
 
         if kind == "srt":
-            raw = job.subtitle_filename
+            raw = snap["subtitle_filename"]
             if not raw:
                 raise HTTPException(status_code=404, detail="No subtitles were generated for this job")
             media_type, disposition = "text/plain; charset=utf-8", "attachment"
         else:
-            raw = job.output_filename
+            raw = snap["output_filename"]
             # A subtitles-only job has no video output: Path("").resolve() is the
             # server's CWD, which then failed the download_dir check and came back
             # as a misleading 403 instead of "there is nothing to preview".

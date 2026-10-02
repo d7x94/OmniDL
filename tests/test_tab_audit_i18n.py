@@ -203,7 +203,8 @@ def test_preview_convert_file_404s_for_a_subtitles_only_job(tmp_path):
     config.set("api_token", "")
     config.set("download_dir", str(tmp_path))
 
-    job = SimpleNamespace(status="COMPLETED", output_filename="", subtitle_filename="subs.srt")
+    snap = {"status": "COMPLETED", "output_filename": "", "subtitle_filename": "subs.srt"}
+    job = SimpleNamespace(**snap, snapshot=lambda: snap)
     remote = SimpleNamespace(get_job=lambda _jid: job)
     service = SimpleNamespace(get_all_tasks=lambda: [], get_history=lambda: [])
     app = srv.create_app(service, config, remote_convert=remote)  # type: ignore[arg-type]
@@ -212,3 +213,41 @@ def test_preview_convert_file_404s_for_a_subtitles_only_job(tmp_path):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(endpoint("job1", "video", None))
     assert exc.value.status_code == 404
+
+
+def test_preview_convert_file_reads_an_atomic_snapshot_not_live_attrs(tmp_path):
+    """status/output_filename/subtitle_filename must come from one
+    job.snapshot() call, not separate unguarded attribute reads that could
+    observe a status from one moment and a filename from another if the
+    conversion worker thread mutates the job in between."""
+    import asyncio
+
+    import api.server as srv
+    from infrastructure.config.config_manager import ConfigManager
+
+    ConfigManager._cache.clear()
+    config = ConfigManager(tmp_path / "config.json")
+    config.set("api_token", "")
+    config.set("download_dir", str(tmp_path))
+
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"data")
+    snap = {"status": "COMPLETED", "output_filename": str(out), "subtitle_filename": ""}
+
+    class _LiveJob:
+        # Live attributes disagree with the snapshot on purpose: if the
+        # endpoint reads these instead of the snapshot, it 400s here.
+        status = "CONVERTING"
+        output_filename = ""
+        subtitle_filename = ""
+
+        def snapshot(self):
+            return snap
+
+    remote = SimpleNamespace(get_job=lambda _jid: _LiveJob())
+    service = SimpleNamespace(get_all_tasks=lambda: [], get_history=lambda: [])
+    app = srv.create_app(service, config, remote_convert=remote)  # type: ignore[arg-type]
+
+    endpoint = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/convert/{job_id}/file")
+    resp = asyncio.run(endpoint("job1", "video", None))
+    assert resp.media_type == "video/mp4"
