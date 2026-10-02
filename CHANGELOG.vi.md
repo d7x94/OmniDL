@@ -15,6 +15,33 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.16 - 2026-10-02
+
+### Đã sửa
+
+- Callback cũ của nút Phân tích (từ yêu cầu đã bị thay thế) không còn xóa mất trạng thái nút hủy/spinner của lần phân tích mới hơn
+- Cài đặt > Xóa dữ liệu giờ cũng dừng Remote API server đang chạy, dừng Tailscale Serve, và dựng lại pool tài khoản TikTok thay vì để chúng trỏ vào cấu hình đã xóa
+- Các công tắc Remote API (API server, Tailscale HTTPS, đổi token) khóa thao tác khi đang xử lý và tự khôi phục nếu khởi động lại thất bại, thay vì để công tắc kẹt ở trạng thái gây hiểu lầm
+- Tab Editor: xuất file và xem trước không còn tranh chấp nhau; bắt đầu xuất khi đang xem trước sẽ bị từ chối thay vì làm hỏng cả hai
+- Nút Xóa ở tab Queue không còn xóa nhầm task đang có job Remote Convert hoạt động
+- Tab Home hiển thị lỗi phân tích qua toast (trước đây im lặng ở một số luồng), nút Duyệt/Thêm vào hàng đợi và huy hiệu LIVE đã được dịch và có tooltip
+- Bước kiểm tra trước khi tải Facebook Story (kiểm tra trình duyệt có đang chạy) không còn chặn luồng giao diện tới 5 giây — giờ chạy trên luồng nền
+- Làm mới cookie TikTok không còn cho phép bấm lần hai khởi động trích xuất trùng lặp cho cùng tài khoản khi lần trước chưa xong
+- Chuyển đổi nhiều file sau khi tải (gallery-dl) giờ đếm số file còn đang chuyển đổi thay vì chuyển nút sang "xong" ngay khi file đầu tiên hoàn tất; bảng chọn encoder tùy chỉnh không còn chặn việc dựng giao diện khi dò GPU
+- Xóa item đang phân tích ở tab Batch không còn làm bộ đếm phân tích chạy về -1 và kẹt spinner; nút Thử lại bị khóa khi đang chạy một đợt
+- Thẻ file ở tab Convert giờ đổi màu theo giao diện thay vì giữ nguyên giao diện lúc tạo; kết quả dò hỗ trợ whisper đến giữa lúc đang xử lý không còn bật sớm nút Phụ đề; chữ bộ lọc hộp thoại chọn file đã được dịch
+- Live Monitor không còn import trực tiếp infrastructure/ để kiểm tra cookie (BUG-LM-INFRA-IMPORT); một bản ghi quay lại trạng thái Chờ sẽ đặt lại URL (BUG-MON-URL); các nút thao tác có tooltip; Kiểm tra ngay trên dòng lỗi kiểm tra lại đúng các điều kiện như Thêm URL
+- Tiêu đề bảng Thông báo, nút "Xóa hết" và tooltip nút đóng từng mục giờ đã được dịch và cập nhật khi đổi ngôn ngữ
+- Giới hạn kích thước bộ nhớ đệm phân tích không còn xóa nhầm một job SSE đang chạy chỉ vì nó cũ nhất, việc này từng phá vỡ cơ chế gộp yêu cầu trùng cho cùng URL
+- Lỗi khóa file Windows (AUDIT-02) trên 3 route còn sót (nhánh xóa file queue kiểu gallery-dl, files/delete, files/rename) giờ trả về 409 thay vì 500
+- `GET /api/queue/{task_id}/file` giờ từ chối phục vụ trực tiếp HTML/SVG/XML, khớp với cơ chế chống XSS lưu trữ của `GET /api/files/serve`
+- `GET /api/convert/{job_id}/file` đọc trạng thái job và tên file qua một lần chụp nhanh nguyên tử thay vì đọc rời rạc không khóa
+- Truyền Taildrop gặp lỗi sớm (thiếu file, không có node đích hợp lệ, hoặc dịch vụ đang tắt) giờ báo lỗi cho từng node dự kiến thay vì để chỉ báo truyền phía client kẹt mãi không có tín hiệu kết thúc
+- `DELETE /api/history/{task_id}` không còn chặn event loop khi ghi lại file lịch sử xuống đĩa
+- Xóa thư mục thất bại một phần (`DELETE /api/files/delete`) giờ vẫn xóa bản ghi queue/history cho các file đã xóa được, thay vì để tất cả trỏ vào đường dẫn gần như đã mất
+
+---
+
 ## v20.3.14 - 2026-09-30
 
 ### Đã sửa

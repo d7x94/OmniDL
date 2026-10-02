@@ -15,6 +15,33 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.16 - 2026-10-02
+
+### Fixed
+
+- Analyse button's stale callback (from a superseded request) no longer wipes a newer analysis's cancel button / spinner state
+- Settings > Clear Data now also stops a running Remote API server, stops Tailscale Serve, and rebuilds the TikTok account pool instead of leaving them pointed at deleted config
+- Remote API toggles (API server, Tailscale HTTPS, rotate token) add a busy-lock and roll the switch back on a failed restart instead of leaving it in a stuck or misleading state
+- Editor tab's export and preview no longer race each other; starting an export while a preview is loading is refused instead of corrupting both
+- Queue tab's Clear button no longer removes a task that still has an active Remote Convert job running against it
+- Home tab surfaces analysis errors via a toast (previously silent in some paths), and its Browse/Add-to-Queue buttons and LIVE badge are translated and tooltipped
+- Special Download's Facebook Story preflight check (browser-running detection) no longer blocks the UI thread for up to 5 seconds — it now runs on the worker thread
+- TikTok cookie refresh no longer lets a second click start a duplicate extraction for the same account while one is already running
+- Post-download multi-file convert (gallery-dl batches) now tracks how many files are still converting instead of flipping the button to "done" after the first one finishes; the custom encoder panel's GPU probe no longer blocks widget construction
+- Batch tab's remove-while-analysing no longer races the analysis-count down to -1 and wedging the spinner; Retry is disabled while a batch is running
+- Convert tab's file cards now restyle on a theme change instead of staying in whatever theme was active when they were built; a whisper-support probe landing mid-batch no longer re-enables Subtitles early; the file picker's filter text is translated
+- Live Monitor no longer imports infrastructure/ directly to check cookie presence (BUG-LM-INFRA-IMPORT); a recording returning to Waiting resets its URL again (BUG-MON-URL); action buttons have tooltips; Force-check-now on an error row re-checks the same guards as Add URL
+- Notification panel's title, "Clear all" and the per-entry dismiss tooltip are now translated and update on a language switch
+- The analyse-cache's size cap no longer evicts an in-flight SSE job just for being the oldest entry, which broke request deduplication for that URL
+- A Windows file lock (AUDIT-02) on 3 more file-mutating routes (queue-file delete's gallery-dl branch, files/delete, files/rename) now answers 409 instead of 500
+- `GET /api/queue/{task_id}/file` now refuses to serve HTML/SVG/XML inline, matching `GET /api/files/serve`'s stored-XSS guard
+- `GET /api/convert/{job_id}/file` reads job status and filenames from one atomic snapshot instead of separate unguarded attribute reads
+- Taildrop transfers that hit an early failure (missing file, no valid target node, or the service shutting down) now report a failure event for every intended node instead of leaving the client's transfer indicator stuck with no terminal signal
+- `DELETE /api/history/{task_id}` no longer blocks the event loop while rewriting the history file to disk
+- A partially-failed folder delete (`DELETE /api/files/delete`) now still clears the queue/history records for the files it did remove, instead of leaving them all pointed at a mostly-gone path
+
+---
+
 ## v20.3.15 - 2026-10-01
 
 ### Fixed
