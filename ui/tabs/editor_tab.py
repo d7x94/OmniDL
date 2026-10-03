@@ -1097,7 +1097,7 @@ class EditorTab(QWidget):
     def retranslate(self) -> None:
         self._empty_lbl.setText(t("editor.empty"))
         self._toggle_ctrl_btn.setText(
-            t("editor.show_panel") if not self._right_scroll.isVisible() else t("editor.hide_panel")
+            t("editor.show_panel") if self._right_scroll.isHidden() else t("editor.hide_panel")
         )
         self._open_btn.setText(t("editor.open_file"))
         self._clear_btn.setText(t("editor.close_file"))
@@ -1148,7 +1148,7 @@ class EditorTab(QWidget):
 
         self._eff_lbl.setText(t("editor.effects_title"))
         self._toggle_effects_btn.setText(
-            t("editor.hide") if self._effects_panel.isVisible() else t("editor.show")
+            t("editor.hide") if not self._effects_panel.isHidden() else t("editor.show")
         )
         self._brightness_lbl.setText(t("editor.brightness"))
         self._contrast_lbl.setText(t("editor.contrast"))
