@@ -254,9 +254,12 @@ class QueueTab(QWidget):
             self._clear_btn.setText(t("queue.clear_finished"))
 
     def _clear_finished(self) -> None:
-        from api.server import tasks_with_active_convert
+        try:
+            from api.server import tasks_with_active_convert
 
-        exclude = tasks_with_active_convert()
+            exclude = tasks_with_active_convert()
+        except ImportError:
+            exclude = frozenset()
         if self._select_mode and self._selected_ids:
             wanted = [tid for tid in self._selected_ids if tid not in exclude]
             self._app.service.clear_specific(wanted)
