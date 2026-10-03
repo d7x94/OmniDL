@@ -1268,8 +1268,8 @@ def create_app(
                     status_code=409,
                     detail=f"Could not delete {file_path.name}: {exc.strerror or exc}",
                 ) from exc
-        # Clear filename on the task so the UI knows the file is gone.
-        task.filename = ""
+        # Clear the task and its history row so the UI knows the file is gone.
+        service.clear_file_record(file_path)
         logger.info("Remote API: deleted file '%s' for task %s", file_path.name, task_id)
 
         return FileActionResponse(
