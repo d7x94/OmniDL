@@ -761,6 +761,7 @@ def create_app(
             # outside would leave refs stuck above zero and pin the MediaInfo.
             with _analyse_cache_lock:
                 entry["refs"] += 1
+            timed_out = False
             try:
                 done = entry["done"]
                 result = entry["result"]
@@ -772,6 +773,7 @@ def create_app(
                 while not done.is_set():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        timed_out = True
                         break
                     # Poll the threading.Event — awaiting keeps this off the
                     # threadpool (sync generators pin a thread per connection).
@@ -823,9 +825,12 @@ def create_app(
                     # over-age / overflowing entries even while refs > 0, so this
                     # key may already hold a *newer* in-flight job.  Popping by
                     # key alone would evict that one and force a duplicate extract.
+                    # A client that drops mid-extract leaves the job running:
+                    # keep the entry unless it finished or hit the deadline.
                     if (
                         entry["refs"] == 0
                         and "info" not in entry.get("result", {})
+                        and (entry["done"].is_set() or timed_out)
                         and _analyse_cache.get(clean_url) is entry
                     ):
                         # Error or timeout — evict so next request spawns a fresh job.
