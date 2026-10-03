@@ -27,7 +27,7 @@ from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
 from ui.theme_qt import apply_theme
-from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T
+from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T, theme_is_dark
 from utils.clipboard_monitor import ClipboardMonitor
 from utils.i18n import register as i18n_register
 from utils.i18n import t
@@ -212,8 +212,7 @@ class MainWindow(QMainWindow):
 
         # Register theme callback
         T.register(self._on_theme)
-        is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._sync_theme_btn()
 
         self.navigate_to("home")
 
@@ -389,8 +388,7 @@ class MainWindow(QMainWindow):
             btn.setMinimumWidth(0)
             btn.setMinimumWidth(btn.sizeHint().width())
 
-        is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._sync_theme_btn()
         self._notif_btn.setToolTip(t("topbar.notifications"))
         self._collapse_nav_btn.setToolTip(t("topbar.hide_nav"))
 
@@ -412,14 +410,18 @@ class MainWindow(QMainWindow):
 
     # ── Theme ─────────────────────────────────────────────────────────────
 
+    def _sync_theme_btn(self) -> None:
+        names = list(THEME_NAMES)
+        nxt = names[(names.index(T.mode) + 1) % len(names)] if T.mode in names else names[0]
+        self._theme_btn.setText(t("topbar.theme_dark") if theme_is_dark(nxt) else t("topbar.theme_light"))
+
     def _toggle_theme(self) -> None:
         themes = list(THEME_NAMES)
         current_idx = themes.index(T.mode) if T.mode in themes else 0
         new_mode = themes[(current_idx + 1) % len(themes)]
         T.set_mode(new_mode)
         self._config.set("theme", new_mode)
-        is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._sync_theme_btn()
         self.toast(t("topbar.theme_changed"), "info")
 
     def _on_theme(self) -> None:
