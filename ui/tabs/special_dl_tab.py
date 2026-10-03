@@ -359,6 +359,8 @@ class SpecialDlTab(QWidget):
         browser = self._browser_combo.currentText()
 
         self._running = True
+        self._last_dest = None
+        self._btn_row.hide()
         self._dl_btn.setEnabled(False)
         self._dl_btn.setText(t("special.downloading"))
         self._set_status("info", t("special.status.starting"), 0)
@@ -370,7 +372,6 @@ class SpecialDlTab(QWidget):
         ).start()
 
     def _worker(self, platform_key: str, url: str, browser: str) -> None:
-        self._last_dest = None
         try:
             if platform_key == "facebook_story":
                 # Pre-flight: report the three things that make a Story

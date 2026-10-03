@@ -288,6 +288,8 @@ class TestFacebookStoryPreflightRunsOffUIThread:
             _platform_combo=MagicMock(currentText=MagicMock(return_value="Facebook Story")),
             _browser_combo=MagicMock(currentText=MagicMock(return_value="chrome")),
             _dl_btn=MagicMock(),
+            _btn_row=MagicMock(),
+            _last_dest=None,
             _worker=MagicMock(),
             _set_status=lambda kind, msg, *a, **k: recorded.append((kind, msg)),
             _recorded=recorded,
@@ -312,6 +314,24 @@ class TestFacebookStoryPreflightRunsOffUIThread:
 
         tab._preflight_facebook_story.assert_not_called()
         thread_cls.return_value.start.assert_called_once()
+
+    def test_on_download_clears_previous_result_before_worker_starts(self):
+        from ui.tabs.special_dl_tab import SpecialDlTab
+
+        tab = self._tab()
+        tab._last_dest = Path("old.mp4")
+        tab._btn_row = MagicMock()
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "ui.tabs.special_dl_tab._PLATFORMS",
+                {"facebook_story": {"label": "Facebook Story"}},
+            ),
+            __import__("unittest.mock", fromlist=["patch"]).patch("threading.Thread"),
+        ):
+            SpecialDlTab._on_download(tab)
+
+        assert tab._last_dest is None
+        tab._btn_row.hide.assert_called_once()
 
     def test_worker_posts_preflight_error_without_running_download(self):
         from ui.tabs.special_dl_tab import SpecialDlTab
