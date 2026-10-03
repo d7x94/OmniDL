@@ -15,6 +15,20 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.17 - 2026-10-03
+
+### Đã sửa
+
+- Special Download: lần tải thứ hai không còn làm nút Mở thư mục / Xem bị vô hiệu; kết quả cũ được xóa khi bắt đầu lần chạy mới
+- Nút Xóa của tab Hàng đợi không còn lỗi khi thiếu thành phần API tùy chọn (fastapi)
+- Nút Xóa tất cả của tab Lịch sử không còn xóa các tác vụ đang có job Remote Convert chạy
+- Luồng analyse: client rớt kết nối giữa chừng không còn làm mất job đang chạy, nên kết nối lại không tạo job trùng
+- Xóa hàng đợi qua Remote API chỉ báo cáo các tác vụ thật sự bị loại trừ
+- Xóa file qua Remote API cũng xóa bản ghi lịch sử tương ứng, Lịch sử không còn hiện Xem / Gửi / Chuyển đổi cho file đã xóa
+- Nhãn Hiện/Ẩn panel của tab Editor giữ đúng khi đổi ngôn ngữ lúc tab đang ẩn
+
+---
+
 ## v20.3.16 - 2026-10-02
 
 ### Đã sửa

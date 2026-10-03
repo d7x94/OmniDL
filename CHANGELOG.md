@@ -15,6 +15,20 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.17 - 2026-10-03
+
+### Fixed
+
+- Special Download: a second download no longer leaves Open folder / View buttons dead; the previous result is cleared when a new run starts
+- Queue tab's Clear no longer fails when the optional API extra (fastapi) is not installed
+- History tab's Clear all no longer removes tasks that still have an active Remote Convert job
+- Analyse stream: a client dropping mid-extract no longer evicts the still-running job, so reconnecting does not start a duplicate extract
+- Remote API finished-clear reports only real queue tasks as excluded (file-browser converts are no longer counted)
+- Remote API file delete also clears the matching history record, so History no longer offers Preview / Send / Convert on a deleted file
+- Editor tab's Show/Hide panel labels stay correct when the language is changed while the tab is hidden
+
+---
+
 ## v20.3.16 - 2026-10-02
 
 ### Fixed
