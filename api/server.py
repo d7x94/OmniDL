@@ -1068,7 +1068,11 @@ def create_app(
         if remote_convert is None:
             return frozenset()
         _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
-        return frozenset(j.source_task_id for j in remote_convert.get_all_jobs() if j.status in _ACTIVE)
+        return frozenset(
+            j.source_task_id
+            for j in remote_convert.get_all_jobs()
+            if j.status in _ACTIVE and j.source_task_id
+        )
 
     @app.delete("/api/queue/items")
     async def clear_selected_items(
@@ -2914,7 +2918,7 @@ def tasks_with_active_convert() -> frozenset[str]:
     if rc is None:
         return frozenset()
     _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
-    return frozenset(j.source_task_id for j in rc.get_all_jobs() if j.status in _ACTIVE)
+    return frozenset(j.source_task_id for j in rc.get_all_jobs() if j.status in _ACTIVE and j.source_task_id)
 
 
 def stop_api_server(timeout: float = 8.0) -> None:
