@@ -399,7 +399,13 @@ class HistoryTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._app.service.clear_history()
+            try:
+                from api.server import tasks_with_active_convert
+
+                exclude = tasks_with_active_convert()
+            except ImportError:
+                exclude = frozenset()
+            self._app.service.clear_history(exclude_ids=exclude or None)
             self.refresh()
 
     def showEvent(self, event) -> None:

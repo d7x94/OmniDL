@@ -624,12 +624,12 @@ class DownloadService:
     def search_history(self, query: str) -> list[dict]:
         return self._history.search(query)
 
-    def clear_history(self) -> None:
+    def clear_history(self, exclude_ids: "frozenset[str] | None" = None) -> None:
         self._history.clear()
         # Also drop terminal tasks from the manager — otherwise their
         # MediaInfo/format data stays resident even though the persisted
         # history record is gone (memory leak: "cleared" history, RAM stays up).
-        self._manager.clear_terminal()
+        self._manager.clear_terminal(exclude_ids=exclude_ids)
 
     def delete_history_entry(self, task_id: str) -> None:
         self._history.remove(task_id)
