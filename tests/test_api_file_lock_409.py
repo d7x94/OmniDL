@@ -32,6 +32,7 @@ def _make_app(download_dir: Path, task):
         get_task=lambda tid: task if tid == task.id else None,
         analyse_url=lambda url, on_done, on_error: None,
         rename_download=lambda tid, name: (_ for _ in ()).throw(_LOCKED),
+        clear_file_record=lambda p: 0,
     )
     config = SimpleNamespace(api_token="", download_dir=download_dir, taildrop_target_nodes=[])
     return srv.create_app(service, config), service  # type: ignore[arg-type]

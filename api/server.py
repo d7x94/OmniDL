@@ -1269,6 +1269,7 @@ def create_app(
                     detail=f"Could not delete {file_path.name}: {exc.strerror or exc}",
                 ) from exc
         # Clear the task and its history row so the UI knows the file is gone.
+        task.filename = ""
         service.clear_file_record(file_path)
         logger.info("Remote API: deleted file '%s' for task %s", file_path.name, task_id)
 
