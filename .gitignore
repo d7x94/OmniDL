@@ -169,6 +169,8 @@ graphify-out/
 
 Prompt/
 omnidl_skill/
+omnidl_audit/
+bak/
 Vande.md
 Claude.md
 .python-version
