@@ -525,8 +525,10 @@ class HomeTab(QWidget):
         self._thumb_lbl.setPixmap(QPixmap())
         self._thumb_lbl.setText("...")
 
+        # Bump even without a thumbnail: a fetch still in flight for the
+        # previous item must not land on this card.
+        self._thumb_token += 1
         if info.thumbnail:
-            self._thumb_token += 1
             token = self._thumb_token
             self._app.service.fetch_thumbnail(
                 url=info.thumbnail,

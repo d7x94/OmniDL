@@ -55,3 +55,16 @@ def test_theme_change_restyles_home(home):
         assert T.text in home._welcome_title_lbl.styleSheet()
     finally:
         T.set_mode(orig)
+
+
+def test_stale_thumbnail_not_applied_to_card_without_thumbnail(home):
+    home._populate_card(_info(thumbnail="https://example.com/a.jpg"))
+    stale = home._fetched[0]
+    home._populate_card(_info(thumbnail=""))
+    applied: list[int] = []
+    home._thumb_lbl.setPixmap = lambda p: applied.append(1)  # type: ignore[method-assign]
+
+    stale_token = 1
+    home._apply_thumb(types.SimpleNamespace(save=lambda *a, **k: None), stale_token)
+    assert applied == []
+    assert stale  # fetch was issued
