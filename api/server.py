@@ -633,7 +633,7 @@ def create_app(
             result["error"] = err
             done.set()
 
-        service.analyse_url(body.url, on_done=on_done, on_error=on_error)
+        cancel = service.analyse_url(body.url, on_done=on_done, on_error=on_error)
         # Poll instead of done.wait(): a blocking wait here would freeze the
         # entire event loop (every endpoint + SSE) for up to 180 s.
         deadline = time.monotonic() + 180.0
@@ -642,11 +642,13 @@ def create_app(
             # Without this the handler polls for the full 180 s after the
             # client is gone, holding result + its threading.Event alive.
             if await request.is_disconnected():
+                cancel.set()
                 raise HTTPException(status_code=499, detail="Client disconnected")
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         if "info" not in result:
+            cancel.set()
             raise HTTPException(status_code=408, detail="Analysis timed out after 180 s")
 
         info: MediaInfo = result["info"]
@@ -875,7 +877,7 @@ def create_app(
             result["error"] = err
             done.set()
 
-        service.analyse_url(body.url, on_done=on_done, on_error=on_error)
+        cancel = service.analyse_url(body.url, on_done=on_done, on_error=on_error)
         # Poll instead of done.wait(): a blocking wait here would freeze the
         # entire event loop (every endpoint + SSE) for up to 180 s.
         deadline = time.monotonic() + 180.0
@@ -884,11 +886,13 @@ def create_app(
             # Without this the handler polls for the full 180 s after the
             # client is gone, holding result + its threading.Event alive.
             if await request.is_disconnected():
+                cancel.set()
                 raise HTTPException(status_code=499, detail="Client disconnected")
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         if "info" not in result:
+            cancel.set()
             raise HTTPException(status_code=408, detail="Analysis timed out after 180 s")
 
         info: MediaInfo = result["info"]

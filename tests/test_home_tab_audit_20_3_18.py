@@ -83,3 +83,38 @@ def test_tooltips_follow_language(home, monkeypatch):
     home.retranslate()
     assert home._browse_btn.toolTip() == "X:home.browse_tooltip"
     assert home._download_btn.toolTip() == "X:home.add_to_queue_tooltip"
+
+
+@pytest.mark.parametrize("path", ["/api/analyse", "/api/clipboard/analyse"])
+def test_analyse_post_cancels_worker_on_timeout(monkeypatch, path):
+    cancel = threading.Event()
+    service = types.SimpleNamespace(
+        get_all_tasks=lambda: [],
+        get_history=lambda: [],
+        analyse_url=lambda url, on_done, on_error: cancel,  # never completes
+    )
+    config = types.SimpleNamespace(api_token="", download_dir=None)
+    app = srv.create_app(service, config)  # type: ignore[arg-type]
+    endpoint = next(r.endpoint for r in app.routes if getattr(r, "path", None) == path)
+    body_cls = endpoint.__annotations__["body"]
+    if isinstance(body_cls, str):
+        body_cls = {"AnalyseRequest": srv.AnalyseRequest}.get(body_cls) or getattr(srv, body_cls)
+    body = body_cls(url="https://example.com/v")
+
+    ticks = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(srv.time, "monotonic", lambda: float(next(ticks)))
+
+    async def _nosleep(_):
+        return None
+
+    monkeypatch.setattr(srv.asyncio, "sleep", _nosleep)
+
+    async def _connected():
+        return False
+
+    request = types.SimpleNamespace(is_disconnected=_connected)
+
+    with pytest.raises(srv.HTTPException) as ei:
+        asyncio.run(endpoint(request=request, body=body, _=None))
+    assert ei.value.status_code == 408
+    assert cancel.is_set()
