@@ -33,9 +33,6 @@ def home():
     tab = HomeTab(app)  # type: ignore[arg-type]
     tab._fetched = fetched  # type: ignore[attr-defined]
     yield tab
-    from ui.themes.tokens import T
-
-    T.unregister(tab._theme_cb)
 
 
 def _info(**kw) -> MediaInfo:
@@ -44,17 +41,41 @@ def _info(**kw) -> MediaInfo:
     return MediaInfo(**base)  # type: ignore[arg-type]
 
 
-def test_theme_change_restyles_home(home):
-    from ui.themes.tokens import T
+class _Pal:
+    """Stand-in for ui.themes.tokens.T: other tests leave a MagicMock in its place."""
 
-    before = home._welcome_title_lbl.styleSheet()
-    orig = T._mode
-    try:
-        T.set_mode("light" if orig != "light" else "dark")
-        assert home._welcome_title_lbl.styleSheet() != before
-        assert T.text in home._welcome_title_lbl.styleSheet()
-    finally:
-        T.set_mode(orig)
+    def __init__(self, color: str) -> None:
+        self.color = color
+        self.registered: list = []
+
+    def __getattr__(self, key: str) -> str:
+        return self.color
+
+    def register(self, cb) -> None:
+        self.registered.append(cb)
+
+    def unregister(self, cb) -> None:
+        pass
+
+
+def test_theme_change_restyles_home(monkeypatch):
+    import ui.tabs.home_tab as ht
+
+    QApplication.instance() or QApplication([])
+    pal = _Pal("#111111")
+    monkeypatch.setattr(ht, "T", pal)
+    app = types.SimpleNamespace(
+        service=types.SimpleNamespace(get_download_dir=lambda: Path("/tmp/dl")),
+        toast=lambda *a, **k: None,
+    )
+    tab = ht.HomeTab(app)  # type: ignore[arg-type]
+    assert pal.registered == [tab._theme_cb]
+    assert "#111111" in tab._welcome_title_lbl.styleSheet()
+
+    pal.color = "#222222"
+    tab._theme_cb()
+    assert "#222222" in tab._welcome_title_lbl.styleSheet()
+    assert "#111111" not in tab._welcome_title_lbl.styleSheet()
 
 
 def test_stale_thumbnail_not_applied_to_card_without_thumbnail(home):
