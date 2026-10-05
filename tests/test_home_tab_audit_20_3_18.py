@@ -68,3 +68,9 @@ def test_stale_thumbnail_not_applied_to_card_without_thumbnail(home):
     home._apply_thumb(types.SimpleNamespace(save=lambda *a, **k: None), stale_token)
     assert applied == []
     assert stale  # fetch was issued
+
+
+def test_live_item_clears_previous_status(home):
+    home._set_status("old photo note", "red")
+    home._populate_card(_info(is_live=True, formats=[{"format_id": "1"}]))
+    assert home._status_lbl.text() == ""

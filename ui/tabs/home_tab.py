@@ -518,8 +518,7 @@ class HomeTab(QWidget):
         else:
             self._selected_quality = QUALITY_PRESETS[self._selected_quality_idx][1]
             self._q_sec.show()
-            if not info.is_live:
-                self._set_status("", T.text3)
+            self._set_status("", T.text3)
 
         # Thumbnail — setPixmap clears any text, so set the placeholder after
         self._thumb_lbl.setPixmap(QPixmap())
