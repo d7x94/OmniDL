@@ -623,7 +623,9 @@ class HomeTab(QWidget):
         self._format_lbl.setText(t("home.format_label"))
         self._folder_title_lbl.setText(t("home.folder_label"))
         self._browse_btn.setText(t("home.browse"))
+        self._browse_btn.setToolTip(t("home.browse_tooltip"))
         self._download_btn.setText(f"↓  {t('home.add_to_queue')}")
+        self._download_btn.setToolTip(t("home.add_to_queue_tooltip"))
         self._live_badge.setText(f"  🔴 {t('home.live')}  ")
         # The status line carries transient, already-formatted text; only the
         # thumbnail placeholder is safe to rewrite here.

@@ -74,3 +74,12 @@ def test_live_item_clears_previous_status(home):
     home._set_status("old photo note", "red")
     home._populate_card(_info(is_live=True, formats=[{"format_id": "1"}]))
     assert home._status_lbl.text() == ""
+
+
+def test_tooltips_follow_language(home, monkeypatch):
+    import ui.tabs.home_tab as ht
+
+    monkeypatch.setattr(ht, "t", lambda key, **kw: f"X:{key}")
+    home.retranslate()
+    assert home._browse_btn.toolTip() == "X:home.browse_tooltip"
+    assert home._download_btn.toolTip() == "X:home.add_to_queue_tooltip"
