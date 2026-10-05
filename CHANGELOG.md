@@ -15,6 +15,18 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.18 - 2026-10-05
+
+### Fixed
+
+- Home tab: switching theme now restyles the welcome screen, result card, quality cards and badges instead of leaving unreadable colours from the old theme
+- Home tab: a thumbnail still loading for the previous item no longer appears on a result that has no thumbnail
+- Home tab: a live result clears the previous status line (photo note or error text)
+- Home tab: the Browse and Add to queue tooltips follow the UI language
+- Remote API: POST /api/analyse and /api/clipboard/analyse cancel the analyse worker when the client disconnects or the request times out
+
+---
+
 ## v20.3.17 - 2026-10-03
 
 ### Fixed

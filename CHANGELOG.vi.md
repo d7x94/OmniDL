@@ -15,6 +15,18 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.18 - 2026-10-05
+
+### Đã sửa
+
+- Tab Home: đổi theme giờ vẽ lại màn hình chào, thẻ kết quả, thẻ chất lượng và huy hiệu thay vì để màu cũ khó đọc
+- Tab Home: ảnh thu nhỏ của mục trước tải chậm không còn hiện trên kết quả không có ảnh thu nhỏ
+- Tab Home: kết quả live xóa dòng trạng thái cũ (ghi chú ảnh hoặc lỗi)
+- Tab Home: tooltip của nút Browse và Add to queue đổi theo ngôn ngữ giao diện
+- Remote API: POST /api/analyse và /api/clipboard/analyse hủy worker phân tích khi client ngắt kết nối hoặc hết thời gian chờ
+
+---
+
 ## v20.3.17 - 2026-10-03
 
 ### Đã sửa
