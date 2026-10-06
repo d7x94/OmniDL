@@ -1246,6 +1246,10 @@ class NetworkPanel(_BasePanel):
                     logger.warning("_clear_cookie_file: could not delete %s — %s", candidate, exc)
 
     def _extract_global_cdp(self) -> None:
+        browser = self._browser_combo.currentText()
+        if browser not in ("brave", "chrome", "chromium", "edge"):
+            self._app.toast(t("settings.network.cdp_browser_unsupported", browser=browser), "error")
+            return
         reply = QMessageBox.question(
             self,
             t("settings.network.cdp_confirm_title"),
@@ -1253,10 +1257,6 @@ class NetworkPanel(_BasePanel):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
-            return
-        browser = self._browser_combo.currentText()
-        if browser not in ("brave", "chrome", "chromium", "edge"):
-            self._app.toast(t("settings.network.cdp_browser_unsupported", browser=browser), "error")
             return
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{browser}_cdp_cookies.txt"
