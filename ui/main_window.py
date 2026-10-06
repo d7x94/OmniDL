@@ -432,6 +432,7 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         self._apply_strip_styles()
+        self._sync_theme_btn()
 
     def _make_collapse_strip(self, label: str, on_expand) -> QFrame:
         strip = QFrame()
