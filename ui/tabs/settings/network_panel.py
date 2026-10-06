@@ -1098,6 +1098,7 @@ class NetworkPanel(_BasePanel):
     def _apply_refreshed_cookie(self, account_id: str, saved_path: str, error: str) -> None:
         from infrastructure.downloader.account_pool import inspect_tiktok_cookie
 
+        getattr(self, "_tt_refreshing", set()).discard(account_id)
         current = self._app.config.tiktok_account_pool
         acc = next((a for a in current if a.get("id") == account_id), None)
         if acc is None:  # deleted while the extraction was running
