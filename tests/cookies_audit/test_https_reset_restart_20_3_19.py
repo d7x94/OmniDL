@@ -1,7 +1,7 @@
 """HTTPS profile reset (v20.3.19): a failed API restart after the new serve is up
 must roll HTTPS back, the same way the enable path does, and refresh the token label."""
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ui.tabs.settings import remote_api_panel as rap_mod
@@ -19,6 +19,10 @@ def test_reset_restart_failure_rolls_back_https():
         _refresh_ts_https_status=MagicMock(),
         _refresh_api_token_label=MagicMock(),
     )
+    panel._api_switch = MagicMock()
+    panel._api_rotate_btn = MagicMock()
+    panel._api_busy = 0
+    panel._api_busy_changed = MethodType(rap_mod.RemoteApiPanel._api_busy_changed, panel)
     panel_cls = rap_mod.RemoteApiPanel
     worker = {}
 

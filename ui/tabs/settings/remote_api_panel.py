@@ -46,7 +46,13 @@ def _pick_bindable_port(lo: int = 50000, hi: int = 65000) -> int:
 class RemoteApiPanel(_BasePanel):
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, app)
+        self._api_busy = 0
         self._build()
+
+    def _api_busy_changed(self, delta: int) -> None:
+        self._api_busy += delta
+        for w in (self._api_switch, self._api_rotate_btn, self._ts_https_switch, self._ts_https_reset_btn):
+            w.setEnabled(self._api_busy == 0)
 
     def _build(self) -> None:
         cfg = self._app.config
@@ -239,7 +245,7 @@ class RemoteApiPanel(_BasePanel):
         cfg = self._app.config
         cfg.set("api_enabled", enabled)
         cfg.save()
-        self._api_switch.setEnabled(False)
+        self._api_busy_changed(1)
         if enabled:
             try:
                 from api.server import is_api_running, start_api_server
@@ -273,7 +279,7 @@ class RemoteApiPanel(_BasePanel):
                 self._refresh_api_status_label()
                 self._app.toast(t("settings.api.start_error", err=f"{exc!s:.60}"), "error")
             finally:
-                self._api_switch.setEnabled(True)
+                self._api_busy_changed(-1)
         else:
 
             def _stop_worker() -> None:
@@ -291,7 +297,7 @@ class RemoteApiPanel(_BasePanel):
                     # (and a fast re-enable click) had actually finished.
                     ui_bridge.post(self._refresh_api_status_label)
                     ui_bridge.post(lambda: self._app.toast(t("settings.api.disabled_toast"), "info"))
-                    ui_bridge.post(lambda: self._api_switch.setEnabled(True))
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_stop_worker, daemon=True, name="omnidl-api-stop").start()
 
@@ -333,7 +339,7 @@ class RemoteApiPanel(_BasePanel):
 
         if was_running:
             self._app.toast(t("settings.api.restarting_toast"), "info")
-            self._api_rotate_btn.setEnabled(False)
+            self._api_busy_changed(1)
 
             def _do_restart():
                 try:
@@ -356,7 +362,7 @@ class RemoteApiPanel(_BasePanel):
                     # BUG: the button stayed clickable while a restart was
                     # already in flight, so a second rotate raced the first
                     # restart_api_server() call for the same port.
-                    ui_bridge.post(lambda: self._api_rotate_btn.setEnabled(True))
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_do_restart, daemon=True, name="omnidl-api-restart").start()
         else:
@@ -426,7 +432,7 @@ class RemoteApiPanel(_BasePanel):
             cfg.save()
             self._refresh_ts_https_status()
             self._app.toast(t("settings.api.setting_up_https"), "info")
-            self._ts_https_switch.setEnabled(False)
+            self._api_busy_changed(1)
 
             def _rollback_https_disabled() -> None:
                 cfg.set("api_ts_https_enabled", False)
@@ -499,7 +505,7 @@ class RemoteApiPanel(_BasePanel):
                         )
                     )
                 finally:
-                    ui_bridge.post(lambda: self._ts_https_switch.setEnabled(True))
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_enable_worker, daemon=True, name="omnidl-ts-https-enable").start()
 
@@ -510,7 +516,7 @@ class RemoteApiPanel(_BasePanel):
             cfg.save()
             self._refresh_ts_https_status()
             self._app.toast(t("settings.api.disabling_https"), "info")
-            self._ts_https_switch.setEnabled(False)
+            self._api_busy_changed(1)
 
             def _disable_worker():
                 restart_ok = True
@@ -551,7 +557,7 @@ class RemoteApiPanel(_BasePanel):
                         )
                     )
                 finally:
-                    ui_bridge.post(lambda: self._ts_https_switch.setEnabled(True))
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_disable_worker, daemon=True, name="omnidl-ts-https-disable").start()
 
@@ -581,7 +587,7 @@ class RemoteApiPanel(_BasePanel):
         st = self._ts_https_reset_status
         st.setText(t("settings.api.resetting_status"))
         self._app.toast(t("settings.api.resetting_toast"), "info")
-        self._ts_https_reset_btn.setEnabled(False)
+        self._api_busy_changed(1)
 
         def _rollback_https_disabled() -> None:
             cfg.set("api_ts_https_enabled", False)
@@ -669,6 +675,6 @@ class RemoteApiPanel(_BasePanel):
                     lambda e=exc: self._app.toast(t("settings.api.reset_error", err=f"{e!s:.60}"), "error")
                 )
             finally:
-                ui_bridge.post(lambda: self._ts_https_reset_btn.setEnabled(True))
+                ui_bridge.post(lambda: self._api_busy_changed(-1))
 
         threading.Thread(target=_reset_worker, daemon=True, name="omnidl-ts-https-reset").start()

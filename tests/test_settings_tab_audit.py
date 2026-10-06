@@ -195,6 +195,7 @@ def test_failed_api_start_turns_the_switch_back_off():
         _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
         _refresh_api_status_label=MagicMock(),
     )
+    _busy(panel)
 
     original = api_server.start_api_server
     api_server.start_api_server = MagicMock(side_effect=RuntimeError("port busy"))
@@ -206,6 +207,18 @@ def test_failed_api_start_turns_the_switch_back_off():
 
     switch.setChecked.assert_called_once_with(False)
     assert ("api_enabled", False) in [c[0] for c in cfg.set.call_args_list]
+
+
+def _busy(panel):
+    from types import MethodType
+
+    from ui.tabs.settings.remote_api_panel import RemoteApiPanel
+
+    panel._api_busy = 0
+    for name in ("_api_switch", "_api_rotate_btn", "_ts_https_switch", "_ts_https_reset_btn"):
+        if not hasattr(panel, name):
+            setattr(panel, name, MagicMock())
+    panel._api_busy_changed = MethodType(RemoteApiPanel._api_busy_changed, panel)
 
 
 def _sync_thread(target=None, **_kw):
@@ -229,6 +242,7 @@ def test_api_start_returning_none_is_treated_as_a_failure():
         _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
         _refresh_api_status_label=MagicMock(),
     )
+    _busy(panel)
 
     original = api_server.start_api_server
     api_server.start_api_server = MagicMock(return_value=None)
@@ -255,6 +269,7 @@ def test_api_switch_is_re_enabled_after_toggle_either_way():
         _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
         _refresh_api_status_label=MagicMock(),
     )
+    _busy(panel)
 
     # Success path (enable): setEnabled(False) then setEnabled(True) around
     # the synchronous start_api_server() call — this is the busy-lock that
@@ -303,6 +318,7 @@ def test_ts_https_restart_failure_after_serve_rolls_back():
         _app=SimpleNamespace(config=cfg, toast=MagicMock(), _service=object()),
         _refresh_ts_https_status=MagicMock(),
     )
+    _busy(panel)
 
     import api.tailscale_https as ts_https
 
