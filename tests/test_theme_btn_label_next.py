@@ -26,3 +26,13 @@ def test_theme_btn_names_next_theme_kind(monkeypatch, current, expected_key):
     MainWindow._sync_theme_btn(fake)
 
     fake._theme_btn.setText.assert_called_once_with(t(expected_key))
+
+
+def test_on_theme_resyncs_theme_button(monkeypatch):
+    from ui import main_window as mw_mod
+
+    monkeypatch.setattr(mw_mod, "apply_theme", MagicMock())
+    fake = MagicMock(_current_tab=None, _pill_btns={})
+    mw_mod.MainWindow._on_theme(fake)
+
+    fake._sync_theme_btn.assert_called_once()
