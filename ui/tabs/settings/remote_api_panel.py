@@ -633,7 +633,10 @@ class RemoteApiPanel(_BasePanel):
                     # even though the new port was never rolled back and
                     # nothing was actually serving it.
                     logger.exception("HTTPS Profile reset: API restart error: %s", exc)
+                    _rollback_https_disabled()
+                    ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
                     ui_bridge.post(self._refresh_ts_https_status)
+                    ui_bridge.post(self._refresh_api_token_label)
                     ui_bridge.post(lambda: st.setText(""))
                     ui_bridge.post(
                         lambda e=exc: self._app.toast(
