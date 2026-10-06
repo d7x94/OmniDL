@@ -15,6 +15,20 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.19 - 2026-10-06
+
+### Đã sửa
+
+- Settings: đổi theme trong Settings giờ cập nhật nhãn nút theme trên thanh trên cùng
+- Settings: làm mới cookie tài khoản TikTok không còn kẹt ở trạng thái "đang làm mới" sau khi xong
+- Settings: khởi động lại API thất bại sau khi reset Tailscale HTTPS sẽ tắt HTTPS lại và làm mới nhãn token, giống luồng bật
+- Settings: Global CDP extract với trình duyệt không hỗ trợ báo lỗi trước hộp xác nhận thay vì sau
+- Settings: giá trị thanh trượt (ví dụ số tải đồng thời) được lưu ngay mỗi lần đổi, không còn mất khi đóng app trong 500 ms
+- Settings: công tắc Remote API, xoay token và điều khiển Tailscale HTTPS bị khóa khi một thao tác đang chạy, nên hai thao tác không chồng nhau
+- Settings: đổi ngôn ngữ hoặc theme chờ các worker của Settings chạy xong rồi mới dựng lại trang, nên worker xong muộn không bật lại nút của lượt mới
+
+---
+
 ## v20.3.18 - 2026-10-05
 
 ### Đã sửa

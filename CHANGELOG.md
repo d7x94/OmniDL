@@ -15,6 +15,20 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.19 - 2026-10-06
+
+### Fixed
+
+- Settings: changing the theme from Settings now updates the top-bar theme button label
+- Settings: a TikTok account cookie refresh no longer stays stuck as "refreshing" after it finishes
+- Settings: a failed API restart after a Tailscale HTTPS reset rolls HTTPS back and refreshes the token label, like the enable path does
+- Settings: Global CDP extract with an unsupported browser shows the error before the confirm dialog instead of after it
+- Settings: slider values (e.g. concurrent downloads) save on every change instead of being lost when the app closes within 500 ms
+- Settings: Remote API switch, rotate token and Tailscale HTTPS controls are locked while one of them runs, so two actions cannot overlap
+- Settings: a language or theme change waits for running Settings workers before rebuilding the page, so a finished worker cannot re-enable a button of a new run
+
+---
+
 ## v20.3.18 - 2026-10-05
 
 ### Fixed

@@ -15,6 +15,20 @@
 
 ---
 
+## v20.3.19 - 2026-10-06
+
+### 已修复
+
+- Settings：在 Settings 中切换主题后，顶栏主题按钮的文字会同步更新
+- Settings：TikTok 账号 Cookie 刷新完成后不再一直停留在"刷新中"状态
+- Settings：Tailscale HTTPS 重置后 API 重启失败时会回滚 HTTPS 并刷新令牌标签，与启用流程一致
+- Settings：Global CDP 提取遇到不支持的浏览器时，先显示错误而不是先弹出确认框
+- Settings：滑块数值（如并发下载数）每次变化立即保存，不会因 500 毫秒内关闭应用而丢失
+- Settings：Remote API 开关、轮换令牌和 Tailscale HTTPS 控件在其中一个操作运行时会被锁定，避免两个操作重叠
+- Settings：切换语言或主题时会等待 Settings 的后台任务结束后再重建页面，避免较晚结束的任务重新启用新一轮的按钮
+
+---
+
 ## v20.3.18 - 2026-10-05
 
 ### 已修复
