@@ -4,10 +4,10 @@ re-sync, not only when the toggle button itself is pressed."""
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from ui import main_window as mw_mod
-
 
 def test_on_theme_resyncs_theme_button():
+    from ui import main_window as mw_mod
+
     fake = SimpleNamespace(
         _current_tab=None,
         _pill_btns={},
