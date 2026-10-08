@@ -15,6 +15,15 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.20 - 2026-10-08
+
+### Fixed
+
+- Main window: the minimum width is now 1290, so the top-bar tabs no longer overlap in Vietnamese at the smallest window size
+- Editor: the side panel rows (text overlay options, color and effect sliders) wrap so no control is cut off in a 380 px panel
+
+---
+
 ## v20.3.19 - 2026-10-06
 
 ### Fixed
