@@ -59,7 +59,7 @@ _TOAST_COLOR = {
 
 
 class MainWindow(QMainWindow):
-    MIN_W = 1220
+    MIN_W = 1290
     MIN_H = 720
 
     def __init__(self, service: DownloadService, config: ConfigManager) -> None:
