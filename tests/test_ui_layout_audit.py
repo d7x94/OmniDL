@@ -43,3 +43,15 @@ def test_top_bar_fits_min_window_width(win, lang):
     app.processEvents()
     assert w._top_bar.minimumSizeHint().width() <= w.MIN_W
     i18n.set_language("en")
+@pytest.mark.parametrize("lang", LANGS)
+def test_editor_controls_fit_side_panel(win, lang):
+    from utils import i18n
+
+    w, app = win
+    i18n.set_language(lang)
+    w.navigate_to("editor")
+    w.resize(w.MIN_W, w.MIN_H)
+    app.processEvents()
+    ed = w._tabs["editor"]
+    assert ed._controls_panel.width() <= ed._right_scroll.viewport().width()
+    i18n.set_language("en")
