@@ -73,3 +73,15 @@ def test_theme_switch_restyles_history_tab():
         assert T.surface in card.styleSheet()
     finally:
         T.set_mode(start)
+
+
+def test_rename_hidden_for_relative_dir_under_output_dir(tmp_path, monkeypatch):
+    from ui.tabs.history_tab import HistoryTab
+
+    (tmp_path / "gallery").mkdir()
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    tab = HistoryTab(_App([_entry(0, filename="gallery", output_dir=str(tmp_path))]))
+    tab.refresh()
+    assert not _btns(tab, "Rename")

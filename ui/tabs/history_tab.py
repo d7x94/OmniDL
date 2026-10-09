@@ -311,7 +311,8 @@ class HistoryTab(QWidget):
             open_btn.clicked.connect(lambda _=False, tid=task_id: self._open_file(tid))
             bot.addWidget(open_btn)
 
-            if not Path(fname).is_dir():
+            p = self._entry_path(task_id)
+            if p is None or not p.is_dir():
                 ren_btn = QPushButton(t("history.rename"))
                 ren_btn.setFixedSize(64, 28)
                 ren_btn.setStyleSheet(f"background: {T.surface2}; color: {T.text2}; {_btn_ss}")
