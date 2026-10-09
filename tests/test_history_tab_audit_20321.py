@@ -58,21 +58,36 @@ def _btns(tab, prefix):
     return [b for b in tab._scroll_content.findChildren(QPushButton) if b.text().startswith(prefix)]
 
 
-def test_theme_switch_restyles_history_tab():
-    from ui.tabs.history_tab import HistoryTab
-    from ui.themes.tokens import T
+class _FakeTokens:
+    def __init__(self, color):
+        self.color = color
+        self.callbacks = []
 
-    start = T.mode
-    other = "light" if start != "light" else "dark"
-    tab = HistoryTab(_App([_entry(0)]))
+    def register(self, cb):
+        self.callbacks.append(cb)
+
+    def unregister(self, cb):
+        pass
+
+    def __getattr__(self, name):
+        return self.color
+
+
+def test_theme_switch_restyles_history_tab(monkeypatch):
+    import ui.tabs.history_tab as H
+
+    fake = _FakeTokens("#AAAAAA")
+    monkeypatch.setattr(H, "T", fake)
+    tab = H.HistoryTab(_App([_entry(0)]))
     tab.refresh()
-    try:
-        T.set_mode(other)
-        assert T.error_bg in tab._clear_btn.styleSheet()
-        card = tab._items_layout.itemAt(0).widget()
-        assert T.surface in card.styleSheet()
-    finally:
-        T.set_mode(start)
+    assert "#AAAAAA" in tab._clear_btn.styleSheet()
+
+    fake.color = "#BBBBBB"
+    for cb in fake.callbacks:
+        cb()
+    assert "#BBBBBB" in tab._clear_btn.styleSheet()
+    card = tab._items_layout.itemAt(0).widget()
+    assert "#BBBBBB" in card.styleSheet()
 
 
 def test_rename_hidden_for_relative_dir_under_output_dir(tmp_path, monkeypatch):
