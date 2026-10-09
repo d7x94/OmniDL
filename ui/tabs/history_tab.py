@@ -80,6 +80,7 @@ class HistoryTab(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self.refresh)
         self._build()
+        T.register(self._on_theme)
 
         from PySide6.QtCore import QPropertyAnimation
         from PySide6.QtWidgets import QGraphicsOpacityEffect
@@ -109,9 +110,7 @@ class HistoryTab(QWidget):
 
         self._clear_btn = QPushButton(t("history.clear_all"))
         self._clear_btn.setFixedHeight(32)
-        self._clear_btn.setStyleSheet(
-            f"background: {T.error_bg}; color: {T.error}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 14px;"
-        )
+        self._style_clear_btn()
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_btn.clicked.connect(self._clear_all)
         hdr_layout.addWidget(self._clear_btn)
@@ -155,6 +154,15 @@ class HistoryTab(QWidget):
 
         scroll.setWidget(self._scroll_content)
         layout.addWidget(scroll, 1)
+
+    def _style_clear_btn(self) -> None:
+        self._clear_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 14px;"
+        )
+
+    def _on_theme(self) -> None:
+        self._style_clear_btn()
+        self.refresh()
 
     def _on_search_change(self) -> None:
         self._debounce.start(300)
