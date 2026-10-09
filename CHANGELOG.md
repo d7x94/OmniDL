@@ -15,6 +15,15 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.21 - 2026-10-09
+
+### Fixed
+
+- History: cards and the Clear button now restyle when the theme changes instead of keeping the old colors
+- History: the Rename button check resolves a relative filename against the download folder, so folder (gallery-dl) rows no longer show Rename
+
+---
+
 ## v20.3.20 - 2026-10-08
 
 ### Fixed
