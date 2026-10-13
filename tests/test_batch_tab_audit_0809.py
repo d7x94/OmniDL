@@ -178,6 +178,7 @@ def test_sequential_submit_does_not_navigate_per_video():
     tab = _batch_stub()
     tab._seq_queue = [_BatchItem(url="https://example.com/a", state=_ItemState.READY)]
     tab._submit_one.return_value = "task-1"
+    tab._seq_ok = 0
 
     BatchTab._submit_next_sequential(tab, "best", "mp4")
 

@@ -77,3 +77,14 @@ def test_retried_row_checkbox_matches_model(tab):
     tab._on_item_done(items[1], info, tab._batch_token)
     assert items[1].checked is True
     assert items[1].check_box.isChecked()
+
+
+def test_sequential_all_failed_reports_error(tab):
+    _load(tab, [_ItemState.READY, _ItemState.READY])
+    tab._sequential_chk.setChecked(True)
+    tab._app.service.start_download.side_effect = RuntimeError("boom")
+    QTest.mouseClick(tab._queue_all_btn, Qt.MouseButton.LeftButton)
+    while tab._seq_timer is not None and tab._seq_timer.isActive():
+        tab._tick_sequential()
+    assert tab._status_fn()[0] == t("batch.queue_all_failed", count=2)
+    tab._app.toast.assert_any_call(t("batch.queue_all_failed", count=2), "error")
