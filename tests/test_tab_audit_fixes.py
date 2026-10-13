@@ -232,6 +232,7 @@ def test_batch_remove_item_releases_analysing_slot():
             pass
 
     tab._queue_all_btn = _Btn()
+    tab._retry_btn = _Btn()
     tab._status_lbl = _Btn()
 
     tab._remove_item(item)
@@ -264,6 +265,7 @@ def test_batch_remove_item_never_goes_negative():
             pass
 
     tab._queue_all_btn = _Btn()
+    tab._retry_btn = _Btn()
     tab._status_lbl = _Btn()
 
     tab._remove_item(item)

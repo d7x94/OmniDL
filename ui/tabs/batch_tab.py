@@ -446,7 +446,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setText(t("batch.analysing_dots"))
         self._cancel_btn.setVisible(True)
         self._queue_all_btn.setEnabled(False)
-        self._retry_btn.setEnabled(False)
+        self._refresh_retry_btn()
         self._set_status(None)
 
         self._rebuild_results_ui()
@@ -554,12 +554,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setEnabled(True)
         self._analyse_btn.setText(t("batch.analyse_again"))
 
-        if errors > 0:
-            self._retry_btn.setEnabled(True)
-            self._retry_btn.setText(t("batch.retry_count", count=errors))
-        else:
-            self._retry_btn.setEnabled(False)
-            self._retry_btn.setText(t("batch.retry_errors"))
+        self._refresh_retry_btn()
 
         if ready == 0:
             self._set_status(lambda: (t("batch.no_valid_urls", errors=errors), T.error_text))
@@ -771,6 +766,14 @@ class BatchTab(QWidget):
             self._queue_all_btn.setEnabled(True)
             self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))
 
+    def _refresh_retry_btn(self) -> None:
+        # Recount from the rows every time: removing an ERROR row or a failed
+        # Queue All submission changes the count, and a stale "Retry N" label
+        # either clicked into nothing or hid a row that could be retried.
+        errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
+        self._retry_btn.setEnabled(errors > 0 and self._analysing_count == 0)
+        self._retry_btn.setText(t("batch.retry_count", count=errors) if errors else t("batch.retry_errors"))
+
     def _remove_item(self, item: _BatchItem) -> None:
         # Don't touch _analysing_count here even if item.state is ANALYSING: its
         # worker thread is still running and will call _on_item_done/_on_item_error
@@ -794,6 +797,7 @@ class BatchTab(QWidget):
             self._queue_all_btn.setText(t("batch.queue_all"))
             self._set_status(None)
         self._update_queue_btn_count()
+        self._refresh_retry_btn()
 
     # ── Queue All ─────────────────────────────────────────────────────────────
 
@@ -853,6 +857,7 @@ class BatchTab(QWidget):
             item.error_msg = str(exc)[:80]
             item.checked = False
             self._refresh_item_ui(item)
+            self._refresh_retry_btn()
             return None
 
     def _submit_next_sequential(self, format_id: str = "", output_ext: str = "") -> None:
@@ -956,9 +961,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setEnabled(bool(self._parse_textarea()))
         self._analyse_btn.setText(t("toolbar.analyse"))
 
-        errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
-        self._retry_btn.setEnabled(errors > 0)
-        self._retry_btn.setText(t("batch.retry_count", count=errors) if errors else t("batch.retry_errors"))
+        self._refresh_retry_btn()
 
         self._set_status(lambda: (t("batch.analyse_stopped"), T.text3))
         self._update_queue_btn_count()

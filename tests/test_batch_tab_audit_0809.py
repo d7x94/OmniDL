@@ -430,6 +430,7 @@ def test_start_batch_analyse_disables_the_stale_retry_button():
     tab._cancel_btn = MagicMock()
     tab._parse_textarea.return_value = ["https://example.com/a"]
     tab._batch_token = 0
+    tab._refresh_retry_btn = lambda: BatchTab._refresh_retry_btn(tab)
 
     BatchTab._start_batch_analyse(tab)
 
