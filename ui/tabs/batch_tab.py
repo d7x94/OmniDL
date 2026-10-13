@@ -1072,6 +1072,11 @@ class BatchTab(QWidget):
         self._format_lbl.setText(t("archive.format_label"))
         if self._empty_lbl is not None and not self._items:
             self._empty_lbl.setText(t("batch.empty"))
+        count = len(self._parse_textarea())
+        if count > MAX_BATCH_URLS:
+            self._url_count_lbl.setText(t("batch.url_count_capped", count=count, max=MAX_BATCH_URLS))
+        elif count:
+            self._url_count_lbl.setText(t("batch.url_count", count=count))
         self._render_status()
 
         # Buttons carry transient, state-dependent text (analysing spinner,
@@ -1093,4 +1098,6 @@ class BatchTab(QWidget):
             )
 
         for item in self._items:
+            if item.remove_btn:
+                item.remove_btn.setToolTip(t("batch.remove_item_tooltip"))
             self._refresh_item_ui(item)

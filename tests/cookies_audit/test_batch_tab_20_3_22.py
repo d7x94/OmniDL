@@ -151,3 +151,19 @@ def test_removing_last_analysing_row_returns_to_idle(tab):
     assert tab._status_fn is None
     assert tab._select_all_chk.isHidden()
     assert tab._sequential_chk.isHidden()
+
+
+def test_retranslate_refreshes_row_tooltip_and_url_count(tab):
+    from utils import i18n
+
+    before = i18n.get_language()
+    i18n.set_language("en")
+    try:
+        items = _load(tab, [_ItemState.READY])
+        tab._text_area.setPlainText("https://example.com/a\nhttps://example.com/b")
+        i18n.set_language("vi")
+        tab.retranslate()
+        assert items[0].remove_btn.toolTip() == t("batch.remove_item_tooltip")
+        assert tab._url_count_lbl.text() == t("batch.url_count", count=2)
+    finally:
+        i18n.set_language(before)
