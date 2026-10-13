@@ -898,6 +898,9 @@ class BatchTab(QWidget):
                 return
             self._queue_all_btn.setText(t("batch.sequential_done_btn"))
             self._set_status(lambda: (t("batch.sequential_done_status"), T.success_text))
+            # Rows ticked mid-run were skipped by the run-time lock: count them now.
+            if any(i.state == _ItemState.READY and i.checked for i in self._items):
+                self._update_queue_btn_count()
             return
 
         if not format_id:

@@ -178,3 +178,17 @@ def test_sequential_failed_count_skips_removed_rows(tab):
     while tab._seq_timer.isActive():
         tab._tick_sequential()
     assert tab._status_fn()[0] == t("batch.queue_all_failed", count=2)
+
+
+def test_row_ticked_during_run_is_queueable_after_it(tab):
+    items = _load(tab, [_ItemState.READY, _ItemState.READY])
+    items[1].check_box.setChecked(False)
+    tab._sequential_chk.setChecked(True)
+    tab._app.service.start_download.return_value = MagicMock(id="task-1")
+    tab._app.service.get_task.return_value = None
+    QTest.mouseClick(tab._queue_all_btn, Qt.MouseButton.LeftButton)
+    items[1].check_box.setChecked(True)
+    while tab._seq_timer.isActive():
+        tab._tick_sequential()
+    assert tab._queue_all_btn.isEnabled()
+    assert tab._queue_all_btn.text() == t("batch.queue_add_count", count=1)
