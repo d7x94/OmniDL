@@ -88,7 +88,7 @@ class BatchTab(QWidget):
         self._spinner_idx: int = 0
         self._spinner_token: int | None = None
         self._seq_queue: list[_BatchItem] = []
-        self._seq_total: int = 0
+        self._seq_failed: int = 0
         self._seq_ok: int = 0
         self._seq_current_task_id: str | None = None
         self._seq_timer: QTimer | None = None
@@ -830,7 +830,7 @@ class BatchTab(QWidget):
 
         if self._sequential_chk.isChecked():
             self._seq_queue = to_submit[:]
-            self._seq_total = len(to_submit)
+            self._seq_failed = 0
             self._seq_ok = 0
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.downloading_sequential"))
@@ -891,7 +891,7 @@ class BatchTab(QWidget):
             if self._seq_ok == 0:
                 # Every submission raised: same outcome as the parallel path,
                 # not a green "done" over a list of red rows.
-                failed = self._seq_total
+                failed = self._seq_failed
                 self._app.toast(t("batch.queue_all_failed", count=failed), "error")
                 self._set_status(lambda: (t("batch.queue_all_failed", count=failed), T.error_text))
                 self._update_queue_btn_count()
@@ -911,6 +911,8 @@ class BatchTab(QWidget):
         task_id = self._submit_one(item, format_id, output_ext)
         if task_id:
             self._seq_ok += 1
+        else:
+            self._seq_failed += 1
         self._seq_current_task_id = task_id
         remaining = len(self._seq_queue)
         if remaining:

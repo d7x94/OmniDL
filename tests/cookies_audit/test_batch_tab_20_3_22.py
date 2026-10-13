@@ -167,3 +167,14 @@ def test_retranslate_refreshes_row_tooltip_and_url_count(tab):
         assert tab._url_count_lbl.text() == t("batch.url_count", count=2)
     finally:
         i18n.set_language(before)
+
+
+def test_sequential_failed_count_skips_removed_rows(tab):
+    items = _load(tab, [_ItemState.READY, _ItemState.READY, _ItemState.READY])
+    tab._sequential_chk.setChecked(True)
+    tab._app.service.start_download.side_effect = RuntimeError("boom")
+    QTest.mouseClick(tab._queue_all_btn, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(items[2].remove_btn, Qt.MouseButton.LeftButton)
+    while tab._seq_timer.isActive():
+        tab._tick_sequential()
+    assert tab._status_fn()[0] == t("batch.queue_all_failed", count=2)
