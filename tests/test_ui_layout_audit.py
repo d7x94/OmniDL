@@ -52,7 +52,8 @@ import os; os._exit(0)
 
 @pytest.fixture(scope="module")
 def measured():
-    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(_ROOT)}
+    # Qt's default PipeWire audio backend segfaults in QAudioOutput() (EditorTab) under WSLg.
+    env = {"QT_AUDIO_BACKEND": "null", **os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(_ROOT)}
     cmd = [sys.executable, "-c", _SCRIPT]
     r = subprocess.run(cmd, env=env, cwd=_ROOT, capture_output=True, text=True, timeout=120)
     line = next(ln for ln in r.stdout.splitlines() if ln.startswith("RESULT"))
