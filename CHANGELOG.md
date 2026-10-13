@@ -15,6 +15,20 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.22 - 2026-10-13
+
+### Fixed
+
+- Batch: the Retry button count updates when rows are removed, when a submission fails and when a new analysis starts
+- Batch: a row that succeeds on retry shows its checkbox ticked again, matching what Queue All submits
+- Batch: a sequential Queue All run where every item fails now shows an error toast and status instead of "done"
+- Batch: Retry and Analyse are locked during a sequential run, and Queue All stays locked until the last item finishes
+- Batch: removing the last row while it is analysing returns the tab to idle
+- Batch: switching language refreshes the row remove tooltip and the URL count
+- Remote API: `POST /api/download/batch` no longer blocks the event loop while queuing a large batch
+
+---
+
 ## v20.3.21 - 2026-10-09
 
 ### Fixed
