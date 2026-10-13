@@ -696,6 +696,11 @@ class BatchTab(QWidget):
                 item.platform_lbl.setText(item.media_info.platform)
             if item.check_box:
                 item.check_box.setEnabled(True)
+                # The ERROR branch unticked the box; a retried row comes back
+                # with checked=True in the model, so the box must follow it.
+                item.check_box.blockSignals(True)
+                item.check_box.setChecked(item.checked)
+                item.check_box.blockSignals(False)
 
         elif state == _ItemState.ERROR:
             item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.error_bg}; border-radius: 12px; }}")

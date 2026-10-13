@@ -66,3 +66,14 @@ def test_new_pass_resets_retry_label(tab):
     tab._app.service.analyse_url = MagicMock()
     tab._start_batch_analyse()
     assert tab._retry_btn.text() == t("batch.retry_errors")
+
+
+def test_retried_row_checkbox_matches_model(tab):
+    items = _load(tab, [_ItemState.READY, _ItemState.ERROR])
+    tab._get_analysis_delay = lambda url: 0.0
+    tab._app.service.analyse_url = MagicMock()
+    QTest.mouseClick(tab._retry_btn, Qt.MouseButton.LeftButton)
+    info = MediaInfo(url=items[1].url, title="ok", platform="x")
+    tab._on_item_done(items[1], info, tab._batch_token)
+    assert items[1].checked is True
+    assert items[1].check_box.isChecked()
