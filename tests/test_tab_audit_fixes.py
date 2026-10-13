@@ -233,6 +233,8 @@ def test_batch_remove_item_releases_analysing_slot():
 
     tab._queue_all_btn = _Btn()
     tab._retry_btn = _Btn()
+    tab._select_all_chk = SimpleNamespace(setVisible=lambda _: None)
+    tab._sequential_chk = SimpleNamespace(setVisible=lambda _: None)
     tab._status_lbl = _Btn()
 
     tab._remove_item(item)
@@ -266,6 +268,8 @@ def test_batch_remove_item_never_goes_negative():
 
     tab._queue_all_btn = _Btn()
     tab._retry_btn = _Btn()
+    tab._select_all_chk = SimpleNamespace(setVisible=lambda _: None)
+    tab._sequential_chk = SimpleNamespace(setVisible=lambda _: None)
     tab._status_lbl = _Btn()
 
     tab._remove_item(item)

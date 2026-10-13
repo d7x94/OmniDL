@@ -137,3 +137,17 @@ def test_api_batch_enqueue_runs_off_the_event_loop():
     assert not inspect.iscoroutinefunction(route.endpoint)
     body = BatchDownloadRequest(items=[BatchDownloadItem(url="https://a.com/1", title="One")])
     assert route.endpoint(body=body, _=None).queued == 1
+
+
+def test_removing_last_analysing_row_returns_to_idle(tab):
+    tab._text_area.setPlainText("https://example.com/a")
+    tab._get_analysis_delay = lambda url: 0.0
+    tab._app.service.analyse_url = MagicMock()
+    tab._start_batch_analyse()
+    item = tab._items[0]
+    assert item.state == _ItemState.ANALYSING
+    QTest.mouseClick(item.remove_btn, Qt.MouseButton.LeftButton)
+    tab._on_item_done(item, MediaInfo(url=item.url, title="t", platform="x"), tab._batch_token)
+    assert tab._status_fn is None
+    assert tab._select_all_chk.isHidden()
+    assert tab._sequential_chk.isHidden()

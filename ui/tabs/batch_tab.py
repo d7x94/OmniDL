@@ -558,6 +558,11 @@ class BatchTab(QWidget):
 
         self._refresh_retry_btn()
 
+        if not self._items:
+            # Every row was removed mid-pass: back to idle, not "no valid URLs".
+            self._set_status(None)
+            self._queue_all_btn.setEnabled(False)
+            return
         if ready == 0:
             self._set_status(lambda: (t("batch.no_valid_urls", errors=errors), T.error_text))
             self._queue_all_btn.setEnabled(False)
@@ -807,6 +812,8 @@ class BatchTab(QWidget):
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.queue_all"))
             self._set_status(None)
+            self._select_all_chk.setVisible(False)
+            self._sequential_chk.setVisible(False)
         self._update_queue_btn_count()
         self._refresh_retry_btn()
 
