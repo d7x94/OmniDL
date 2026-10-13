@@ -990,7 +990,9 @@ def create_app(
         response_model=BatchDownloadResponse,
         summary="Enqueue many downloads in one call (Batch tab)",
     )
-    async def start_download_batch(body: BatchDownloadRequest, _: None = Depends(_require_auth)):
+    def start_download_batch(body: BatchDownloadRequest, _: None = Depends(_require_auth)):
+        # Plain def: FastAPI runs it in the threadpool, so up to 500 sync
+        # _enqueue_download calls (mkdir, task scan) never block the event loop.
         """
         Enqueue up to MAX_BATCH_ITEMS jobs at once.
 

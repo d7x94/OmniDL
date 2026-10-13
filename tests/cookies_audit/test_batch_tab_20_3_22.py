@@ -1,5 +1,8 @@
 """Batch tab audit (v20.3.22): real BatchTab widget, offscreen, mocked service."""
 
+import inspect
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -115,3 +118,22 @@ def test_last_sequential_item_keeps_queue_all_locked(tab):
     items[1].check_box.setChecked(True)
     assert not tab._queue_all_btn.isEnabled()
     assert tab._queue_all_btn.text() == t("batch.downloading_sequential")
+
+
+def test_api_batch_enqueue_runs_off_the_event_loop():
+    # FastAPI awaits an async handler on the event loop and runs a plain def in
+    # its threadpool; 500 sync enqueues (mkdir, task scan) must take the latter.
+    import api.server as srv
+    from api.models import BatchDownloadItem, BatchDownloadRequest
+    from domain.models.download_task import DownloadTask
+
+    def start_download(url, media_info, format_id, output_ext):
+        return DownloadTask(url=url, media_info=media_info, format_id=format_id, output_ext=output_ext)
+
+    service = SimpleNamespace(start_download=start_download, get_all_tasks=lambda: [], get_history=lambda: [])
+    config = SimpleNamespace(api_token="", download_dir=Path("/tmp"), default_quality="best", default_format="mp4")
+    app = srv.create_app(service, config)
+    route = next(r for r in app.routes if getattr(r, "path", None) == "/api/download/batch")
+    assert not inspect.iscoroutinefunction(route.endpoint)
+    body = BatchDownloadRequest(items=[BatchDownloadItem(url="https://a.com/1", title="One")])
+    assert route.endpoint(body=body, _=None).queued == 1
