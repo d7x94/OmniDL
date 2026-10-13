@@ -761,6 +761,10 @@ class BatchTab(QWidget):
         self._sync_select_all_state()
 
     def _update_queue_btn_count(self) -> None:
+        if self._seq_running():
+            # The last item is still downloading after _seq_queue emptied: keep
+            # Queue All locked and its progress label intact until the run ends.
+            return
         ready = sum(1 for i in self._items if i.state == _ItemState.READY and i.checked)
         if ready == 0:
             self._queue_all_btn.setEnabled(False)

@@ -278,6 +278,7 @@ class TestBatchQueueAllStaysDisabledDuringRun:
         bt._items = [ready_item]
         bt._analysing_count = 1
         bt._seq_queue = []
+        bt._seq_running = lambda: False
         calls = {"enabled": []}
         bt._queue_all_btn = types.SimpleNamespace(
             setEnabled=lambda v: calls["enabled"].append(v),
@@ -296,6 +297,7 @@ class TestBatchQueueAllStaysDisabledDuringRun:
         bt._items = [ready_item]
         bt._analysing_count = 0
         bt._seq_queue = [ready_item]
+        bt._seq_running = lambda: False
         calls = {"enabled": []}
         bt._queue_all_btn = types.SimpleNamespace(
             setEnabled=lambda v: calls["enabled"].append(v),
@@ -314,6 +316,7 @@ class TestBatchQueueAllStaysDisabledDuringRun:
         bt._items = [ready_item]
         bt._analysing_count = 0
         bt._seq_queue = []
+        bt._seq_running = lambda: False
         calls = {"enabled": []}
         bt._queue_all_btn = types.SimpleNamespace(
             setEnabled=lambda v: calls["enabled"].append(v),

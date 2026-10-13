@@ -103,3 +103,15 @@ def test_sequential_run_locks_retry_and_analyse(tab):
         tab._tick_sequential()
     assert tab._retry_btn.isEnabled()
     assert tab._analyse_btn.isEnabled()
+
+
+def test_last_sequential_item_keeps_queue_all_locked(tab):
+    items = _load(tab, [_ItemState.READY, _ItemState.READY])
+    items[1].check_box.setChecked(False)
+    tab._sequential_chk.setChecked(True)
+    tab._app.service.start_download.return_value = MagicMock(id="task-1")
+    QTest.mouseClick(tab._queue_all_btn, Qt.MouseButton.LeftButton)
+    assert tab._seq_queue == []
+    items[1].check_box.setChecked(True)
+    assert not tab._queue_all_btn.isEnabled()
+    assert tab._queue_all_btn.text() == t("batch.downloading_sequential")
