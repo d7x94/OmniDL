@@ -47,6 +47,9 @@ def _batch_stub():
     tab._status_fn = None
     tab._app = MagicMock()
     tab._queue_all_btn = MagicMock()
+    tab._analyse_btn = MagicMock()
+    tab._retry_btn = MagicMock()
+    tab._seq_running.return_value = False
     tab._status_lbl = MagicMock()
     tab._items_layout = MagicMock()
     tab._get_analysis_delay.return_value = 0.0  # the worker thread must not sleep on a Mock

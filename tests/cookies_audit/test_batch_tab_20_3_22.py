@@ -88,3 +88,18 @@ def test_sequential_all_failed_reports_error(tab):
         tab._tick_sequential()
     assert tab._status_fn()[0] == t("batch.queue_all_failed", count=2)
     tab._app.toast.assert_any_call(t("batch.queue_all_failed", count=2), "error")
+
+
+def test_sequential_run_locks_retry_and_analyse(tab):
+    _load(tab, [_ItemState.READY, _ItemState.READY, _ItemState.ERROR])
+    tab._sequential_chk.setChecked(True)
+    tab._app.service.start_download.return_value = MagicMock(id="task-1")
+    tab._app.service.get_task.return_value = None
+    QTest.mouseClick(tab._queue_all_btn, Qt.MouseButton.LeftButton)
+    tab._text_area.setPlainText("https://example.com/new")
+    assert not tab._retry_btn.isEnabled()
+    assert not tab._analyse_btn.isEnabled()
+    while tab._seq_timer.isActive():
+        tab._tick_sequential()
+    assert tab._retry_btn.isEnabled()
+    assert tab._analyse_btn.isEnabled()

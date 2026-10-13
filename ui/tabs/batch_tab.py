@@ -366,7 +366,7 @@ class BatchTab(QWidget):
             self._url_count_lbl.setText(t("batch.url_count", count=count))
         # Typing while a pass runs must not re-enable Analyse: the button still
         # reads "Analysing…", and clicking it threw away every finished row.
-        if self._analysing_count == 0:
+        if self._analysing_count == 0 and not self._seq_running():
             self._analyse_btn.setEnabled(count > 0)
 
     def _parse_textarea(self) -> list[str]:
@@ -778,7 +778,7 @@ class BatchTab(QWidget):
         # Queue All submission changes the count, and a stale "Retry N" label
         # either clicked into nothing or hid a row that could be retried.
         errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
-        self._retry_btn.setEnabled(errors > 0 and self._analysing_count == 0)
+        self._retry_btn.setEnabled(errors > 0 and self._analysing_count == 0 and not self._seq_running())
         self._retry_btn.setText(t("batch.retry_count", count=errors) if errors else t("batch.retry_errors"))
 
     def _remove_item(self, item: _BatchItem) -> None:
@@ -823,6 +823,9 @@ class BatchTab(QWidget):
             self._seq_ok = 0
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.downloading_sequential"))
+            # Retry and Analyse both clear _seq_queue: locked until the run ends.
+            self._analyse_btn.setEnabled(False)
+            self._retry_btn.setEnabled(False)
             _n = len(to_submit)
             self._set_status(lambda: (t("batch.sequential_status", count=_n), T.text3))
             self._submit_next_sequential(format_id, output_ext)
@@ -872,6 +875,8 @@ class BatchTab(QWidget):
     def _submit_next_sequential(self, format_id: str = "", output_ext: str = "") -> None:
         if not self._seq_queue:
             self._stop_seq_timer()
+            self._analyse_btn.setEnabled(bool(self._parse_textarea()))
+            self._refresh_retry_btn()
             if self._seq_ok == 0:
                 # Every submission raised: same outcome as the parallel path,
                 # not a green "done" over a list of red rows.
@@ -890,6 +895,8 @@ class BatchTab(QWidget):
             output_ext = self._format_combo.currentText()
 
         item = self._seq_queue.pop(0)
+        # Timer first so _seq_running() already holds while this item is submitted.
+        self._start_seq_timer()
         task_id = self._submit_one(item, format_id, output_ext)
         if task_id:
             self._seq_ok += 1
@@ -897,13 +904,15 @@ class BatchTab(QWidget):
         remaining = len(self._seq_queue)
         if remaining:
             self._app.toast(t("batch.sequential_toast", remaining=remaining), "info")
-        self._start_seq_timer()
 
     def _start_seq_timer(self) -> None:
         if self._seq_timer is None:
             self._seq_timer = QTimer(self)
             self._seq_timer.timeout.connect(self._tick_sequential)
         self._seq_timer.start(2000)
+
+    def _seq_running(self) -> bool:
+        return self._seq_timer is not None and self._seq_timer.isActive()
 
     def _stop_seq_timer(self) -> None:
         if self._seq_timer:
