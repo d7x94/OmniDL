@@ -106,6 +106,7 @@ def _install_ui_stubs():
             m.T = T
             m.TAB_ACCENTS = {}
             m.THEME_NAMES = []
+            m.theme_is_dark = lambda name: True
             sys.modules[mod_name] = m
 
 
