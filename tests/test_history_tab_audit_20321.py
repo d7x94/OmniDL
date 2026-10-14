@@ -9,6 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import QCoreApplication, QEvent
     from PySide6.QtWidgets import QApplication, QPushButton
 
     _QT = QApplication.instance() is not None or QApplication([]) is not None
@@ -73,12 +74,23 @@ class _FakeTokens:
         return self.color
 
 
-def test_theme_switch_restyles_history_tab(monkeypatch):
+@pytest.fixture
+def tabs():
+    # Parentless tabs left to PySide's exit cleanup crash the interpreter (exit 139).
+    made = []
+    yield made
+    for tab in made:
+        tab.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_theme_switch_restyles_history_tab(monkeypatch, tabs):
     import ui.tabs.history_tab as H
 
     fake = _FakeTokens("#AAAAAA")
     monkeypatch.setattr(H, "T", fake)
     tab = H.HistoryTab(_App([_entry(0)]))
+    tabs.append(tab)
     tab.refresh()
     assert "#AAAAAA" in tab._clear_btn.styleSheet()
 
@@ -90,7 +102,7 @@ def test_theme_switch_restyles_history_tab(monkeypatch):
     assert "#BBBBBB" in card.styleSheet()
 
 
-def test_rename_hidden_for_relative_dir_under_output_dir(tmp_path, monkeypatch):
+def test_rename_hidden_for_relative_dir_under_output_dir(tmp_path, monkeypatch, tabs):
     from ui.tabs.history_tab import HistoryTab
 
     (tmp_path / "gallery").mkdir()
@@ -98,5 +110,6 @@ def test_rename_hidden_for_relative_dir_under_output_dir(tmp_path, monkeypatch):
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     tab = HistoryTab(_App([_entry(0, filename="gallery", output_dir=str(tmp_path))]))
+    tabs.append(tab)
     tab.refresh()
     assert not _btns(tab, "Rename")
