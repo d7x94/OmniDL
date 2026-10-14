@@ -15,6 +15,17 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.23 - 2026-10-14
+
+### Fixed
+
+- Instagram: the profile live check removes the temporary decrypted cookie before reporting its result
+- CI: the test suite no longer crashes the interpreter at exit (exit code 139) after all tests pass
+- CI: a test no longer replaces UI modules with stubs for the rest of the run, which aborted a later Convert tab test
+- CI: the TikTok live checker tests pass when run on their own
+
+---
+
 ## v20.3.22 - 2026-10-13
 
 ### Fixed
