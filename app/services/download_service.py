@@ -819,25 +819,27 @@ class DownloadService:
             cookie_txt = ""
             cookie_is_temp = False
             try:
-                if cookie_raw:
-                    cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
-                live_url = check_instagram_live(
-                    username=username,
-                    cookie_file=cookie_txt,
-                    proxy=proxy,
-                    deep=deep,
-                )
+                # Unlink before the callbacks so callers never see the temp cookie still on disk.
+                try:
+                    if cookie_raw:
+                        cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
+                    live_url = check_instagram_live(
+                        username=username,
+                        cookie_file=cookie_txt,
+                        proxy=proxy,
+                        deep=deep,
+                    )
+                finally:
+                    if cookie_is_temp and cookie_txt:
+                        try:
+                            import os as _os  # noqa: PLC0415
+
+                            _os.unlink(cookie_txt)
+                        except OSError:
+                            pass
                 on_done(live_url)
             except Exception as exc:
                 on_error(str(exc))
-            finally:
-                if cookie_is_temp and cookie_txt:
-                    try:
-                        import os as _os  # noqa: PLC0415
-
-                        _os.unlink(cookie_txt)
-                    except OSError:
-                        pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
