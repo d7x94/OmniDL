@@ -139,6 +139,7 @@ def test_remove_keeps_entry_when_rewrite_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "replace", _fail)
     repo.remove(task.id)
+    repo.clear()
     monkeypatch.undo()
 
     assert [e["id"] for e in repo.all()] == [task.id]

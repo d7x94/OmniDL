@@ -119,7 +119,7 @@ class HistoryRepository:
         """
         self._rewrite_unlocked(self._entries)
 
-    def _rewrite_unlocked(self, entries: list[dict]) -> None:
+    def _rewrite_unlocked(self, entries: list[dict]) -> bool:
         """Write *entries* atomically to disk without requiring ``self._lock``.
 
         Accepts a consistent snapshot so the caller can release the lock
@@ -142,6 +142,7 @@ class HistoryRepository:
             # Remove backup only after successful replacement.
             if backup.exists():
                 backup.unlink(missing_ok=True)
+            return True
         except OSError as exc:
             logger.error("History rewrite failed: %s", exc)
             # Restore from backup if available.
@@ -151,6 +152,7 @@ class HistoryRepository:
                     logger.info("History restored from backup after failed rewrite")
                 except OSError as rb_exc:
                     logger.error("History backup restore failed: %s", rb_exc)
+            return False
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -204,15 +206,17 @@ class HistoryRepository:
     def remove(self, task_id: str) -> None:
         with self._io_lock:
             with self._lock:
-                self._entries = [e for e in self._entries if e.get("id") != task_id]
-                snapshot = list(self._entries)
-            self._rewrite_unlocked(snapshot)
+                snapshot = [e for e in self._entries if e.get("id") != task_id]
+            # Drop from memory only once disk agrees, else the row returns after restart.
+            if self._rewrite_unlocked(snapshot):
+                with self._lock:
+                    self._entries = snapshot
 
     def clear(self) -> None:
         with self._io_lock:
-            with self._lock:
-                self._entries = []
-            self._rewrite_unlocked([])
+            if self._rewrite_unlocked([]):
+                with self._lock:
+                    self._entries = []
 
     def update_filename(self, task_id: str, new_filename: str) -> bool:
         """Patch the ``filename`` field of one entry. Returns False if not found."""
