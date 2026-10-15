@@ -15,6 +15,17 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.24 - 2026-10-15
+
+### Fixed
+
+- History: Clear all now clears the history instead of failing silently after confirmation
+- History: partially saved downloads show a translated "Partial" badge and can be filtered
+- History: deleting or clearing entries keeps them listed when the history file cannot be written, instead of bringing them back after a restart
+- Live Monitor: checking a watched Facebook profile no longer leaves it stuck in the checking state
+
+---
+
 ## v20.3.23 - 2026-10-14
 
 ### Fixed
