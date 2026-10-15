@@ -687,8 +687,8 @@ class ServiceFacade:
     def search_history(self, q):
         return self._svc.search_history(q)
 
-    def clear_history(self):
-        self._svc.clear_history()
+    def clear_history(self, exclude_ids=None):
+        self._svc.clear_history(exclude_ids=exclude_ids)
 
     def delete_history_entry(self, tid):
         self._svc.delete_history_entry(tid)
@@ -731,6 +731,9 @@ class ServiceFacade:
 
     def check_tiktok_profile_live(self, url: str, on_done, on_error) -> None:
         self._svc.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
+
+    def check_facebook_profile_live(self, url: str, on_done, on_error) -> None:
+        self._svc.check_facebook_profile_live(url=url, on_done=on_done, on_error=on_error)
 
     @property
     def taildrop(self) -> "TaildropService":
