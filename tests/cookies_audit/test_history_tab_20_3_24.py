@@ -83,7 +83,12 @@ def test_clear_all_through_service_facade(monkeypatch, tabs):
         mod = types.ModuleType(name)
         setattr(mod, cls, object)
         monkeypatch.setitem(sys.modules, name, mod)
-    monkeypatch.delitem(sys.modules, "ui.main_window", raising=False)
+    import ui
+
+    # setitem/setattr first so teardown removes the stubbed re-import even if it was not loaded before.
+    monkeypatch.setitem(sys.modules, "ui.main_window", None)
+    monkeypatch.setattr(ui, "main_window", None, raising=False)
+    del sys.modules["ui.main_window"]
     from ui.main_window import ServiceFacade
     from ui.tabs.history_tab import HistoryTab
 
