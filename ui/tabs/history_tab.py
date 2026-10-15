@@ -38,8 +38,9 @@ _STATUS_TOKENS = {
     "COMPLETED": ("success", "success_bg"),
     "FAILED": ("error", "error_bg"),
     "CANCELLED": ("text3", "surface2"),
+    "PARTIAL_SAVED": ("warning", "warning_bg"),
 }
-_FILTER_STATUSES = ["All", "COMPLETED", "FAILED", "CANCELLED"]
+_FILTER_STATUSES = ["All", "COMPLETED", "FAILED", "CANCELLED", "PARTIAL_SAVED"]
 
 
 def _status_label(status: str) -> str:
@@ -48,6 +49,7 @@ def _status_label(status: str) -> str:
         "COMPLETED": t("history.status.completed"),
         "FAILED": t("history.status.failed"),
         "CANCELLED": t("history.status.cancelled"),
+        "PARTIAL_SAVED": t("item.status.partial"),
     }.get(status, status)
 
 
