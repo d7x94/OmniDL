@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
@@ -33,6 +34,23 @@ from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
+
+_SETTINGS_WORKERS = (
+    "omnidl-tt-pool-",
+    "omnidl-cdp-extract",
+    "omnidl-cookie-extract",
+    "omnidl-api-stop",
+    "omnidl-api-restart",
+    "omnidl-ts-https-",
+    "omnidl-td-scan",
+    "omnidl-ytdlp-update",
+    "omnidl-install-keyring",
+    "omnidl-gdl-update",
+)
+
+
+def _settings_work_running() -> bool:
+    return any(th.is_alive() and th.name.startswith(_SETTINGS_WORKERS) for th in threading.enumerate())
 
 
 class SettingsTab(QWidget):
@@ -122,7 +140,11 @@ class SettingsTab(QWidget):
         both the smallest and the only complete fix. In-flight worker callbacks
         target widgets that are gone by then; ui_bridge swallows the resulting
         "already deleted" errors, so a running cookie extract cannot crash this.
+        A rebuild during a running worker would re-enable its button, so wait.
         """
+        if _settings_work_running():
+            QTimer.singleShot(500, self, self.retranslate)
+            return
         self._search_box.setPlaceholderText(t("settings.search"))
         self._no_results.setText(t("settings.no_results"))
         self._no_results.setStyleSheet(f"color: {T.text3}; font-size: 12px; padding: 40px 28px;")

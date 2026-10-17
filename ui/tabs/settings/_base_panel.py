@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -200,17 +200,10 @@ class _BasePanel(QWidget):
         vl.addWidget(val_lbl)
         card.layout().addWidget(val_row)
 
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        _v = [initial_val]
-
-        def _on_change(v, _lbl=val_lbl, _vref=_v, _t=timer):
+        def _on_change(v, _lbl=val_lbl):
             _lbl.setText(str(v))
-            _vref[0] = v
-            _t.stop()
-            _t.start(500)
+            cmd(v)
 
-        timer.timeout.connect(lambda: cmd(_v[0]))
         slider.valueChanged.connect(_on_change)
         return slider
 

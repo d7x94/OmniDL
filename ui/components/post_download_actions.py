@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.signals import ui_bridge
 from ui.themes.tokens import T
 from utils.i18n import t
 
@@ -64,6 +66,7 @@ class PostDownloadActions(QWidget):
         self._file_path: Optional[Path] = None
         self._gallery_dl_files: Optional[list] = None
         self._converting = False
+        self._pending_conversions = 0
 
         self._build()
 
@@ -160,19 +163,25 @@ class PostDownloadActions(QWidget):
         self.setVisible(False)
 
     def notify_convert_done(self, output_path: Path) -> None:
-        self._converting = False
-        self._convert_btn.setText(f"✓ {t('pda.done')}")
-        self._convert_btn.setEnabled(False)
+        self._pending_conversions = max(0, self._pending_conversions - 1)
         if self._gallery_dl_files:
             self._file_path = output_path.parent
         else:
             self._file_path = output_path
+        if self._pending_conversions > 0:
+            return
+        self._converting = False
+        self._convert_btn.setText(f"✓ {t('pda.done')}")
+        self._convert_btn.setEnabled(False)
 
     def notify_convert_error(self, msg: str) -> None:
+        self._pending_conversions = max(0, self._pending_conversions - 1)
+        self._set_status(t("pda.convert_failed", msg=msg[:80]))
+        if self._pending_conversions > 0:
+            return
         self._converting = False
         self._convert_btn.setText(self._convert_label())
         self._convert_btn.setEnabled(True)
-        self._set_status(t("pda.convert_failed", msg=msg[:80]))
 
     # ── Handlers ──────────────────────────────────────────────────────────
 
@@ -213,22 +222,33 @@ class PostDownloadActions(QWidget):
         gdl = self._gallery_dl_files
         if gdl:
             video_files = [Path(f) for f in gdl if Path(f).suffix.lower() in _vid_exts and Path(f).is_file()]
+            if not video_files:
+                self._converting = False
+                self._convert_btn.setText(self._convert_label())
+                self._convert_btn.setEnabled(True)
+                self._set_status(t("pda.empty_folder"))
+                return
+            self._pending_conversions = len(video_files)
             for vf in video_files:
                 try:
                     self._on_convert(vf, target_ext, encode_settings)
                 except Exception as exc:
                     logger.warning("PostDownloadActions on_convert raised: %s", exc)
                     self._set_status(t("pda.convert_error_file", name=vf.name, err=exc))
-                    self._converting = False
-                    self._convert_btn.setText(self._convert_label())
-                    self._convert_btn.setEnabled(True)
+                    self._pending_conversions -= 1
+                    if self._pending_conversions <= 0:
+                        self._converting = False
+                        self._convert_btn.setText(self._convert_label())
+                        self._convert_btn.setEnabled(True)
                     return
         else:
+            self._pending_conversions = 1
             try:
                 self._on_convert(self._file_path, target_ext, encode_settings)
             except Exception as exc:
                 logger.warning("PostDownloadActions on_convert raised: %s", exc)
                 self._set_status(t("pda.convert_error", err=exc))
+                self._pending_conversions = 0
                 self._converting = False
                 self._convert_btn.setText(self._convert_label())
                 self._convert_btn.setEnabled(True)
@@ -467,24 +487,42 @@ class _CustomEncodePanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setStyleSheet("background: transparent; border: none;")
+        self._encoder_keys: list[str] = ["cpu"]
         self._build()
+        threading.Thread(
+            target=self._detect_encoders_async,
+            daemon=True,
+            name="omnidl-pda-encoder-probe",
+        ).start()
+
+    def _detect_encoders_async(self) -> None:
+        from app.services.ffmpeg_convert_service import get_available_encoder_options
+
+        available = get_available_encoder_options()
+        ui_bridge.post(lambda opts=available: self._apply_available_encoders(opts))
+
+    def _apply_available_encoders(self, available: list[tuple[str, str]]) -> None:
+        self._encoder_combo.clear()
+        self._encoder_keys = [k for k, _ in available]
+        self._encoder_combo.addItems([lbl for _, lbl in available])
+        self._encoder_combo.setEnabled(True)
 
     def _build(self) -> None:
-        from app.services.ffmpeg_convert_service import SPEED_OPTIONS, get_available_encoder_options
+        from app.services.ffmpeg_convert_service import SPEED_OPTIONS
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        # Encoder
+        # Encoder — populated off-thread once the probe (which may test-encode
+        # each GPU codec via subprocess) finishes; see _detect_encoders_async.
         row1 = QHBoxLayout()
         lbl = QLabel(t("pda.encoder"))
         lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-weight: bold;")
         row1.addWidget(lbl)
         self._encoder_combo = QComboBox()
-        available = get_available_encoder_options()
-        self._encoder_keys = [k for k, _ in available]
-        self._encoder_combo.addItems([lbl for _, lbl in available])
+        self._encoder_combo.addItem(t("live.state.checking"))
+        self._encoder_combo.setEnabled(False)
         row1.addWidget(self._encoder_combo)
         layout.addLayout(row1)
 

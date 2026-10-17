@@ -551,19 +551,6 @@ class DownloadService:
         existing task is returned immediately — no duplicate is created.
         Re-downloading a COMPLETED/FAILED/CANCELLED URL always starts a new job.
         """
-        # Duplicate guard: only block active (not terminal) duplicates.
-        for existing in self._manager.get_all_tasks():
-            if existing.url == url and existing.status in DownloadStatus.active_states():
-                logger.info(
-                    "Duplicate URL ignored — task %s already active: %s",
-                    existing.id,
-                    url,
-                )
-                return existing
-
-        resolved_dir = output_dir or self._config.download_dir
-        resolved_dir.mkdir(parents=True, exist_ok=True)
-
         # If media_info carries a resolved canonical URL (e.g. TikTok short-link
         # resolved to /@user/live during analyse), use it as task.url so yt-dlp
         # receives the canonical URL directly instead of re-resolving the short
@@ -576,6 +563,21 @@ class DownloadService:
             and media_info.url.startswith("http")
         ):
             task_url = media_info.url
+
+        # Duplicate guard: only block active (not terminal) duplicates.
+        # BUG-DUP-CANONICAL: tasks are stored under task_url, so compare that
+        # too -- the same short link posted twice was never caught.
+        for existing in self._manager.get_all_tasks():
+            if existing.url in (url, task_url) and existing.status in DownloadStatus.active_states():
+                logger.info(
+                    "Duplicate URL ignored — task %s already active: %s",
+                    existing.id,
+                    url,
+                )
+                return existing
+
+        resolved_dir = output_dir or self._config.download_dir
+        resolved_dir.mkdir(parents=True, exist_ok=True)
 
         task = DownloadTask(
             url=task_url,
@@ -622,12 +624,12 @@ class DownloadService:
     def search_history(self, query: str) -> list[dict]:
         return self._history.search(query)
 
-    def clear_history(self) -> None:
+    def clear_history(self, exclude_ids: "frozenset[str] | None" = None) -> None:
         self._history.clear()
         # Also drop terminal tasks from the manager — otherwise their
         # MediaInfo/format data stays resident even though the persisted
         # history record is gone (memory leak: "cleared" history, RAM stays up).
-        self._manager.clear_terminal()
+        self._manager.clear_terminal(exclude_ids=exclude_ids)
 
     def delete_history_entry(self, task_id: str) -> None:
         self._history.remove(task_id)
@@ -771,6 +773,14 @@ class DownloadService:
             on_error=on_error,
         )
 
+    def has_cookie_for(self, platform_url: str) -> bool:
+        """True if a usable cookie resolves for the given platform URL.
+
+        Thin wrapper so UI code never has to import infrastructure/ directly
+        just to check cookie presence (see BUG-LM-INFRA-IMPORT).
+        """
+        return bool(_resolve_cookie(platform_url, self._config))
+
     def check_profile_live(
         self,
         url: str,
@@ -809,25 +819,27 @@ class DownloadService:
             cookie_txt = ""
             cookie_is_temp = False
             try:
-                if cookie_raw:
-                    cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
-                live_url = check_instagram_live(
-                    username=username,
-                    cookie_file=cookie_txt,
-                    proxy=proxy,
-                    deep=deep,
-                )
+                # Unlink before the callbacks so callers never see the temp cookie still on disk.
+                try:
+                    if cookie_raw:
+                        cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
+                    live_url = check_instagram_live(
+                        username=username,
+                        cookie_file=cookie_txt,
+                        proxy=proxy,
+                        deep=deep,
+                    )
+                finally:
+                    if cookie_is_temp and cookie_txt:
+                        try:
+                            import os as _os  # noqa: PLC0415
+
+                            _os.unlink(cookie_txt)
+                        except OSError:
+                            pass
                 on_done(live_url)
             except Exception as exc:
                 on_error(str(exc))
-            finally:
-                if cookie_is_temp and cookie_txt:
-                    try:
-                        import os as _os  # noqa: PLC0415
-
-                        _os.unlink(cookie_txt)
-                    except OSError:
-                        pass
 
         threading.Thread(target=_worker, daemon=True).start()
 

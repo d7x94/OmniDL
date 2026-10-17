@@ -52,6 +52,9 @@ class _FakeService:
     def get_history(self) -> list[dict]:
         return self.history
 
+    def delete_history_entry(self, task_id: str) -> None:
+        self.history = [e for e in self.history if e.get("id") != task_id]
+
     def clear_file_record(self, deleted_path: Path) -> int:
         self.cleared_with.append(deleted_path)
         count = 0
@@ -224,6 +227,37 @@ class TestDeleteSyncsDownloadRecords:
         _call(_endpoint(app, "/api/files/delete", "DELETE"), FileDeleteRequest(path=str(victim)), None)
 
         assert service.tasks[0].filename == str(keeper)
+
+    def test_partial_rmtree_failure_still_clears_records(self, tmp_path: Path, monkeypatch) -> None:
+        """shutil.rmtree() can fail partway through (a locked file inside the
+        directory). Records for files already removed before the failure
+        must not be left pointing at a dead path just because the whole
+        operation ends in a 409."""
+        import shutil as shutil_mod
+
+        from fastapi import HTTPException
+
+        root = tmp_path / "dl"
+        root.mkdir()
+        folder = root / "album"
+        folder.mkdir()
+        inner = folder / "a.mp4"
+        inner.write_bytes(b"x")
+        service = _FakeService()
+        service.history = [{"id": "H1", "filename": str(inner)}]
+        app, _ = _make_app(root, service)
+
+        monkeypatch.setattr(
+            shutil_mod,
+            "rmtree",
+            lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "used by another process")),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _call(_endpoint(app, "/api/files/delete", "DELETE"), FileDeleteRequest(path=str(folder)), None)
+
+        assert exc.value.status_code == 409
+        assert service.history[0]["filename"] == ""
 
     def test_response_reports_the_resolved_path(self, tmp_path: Path) -> None:
         root = tmp_path / "dl"
@@ -430,3 +464,15 @@ class TestDeleteHandlesSymlinks:
             == 400
         )
         assert root.exists()
+
+
+class TestDeleteHistoryEntryOffloadsDiskWrite:
+    def test_delete_still_removes_the_entry(self, tmp_path: Path) -> None:
+        service = _FakeService()
+        service.history = [{"id": "a"}, {"id": "b"}]
+        app, _ = _make_app(tmp_path, service)
+
+        result = _call(_endpoint(app, "/api/history/{task_id}", "DELETE"), "a", None)
+
+        assert result == {"deleted": "a"}
+        assert [e["id"] for e in service.history] == ["b"]

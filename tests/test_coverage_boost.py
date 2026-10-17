@@ -324,10 +324,12 @@ class TestDownloadManagerPhotoFallback:
         yt_engine = MagicMock()
         gallery_engine = MagicMock()
 
-        orphan = tmp_path / "partial_ytdlp.mp4"
+        orphan = tmp_path / "partial_ytdlp [vid1].mp4"
         orphan.write_bytes(b"fake")
 
         def fake_yt_dl(task, on_progress=None, on_postprocess=None):
+            # BUG-BU-SWEEP: only files named after an id yt-dlp recorded are swept.
+            task.ytdlp_ids.append("vid1")
             raise RuntimeError("no video formats found")
 
         def fake_gallery_dl(task, on_progress=None, on_postprocess=None):

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -412,6 +412,25 @@ def test_refresh_needs_a_recorded_browser():
     NetworkPanel._refresh_tiktok_account_cookie(panel, "a")
 
     assert panel._app.toast.call_args[0][1] == "error"
+
+
+def test_refresh_ignores_a_second_click_while_one_is_in_flight(tmp_path):
+    """Clicking Refresh twice for the same account (or the row being rebuilt
+    mid-extraction by an unrelated list refresh, which would otherwise hand
+    back a fresh, enabled button) must not start a second extraction: the
+    two would race set_tiktok_account_pool() in _apply_refreshed_cookie and
+    leak the loser's cookie file."""
+    stored = [{"id": "a", "name": "Acc", "browser": "chrome", "cookie_file": "/x/c.enc"}]
+    panel = _pool_panel(stored)
+    panel._cookies_dir = lambda: tmp_path
+
+    with patch("threading.Thread") as thread_cls:
+        thread_cls.return_value = MagicMock()
+        NetworkPanel._refresh_tiktok_account_cookie(panel, "a")
+        NetworkPanel._refresh_tiktok_account_cookie(panel, "a")
+
+    assert thread_cls.call_count == 1
+    assert panel._app.toast.call_count == 1
 
 
 def test_refresh_swaps_the_cookie_file_and_drops_the_old_one(tmp_path):

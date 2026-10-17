@@ -27,7 +27,7 @@ from app.services.taildrop_service import TaildropService
 from domain.enums.download_status import DownloadStatus
 from infrastructure.config.config_manager import ConfigManager
 from ui.theme_qt import apply_theme
-from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T
+from ui.themes.tokens import TAB_ACCENTS, THEME_NAMES, T, theme_is_dark
 from utils.clipboard_monitor import ClipboardMonitor
 from utils.i18n import register as i18n_register
 from utils.i18n import t
@@ -59,7 +59,7 @@ _TOAST_COLOR = {
 
 
 class MainWindow(QMainWindow):
-    MIN_W = 1220
+    MIN_W = 1290
     MIN_H = 720
 
     def __init__(self, service: DownloadService, config: ConfigManager) -> None:
@@ -212,8 +212,7 @@ class MainWindow(QMainWindow):
 
         # Register theme callback
         T.register(self._on_theme)
-        is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._sync_theme_btn()
 
         self.navigate_to("home")
 
@@ -389,8 +388,7 @@ class MainWindow(QMainWindow):
             btn.setMinimumWidth(0)
             btn.setMinimumWidth(btn.sizeHint().width())
 
-        is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._sync_theme_btn()
         self._notif_btn.setToolTip(t("topbar.notifications"))
         self._collapse_nav_btn.setToolTip(t("topbar.hide_nav"))
 
@@ -402,7 +400,7 @@ class MainWindow(QMainWindow):
             if inner is not None:
                 inner.setText(f"∨  {label}")
 
-        for widget in (self._toolbar, self._status_bar, *self._tabs.values()):
+        for widget in (self._toolbar, self._status_bar, self._notification_panel, *self._tabs.values()):
             retranslate = getattr(widget, "retranslate", None)
             if callable(retranslate):
                 try:
@@ -412,14 +410,18 @@ class MainWindow(QMainWindow):
 
     # ── Theme ─────────────────────────────────────────────────────────────
 
+    def _sync_theme_btn(self) -> None:
+        names = list(THEME_NAMES)
+        nxt = names[(names.index(T.mode) + 1) % len(names)] if T.mode in names else names[0]
+        self._theme_btn.setText(t("topbar.theme_dark") if theme_is_dark(nxt) else t("topbar.theme_light"))
+
     def _toggle_theme(self) -> None:
         themes = list(THEME_NAMES)
         current_idx = themes.index(T.mode) if T.mode in themes else 0
         new_mode = themes[(current_idx + 1) % len(themes)]
         T.set_mode(new_mode)
         self._config.set("theme", new_mode)
-        is_dark = T.mode not in ("light", "solarized", "lavender")
-        self._theme_btn.setText(t("topbar.theme_dark") if not is_dark else t("topbar.theme_light"))
+        self._sync_theme_btn()
         self.toast(t("topbar.theme_changed"), "info")
 
     def _on_theme(self) -> None:
@@ -430,6 +432,7 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         self._apply_strip_styles()
+        self._sync_theme_btn()
 
     def _make_collapse_strip(self, label: str, on_expand) -> QFrame:
         strip = QFrame()
@@ -669,6 +672,9 @@ class ServiceFacade:
     def rebuild_tiktok_pool(self) -> None:
         self._svc.rebuild_tiktok_pool()
 
+    def has_cookie_for(self, platform_url: str) -> bool:
+        return self._svc.has_cookie_for(platform_url)
+
     def get_all_tasks(self):
         return self._svc.get_all_tasks()
 
@@ -681,8 +687,8 @@ class ServiceFacade:
     def search_history(self, q):
         return self._svc.search_history(q)
 
-    def clear_history(self):
-        self._svc.clear_history()
+    def clear_history(self, exclude_ids=None):
+        self._svc.clear_history(exclude_ids=exclude_ids)
 
     def delete_history_entry(self, tid):
         self._svc.delete_history_entry(tid)
@@ -725,6 +731,9 @@ class ServiceFacade:
 
     def check_tiktok_profile_live(self, url: str, on_done, on_error) -> None:
         self._svc.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
+
+    def check_facebook_profile_live(self, url: str, on_done, on_error) -> None:
+        self._svc.check_facebook_profile_live(url=url, on_done=on_done, on_error=on_error)
 
     @property
     def taildrop(self) -> "TaildropService":

@@ -68,6 +68,7 @@ def _self(**over):
         _subs_lang_combo=_Combo(),
         _subs_model_combo=_Combo(),
         _whisper_ok=False,
+        _active_count=0,
         _update_card_selection=MagicMock(),
         _on_codec_change=MagicMock(),
     )

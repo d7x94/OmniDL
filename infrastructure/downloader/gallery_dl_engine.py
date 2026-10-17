@@ -204,25 +204,55 @@ def gallery_dl_url_candidates(url: str) -> list[str]:
     return [f"https://www.facebook.com/media/set/?set=pcb.{story_id}", primary]
 
 
+_DUMP_VIDEO_EXTS = frozenset({"mp4", "webm", "mov", "m4v", "mkv"})
+
+
+def _dump_entries(stdout: str) -> list[list[Any]]:
+    """Message arrays from ``--dump-json``.
+
+    gallery-dl's DataJob writes ONE indented JSON array at exit (each message
+    is ``[type, ...]``); with ``output.jsonl`` it writes one message per line.
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        data = []
+        for raw in stdout.splitlines():
+            try:
+                data.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+    if isinstance(data, list) and data and not isinstance(data[0], list):
+        data = [data]
+    return [e for e in data if isinstance(e, list) and e]
+
+
 def _parse_dump_json(stdout: str) -> list[dict[str, Any]]:
     """Collect the image entries from gallery-dl ``--dump-json`` output.
 
-    gallery-dl emits one JSON array per line:
-        [1, "url", {metadata}]  → type 1 = image URL
-        [0, {...}]              → type 0 = message / count info
+    Message types (extractor/message.py): 2 = directory, 3 = URL
+    (``[3, url, {metadata}]``), -1 = extractor error (see _dump_json_error).
+    Videos (video extension, ``ytdl:`` URL, ``type == "video"``) are skipped: this
+    is the photo-set probe, the yt-dlp pass owns videos.
     """
     items: list[dict[str, Any]] = []
-    for raw in stdout.splitlines():
-        line = raw.strip()
-        if not line.startswith("["):
+    for e in _dump_entries(stdout):
+        if e[0] != 3 or len(e) < 3 or not isinstance(e[2], dict):
             continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
+        url = str(e[1])
+        ext = str(e[2].get("extension") or "").lower() or Path(url.split("?", 1)[0]).suffix[1:].lower()
+        if ext in _DUMP_VIDEO_EXTS or url.startswith("ytdl:") or e[2].get("type") == "video":
             continue
-        if isinstance(obj, list) and len(obj) >= 3 and obj[0] == 1:
-            items.append(obj[2])
+        items.append(e[2])
     return items
+
+
+def _dump_json_error(stdout: str) -> str:
+    """Message of the first ``[-1, {"error", "message"}]`` entry, or ""."""
+    for e in _dump_entries(stdout):
+        if e[0] == -1 and isinstance(e[-1], dict):
+            return str(e[-1].get("message") or e[-1].get("error") or "")
+    return ""
 
 
 def _find_executable() -> Optional[str]:
@@ -303,7 +333,7 @@ def _friendly_error(msg: str) -> str:
         return "login: " + t("err.gdl_login_required")
     if "404" in m or "not found" in m:
         return "not found: " + t("err.not_found")
-    if "429" in m or "rate" in m or "too many" in m:
+    if "429" in m or re.search(r"\brate\b", m) or "too many" in m:  # BUG-GDL-RATE-SUBSTR
         return "blocked: " + t("err.gdl_rate_limited")
     if "gallery-dl" in m and ("not found" in m or "no such" in m):
         return "unsupported url: " + t("err.gdl_not_installed_short")
@@ -568,8 +598,13 @@ class GalleryDlEngine:
             # never saw this setting at all, so users who chose "cookies
             # from browser" (no cookie file) got logged-out gallery-dl runs
             # for Instagram/Twitter/Facebook photo posts.
-            cmd += ["--cookies-from-browser", self._config.cookies_browser]
-            logger.debug("gallery-dl using cookies from browser: %s", self._config.cookies_browser)
+            # BUG-COOKIE-PROFILE-DL: BROWSER[:PROFILE], otherwise gallery-dl
+            # picks a profile itself instead of the one chosen in Settings.
+            _browser_spec = self._config.cookies_browser
+            if self._config.cookies_profile:
+                _browser_spec += f":{self._config.cookies_profile}"
+            cmd += ["--cookies-from-browser", _browser_spec]
+            logger.debug("gallery-dl using cookies from browser: %s", _browser_spec)
 
         if self._config.proxy:
             cmd += ["--proxy", self._config.proxy]
@@ -602,7 +637,8 @@ class GalleryDlEngine:
         try:
             for _gdl_url in gallery_dl_url_candidates(url):
                 cmd = base_cmd + ["--dump-json", "--no-download", _gdl_url]
-                logger.debug("gallery-dl extract_info: %s", cmd)
+                # BUG-GDL-LOG-ARGV: not the argv, it holds --proxy user:pass and the cookie temp path
+                logger.debug("gallery-dl extract_info: %s", _gdl_url)
                 try:
                     result = subprocess.run(
                         cmd,
@@ -637,6 +673,11 @@ class GalleryDlEngine:
 
         if not items:
             stderr = result.stderr.strip() if result else ""
+            # BUG-GDL-DUMP: DataJob reports an extractor failure as a [-1, {...}]
+            # entry with exit code 0 and empty stderr.
+            dump_err = _dump_json_error(result.stdout) if result else ""
+            if dump_err:
+                raise RuntimeError(_friendly_error(dump_err))
             if (result is not None and result.returncode != 0) or stderr:
                 raise RuntimeError(_friendly_error(stderr or "No items found"))
             raise RuntimeError(t("err.gdl_no_content"))
@@ -827,6 +868,25 @@ class GalleryDlEngine:
         if on_progress:
             on_progress(task)
 
+        def _drop_cookie_temp() -> None:
+            if cookie_temp:
+                try:
+                    Path(cookie_temp).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        # BUG-GDL-CANCEL: -q leaves stdout empty, so the kill in the stdout
+        # loop below never runs.  Watch the cancel flag on its own thread.
+        _proc_done = threading.Event()
+
+        def _kill_on_cancel() -> None:
+            while not _proc_done.wait(0.5):
+                if task.is_cancellation_requested:
+                    proc.kill()
+                    return
+
+        threading.Thread(target=_kill_on_cancel, daemon=True).start()
+
         # Drain stderr in a daemon thread to prevent pipe deadlock
         stderr_lines: deque[str] = deque(maxlen=200)
 
@@ -883,12 +943,14 @@ class GalleryDlEngine:
                     logger.debug("gallery-dl downloaded: %s", fp.name)
 
         proc.wait()
+        _proc_done.set()
         stderr_thread.join(timeout=5.0)
 
         # ── Cancel handling ───────────────────────────────────────────────
         if task.is_cancellation_requested:
             from yt_dlp.utils import DownloadError
 
+            _drop_cookie_temp()  # BUG-GDL-COOKIE-LEAK
             raise DownloadError("Cancelled by user")
 
         # ── Error handling ────────────────────────────────────────────────
@@ -898,11 +960,15 @@ class GalleryDlEngine:
         # BUG-FB-POST: for a Facebook feed post this is not yet a failure — the
         # post may hold a video and no photo set at all.  Hold the message and
         # raise it after the yt-dlp pass below only if that finds nothing either.
+        # BUG-GDL-IG-SILENT: a carousel is deferred too, not skipped -- a
+        # login/429 failure with no video rescued below was reported COMPLETED
+        # with nothing saved.
         _deferred_err = ""
-        if proc.returncode != 0 and not downloaded_files and not _is_ig_carousel:
+        if proc.returncode != 0 and not downloaded_files:
             err = "\n".join(ln for ln in stderr_lines if ln and not ln.startswith("[debug]"))
             _deferred_err = _friendly_error(err or "gallery-dl exit code non-zero")
-            if not _is_fb_post:
+            if not (_is_fb_post or _is_ig_carousel):
+                _drop_cookie_temp()  # BUG-GDL-COOKIE-LEAK
                 raise RuntimeError(_deferred_err)
             logger.info("gallery-dl found no photo set for %s — trying the yt-dlp video pass", _gdl_url)
 

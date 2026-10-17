@@ -96,17 +96,46 @@ class TestAnalyseCacheEviction:
     def test_size_cap_drops_oldest_first(self):
         base = time.monotonic()
         for i in range(srv._ANALYSE_CACHE_MAX_ENTRIES + 5):
+            done = threading.Event()
+            done.set()
             srv._analyse_cache[f"https://example.com/{i}"] = {
-                "done": threading.Event(),
-                "result": {},
-                "ts": 0.0,
+                "done": done,
+                "result": {"info": object()},
+                "ts": time.monotonic(),
                 "created": base + i,
-                "refs": 1,
+                "refs": 0,
             }
         srv._analyse_cache_cleanup()
         assert len(srv._analyse_cache) == srv._ANALYSE_CACHE_MAX_ENTRIES
         assert "https://example.com/0" not in srv._analyse_cache
         assert f"https://example.com/{srv._ANALYSE_CACHE_MAX_ENTRIES + 4}" in srv._analyse_cache
+
+    def test_size_cap_never_evicts_an_in_flight_entry(self):
+        """An in-flight job (not done, or refs > 0) must survive the overflow
+        cap even when it's the oldest entry: a concurrent SSE stream already
+        holds a direct reference and keeps working, but removing it from the
+        dict breaks dedup — the next request for the same URL would spawn a
+        duplicate extract instead of attaching to this one."""
+        base = time.monotonic()
+        srv._analyse_cache["https://example.com/in-flight"] = {
+            "done": threading.Event(),  # not set — job still running
+            "result": {},
+            "ts": 0.0,
+            "created": base - 10.0,  # oldest, but well under _ANALYSE_CACHE_MAX_AGE
+            "refs": 1,
+        }
+        for i in range(srv._ANALYSE_CACHE_MAX_ENTRIES + 5):
+            done = threading.Event()
+            done.set()
+            srv._analyse_cache[f"https://example.com/{i}"] = {
+                "done": done,
+                "result": {"info": object()},
+                "ts": time.monotonic(),
+                "created": base + i,
+                "refs": 0,
+            }
+        srv._analyse_cache_cleanup()
+        assert "https://example.com/in-flight" in srv._analyse_cache
 
     def test_refs_incremented_inside_the_generator(self):
         app = _make_app()

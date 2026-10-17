@@ -39,6 +39,7 @@ class Toolbar(QWidget):
         self._spinner_idx = 0
         self._analyse_token = 0
         self._current_cancel: Optional[threading.Event] = None
+        self._current_analysing_url = ""
 
         self.setFixedHeight(68)
         self._build()
@@ -241,11 +242,15 @@ class Toolbar(QWidget):
         _m = _CLIPBOARD_URL_RE.search(raw)
         url = _m.group(0).rstrip("".join(_URL_TRAILING_JUNK)) if _m else raw
 
+        if self._analysing and url == self._current_analysing_url:
+            return
+
         if self._current_cancel is not None:
             self._current_cancel.set()
             self._current_cancel = None
 
         self._analysing = True
+        self._current_analysing_url = url
         self._analyse_token += 1
         my_token = self._analyse_token
 
@@ -261,14 +266,15 @@ class Toolbar(QWidget):
             home.on_analysis_start()
 
         def _safe_done(info) -> None:
+            # A stale callback must not touch shared state — a newer analysis
+            # (different token) may already be in flight and owns _analysing /
+            # _current_cancel / _stop_btn now.
             if my_token != self._analyse_token:
-                ui_bridge.post(self._reset_btn)
                 return
             ui_bridge.post(lambda: self._on_done(info))
 
         def _safe_error(err: str) -> None:
             if my_token != self._analyse_token:
-                ui_bridge.post(self._reset_btn)
                 return
             ui_bridge.post(lambda: self._on_error(err))
 
@@ -277,6 +283,8 @@ class Toolbar(QWidget):
             self._current_cancel = cancel_event
         except Exception:
             self._reset_btn()
+            if home:
+                home.clear_result()
 
     def _cancel_analyse(self) -> None:
         if self._current_cancel is not None:
@@ -285,6 +293,9 @@ class Toolbar(QWidget):
         self._analyse_token += 1
         self._set_status(t("toolbar.status.cancelled"), T.text3)
         self._reset_btn()
+        home = self._app.get_tab("home")
+        if home:
+            home.clear_result()
 
     def _on_done(self, info) -> None:
         self._spinner_timer.stop()
@@ -324,7 +335,7 @@ class Toolbar(QWidget):
             self._spinner_timer.stop()
             return
         frame = _SPINNER[self._spinner_idx % len(_SPINNER)]
-        self._analyse_btn.setText(f'{frame} {t("toolbar.analysing")}')
+        self._analyse_btn.setText(f"{frame} {t('toolbar.analysing')}")
         self._spinner_idx += 1
 
     # ── Helpers ───────────────────────────────────────────────────────────

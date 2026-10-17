@@ -237,7 +237,17 @@ def _analyse_cache_cleanup() -> None:
 
     overflow = len(_analyse_cache) - _ANALYSE_CACHE_MAX_ENTRIES
     if overflow > 0:
-        oldest = sorted(_analyse_cache, key=lambda k: _analyse_cache[k].get("created", 0.0))
+        # Only evict completed, unreferenced entries here — an in-flight job
+        # (refs > 0, or still running) must not be evicted just for being
+        # the oldest: a concurrent SSE stream already holds a direct
+        # reference to its entry and keeps working, but removing it from
+        # the dict breaks deduplication, so the next request for the same
+        # URL spawns a duplicate extract instead of attaching to this one.
+        # _ANALYSE_CACHE_MAX_AGE above already bounds a stuck entry's
+        # lifetime regardless of refs, so it's fine to stay over the soft
+        # cap while every entry is still in flight.
+        evictable = [k for k, v in _analyse_cache.items() if v["done"].is_set() and v.get("refs", 0) == 0]
+        oldest = sorted(evictable, key=lambda k: _analyse_cache[k].get("created", 0.0))
         for k in oldest[:overflow]:
             del _analyse_cache[k]
 
@@ -246,6 +256,7 @@ def _analyse_cache_cleanup() -> None:
 _active_server: "uvicorn.Server | None" = None  # type: ignore[name-defined]
 _active_thread: threading.Thread | None = None
 _active_monitor: "LiveMonitorService | None" = None  # stopped on restart/shutdown
+_active_remote_convert: "RemoteConvertService | None" = None  # stopped on restart/shutdown
 _server_lock = threading.Lock()  # guards _active_server / _active_thread
 _bus_wired = False  # BUG-CB: prevent duplicate subscriptions on restart
 # (bus, event, handler) recorded by _wire_event_bus so _unwire_bus can undo it.
@@ -622,7 +633,7 @@ def create_app(
             result["error"] = err
             done.set()
 
-        service.analyse_url(body.url, on_done=on_done, on_error=on_error)
+        cancel = service.analyse_url(body.url, on_done=on_done, on_error=on_error)
         # Poll instead of done.wait(): a blocking wait here would freeze the
         # entire event loop (every endpoint + SSE) for up to 180 s.
         deadline = time.monotonic() + 180.0
@@ -631,11 +642,13 @@ def create_app(
             # Without this the handler polls for the full 180 s after the
             # client is gone, holding result + its threading.Event alive.
             if await request.is_disconnected():
+                cancel.set()
                 raise HTTPException(status_code=499, detail="Client disconnected")
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         if "info" not in result:
+            cancel.set()
             raise HTTPException(status_code=408, detail="Analysis timed out after 180 s")
 
         info: MediaInfo = result["info"]
@@ -674,10 +687,14 @@ def create_app(
         then sends a single "result" or "error_result" event and closes.
         """
         # Validate + normalise URL (strips share text, trailing punctuation).
+        # BUG-API-CDP-GUARD: same CDP-only check as POST /api/analyse, reported
+        # as an error_result frame like every other analyse failure here.
         try:
             req = AnalyseRequest(url=url)
+            _exc_msg = cdp_only_reason(req.url)
         except Exception as exc:
             _exc_msg = str(exc)
+        if _exc_msg:
 
             def _invalid() -> Generator[str, None, None]:
                 payload = json.dumps({"detail": _exc_msg})
@@ -748,9 +765,9 @@ def create_app(
             # never iterate this generator when the client drops early, and the
             # matching decrement lives in the finally below.  Registering
             # outside would leave refs stuck above zero and pin the MediaInfo.
-            timed_out = False
             with _analyse_cache_lock:
                 entry["refs"] += 1
+            timed_out = False
             try:
                 done = entry["done"]
                 result = entry["result"]
@@ -814,9 +831,8 @@ def create_app(
                     # over-age / overflowing entries even while refs > 0, so this
                     # key may already hold a *newer* in-flight job.  Popping by
                     # key alone would evict that one and force a duplicate extract.
-                    # A job that is still running is kept: the PWA reconnects after
-                    # an EventSource drop and must attach to it, not start a
-                    # duplicate extract.
+                    # A client that drops mid-extract leaves the job running:
+                    # keep the entry unless it finished or hit the deadline.
                     if (
                         entry["refs"] == 0
                         and "info" not in entry.get("result", {})
@@ -850,6 +866,10 @@ def create_app(
         the client can distinguish clipboard-triggered requests from manual
         ones (e.g. to show a different toast or auto-queue immediately).
         """
+        _cdp_reason = cdp_only_reason(body.url)  # BUG-API-CDP-GUARD
+        if _cdp_reason:
+            raise HTTPException(status_code=400, detail=_cdp_reason)
+
         result: dict = {}
         done = threading.Event()
 
@@ -861,7 +881,7 @@ def create_app(
             result["error"] = err
             done.set()
 
-        service.analyse_url(body.url, on_done=on_done, on_error=on_error)
+        cancel = service.analyse_url(body.url, on_done=on_done, on_error=on_error)
         # Poll instead of done.wait(): a blocking wait here would freeze the
         # entire event loop (every endpoint + SSE) for up to 180 s.
         deadline = time.monotonic() + 180.0
@@ -870,11 +890,13 @@ def create_app(
             # Without this the handler polls for the full 180 s after the
             # client is gone, holding result + its threading.Event alive.
             if await request.is_disconnected():
+                cancel.set()
                 raise HTTPException(status_code=499, detail="Client disconnected")
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
         if "info" not in result:
+            cancel.set()
             raise HTTPException(status_code=408, detail="Analysis timed out after 180 s")
 
         info: MediaInfo = result["info"]
@@ -972,7 +994,9 @@ def create_app(
         response_model=BatchDownloadResponse,
         summary="Enqueue many downloads in one call (Batch tab)",
     )
-    async def start_download_batch(body: BatchDownloadRequest, _: None = Depends(_require_auth)):
+    def start_download_batch(body: BatchDownloadRequest, _: None = Depends(_require_auth)):
+        # Plain def: FastAPI runs it in the threadpool, so up to 500 sync
+        # _enqueue_download calls (mkdir, task scan) never block the event loop.
         """
         Enqueue up to MAX_BATCH_ITEMS jobs at once.
 
@@ -1054,7 +1078,11 @@ def create_app(
         if remote_convert is None:
             return frozenset()
         _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
-        return frozenset(j.source_task_id for j in remote_convert.get_all_jobs() if j.status in _ACTIVE)
+        return frozenset(
+            j.source_task_id
+            for j in remote_convert.get_all_jobs()
+            if j.status in _ACTIVE and j.source_task_id
+        )
 
     @app.delete("/api/queue/items")
     async def clear_selected_items(
@@ -1225,8 +1253,11 @@ def create_app(
                 except OSError as exc:
                     errors.append(f"{fp.name}: {exc.strerror}")
             if errors:
+                # Same file-lock case as the single-file branch below: Windows
+                # keeps a hard lock while another process still has a file
+                # open, so this is a transient 409, not an unhandled 500.
                 raise HTTPException(
-                    status_code=500,
+                    status_code=409,
                     detail=f"Partial delete — could not remove: {'; '.join(errors[:3])}",
                 )
             # Remove directory only if now empty
@@ -1247,8 +1278,9 @@ def create_app(
                     status_code=409,
                     detail=f"Could not delete {file_path.name}: {exc.strerror or exc}",
                 ) from exc
-        # Clear filename on the task so the UI knows the file is gone.
+        # Clear the task and its history row so the UI knows the file is gone.
         task.filename = ""
+        service.clear_file_record(file_path)
         logger.info("Remote API: deleted file '%s' for task %s", file_path.name, task_id)
 
         return FileActionResponse(
@@ -1335,11 +1367,21 @@ def create_app(
             or mimetypes.guess_type(file_path.name)[0]
             or "application/octet-stream"
         )
+        # Active content (HTML/SVG/XML) served inline would execute in the
+        # API's own origin, where the PWA keeps the bearer token — a stored
+        # XSS for any such file (e.g. the .html the document converter
+        # writes from an arbitrary Markdown/PDF source). Same guard as
+        # GET /api/files/serve; hand those over as an opaque download
+        # instead, media previews are unaffected.
+        disposition = "inline"
+        if file_path.suffix.lower() in _ACTIVE_CONTENT_EXTS:
+            media_type = "application/octet-stream"
+            disposition = "attachment"
         return FileResponse(
             path=str(file_path),
             media_type=media_type,
             filename=file_path.name,
-            content_disposition_type="inline",
+            content_disposition_type=disposition,
             headers={"Accept-Ranges": "bytes"},
         )
 
@@ -1714,16 +1756,22 @@ def create_app(
         job = remote_convert.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Convert job not found")
-        if job.status != "COMPLETED":
+        # Atomic read: the conversion worker thread mutates status,
+        # output_filename and subtitle_filename together (e.g. clearing
+        # output_filename back out on a concurrent delete). Reading them as
+        # separate unguarded attribute accesses could observe a status from
+        # one moment and a filename from another.
+        snap = job.snapshot()
+        if snap["status"] != "COMPLETED":
             raise HTTPException(status_code=400, detail="Conversion not completed yet")
 
         if kind == "srt":
-            raw = job.subtitle_filename
+            raw = snap["subtitle_filename"]
             if not raw:
                 raise HTTPException(status_code=404, detail="No subtitles were generated for this job")
             media_type, disposition = "text/plain; charset=utf-8", "attachment"
         else:
-            raw = job.output_filename
+            raw = snap["output_filename"]
             # A subtitles-only job has no video output: Path("").resolve() is the
             # server's CWD, which then failed the download_dir check and came back
             # as a misleading 403 instead of "there is nothing to preview".
@@ -1855,7 +1903,10 @@ def create_app(
 
     @app.delete("/api/history/{task_id}", summary="Delete a single history entry")
     async def delete_history_entry(task_id: str, _: None = Depends(_require_auth)):
-        service.delete_history_entry(task_id)
+        # HistoryRepository.remove() rewrites the whole history file to disk
+        # synchronously (temp file + backup + atomic replace) — offload so it
+        # cannot stall the event loop for every other connected client.
+        await asyncio.to_thread(service.delete_history_entry, task_id)
         return {"deleted": task_id}
 
     # ── File Browser ──────────────────────────────────────────────────────
@@ -2170,7 +2221,18 @@ def create_app(
             else:
                 shutil.rmtree(target)
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=exc.strerror) from exc
+            # shutil.rmtree() can fail partway through a directory: most
+            # files are already gone by the time it hits one Windows still
+            # has locked. Clear records for whatever was actually removed
+            # before re-raising, or every task/history entry under target
+            # keeps pointing at a path that's gone — same dead-404 problem
+            # this whole block exists to prevent, just silently on the
+            # failure path.
+            service.clear_file_record(target)
+            # Same file-lock case as DELETE /api/queue/{task_id}/file: Windows
+            # keeps a hard lock while another process still has the file
+            # open, so this is a transient 409, not an unhandled 500.
+            raise HTTPException(status_code=409, detail=exc.strerror or str(exc)) from exc
 
         # A queued task or a history entry may point at what we just removed.
         # Leaving those records on a dead path makes the Queue / History cards
@@ -2257,7 +2319,10 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             except OSError as exc:
-                raise HTTPException(status_code=500, detail=exc.strerror) from exc
+                # Same file-lock case as POST /api/queue/{task_id}/rename.
+                raise HTTPException(
+                    status_code=409, detail=f"Could not rename: {exc.strerror or exc}"
+                ) from exc
             logger.info("Remote API: renamed '%s' to '%s'", old_path.name, Path(new_name_str).name)
             return FileRenameByPathResponse(
                 path=new_name_str,
@@ -2279,7 +2344,10 @@ def create_app(
             try:
                 old_path.rename(new_path)
             except OSError as exc:
-                raise HTTPException(status_code=500, detail=exc.strerror) from exc
+                # Same file-lock case as above.
+                raise HTTPException(
+                    status_code=409, detail=f"Could not rename: {exc.strerror or exc}"
+                ) from exc
 
         logger.info("Remote API: renamed '%s' to '%s'", old_path.name, new_path.name)
         return FileRenameByPathResponse(
@@ -2848,6 +2916,22 @@ def is_api_running() -> bool:
         return _active_thread is not None and _active_thread.is_alive()
 
 
+def tasks_with_active_convert() -> frozenset[str]:
+    """Task IDs that still have a PENDING / CONVERTING remote convert job.
+
+    Safe to call whether or not the API server is running — returns an empty
+    set when it isn't. Shared by the API's own clear routes and the desktop
+    QueueTab, so clearing a task from either side never orphans a running
+    FFmpeg job started through the Remote API.
+    """
+    with _server_lock:
+        rc = _active_remote_convert
+    if rc is None:
+        return frozenset()
+    _ACTIVE = {ConversionStatus.PENDING, ConversionStatus.CONVERTING}
+    return frozenset(j.source_task_id for j in rc.get_all_jobs() if j.status in _ACTIVE and j.source_task_id)
+
+
 def stop_api_server(timeout: float = 8.0) -> None:
     """Gracefully stop the running API server.
 
@@ -2860,7 +2944,7 @@ def stop_api_server(timeout: float = 8.0) -> None:
     # take >4s to drain its completion queue during shutdown, causing the
     # socket to remain bound when restart_api_server() tries to rebind
     # immediately after → [Errno 10048] address already in use.
-    global _active_server, _active_thread, _active_monitor
+    global _active_server, _active_thread, _active_monitor, _active_remote_convert
 
     with _server_lock:
         srv = _active_server
@@ -2869,6 +2953,7 @@ def stop_api_server(timeout: float = 8.0) -> None:
         _active_server = None
         _active_thread = None
         _active_monitor = None
+        _active_remote_convert = None
 
     if mon is not None:
         mon.stop()
@@ -2989,6 +3074,9 @@ def start_api_server(
         _bus_wired = True
 
     app = create_app(service, config, remote_convert=remote_convert, live_monitor=live_monitor)
+
+    global _active_remote_convert
+    _active_remote_convert = remote_convert
 
     try:
         import uvicorn

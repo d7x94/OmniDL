@@ -88,6 +88,8 @@ class BatchTab(QWidget):
         self._spinner_idx: int = 0
         self._spinner_token: int | None = None
         self._seq_queue: list[_BatchItem] = []
+        self._seq_failed: int = 0
+        self._seq_ok: int = 0
         self._seq_current_task_id: str | None = None
         self._seq_timer: QTimer | None = None
         self._empty_lbl: QLabel | None = None
@@ -364,7 +366,7 @@ class BatchTab(QWidget):
             self._url_count_lbl.setText(t("batch.url_count", count=count))
         # Typing while a pass runs must not re-enable Analyse: the button still
         # reads "Analysing…", and clicking it threw away every finished row.
-        if self._analysing_count == 0:
+        if self._analysing_count == 0 and not self._seq_running():
             self._analyse_btn.setEnabled(count > 0)
 
     def _parse_textarea(self) -> list[str]:
@@ -446,6 +448,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setText(t("batch.analysing_dots"))
         self._cancel_btn.setVisible(True)
         self._queue_all_btn.setEnabled(False)
+        self._refresh_retry_btn()
         self._set_status(None)
 
         self._rebuild_results_ui()
@@ -466,9 +469,7 @@ class BatchTab(QWidget):
         pending.state = _ItemState.ANALYSING
         self._refresh_item_ui(pending)
         self._analysing_count += 1
-        _done = sum(
-            1 for i in self._items if i.state not in (_ItemState.PENDING, _ItemState.ANALYSING)
-        )
+        _done = sum(1 for i in self._items if i.state not in (_ItemState.PENDING, _ItemState.ANALYSING))
         _total = len(self._items)
         self._set_status(
             lambda d=_done, tot=_total: (
@@ -516,9 +517,9 @@ class BatchTab(QWidget):
         if token != self._batch_token:
             return
         if item not in self._items:
-            # Removed mid-analysis: _remove_item already gave the slot back, so
-            # decrementing again would push the count negative and leave
-            # _tick_spinner rescheduling itself every 100 ms forever.
+            # Removed mid-analysis: _remove_item left the count untouched, so the
+            # real completion (here) is what frees the slot.
+            self._analysing_count -= 1
             self._analyse_next(token)
             return
         self._analysing_count -= 1
@@ -532,6 +533,9 @@ class BatchTab(QWidget):
         if token != self._batch_token:
             return
         if item not in self._items:
+            # Removed mid-analysis: _remove_item left the count untouched, so the
+            # real completion (here) is what frees the slot.
+            self._analysing_count -= 1
             self._analyse_next(token)
             return
         self._analysing_count -= 1
@@ -552,13 +556,13 @@ class BatchTab(QWidget):
         self._analyse_btn.setEnabled(True)
         self._analyse_btn.setText(t("batch.analyse_again"))
 
-        if errors > 0:
-            self._retry_btn.setEnabled(True)
-            self._retry_btn.setText(t("batch.retry_count", count=errors))
-        else:
-            self._retry_btn.setEnabled(False)
-            self._retry_btn.setText(t("batch.retry_errors"))
+        self._refresh_retry_btn()
 
+        if not self._items:
+            # Every row was removed mid-pass: back to idle, not "no valid URLs".
+            self._set_status(None)
+            self._queue_all_btn.setEnabled(False)
+            return
         if ready == 0:
             self._set_status(lambda: (t("batch.no_valid_urls", errors=errors), T.error_text))
             self._queue_all_btn.setEnabled(False)
@@ -660,6 +664,7 @@ class BatchTab(QWidget):
             f"background: transparent; color: {T.text3}; border: none; border-radius: 6px;"
         )
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setToolTip(t("batch.remove_item_tooltip"))
         remove_btn.clicked.connect(lambda _=False, i=item: self._remove_item(i))
         row_layout.addWidget(remove_btn)
         item.remove_btn = remove_btn
@@ -698,6 +703,11 @@ class BatchTab(QWidget):
                 item.platform_lbl.setText(item.media_info.platform)
             if item.check_box:
                 item.check_box.setEnabled(True)
+                # The ERROR branch unticked the box; a retried row comes back
+                # with checked=True in the model, so the box must follow it.
+                item.check_box.blockSignals(True)
+                item.check_box.setChecked(item.checked)
+                item.check_box.blockSignals(False)
 
         elif state == _ItemState.ERROR:
             item.row_frame.setStyleSheet(f"QFrame {{ background-color: {T.error_bg}; border-radius: 12px; }}")
@@ -756,17 +766,37 @@ class BatchTab(QWidget):
         self._sync_select_all_state()
 
     def _update_queue_btn_count(self) -> None:
+        if self._seq_running():
+            # The last item is still downloading after _seq_queue emptied: keep
+            # Queue All locked and its progress label intact until the run ends.
+            return
         ready = sum(1 for i in self._items if i.state == _ItemState.READY and i.checked)
         if ready == 0:
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.queue_all"))
+        elif self._analysing_count > 0 or self._seq_queue:
+            # Analysing or a sequential run is in progress: don't let a checkbox
+            # toggle re-enable Queue All out from under it.
+            self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))
         else:
             self._queue_all_btn.setEnabled(True)
             self._queue_all_btn.setText(t("batch.queue_add_count", count=ready))
 
+    def _refresh_retry_btn(self) -> None:
+        # Recount from the rows every time: removing an ERROR row or a failed
+        # Queue All submission changes the count, and a stale "Retry N" label
+        # either clicked into nothing or hid a row that could be retried.
+        errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
+        self._retry_btn.setEnabled(errors > 0 and self._analysing_count == 0 and not self._seq_running())
+        self._retry_btn.setText(t("batch.retry_count", count=errors) if errors else t("batch.retry_errors"))
+
     def _remove_item(self, item: _BatchItem) -> None:
-        if item.state == _ItemState.ANALYSING and self._analysing_count > 0:
-            self._analysing_count -= 1
+        # Don't touch _analysing_count here even if item.state is ANALYSING: its
+        # worker thread is still running and will call _on_item_done/_on_item_error
+        # once it finishes, which is where the count must actually drop (see the
+        # "item not in self._items" branch there). Decrementing here too would
+        # make the count hit 0 while the analysis is still in flight, so Cancel
+        # would look like a no-op and Queue All would re-enable mid-pass.
         if item.row_frame:
             self._items_layout.removeWidget(item.row_frame)
             item.row_frame.deleteLater()
@@ -782,7 +812,10 @@ class BatchTab(QWidget):
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.queue_all"))
             self._set_status(None)
+            self._select_all_chk.setVisible(False)
+            self._sequential_chk.setVisible(False)
         self._update_queue_btn_count()
+        self._refresh_retry_btn()
 
     # ── Queue All ─────────────────────────────────────────────────────────────
 
@@ -797,8 +830,13 @@ class BatchTab(QWidget):
 
         if self._sequential_chk.isChecked():
             self._seq_queue = to_submit[:]
+            self._seq_failed = 0
+            self._seq_ok = 0
             self._queue_all_btn.setEnabled(False)
             self._queue_all_btn.setText(t("batch.downloading_sequential"))
+            # Retry and Analyse both clear _seq_queue: locked until the run ends.
+            self._analyse_btn.setEnabled(False)
+            self._retry_btn.setEnabled(False)
             _n = len(to_submit)
             self._set_status(lambda: (t("batch.sequential_status", count=_n), T.text3))
             self._submit_next_sequential(format_id, output_ext)
@@ -842,13 +880,27 @@ class BatchTab(QWidget):
             item.error_msg = str(exc)[:80]
             item.checked = False
             self._refresh_item_ui(item)
+            self._refresh_retry_btn()
             return None
 
     def _submit_next_sequential(self, format_id: str = "", output_ext: str = "") -> None:
         if not self._seq_queue:
             self._stop_seq_timer()
+            self._analyse_btn.setEnabled(bool(self._parse_textarea()))
+            self._refresh_retry_btn()
+            if self._seq_ok == 0:
+                # Every submission raised: same outcome as the parallel path,
+                # not a green "done" over a list of red rows.
+                failed = self._seq_failed
+                self._app.toast(t("batch.queue_all_failed", count=failed), "error")
+                self._set_status(lambda: (t("batch.queue_all_failed", count=failed), T.error_text))
+                self._update_queue_btn_count()
+                return
             self._queue_all_btn.setText(t("batch.sequential_done_btn"))
             self._set_status(lambda: (t("batch.sequential_done_status"), T.success_text))
+            # Rows ticked mid-run were skipped by the run-time lock: count them now.
+            if any(i.state == _ItemState.READY and i.checked for i in self._items):
+                self._update_queue_btn_count()
             return
 
         if not format_id:
@@ -857,18 +909,26 @@ class BatchTab(QWidget):
             output_ext = self._format_combo.currentText()
 
         item = self._seq_queue.pop(0)
+        # Timer first so _seq_running() already holds while this item is submitted.
+        self._start_seq_timer()
         task_id = self._submit_one(item, format_id, output_ext)
+        if task_id:
+            self._seq_ok += 1
+        else:
+            self._seq_failed += 1
         self._seq_current_task_id = task_id
         remaining = len(self._seq_queue)
         if remaining:
             self._app.toast(t("batch.sequential_toast", remaining=remaining), "info")
-        self._start_seq_timer()
 
     def _start_seq_timer(self) -> None:
         if self._seq_timer is None:
             self._seq_timer = QTimer(self)
             self._seq_timer.timeout.connect(self._tick_sequential)
         self._seq_timer.start(2000)
+
+    def _seq_running(self) -> bool:
+        return self._seq_timer is not None and self._seq_timer.isActive()
 
     def _stop_seq_timer(self) -> None:
         if self._seq_timer:
@@ -896,6 +956,11 @@ class BatchTab(QWidget):
 
         self._stop_seq_timer()
         self._seq_queue.clear()
+
+        for item in self._items:
+            if item.state == _ItemState.ANALYSING:
+                item.state = _ItemState.PENDING
+                self._refresh_item_ui(item)
 
         for item in error_items:
             item.state = _ItemState.PENDING
@@ -940,11 +1005,7 @@ class BatchTab(QWidget):
         self._analyse_btn.setEnabled(bool(self._parse_textarea()))
         self._analyse_btn.setText(t("toolbar.analyse"))
 
-        errors = sum(1 for i in self._items if i.state == _ItemState.ERROR)
-        self._retry_btn.setEnabled(errors > 0)
-        self._retry_btn.setText(
-            t("batch.retry_count", count=errors) if errors else t("batch.retry_errors")
-        )
+        self._refresh_retry_btn()
 
         self._set_status(lambda: (t("batch.analyse_stopped"), T.text3))
         self._update_queue_btn_count()
@@ -1016,6 +1077,11 @@ class BatchTab(QWidget):
         self._format_lbl.setText(t("archive.format_label"))
         if self._empty_lbl is not None and not self._items:
             self._empty_lbl.setText(t("batch.empty"))
+        count = len(self._parse_textarea())
+        if count > MAX_BATCH_URLS:
+            self._url_count_lbl.setText(t("batch.url_count_capped", count=count, max=MAX_BATCH_URLS))
+        elif count:
+            self._url_count_lbl.setText(t("batch.url_count", count=count))
         self._render_status()
 
         # Buttons carry transient, state-dependent text (analysing spinner,
@@ -1037,4 +1103,6 @@ class BatchTab(QWidget):
             )
 
         for item in self._items:
+            if item.remove_btn:
+                item.remove_btn.setToolTip(t("batch.remove_item_tooltip"))
             self._refresh_item_ui(item)

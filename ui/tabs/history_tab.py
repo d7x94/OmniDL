@@ -38,8 +38,9 @@ _STATUS_TOKENS = {
     "COMPLETED": ("success", "success_bg"),
     "FAILED": ("error", "error_bg"),
     "CANCELLED": ("text3", "surface2"),
+    "PARTIAL_SAVED": ("warning", "warning_bg"),
 }
-_FILTER_STATUSES = ["All", "COMPLETED", "FAILED", "CANCELLED"]
+_FILTER_STATUSES = ["All", "COMPLETED", "FAILED", "CANCELLED", "PARTIAL_SAVED"]
 
 
 def _status_label(status: str) -> str:
@@ -48,6 +49,7 @@ def _status_label(status: str) -> str:
         "COMPLETED": t("history.status.completed"),
         "FAILED": t("history.status.failed"),
         "CANCELLED": t("history.status.cancelled"),
+        "PARTIAL_SAVED": t("item.status.partial"),
     }.get(status, status)
 
 
@@ -80,6 +82,7 @@ class HistoryTab(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self.refresh)
         self._build()
+        T.register(self._on_theme)
 
         from PySide6.QtCore import QPropertyAnimation
         from PySide6.QtWidgets import QGraphicsOpacityEffect
@@ -109,9 +112,7 @@ class HistoryTab(QWidget):
 
         self._clear_btn = QPushButton(t("history.clear_all"))
         self._clear_btn.setFixedHeight(32)
-        self._clear_btn.setStyleSheet(
-            f"background: {T.error_bg}; color: {T.error}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 14px;"
-        )
+        self._style_clear_btn()
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_btn.clicked.connect(self._clear_all)
         hdr_layout.addWidget(self._clear_btn)
@@ -155,6 +156,15 @@ class HistoryTab(QWidget):
 
         scroll.setWidget(self._scroll_content)
         layout.addWidget(scroll, 1)
+
+    def _style_clear_btn(self) -> None:
+        self._clear_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 14px;"
+        )
+
+    def _on_theme(self) -> None:
+        self._style_clear_btn()
+        self.refresh()
 
     def _on_search_change(self) -> None:
         self._debounce.start(300)
@@ -303,7 +313,8 @@ class HistoryTab(QWidget):
             open_btn.clicked.connect(lambda _=False, tid=task_id: self._open_file(tid))
             bot.addWidget(open_btn)
 
-            if not Path(fname).is_dir():
+            p = self._entry_path(task_id)
+            if p is None or not p.is_dir():
                 ren_btn = QPushButton(t("history.rename"))
                 ren_btn.setFixedSize(64, 28)
                 ren_btn.setStyleSheet(f"background: {T.surface2}; color: {T.text2}; {_btn_ss}")
@@ -399,7 +410,13 @@ class HistoryTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._app.service.clear_history()
+            try:
+                from api.server import tasks_with_active_convert
+
+                exclude = tasks_with_active_convert()
+            except ImportError:
+                exclude = frozenset()
+            self._app.service.clear_history(exclude_ids=exclude or None)
             self.refresh()
 
     def showEvent(self, event) -> None:

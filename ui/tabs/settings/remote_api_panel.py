@@ -46,7 +46,13 @@ def _pick_bindable_port(lo: int = 50000, hi: int = 65000) -> int:
 class RemoteApiPanel(_BasePanel):
     def __init__(self, master, app: "MainWindow") -> None:
         super().__init__(master, app)
+        self._api_busy = 0
         self._build()
+
+    def _api_busy_changed(self, delta: int) -> None:
+        self._api_busy += delta
+        for w in (self._api_switch, self._api_rotate_btn, self._ts_https_switch, self._ts_https_reset_btn):
+            w.setEnabled(self._api_busy == 0)
 
     def _build(self) -> None:
         cfg = self._app.config
@@ -239,6 +245,7 @@ class RemoteApiPanel(_BasePanel):
         cfg = self._app.config
         cfg.set("api_enabled", enabled)
         cfg.save()
+        self._api_busy_changed(1)
         if enabled:
             try:
                 from api.server import is_api_running, start_api_server
@@ -247,8 +254,14 @@ class RemoteApiPanel(_BasePanel):
                 svc = getattr(self._app, "_service", None)
                 if svc is None:
                     raise RuntimeError("DownloadService reference not found on MainWindow")
+                started = True
                 if not is_api_running():
-                    start_api_server(service=svc, config=cfg, bus=_bus)
+                    started = start_api_server(service=svc, config=cfg, bus=_bus) is not None
+                if not started:
+                    # BUG: start_api_server() returning None (missing token,
+                    # no free port, api_enabled race) used to be treated as
+                    # success — the switch stayed on with a success toast.
+                    raise RuntimeError("API server did not start")
                 QTimer.singleShot(400, self._refresh_api_status_label)
                 self._app.toast(t("settings.api.enabled_toast"), "success")
             except ImportError:
@@ -265,15 +278,28 @@ class RemoteApiPanel(_BasePanel):
                 cfg.save()
                 self._refresh_api_status_label()
                 self._app.toast(t("settings.api.start_error", err=f"{exc!s:.60}"), "error")
+            finally:
+                self._api_busy_changed(-1)
         else:
-            try:
-                from api.server import stop_api_server
 
-                threading.Thread(target=stop_api_server, daemon=True, name="omnidl-api-stop").start()
-            except ImportError:
-                pass
-            QTimer.singleShot(600, self._refresh_api_status_label)
-            self._app.toast(t("settings.api.disabled_toast"), "info")
+            def _stop_worker() -> None:
+                try:
+                    from api.server import stop_api_server
+
+                    stop_api_server()
+                except ImportError:
+                    pass
+                except Exception as exc:
+                    logger.exception("Failed to stop API server from Settings: %s", exc)
+                finally:
+                    # BUG: the off path used to toast "disabled" and refresh
+                    # the status label immediately, before the stop thread
+                    # (and a fast re-enable click) had actually finished.
+                    ui_bridge.post(self._refresh_api_status_label)
+                    ui_bridge.post(lambda: self._app.toast(t("settings.api.disabled_toast"), "info"))
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
+
+            threading.Thread(target=_stop_worker, daemon=True, name="omnidl-api-stop").start()
 
     def _on_api_copy_token(self) -> None:
         tok = str(getattr(self._app.config, "api_token", "") or "")
@@ -313,6 +339,7 @@ class RemoteApiPanel(_BasePanel):
 
         if was_running:
             self._app.toast(t("settings.api.restarting_toast"), "info")
+            self._api_busy_changed(1)
 
             def _do_restart():
                 try:
@@ -331,6 +358,11 @@ class RemoteApiPanel(_BasePanel):
                             t("settings.api.restart_error", err=f"{e!s:.60}"), "error"
                         )
                     )
+                finally:
+                    # BUG: the button stayed clickable while a restart was
+                    # already in flight, so a second rotate raced the first
+                    # restart_api_server() call for the same port.
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_do_restart, daemon=True, name="omnidl-api-restart").start()
         else:
@@ -400,6 +432,21 @@ class RemoteApiPanel(_BasePanel):
             cfg.save()
             self._refresh_ts_https_status()
             self._app.toast(t("settings.api.setting_up_https"), "info")
+            self._api_busy_changed(1)
+
+            def _rollback_https_disabled() -> None:
+                cfg.set("api_ts_https_enabled", False)
+                cfg.set("api_ts_https_internal_port", 0)
+                cfg.save()
+                try:
+                    from api.server import restart_api_server
+                    from app.event_bus import bus as _bus
+
+                    svc = getattr(self._app, "_service", None)
+                    if svc:
+                        restart_api_server(service=svc, config=cfg, bus=_bus)
+                except Exception as exc:
+                    logger.exception("HTTPS Profile rollback: API restart failed: %s", exc)
 
             def _enable_worker():
                 try:
@@ -411,18 +458,7 @@ class RemoteApiPanel(_BasePanel):
                         cfg.save()
                     ok = start_tailscale_serve(new_port)
                     if not ok:
-                        cfg.set("api_ts_https_enabled", False)
-                        cfg.set("api_ts_https_internal_port", 0)
-                        cfg.save()
-                        try:
-                            from api.server import restart_api_server
-                            from app.event_bus import bus as _bus
-
-                            svc = getattr(self._app, "_service", None)
-                            if svc:
-                                restart_api_server(service=svc, config=cfg, bus=_bus)
-                        except Exception as exc:
-                            logger.exception("HTTPS Profile rollback: API restart failed: %s", exc)
+                        _rollback_https_disabled()
                         hint = t("settings.api.login_hint") if not dns else ""
                         ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
                         ui_bridge.post(self._refresh_ts_https_status)
@@ -438,7 +474,14 @@ class RemoteApiPanel(_BasePanel):
                         if svc:
                             restart_api_server(service=svc, config=cfg, bus=_bus)
                     except Exception as exc:
+                        # BUG: tailscale serve was already up, but a restart
+                        # failure here used to only be logged — the switch
+                        # stayed on and the config kept the new port/flag
+                        # with nothing actually serving behind them.
                         logger.exception("HTTPS Profile: API restart failed: %s", exc)
+                        _rollback_https_disabled()
+                        ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
+                        ui_bridge.post(self._refresh_ts_https_status)
                         ui_bridge.post(
                             lambda e=exc: self._app.toast(
                                 t("settings.api.restart_error", err=f"{e!s:.60}"), "error"
@@ -461,6 +504,8 @@ class RemoteApiPanel(_BasePanel):
                             t("settings.api.setup_error", err=f"{e!s:.60}"), "error"
                         )
                     )
+                finally:
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_enable_worker, daemon=True, name="omnidl-ts-https-enable").start()
 
@@ -471,8 +516,10 @@ class RemoteApiPanel(_BasePanel):
             cfg.save()
             self._refresh_ts_https_status()
             self._app.toast(t("settings.api.disabling_https"), "info")
+            self._api_busy_changed(1)
 
             def _disable_worker():
+                restart_ok = True
                 try:
                     if old_port:
                         from api.tailscale_https import stop_tailscale_serve
@@ -486,9 +533,22 @@ class RemoteApiPanel(_BasePanel):
                         if svc:
                             restart_api_server(service=svc, config=cfg, bus=_bus)
                     except Exception as exc:
+                        restart_ok = False
                         logger.exception("HTTPS Profile disable: API restart error: %s", exc)
                     ui_bridge.post(self._refresh_ts_https_status)
-                    ui_bridge.post(lambda: self._app.toast(t("settings.api.https_disabled_toast"), "info"))
+                    if restart_ok:
+                        ui_bridge.post(
+                            lambda: self._app.toast(t("settings.api.https_disabled_toast"), "info")
+                        )
+                    else:
+                        # BUG: a restart failure here used to be only logged
+                        # — the user got the "disabled" toast while the API
+                        # was actually down.
+                        ui_bridge.post(
+                            lambda: self._app.toast(
+                                t("settings.api.restart_error", err="API restart failed"), "error"
+                            )
+                        )
                 except Exception as exc:
                     logger.exception("HTTPS Profile disable error: %s", exc)
                     ui_bridge.post(
@@ -496,6 +556,8 @@ class RemoteApiPanel(_BasePanel):
                             t("settings.api.disable_error", err=f"{e!s:.60}"), "error"
                         )
                     )
+                finally:
+                    ui_bridge.post(lambda: self._api_busy_changed(-1))
 
             threading.Thread(target=_disable_worker, daemon=True, name="omnidl-ts-https-disable").start()
 
@@ -525,6 +587,22 @@ class RemoteApiPanel(_BasePanel):
         st = self._ts_https_reset_status
         st.setText(t("settings.api.resetting_status"))
         self._app.toast(t("settings.api.resetting_toast"), "info")
+        self._api_busy_changed(1)
+
+        def _rollback_https_disabled() -> None:
+            cfg.set("api_ts_https_enabled", False)
+            cfg.set("api_ts_https_internal_port", 0)
+            cfg.set("api_ts_https_dns_name", "")
+            cfg.save()
+            try:
+                from api.server import restart_api_server
+                from app.event_bus import bus as _bus
+
+                svc = getattr(self._app, "_service", None)
+                if svc:
+                    restart_api_server(service=svc, config=cfg, bus=_bus)
+            except Exception as exc:
+                logger.exception("HTTPS Profile reset rollback: API restart failed: %s", exc)
 
         def _reset_worker():
             try:
@@ -537,19 +615,7 @@ class RemoteApiPanel(_BasePanel):
                 reset_tailscale_serve()
                 ok = start_tailscale_serve(new_port)
                 if not ok:
-                    cfg.set("api_ts_https_enabled", False)
-                    cfg.set("api_ts_https_internal_port", 0)
-                    cfg.set("api_ts_https_dns_name", "")
-                    cfg.save()
-                    try:
-                        from api.server import restart_api_server
-                        from app.event_bus import bus as _bus
-
-                        svc = getattr(self._app, "_service", None)
-                        if svc:
-                            restart_api_server(service=svc, config=cfg, bus=_bus)
-                    except Exception as exc:
-                        logger.exception("HTTPS Profile reset rollback: API restart failed: %s", exc)
+                    _rollback_https_disabled()
                     ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
                     ui_bridge.post(self._refresh_ts_https_status)
                     ui_bridge.post(lambda: st.setText(""))
@@ -568,7 +634,22 @@ class RemoteApiPanel(_BasePanel):
                     if svc:
                         restart_api_server(service=svc, config=cfg, bus=_bus)
                 except Exception as exc:
+                    # BUG: a restart failure here used to only be logged —
+                    # the function fell through to the success toast below
+                    # even though the new port was never rolled back and
+                    # nothing was actually serving it.
                     logger.exception("HTTPS Profile reset: API restart error: %s", exc)
+                    _rollback_https_disabled()
+                    ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
+                    ui_bridge.post(self._refresh_ts_https_status)
+                    ui_bridge.post(self._refresh_api_token_label)
+                    ui_bridge.post(lambda: st.setText(""))
+                    ui_bridge.post(
+                        lambda e=exc: self._app.toast(
+                            t("settings.api.restart_error", err=f"{e!s:.60}"), "error"
+                        )
+                    )
+                    return
                 ui_bridge.post(self._refresh_ts_https_status)
                 ui_bridge.post(self._refresh_api_token_label)
                 ui_bridge.post(lambda: st.setText(""))
@@ -583,8 +664,17 @@ class RemoteApiPanel(_BasePanel):
                     ui_bridge.post(lambda: self._app.toast(t("settings.api.reset_success"), "success"))
             except Exception as exc:
                 logger.exception("HTTPS Profile reset error: %s", exc)
+                # BUG: the new port written above (line ~570) was never
+                # rolled back when the outer worker raised before start
+                # confirmed it was actually serving.
+                _rollback_https_disabled()
+                ui_bridge.post(lambda: self._ts_https_switch.setChecked(False))
+                ui_bridge.post(self._refresh_ts_https_status)
+                ui_bridge.post(lambda: st.setText(""))
                 ui_bridge.post(
                     lambda e=exc: self._app.toast(t("settings.api.reset_error", err=f"{e!s:.60}"), "error")
                 )
+            finally:
+                ui_bridge.post(lambda: self._api_busy_changed(-1))
 
         threading.Thread(target=_reset_worker, daemon=True, name="omnidl-ts-https-reset").start()

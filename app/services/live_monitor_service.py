@@ -269,6 +269,7 @@ class LiveMonitorService:
                 except Exception as exc:
                     logger.warning("LiveMonitor: cancel failed: %s", exc)
             item.task_id = None
+            item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
             item.state = WAITING
             # Wait a full interval before re-checking: zeroing this made the
             # next poll (<=5s) re-detect the still-running stream and restart
@@ -380,6 +381,7 @@ class LiveMonitorService:
             status = snap.get("status")
             if status not in (
                 DownloadStatus.COMPLETED,
+                DownloadStatus.PARTIAL_SAVED,
                 DownloadStatus.FAILED,
                 DownloadStatus.CANCELLED,
             ):
@@ -387,7 +389,9 @@ class LiveMonitorService:
                 # payload carries no progress, so an emit here is pure SSE noise
                 # (one full re-render per client every _POLL_S per item).
                 continue
-            if status == DownloadStatus.COMPLETED:
+            # BUG-MON-PARTIAL: a live task cancelled from the queue keeps its
+            # partial file as PARTIAL_SAVED -- a finished recording too.
+            if status in (DownloadStatus.COMPLETED, DownloadStatus.PARTIAL_SAVED):
                 item.state = ENDED
                 item.filename = snap.get("filename", "") or ""
                 if item.is_profile_watch:
@@ -555,6 +559,7 @@ class LiveMonitorService:
             item.media_info = info
             item.url = live_url
             if not info.is_live:
+                item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
                 item.state = WAITING
                 self._emit(item)
                 return

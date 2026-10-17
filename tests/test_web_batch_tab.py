@@ -10,7 +10,6 @@ WB-05  The web UI ships the Batch markup, the catalogue keys and the JS.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,7 +80,7 @@ def test_batch_endpoint_enqueues_every_item():
         ]
     )
 
-    resp = asyncio.run(call(body=body, _=None))
+    resp = call(body=body, _=None)
 
     assert resp.queued == 2
     assert resp.failed == 0
@@ -102,7 +101,7 @@ def test_batch_forwards_live_and_room_id():
         items=[_item("https://tiktok.com/@u/live", is_live=True, tiktok_room_id="12345")]
     )
 
-    asyncio.run(call(body=body, _=None))
+    call(body=body, _=None)
 
     assert started[0]["is_live"] is True
     assert started[0]["room_id"] == "12345"
@@ -114,7 +113,7 @@ def test_batch_rejects_a_forged_room_id():
     call = _endpoint(app, "/api/download/batch", "POST")
     body = BatchDownloadRequest(items=[_item("https://tiktok.com/@u/live", tiktok_room_id="1;drop")])
 
-    asyncio.run(call(body=body, _=None))
+    call(body=body, _=None)
 
     assert started[0]["room_id"] == ""
 
@@ -129,7 +128,7 @@ def test_one_bad_item_does_not_sink_the_batch():
         items=[_item("https://a.com/ok"), _item("https://a.com/bad"), _item("https://a.com/ok2")]
     )
 
-    resp = asyncio.run(call(body=body, _=None))
+    resp = call(body=body, _=None)
 
     assert resp.queued == 2
     assert resp.failed == 1
@@ -145,7 +144,7 @@ def test_cdp_only_url_is_reported_per_item(monkeypatch):
     call = _endpoint(app, "/api/download/batch", "POST")
     body = BatchDownloadRequest(items=[_item("https://fb.com/story/1"), _item("https://a.com/ok")])
 
-    resp = asyncio.run(call(body=body, _=None))
+    resp = call(body=body, _=None)
 
     assert resp.results[0].error == "needs a browser"
     assert resp.results[1].task_id
