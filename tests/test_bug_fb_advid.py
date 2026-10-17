@@ -385,7 +385,7 @@ def _run_extract_info(monkeypatch, tmp_path, outputs):
 def _dump_line(photo_id):
     import json
 
-    return json.dumps([1, f"https://cdn/{photo_id}.jpg", {"id": photo_id, "username": "Mì Kokomi"}])
+    return json.dumps([[3, f"https://cdn/{photo_id}.jpg", {"id": photo_id, "username": "Mì Kokomi"}]], indent=2)
 
 
 def test_extract_info_falls_back_to_the_posts_form(tmp_path, monkeypatch):

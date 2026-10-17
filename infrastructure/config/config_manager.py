@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -53,6 +54,7 @@ _DEFAULTS: dict[str, Any] = {
     "proxy": "",
     "use_cookies": False,
     "cookies_browser": "chrome",
+    "cookies_profile": "",  # Chromium profile dir ("Default", "Profile N"); "" = browser default
     "cookie_file": "",  # path to a Netscape-format .txt cookie file (global fallback)
     # Per-platform cookie files — take priority over cookie_file for each platform.
     # Keys: "tiktok", "instagram", "facebook", "twitter", "threads"
@@ -345,6 +347,16 @@ class ConfigManager:
                 ", ".join(sorted(_VALID_BROWSERS)),
             )
             return "chrome"
+        return val
+
+    @property
+    def cookies_profile(self) -> str:
+        # Directory name only: a display name or a path would either open a
+        # new empty profile or escape the user-data-dir (CWE-22).
+        val = str(self.get("cookies_profile", "") or "")
+        if val and not re.fullmatch(r"Default|Profile \d+", val):
+            logger.warning("cookies_profile %r is not a profile directory name, ignoring.", val)
+            return ""
         return val
 
     @property

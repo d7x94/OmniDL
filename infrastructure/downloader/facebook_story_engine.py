@@ -688,6 +688,7 @@ def _cdp_intercept(
     browser: str,
     timeout: float,
     on_progress: Optional[Callable],
+    profile: str = "",
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Launch browser, navigate to story_url; return (video_cdn_url, audio_cdn_url, progressive_cdn_url).
 
@@ -764,6 +765,11 @@ def _cdp_intercept(
     else:
         profile_base = Path()
 
+    # BUG-COOKIE-PROFILE-DL: Chromium opens a new empty profile for an unknown
+    # --profile-directory, so a vanished profile is refused, never replaced.
+    if profile and not (profile_base / profile).is_dir():
+        raise RuntimeError(t("cookie.err.profile_not_found", profile=profile, browser=browser.title()))
+
     if profile_base.exists():
         _clear_crashed_flag(profile_base)
 
@@ -815,6 +821,8 @@ def _cdp_intercept(
     # cookie_extractor.extract_via_cdp launches the same browsers.
     if profile_base.exists():
         cmd.append(f"--user-data-dir={profile_base}")
+        if profile:
+            cmd.append(f"--profile-directory={profile}")
     _prog(8, t("progress.browser_start_named", browser=browser.title()))
     proc = subprocess.Popen(
         cmd,
@@ -1267,26 +1275,33 @@ def _download_cdn_url(
 
     # closing(resp): the deadline branch below returns mid-iteration, which
     # left the socket open until the GC ran.
-    with contextlib.closing(resp), open(dest, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=256 * 1024):
-            if time.monotonic() > stream_deadline:
-                logger.warning("_download_cdn_url: stream deadline exceeded (300s)")
-                dest.unlink(missing_ok=True)
-                return None
-            if chunk:
-                f.write(chunk)
-                done += len(chunk)
-                elapsed = time.monotonic() - start
-                speed = done / elapsed if elapsed > 0.1 else 0
-                pct = min(95, 50 + int(done / total * 44)) if total else 70
-                s_str = (
-                    f"{speed / 1048576:.1f} MB/s"
-                    if speed > 1_048_576
-                    else f"{speed / 1024:.0f} KB/s"
-                    if speed > 0
-                    else ""
-                )
-                _prog(pct, s_str, t("progress.downloading_kb", kb=done // 1024))
+    try:
+        with contextlib.closing(resp), open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=256 * 1024):
+                if time.monotonic() > stream_deadline:
+                    logger.warning("_download_cdn_url: stream deadline exceeded (300s)")
+                    dest.unlink(missing_ok=True)
+                    return None
+                if chunk:
+                    f.write(chunk)
+                    done += len(chunk)
+                    elapsed = time.monotonic() - start
+                    speed = done / elapsed if elapsed > 0.1 else 0
+                    pct = min(95, 50 + int(done / total * 44)) if total else 70
+                    s_str = (
+                        f"{speed / 1048576:.1f} MB/s"
+                        if speed > 1_048_576
+                        else f"{speed / 1024:.0f} KB/s"
+                        if speed > 0
+                        else ""
+                    )
+                    _prog(pct, s_str, t("progress.downloading_kb", kb=done // 1024))
+    except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+        # BUG-FB-STORY-TRUNC: fall through to the caller's next path instead
+        # of leaving a truncated mp4 behind.
+        logger.warning("_download_cdn_url: stream failed (%s)", exc)
+        dest.unlink(missing_ok=True)
+        return None
 
     if _validate_mp4(dest):
         return dest
@@ -1597,7 +1612,13 @@ def download_story(
     # tracks; we mux them with FFmpeg to produce a file with sound. When the
     # audio-DASH URL is never intercepted, the progressive URL is a robust
     # fallback that already carries sound.
-    cdn_url, audio_url, progressive_url = _cdp_intercept(url, browser, timeout, on_progress)
+    # BUG-COOKIE-PROFILE-DL: the Settings profile is a directory of the Settings
+    # browser; the Special tab may pick another browser, which keeps its default.
+    # Only brave/chrome: _cdp_intercept maps every other browser to Chrome's User Data.
+    profile = ""
+    if browser.lower() in ("brave", "chrome") and browser.lower() == getattr(config, "cookies_browser", ""):
+        profile = getattr(config, "cookies_profile", "") or ""
+    cdn_url, audio_url, progressive_url = _cdp_intercept(url, browser, timeout, on_progress, profile=profile)
 
     if not cdn_url and progressive_url:
         logger.info("CDP: no DASH video URL — falling back to progressive URL as primary source")

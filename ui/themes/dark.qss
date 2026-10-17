@@ -393,7 +393,7 @@ QPushButton#pill_tab {
     color: $text2;
     border: none;
     border-radius: 7px;
-    padding: 5px 12px;
+    padding: 5px 8px;
     font-size: 12px;
     font-weight: 500;
     min-height: 28px;

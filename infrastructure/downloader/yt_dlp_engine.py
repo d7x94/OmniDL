@@ -342,6 +342,7 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("fb.watch", "facebook"),
     ("twitter.com", "twitter"),
     ("x.com", "twitter"),
+    ("t.co", "twitter"),  # X link shortener; yt-dlp resolves it (TwitterShortenerIE)
     ("threads.net", "threads"),
     ("threads.com", "threads"),  # new domain (2024+)
     ("kuaishou.com", "kuaishou"),
@@ -350,6 +351,10 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("ok.ru", "ok_ru"),
     ("m.ok.ru", "ok_ru"),
 ]
+
+# yt-dlp TwitterIE texts for a tweet that holds only photos: raise_no_formats()
+# on a plain /status/ URL, "Media #N is not a video" on a /photo/N URL.
+_X_PHOTO_ONLY_MSGS = ("no video could be found in this tweet", "is not a video")
 
 _IG_RL = _PlatformRateLimiter(1.5)
 _FB_RL = _PlatformRateLimiter(1.0)
@@ -532,7 +537,8 @@ def _build_ffmpeg_cookie_header(cookie_file: str, domain_keyword: str = "tiktok"
 
         pairs: list[str] = []
         for line in _P(cookie_file).read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
+            # BUG-COOKIE-HTTPONLY: "#HttpOnly_" marks a cookie (sessionid), not a comment.
+            line = line.strip().removeprefix("#HttpOnly_")
             if not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
@@ -1322,18 +1328,20 @@ class YtDlpEngine:
             if _is_temp:
                 _cookie_temp_ei = _usable
         if not opts.get("cookiefile") and self._config.use_cookies:
-            opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+            # BUG-COOKIE-PROFILE-DL: without a profile yt-dlp reads the newest
+            # Cookies DB of any profile, not the one picked in Settings.
+            opts["cookiesfrombrowser"] = (self._config.cookies_browser, self._config.cookies_profile or None)
 
         # Profile / channel fast-path (after opts are built so cookie/proxy
         # are included in the flat playlist fetch).
         if _PROFILE_URL_RE.search(url):
-            # Clean temp cookie before early return (playlist path)
-            if _cookie_temp_ei:
-                try:
-                    Path(_cookie_temp_ei).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return self._extract_playlist_flat(url, opts)
+            # BUG-PROFILE-COOKIE: delete only after the flat extract -- opts
+            # still points yt-dlp at this file, and YoutubeDL.close() saves
+            # the jar back to it.
+            try:
+                return self._extract_playlist_flat(url, opts)
+            finally:
+                _drop_temp_cookie()
 
         # Rate-limit per-platform to reduce HTTP 429 risk when analyse and download
         # fire concurrently (shared per-platform limiter with _extract_tiktok_live_hls_url).
@@ -1401,10 +1409,16 @@ class YtDlpEngine:
                 # same URL into a photo set, so treat it as the photo signal.
                 if _photo_platform == "facebook" and "cannot parse data" in msg_l:
                     _is_photo_error = True
-                if _is_photo_error and _photo_platform in ("instagram", "facebook"):
+                # BUG-X-PHOTO: TwitterIE drops photo media and ends an image-only
+                # tweet with this message; gallery-dl downloads the images.
+                if _photo_platform == "twitter" and any(m in msg_l for m in _X_PHOTO_ONLY_MSGS):
+                    _is_photo_error = True
+                if _is_photo_error and _photo_platform in ("instagram", "facebook", "twitter"):
                     m = _ig_photo_re.search(url)
                     shortcode = m.group(1) if m else ""
-                    _photo_label = "Instagram" if _photo_platform == "instagram" else "Facebook"
+                    _photo_label = {"instagram": "Instagram", "facebook": "Facebook"}.get(
+                        _photo_platform, "Twitter/X"
+                    )
                     logger.info(
                         "%s photo detected (no video stream) — "
                         "returning synthetic MediaInfo for photo path: %s",
@@ -1482,6 +1496,8 @@ class YtDlpEngine:
                     "curl: (35)",  # BUG-CC: curl SSL connect error code
                     "is not available",  # BUG-CD: impersonate target missing in EXE
                     "not currently live",  # TikTok/IG channel is offline — not an error
+                    "requires authentication",  # BUG-X-AUTH: X NSFW tweet, needs cookies
+                    "not authorized to view",  # BUG-X-AUTH: X protected tweet
                 )
                 if any(k in msg_l for k in _hard):
                     # BUG-FB-COOKIE-LEAK FIX: this raise used to skip the
@@ -2392,7 +2408,9 @@ class YtDlpEngine:
                 # Erased by download()'s finally, so a raising path cannot leak it.
                 _temp_cookies.append(_usable)
         if not opts.get("cookiefile") and self._config.use_cookies:
-            opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+            # BUG-COOKIE-PROFILE-DL: without a profile yt-dlp reads the newest
+            # Cookies DB of any profile, not the one picked in Settings.
+            opts["cookiesfrombrowser"] = (self._config.cookies_browser, self._config.cookies_profile or None)
 
         # Rate-limit per-platform on the download path too — extract_info()
         # already acquires this; without it here, an analyse+download pair
@@ -4347,7 +4365,7 @@ class YtDlpEngine:
                         task.eta = f"⏺ {elapsed}"
                     if _stall_seconds >= _STALL_LIMIT_S:
                         proc.kill()
-                        raise _keyed_exc("err.ffmpeg_stall")
+                        raise _keyed_exc("err.ffmpeg_stall", seconds=_STALL_LIMIT_S)
 
                 if on_progress:
                     on_progress(task)
@@ -4542,6 +4560,9 @@ class YtDlpEngine:
                 raise yt_dlp.utils.DownloadError("Cancelled by user")
 
             status = d.get("status", "")
+            _vid = str((d.get("info_dict") or {}).get("id") or "")
+            if _vid and _vid not in task.ytdlp_ids:
+                task.ytdlp_ids.append(_vid)
             if status == "downloading":
                 task.status = DownloadStatus.DOWNLOADING
                 task.downloaded_bytes = d.get("downloaded_bytes") or 0

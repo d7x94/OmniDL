@@ -202,9 +202,7 @@ def test_cancel_during_submit_is_not_lost(tmp_path, monkeypatch):
         return cancelled.set
 
     monkeypatch.setattr(svc._queue, "submit", _submit_then_cancel)
-    monkeypatch.setattr(
-        "app.services.remote_convert_service._allowed_codecs", lambda: frozenset({"h264"})
-    )
+    monkeypatch.setattr("app.services.remote_convert_service._allowed_codecs", lambda: frozenset({"h264"}))
 
     svc.start_convert(source_task_id="t1", file_path=source, encoder_key="cpu")
 
@@ -226,12 +224,20 @@ def test_file_convert_endpoints_offload_blocking_probes(endpoint):
     assert "asyncio.to_thread(" in body, f"{endpoint} still calls the service inline"
 
 
+def test_delete_history_entry_offloads_the_disk_rewrite():
+    """HistoryRepository.remove() rewrites the whole history file to disk
+    synchronously (temp file + backup + atomic replace); this async route
+    must not call it inline on the event loop."""
+    src = Path("api/server.py").read_text(encoding="utf-8")
+    start = src.index("async def delete_history_entry(")
+    body = src[start : start + 500]
+    assert "asyncio.to_thread(" in body, "delete_history_entry still calls the service inline"
+
+
 # ── A5: subtitles-only desktop job must not Taildrop the .srt ────────────────
 
 
 def test_desktop_subtitles_only_skips_taildrop():
-    src = inspect.getsource(
-        __import__("ui.tabs.convert_tab", fromlist=["ConvertTab"]).ConvertTab._submit_job
-    )
+    src = inspect.getsource(__import__("ui.tabs.convert_tab", fromlist=["ConvertTab"]).ConvertTab._submit_job)
     assert "subtitles_only" in src, "_submit_job no longer guards the Taildrop hook"
     assert src.index("if subtitles_only:") < src.index("send_converted_file")

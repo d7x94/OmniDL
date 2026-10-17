@@ -390,6 +390,17 @@ def _cdp_intercept_hls_impl(
                     logger.debug("CDP[SW]: route(%s) failed (%s)", _stream_pattern, exc)
             logger.debug("CDP[SW]: context-level stream routes installed")
 
+            # BUG-IG-ROUTE-TEARDOWN: a live DASH player refetches the .mpd every
+            # few seconds, so a route.continue_() is almost always in flight when
+            # sync_playwright() exits. Teardown cancels it and asyncio logs two
+            # CancelledError tracebacks (BaseException, so _on_ctx_route's except
+            # misses it). Remove the routes and let in-flight handlers finish first.
+            def _unroute() -> None:
+                try:
+                    ctx.unroute_all(behavior="wait")
+                except Exception as exc:
+                    logger.debug("CDP[SW]: unroute_all failed (%s)", exc)
+
             # Layer A: Playwright request intercept (page-level)
             # Log ALL instagram/cdninstagram requests to help diagnose
             def _on_request(request) -> None:
@@ -567,6 +578,7 @@ def _cdp_intercept_hls_impl(
                 if hls_url:
                     break
                 if _cancelled():
+                    _unroute()
                     return None, {}
 
                 # Re-inject gesture every 5s -- Instagram SPA may render the
@@ -649,6 +661,8 @@ def _cdp_intercept_hls_impl(
                         pass
 
                 time.sleep(0.5)
+
+            _unroute()
 
             if not hls_url:
                 logger.warning(
@@ -1046,6 +1060,9 @@ class InstagramLiveEngine:
             ) from exc
 
         # Drain stderr continuously so the pipe never fills and blocks FFmpeg.
+        # BUG-IG-STDERR-TAIL: log these whole lines, never a character tail -- a
+        # stream URL is ~400 chars and FFmpeg echoes it, so a 600-char slice cut
+        # off the one line that named the real error.
         _stderr_lines: deque[str] = deque(maxlen=40)
 
         def _drain_stderr(pipe, lines: "deque[str]") -> None:
@@ -1099,7 +1116,7 @@ class InstagramLiveEngine:
                         _data_ever_written = True
                         _STALL_TIMEOUT = 30.0
                 elif now - _last_growth_t > _STALL_TIMEOUT:
-                    _stall_msg = "\n".join(_stderr_lines)[-600:] or "(no stderr output)"
+                    _stall_msg = "\n".join(_stderr_lines) or "(no stderr output)"
                     logger.warning(
                         "InstagramLiveEngine: FFmpeg stalled"
                         " (no bytes written in %.0fs) -- terminating | stderr: %s",
@@ -1141,7 +1158,7 @@ class InstagramLiveEngine:
             logger.error(
                 "InstagramLiveEngine: FFmpeg exited %d | stderr: %s",
                 ret,
-                "\n".join(_stderr_lines)[-600:],
+                "\n".join(_stderr_lines),
             )
             return "ffmpeg_error", final_size
         if ret is None:

@@ -132,6 +132,7 @@ class EditorTab(QWidget):
         self._preview_temp: Optional[Path] = None
         self._cancel_preview: Optional[Callable[[], None]] = None
         self._preview_gen: int = 0
+        self._export_gen: int = 0
         self._frame_processor = FrameProcessor()
         self._saved_effect_params: EffectParams = EffectParams()
         self._file_path: str = ""
@@ -474,6 +475,11 @@ class EditorTab(QWidget):
         )
         text_opt_row.addWidget(self._text_size_spin)
 
+        text_opt_row.addStretch()
+        panel_layout.addLayout(text_opt_row)
+        text_opt_row = QHBoxLayout()
+        text_opt_row.setSpacing(8)
+
         self._color_lbl = QLabel(t("editor.color_label"))
         self._color_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         text_opt_row.addWidget(self._color_lbl)
@@ -545,37 +551,39 @@ class EditorTab(QWidget):
         self._contrast_slider, self._contrast_val = self._mk_slider(50, 300, 100)
         bcs_row.addWidget(self._contrast_slider, 2)
         bcs_row.addWidget(self._contrast_val)
-        bcs_row.addSpacing(8)
+        eff_layout.addLayout(bcs_row)
+        bcs_row = QHBoxLayout()
+        bcs_row.setSpacing(10)
         self._saturation_lbl = self._mk_eff_label(t("editor.saturation"))
         bcs_row.addWidget(self._saturation_lbl)
         self._saturation_slider, self._saturation_val = self._mk_slider(0, 300, 100)
         bcs_row.addWidget(self._saturation_slider, 2)
         bcs_row.addWidget(self._saturation_val)
+        bcs_row.addSpacing(8)
+        self._hue_lbl = self._mk_eff_label(t("editor.hue"))
+        bcs_row.addWidget(self._hue_lbl)
+        self._hue_slider, self._hue_val = self._mk_slider(-180, 180, 0)
+        bcs_row.addWidget(self._hue_slider, 2)
+        bcs_row.addWidget(self._hue_val)
         eff_layout.addLayout(bcs_row)
 
         hb_row = QHBoxLayout()
         hb_row.setSpacing(10)
-        self._hue_lbl = self._mk_eff_label(t("editor.hue"))
-        hb_row.addWidget(self._hue_lbl)
-        self._hue_slider, self._hue_val = self._mk_slider(-180, 180, 0)
-        hb_row.addWidget(self._hue_slider, 2)
-        hb_row.addWidget(self._hue_val)
-        hb_row.addSpacing(8)
         self._blur_lbl = self._mk_eff_label(t("editor.blur"))
         hb_row.addWidget(self._blur_lbl)
         self._blur_slider, self._blur_val = self._mk_slider(0, 100, 0)
         hb_row.addWidget(self._blur_slider, 2)
         hb_row.addWidget(self._blur_val)
+        hb_row.addSpacing(8)
+        self._fade_in_lbl = self._mk_eff_label(t("editor.fade_in"))
+        hb_row.addWidget(self._fade_in_lbl)
+        self._fade_in_slider, self._fade_in_val = self._mk_slider(0, 100, 0)
+        hb_row.addWidget(self._fade_in_slider, 2)
+        hb_row.addWidget(self._fade_in_val)
         eff_layout.addLayout(hb_row)
 
         fade_row = QHBoxLayout()
         fade_row.setSpacing(10)
-        self._fade_in_lbl = self._mk_eff_label(t("editor.fade_in"))
-        fade_row.addWidget(self._fade_in_lbl)
-        self._fade_in_slider, self._fade_in_val = self._mk_slider(0, 100, 0)
-        fade_row.addWidget(self._fade_in_slider, 2)
-        fade_row.addWidget(self._fade_in_val)
-        fade_row.addSpacing(8)
         self._fade_out_lbl = self._mk_eff_label(t("editor.fade_out"))
         fade_row.addWidget(self._fade_out_lbl)
         self._fade_out_slider, self._fade_out_val = self._mk_slider(0, 100, 0)
@@ -664,9 +672,7 @@ class EditorTab(QWidget):
             logger.warning("editor_tab: file not found: %s", path)
             return
         self._cleanup_preview()
-        if self._cancel_trim is not None:
-            self._cancel_trim()
-            self._cancel_trim = None
+        self._cleanup_export()
         self._player.stop()
         self._player.setSource(QUrl.fromLocalFile(str(p)))
         self._file_path = str(p)
@@ -713,9 +719,7 @@ class EditorTab(QWidget):
 
     def _clear_file(self) -> None:
         self._cleanup_preview()
-        if self._cancel_trim is not None:
-            self._cancel_trim()
-            self._cancel_trim = None
+        self._cleanup_export()
         self._player.stop()
         self._player.setSource(QUrl())
         self._file_path = ""
@@ -748,6 +752,12 @@ class EditorTab(QWidget):
             self._preview_temp = None
         self._preview_mode = False
 
+    def _cleanup_export(self) -> None:
+        self._export_gen += 1
+        if self._cancel_trim is not None:
+            self._cancel_trim()
+            self._cancel_trim = None
+
     # ── Toggle controls ───────────────────────────────────────────────────────
 
     def _toggle_controls(self) -> None:
@@ -759,6 +769,8 @@ class EditorTab(QWidget):
 
     def _on_preview_click(self) -> None:
         if self._cancel_trim is not None:
+            self._export_status.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+            self._export_status.setText(t("editor.preview_blocked_by_export"))
             return
         if self._preview_mode:
             self._back_to_original()
@@ -931,8 +943,14 @@ class EditorTab(QWidget):
 
     def _export(self) -> None:
         if self._cancel_trim is not None:
-            self._cancel_trim()
-            self._cancel_trim = None
+            self._cleanup_export()
+            self._export_btn.setText(t("editor.export_btn"))
+            self._export_status.setText("")
+            return
+
+        if self._cancel_preview is not None or self._preview_mode:
+            self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
+            self._export_status.setText(t("editor.export_blocked_by_preview"))
             return
 
         src_text = self._file_path
@@ -954,14 +972,16 @@ class EditorTab(QWidget):
         self._export_status.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         self._export_status.setText(t("editor.exporting_status"))
 
+        gen = self._export_gen
+
         def _on_progress(pct: float) -> None:
-            ui_bridge.post(lambda p=pct: self._export_status.setText(f"{p:.0f}%"))
+            ui_bridge.post(lambda p=pct, g=gen: self._on_export_progress(p, g))
 
         def _on_done(path: Path) -> None:
-            ui_bridge.post(lambda p=path: self._finish_export(p))
+            ui_bridge.post(lambda p=path, g=gen: self._finish_export(p, g))
 
         def _on_error(msg: str) -> None:
-            ui_bridge.post(lambda m=msg: self._fail_export(m))
+            ui_bridge.post(lambda m=msg, g=gen: self._fail_export(m, g))
 
         self._cancel_trim = trim_video(
             source,
@@ -974,13 +994,22 @@ class EditorTab(QWidget):
             on_error=_on_error,
         )
 
-    def _finish_export(self, path: Path) -> None:
+    def _on_export_progress(self, pct: float, gen: int) -> None:
+        if gen != self._export_gen:
+            return
+        self._export_status.setText(f"{pct:.0f}%")
+
+    def _finish_export(self, path: Path, gen: int) -> None:
+        if gen != self._export_gen:
+            return
         self._cancel_trim = None
         self._export_btn.setText(t("editor.export_btn"))
         self._export_status.setStyleSheet(f"color: {T.success}; font-size: 11px;")
         self._export_status.setText(t("editor.export_saved", name=path.name))
 
-    def _fail_export(self, msg: str) -> None:
+    def _fail_export(self, msg: str, gen: int) -> None:
+        if gen != self._export_gen:
+            return
         self._cancel_trim = None
         self._export_btn.setText(t("editor.export_btn"))
         self._export_status.setStyleSheet(f"color: {T.error}; font-size: 11px;")
@@ -1042,7 +1071,7 @@ class EditorTab(QWidget):
     def _on_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
         if error != QMediaPlayer.Error.NoError:
             logger.error("QMediaPlayer error: %s - %s", error, error_string)
-            self._info_lbl.setText(t("editor.export_error", msg=error_string))
+            self._info_lbl.setText(t("editor.playback_error", msg=error_string))
 
     def _on_video_frame(self, frame: "QVideoFrame") -> None:
         pixmap = self._frame_processor.process(frame, self._preview_label.size())
@@ -1075,7 +1104,7 @@ class EditorTab(QWidget):
     def retranslate(self) -> None:
         self._empty_lbl.setText(t("editor.empty"))
         self._toggle_ctrl_btn.setText(
-            t("editor.show_panel") if not self._right_scroll.isVisible() else t("editor.hide_panel")
+            t("editor.show_panel") if self._right_scroll.isHidden() else t("editor.hide_panel")
         )
         self._open_btn.setText(t("editor.open_file"))
         self._clear_btn.setText(t("editor.close_file"))
@@ -1126,7 +1155,7 @@ class EditorTab(QWidget):
 
         self._eff_lbl.setText(t("editor.effects_title"))
         self._toggle_effects_btn.setText(
-            t("editor.hide") if self._effects_panel.isVisible() else t("editor.show")
+            t("editor.hide") if not self._effects_panel.isHidden() else t("editor.show")
         )
         self._brightness_lbl.setText(t("editor.brightness"))
         self._contrast_lbl.setText(t("editor.contrast"))

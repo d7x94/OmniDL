@@ -349,7 +349,7 @@ class TestGalleryDlInstagramPacing:
     def test_base_cmd_uses_cookies_from_browser_when_no_cookie_file(self):
         from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
 
-        cfg = MagicMock(proxy="", use_cookies=True, cookies_browser="firefox")
+        cfg = MagicMock(proxy="", use_cookies=True, cookies_browser="firefox", cookies_profile="")
         engine = GalleryDlEngine(cfg)
 
         with (

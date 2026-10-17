@@ -61,6 +61,7 @@ def download_ig_cdn_url(
     output_dir: Path,
     filename_hint: str,
     on_progress: Optional[Callable[[int, str], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Path:
     """Stream-download a pre-signed CDN URL straight to *output_dir*.
 
@@ -102,6 +103,8 @@ def download_ig_cdn_url(
                 for chunk in resp.iter_content(chunk_size=256 * 1024):
                     if not chunk:
                         continue
+                    if should_cancel and should_cancel():
+                        raise RuntimeError("cancelled by user")
                     f.write(chunk)
                     downloaded += len(chunk)
                     now = time.monotonic()

@@ -132,6 +132,17 @@ class NetworkPanel(_BasePanel):
         self._browser_combo.setFixedWidth(120)
         self._browser_combo.currentTextChanged.connect(lambda v: cfg.set("cookies_browser", v))
         brhl.addWidget(self._browser_combo)
+        brhl.addWidget(QLabel(t("settings.network.profile_label")))
+        self._cookie_profile_combo = QComboBox()
+        self._cookie_profile_combo.setMinimumWidth(150)
+        self._cookie_profile_combo.setToolTip(t("settings.network.profile_tip"))
+        self._cookie_profile_combo.currentIndexChanged.connect(
+            lambda _: cfg.set("cookies_profile", self._selected_profile())
+        )
+        brhl.addWidget(self._cookie_profile_combo)
+        self._reload_cookie_profiles(cfg.cookies_profile)
+        # A profile dir of one browser means nothing in another: start from its default.
+        self._browser_combo.currentTextChanged.connect(lambda _: self._reload_cookie_profiles(""))
         brhl.addStretch()
         use_lbl = QLabel(t("settings.network.use_cookies_label"))
         use_lbl.setStyleSheet(f"color: {T.text2}; font-size: 12px; background: transparent;")
@@ -568,6 +579,36 @@ class NetworkPanel(_BasePanel):
             shown = label if label == dir_name else f"{label} — {dir_name}"
             self._tt_add_profile.addItem(shown, dir_name)
 
+    def _reload_cookie_profiles(self, selected: str) -> None:
+        """Refill the Network cookie profile picker and select *selected*."""
+        from infrastructure.downloader.cookie_extractor import list_browser_profiles
+
+        combo = self._cookie_profile_combo
+        browser = self._browser_combo.currentText()
+        try:
+            profiles = list_browser_profiles(browser)
+        except Exception as exc:
+            logger.warning("list_browser_profiles(%s) failed: %s", browser, exc)
+            profiles = []
+        combo.blockSignals(True)
+        combo.clear()
+        if not profiles:
+            combo.addItem(t("settings.network.profile_default"), "")
+        for dir_name, label in profiles:
+            combo.addItem(label if label == dir_name else f"{label} - {dir_name}", dir_name)
+        # Keep a saved profile that vanished so extraction reports it instead
+        # of silently reading another profile (BUG-CDP-PROFILE).
+        if selected and combo.findData(selected) < 0:
+            combo.addItem(selected, selected)
+        combo.setCurrentIndex(max(combo.findData(selected), 0) if selected else 0)
+        combo.setEnabled(bool(profiles) or bool(selected))
+        combo.blockSignals(False)
+        self._app.config.set("cookies_profile", self._selected_profile())
+
+    def _selected_profile(self) -> str:
+        data = self._cookie_profile_combo.currentData()
+        return str(data) if data else ""
+
     def _add_form_profile(self) -> str:
         data = self._tt_add_profile.currentData()
         return str(data) if data else ""
@@ -595,6 +636,7 @@ class NetworkPanel(_BasePanel):
         # Rows are recreated below, so any button kept from the previous build
         # is about to be deleted — drop the references before they go stale.
         self._tt_refresh_btns: dict[str, QPushButton] = {}
+        refreshing = getattr(self, "_tt_refreshing", set())
         # Clear existing rows
         while self._tt_list_vbox.count():
             item = self._tt_list_vbox.takeAt(0)
@@ -663,6 +705,7 @@ class NetworkPanel(_BasePanel):
             refresh_btn.setToolTip(t("settings.network.refresh_tip"))
             refresh_btn.setStyleSheet(f"background: {T.surface3}; color: {T.text2}; {_btn_ss}")
             refresh_btn.clicked.connect(lambda _, aid=acc_id: self._refresh_tiktok_account_cookie(aid))
+            refresh_btn.setEnabled(acc_id not in refreshing)
             hl.addWidget(refresh_btn)
             self._tt_refresh_btns[acc_id] = refresh_btn
 
@@ -1000,6 +1043,17 @@ class NetworkPanel(_BasePanel):
         Sessions expire; before this the only cure was Delete + Add again,
         retyping the name and slot count.
         """
+        refreshing = getattr(self, "_tt_refreshing", None)
+        if refreshing is None:
+            refreshing = set()
+            self._tt_refreshing = refreshing
+        if account_id in refreshing:
+            # Already extracting for this account (e.g. the row was rebuilt by
+            # an unrelated _refresh_tiktok_accounts_list() call mid-extraction,
+            # which would otherwise swap in a fresh, enabled button). A second
+            # concurrent extraction would race set_tiktok_account_pool() in
+            # _apply_refreshed_cookie and leak the loser's cookie file.
+            return
         acc = next((a for a in self._app.config.tiktok_account_pool if a.get("id") == account_id), None)
         if acc is None:
             return
@@ -1014,6 +1068,7 @@ class NetworkPanel(_BasePanel):
         safe_dir = self._cookies_dir()
         output_path = safe_dir / f"tiktok_pool_{_uuid.uuid4().hex[:6]}_{browser}_refresh.txt"
 
+        refreshing.add(account_id)
         btn = getattr(self, "_tt_refresh_btns", {}).get(account_id)
         if btn is not None:
             btn.setEnabled(False)
@@ -1043,6 +1098,7 @@ class NetworkPanel(_BasePanel):
     def _apply_refreshed_cookie(self, account_id: str, saved_path: str, error: str) -> None:
         from infrastructure.downloader.account_pool import inspect_tiktok_cookie
 
+        getattr(self, "_tt_refreshing", set()).discard(account_id)
         current = self._app.config.tiktok_account_pool
         acc = next((a for a in current if a.get("id") == account_id), None)
         if acc is None:  # deleted while the extraction was running
@@ -1190,6 +1246,10 @@ class NetworkPanel(_BasePanel):
                     logger.warning("_clear_cookie_file: could not delete %s — %s", candidate, exc)
 
     def _extract_global_cdp(self) -> None:
+        browser = self._browser_combo.currentText()
+        if browser not in ("brave", "chrome", "chromium", "edge"):
+            self._app.toast(t("settings.network.cdp_browser_unsupported", browser=browser), "error")
+            return
         reply = QMessageBox.question(
             self,
             t("settings.network.cdp_confirm_title"),
@@ -1198,21 +1258,24 @@ class NetworkPanel(_BasePanel):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        browser = self._browser_combo.currentText()
-        if browser not in ("brave", "chrome", "chromium", "edge"):
-            self._app.toast(t("settings.network.cdp_browser_unsupported", browser=browser), "error")
-            return
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{browser}_cdp_cookies.txt"
         busy_btns = (self._extract_global_btn, self._extract_cdp_btn)
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Clear stay locked until the worker has registered its jar.
+        busy_btns += (self._browse_cf_btn, self._clear_cf_btn)
         status = self._extract_global_status
         old_path_str = self._app.config.get("cookie_file", "")
+        profile = self._selected_profile()
 
         def _worker():
             try:
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
 
-                count, error = extract_via_cdp(output_path, platform_key=None, browser=browser)
+                count, error = extract_via_cdp(
+                    output_path, platform_key=None, browser=browser, profile=profile or None
+                )
+                if error:
+                    raise RuntimeError(error)
             except Exception as exc:
                 err_msg = str(exc)
                 ui_bridge.post(
@@ -1270,14 +1333,19 @@ class NetworkPanel(_BasePanel):
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{browser}_global_cookies.txt"
         busy_btns = (self._extract_global_btn, self._extract_cdp_btn)
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Clear stay locked until the worker has registered its jar.
+        busy_btns += (self._browse_cf_btn, self._clear_cf_btn)
         status = self._extract_global_status
         old_path_str = self._app.config.get("cookie_file", "")
+        profile = self._selected_profile()
 
         def _worker():
             try:
                 from infrastructure.downloader.cookie_extractor import extract_browser_cookies
 
-                count, error = extract_browser_cookies(browser, output_path, platform_key=None)
+                count, error = extract_browser_cookies(
+                    browser, output_path, platform_key=None, profile=profile or None
+                )
             except Exception as exc:
                 error = str(exc)
                 count = 0
@@ -1376,14 +1444,18 @@ class NetworkPanel(_BasePanel):
         output_path = safe_dir / f"{platform_key}_{browser}_cookies.txt"
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
-        for btn in self._pc_extract_btns:
+        profile = self._selected_profile()
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Delete stay locked until the worker has registered its jar.
+        for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns:
             btn.setEnabled(False)
 
         def _worker():
             try:
                 from infrastructure.downloader.cookie_extractor import extract_browser_cookies
 
-                count, error = extract_browser_cookies(browser, output_path, platform_key=platform_key)
+                count, error = extract_browser_cookies(
+                    browser, output_path, platform_key=platform_key, profile=profile or None
+                )
             except Exception as exc:
                 error = str(exc)
                 count = 0
@@ -1437,7 +1509,12 @@ class NetworkPanel(_BasePanel):
                         ),
                     )
                 )
-            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns])
+            ui_bridge.post(
+                lambda: [
+                    btn.setEnabled(True)
+                    for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns
+                ]
+            )
 
         status.setText(t("settings.network.reading_platform_status", platform=platform_name, browser=browser))
         threading.Thread(
@@ -1452,18 +1529,37 @@ class NetworkPanel(_BasePanel):
             self._app.toast(t("settings.network.cdp_unsupported_use_browser", browser=browser), "error")
             return
         platform_name = _PLATFORM_NAMES.get(platform_key, platform_key.title())
+        profile = self._selected_profile()
+        # CDP launches the browser itself, and Chromium silently opens "Default"
+        # for an unknown --profile-directory.  Without a resolved profile dir we
+        # cannot promise the cookies come from the account the user picked, so
+        # refuse instead of reading someone else's session (BUG-CDP-NO-PROFILE).
+        if not profile:
+            self._app.toast(t("settings.network.cdp_no_profile", browser=browser), "error")
+            self._pc_extract_status.setText(t("settings.network.cdp_no_profile_status"))
+            self._pc_extract_status.setStyleSheet(
+                f"color: {T.error}; font-size: 11px; background: transparent;"
+            )
+            return
         safe_dir = self._app.config.config_path.parent / "cookies"
         output_path = safe_dir / f"{platform_key}_{browser}_cdp_cookies.txt"
         status = self._pc_extract_status
         old_path_str = self._app.config.get_cookie_for_platform(platform_key)
-        for btn in self._pc_extract_btns:
+        # BUG-COOKIE-EXTRACT-RACE: Choose/Delete stay locked until the worker has registered its jar.
+        for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns:
             btn.setEnabled(False)
 
         def _worker():
             try:
                 from infrastructure.downloader.cookie_extractor import extract_via_cdp
 
-                count, error = extract_via_cdp(output_path, platform_key=platform_key, browser=browser)
+                count, error = extract_via_cdp(
+                    output_path, platform_key=platform_key, browser=browser, profile=profile or None
+                )
+                # A failed run must not re-register the previous jar, which may
+                # come from another profile (BUG-CDP-PROFILE).
+                if error:
+                    raise RuntimeError(error)
             except Exception as exc:
                 err_msg = str(exc)
                 ui_bridge.post(
@@ -1486,7 +1582,12 @@ class NetworkPanel(_BasePanel):
                         ),
                     )
                 )
-                ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns])
+                ui_bridge.post(
+                    lambda: [
+                        btn.setEnabled(True)
+                        for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns
+                    ]
+                )
                 return
             path_str = self._resolve_saved_cookie_path(output_path)
             self._app.config.set_cookie_for_platform(platform_key, path_str)
@@ -1511,7 +1612,12 @@ class NetworkPanel(_BasePanel):
                     ),
                 )
             )
-            ui_bridge.post(lambda: [btn.setEnabled(True) for btn in self._pc_extract_btns])
+            ui_bridge.post(
+                lambda: [
+                    btn.setEnabled(True)
+                    for btn in self._pc_extract_btns + self._pc_browse_btns + self._pc_clear_btns
+                ]
+            )
 
         status.setText(
             t(

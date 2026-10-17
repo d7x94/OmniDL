@@ -28,6 +28,9 @@ VI: dict[str, str] = {
     "topbar.theme_light": "☀ Sáng",
     "topbar.theme_dark": "🌙 Tối",
     "topbar.notifications": "Thông báo",
+    "notification.title": "THÔNG BÁO",
+    "notification.clear_all": "Xóa hết",
+    "notification.dismiss": "Đóng",
     "topbar.hide_nav": "Ẩn thanh điều hướng",
     "topbar.nav_strip": "Thanh điều hướng",
     "topbar.toolbar_strip": "Thanh phân tích",
@@ -167,6 +170,7 @@ VI: dict[str, str] = {
     "archive.compress_individually": "Nén từng file riêng",
     "archive.encrypt_names": "Mã hóa tên file (chỉ 7z)",
     "archive.password_label": "Mật khẩu:",
+    "archive.toggle_password_visibility": "Hiện/ẩn mật khẩu",
     "archive.password_placeholder": "Để trống nếu không đặt mật khẩu",
     "archive.name_label": "Tên archive:",
     "archive.use_orig_name": "Dùng tên gốc",
@@ -213,6 +217,7 @@ VI: dict[str, str] = {
     "batch.select_all": "Chọn hết",
     "batch.sequential": "Tải tuần tự",
     "batch.quality_label": "Chất lượng:",
+    "batch.remove_item_tooltip": "Xóa khỏi danh sách",
     "batch.retry_errors": "Thử lại lỗi",
     "batch.retry_count": "Thử lại {count} lỗi",
     "batch.queue_all": "Thêm tất cả",
@@ -305,12 +310,16 @@ VI: dict[str, str] = {
     "editor.in_after_out_error": "In phải nhỏ hơn Out",
     "editor.export_saved": "Đã lưu: {name}",
     "editor.export_error": "Lỗi: {msg}",
+    "editor.playback_error": "Lỗi phát video: {msg}",
+    "editor.export_blocked_by_preview": "Đang xem thử, không thể xuất",
+    "editor.preview_blocked_by_export": "Đang xuất, không thể xem thử",
     "editor.choose_video_file": "Chọn file video",
     "editor.all_files_filter": "Tất cả",
     # ── Live monitor tab ──────────────────────────────────────────────────
     "live.title": "Theo dõi trực tiếp",
     "live.hint": "Dán URL live stream — Instagram, YouTube, TikTok, Facebook, Twitch…  (tối đa {max})",
     "live.add_btn": "Thêm",
+    "live.remove_tooltip": "Xóa khỏi danh sách theo dõi",
     "live.check_interval_label": "Kiểm tra mới:",
     "live.seconds_label": "giây",
     "live.pause": "Tạm ngưng",
@@ -410,6 +419,8 @@ VI: dict[str, str] = {
     "convert.gpu_status": "GPU: {labels}",
     "convert.cpu_only_status": "Chỉ CPU",
     "convert.choose_videos_title": "Chọn video để chuyển đổi",
+    "convert.file_filter_video": "Tệp video ({ext_filter})",
+    "convert.file_filter_all": "Tất cả tệp (*.*)",
     "convert.choose_folder_title": "Chọn thư mục chứa video",
     "convert.scanning_folder": "Đang quét thư mục…",
     "convert.no_video_in_folder": "Không tìm thấy video trong {folder}",
@@ -756,6 +767,11 @@ VI: dict[str, str] = {
     "settings.network.cdp_unsupported_use_browser": (
         "CDP chỉ hỗ trợ Brave/Chrome/Edge. Dùng 🔄 cho {browser}."
     ),
+    "settings.network.cdp_no_profile": (
+        "Chưa chọn được hồ sơ {browser} nào. Chọn hồ sơ ở mục Mạng trước khi dùng CDP: "
+        "OmniDL không tự dùng hồ sơ mặc định."
+    ),
+    "settings.network.cdp_no_profile_status": "❌ CDP: hãy chọn hồ sơ trình duyệt trước.",
     "settings.network.platform_cdp_failed_status": "❌ {platform} CDP: {err}",
     "settings.network.platform_cdp_failed_toast": "CDP {platform} thất bại: {err}",
     "settings.network.platform_cdp_saved_status": "✓ {platform}: {count} cookies (CDP)",
@@ -771,7 +787,10 @@ VI: dict[str, str] = {
     "home.format_label": "Định dạng",
     "home.folder_label": "Thư mục",
     "home.browse": "Duyệt",
+    "home.browse_tooltip": "Chọn thư mục tải khác cho lần tải này",
     "home.add_to_queue": "Thêm vào hàng đợi",
+    "home.add_to_queue_tooltip": "Thêm nội dung đã phân tích vào hàng đợi tải",
+    "home.live": "TRỰC TIẾP",
     "home.no_preview": "Không có xem trước",
     "home.choose_dir": "Chọn thư mục tải",
     "home.photo_note": "Ảnh — tải ở độ phân giải cao nhất",
@@ -994,8 +1013,7 @@ VI: dict[str, str] = {
         "Hãy thiết lập cookie file trong Settings → Network → Cookie file."
     ),
     "err.fb_live_cookies": (
-        "Facebook Live cần cookie.\n"
-        "Hãy thiết lập cookie file trong Settings → Network → Cookie file."
+        "Facebook Live cần cookie.\nHãy thiết lập cookie file trong Settings → Network → Cookie file."
     ),
     "err.fb_stories_manual": (
         "Facebook Stories không thể tải tự động.\n"
@@ -1008,22 +1026,22 @@ VI: dict[str, str] = {
     "err.playlist_failed": "Không thể lấy danh sách từ URL này: {err}",
     "err.no_data": "Không nhận được dữ liệu từ URL. Kiểm tra lại URL hoặc thêm cookie file trong Cài đặt.",
     "err.playlist_empty": (
-        "Playlist/profile không có video nào khả dụng.\n"
-        "Có thể tài khoản private hoặc cần cookie file."
+        "Playlist/profile không có video nào khả dụng.\nCó thể tài khoản private hoặc cần cookie file."
     ),
     "err.ffmpeg_not_found": "Không tìm thấy FFmpeg. Kiểm tra cài đặt FFmpeg.",
-    "err.ffmpeg_stall": "FFmpeg stall watchdog: không có dữ liệu trong 120 giây — stream có thể đã kết thúc.",
+    "err.ffmpeg_stall": (
+        "FFmpeg stall watchdog: không có dữ liệu trong {seconds} giây — stream có thể đã kết thúc."
+    ),
     "err.no_error_detail": "Không có thông tin lỗi.",
     "err.hls_stall": (
         "Stall watchdog: curl_cffi HLS không có segment mới trong {seconds}s — stream có thể đã kết thúc."
     ),
     "err.livestream_ended_relink": (
-        "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\n"
-        "Thêm lại link để theo dõi lần phát tiếp theo."
+        "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\nThêm lại link để theo dõi lần phát tiếp theo."
     ),
     "err.tiktok_audio_only": (
         "Video này chỉ có âm thanh — không có video track.\n"
-        "TikTok product/showcase và \"template effect\" / AR effect videos không cung cấp video track qua API"
+        'TikTok product/showcase và "template effect" / AR effect videos không cung cấp video track qua API'
         " "
         "(chỉ expose audio stream).\n"
         "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
@@ -1049,16 +1067,13 @@ VI: dict[str, str] = {
     "err.http": "Lỗi HTTP: {err}",
     "err.cookie_unreadable": "Không đọc được cookie file: {err}",
     "err.ig_cookie_required": (
-        "Cần cookie file Instagram để kiểm tra live status.\n"
-        "Cấu hình trong Settings → Network → Cookie file."
+        "Cần cookie file Instagram để kiểm tra live status.\nCấu hình trong Settings → Network → Cookie file."
     ),
     "err.ig_cookie_no_sessionid": (
-        "Cookie file không có sessionid Instagram.\n"
-        "Export lại cookie file sau khi đăng nhập Instagram."
+        "Cookie file không có sessionid Instagram.\nExport lại cookie file sau khi đăng nhập Instagram."
     ),
     "err.ig_cookie_invalid": (
-        "Cookie Instagram đã hết hạn hoặc không hợp lệ.\n"
-        "Refresh cookie file trong Settings → Network."
+        "Cookie Instagram đã hết hạn hoặc không hợp lệ.\nRefresh cookie file trong Settings → Network."
     ),
     "err.ig_account_not_found": "Tài khoản @{username} không tìm thấy.",
     "err.ig_rate_limited": "Rate limit — Instagram đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại.",
@@ -1071,16 +1086,14 @@ VI: dict[str, str] = {
         "Theo dõi trang Facebook cần cookie file Facebook. Cấu hình trong Settings → Network → Cookie file."
     ),
     "err.fb_cookie_required": (
-        "Cần cookie file Facebook để kiểm tra live status.\n"
-        "Cấu hình trong Settings → Network → Cookie file."
+        "Cần cookie file Facebook để kiểm tra live status.\nCấu hình trong Settings → Network → Cookie file."
     ),
     "err.fb_cookie_no_session": (
         "Cookie file không có phiên đăng nhập Facebook (thiếu c_user/xs).\n"
         "Export lại cookie file sau khi đăng nhập Facebook."
     ),
     "err.fb_cookie_invalid": (
-        "Cookie Facebook đã hết hạn hoặc không hợp lệ.\n"
-        "Refresh cookie file trong Settings → Network."
+        "Cookie Facebook đã hết hạn hoặc không hợp lệ.\nRefresh cookie file trong Settings → Network."
     ),
     "err.fb_page_not_found": "Không tìm thấy trang Facebook {username}.",
     "err.fb_rate_limited": "Rate limit — Facebook đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại.",
@@ -1127,20 +1140,16 @@ VI: dict[str, str] = {
         "bạn đang dùng (ví dụ: Brave ≠ Chrome)."
     ),
     "cookie.err.permission_denied": (
-        "Bị từ chối truy cập file cookie của trình duyệt.\n"
-        "Thử chạy OmniDL với quyền Administrator."
+        "Bị từ chối truy cập file cookie của trình duyệt.\nThử chạy OmniDL với quyền Administrator."
     ),
     "cookie.err.browser_unsupported": (
-        "Trình duyệt này chưa được yt-dlp hỗ trợ.\n"
-        "Hãy thử Chrome, Firefox hoặc Edge."
+        "Trình duyệt này chưa được yt-dlp hỗ trợ.\nHãy thử Chrome, Firefox hoặc Edge."
     ),
     "cookie.err.cdp_no_connection": (
-        "Không kết nối được vào trình duyệt.\n"
-        "Thử lại — lần đầu có thể cần vài giây để khởi động."
+        "Không kết nối được vào trình duyệt.\nThử lại — lần đầu có thể cần vài giây để khởi động."
     ),
     "cookie.err.cdp_websocket": (
-        "Lỗi kết nối WebSocket với trình duyệt.\n"
-        "Hãy thử lại hoặc khởi động lại OmniDL."
+        "Lỗi kết nối WebSocket với trình duyệt.\nHãy thử lại hoặc khởi động lại OmniDL."
     ),
     "cookie.err.cdp_no_cookies": (
         "Không nhận được cookies từ trình duyệt. Hãy đăng nhập vào các trang rồi thử lại."
@@ -1165,16 +1174,13 @@ VI: dict[str, str] = {
         "Trên macOS/Linux hãy dùng nút 🔄 (yt-dlp) hoặc chọn file cookie thủ công."
     ),
     "cookie.err.browser_not_installed": (
-        "Không tìm thấy {browser} trên máy.\n"
-        "Kiểm tra Brave/Chrome đã cài đặt chưa."
+        "Không tìm thấy {browser} trên máy.\nKiểm tra Brave/Chrome đã cài đặt chưa."
     ),
     "cookie.err.cdp_zero_cookies": (
-        "Trình duyệt trả về 0 cookies.\n"
-        "Hãy đăng nhập vào các trang trước khi lấy cookies."
+        "Trình duyệt trả về 0 cookies.\nHãy đăng nhập vào các trang trước khi lấy cookies."
     ),
     "cookie.err.cdp_timeout": (
-        "Không kết nối được vào {browser} sau 20 giây.\n"
-        "Hãy thử lại — lần đầu có thể cần chờ thêm."
+        "Không kết nối được vào {browser} sau 20 giây.\nHãy thử lại — lần đầu có thể cần chờ thêm."
     ),
     "cookie.err.browser_running": (
         "{browser} đang chạy — cần đóng tạm để đọc cookies.\n"
@@ -1188,26 +1194,30 @@ VI: dict[str, str] = {
         "Không tìm thấy thư mục profile của {browser}.\n"
         "Kiểm tra Brave/Chrome đã được cài và đăng nhập ít nhất 1 lần."
     ),
+    "cookie.err.profile_not_found": (
+        'Không tìm thấy profile "{profile}" của {browser}.\n'
+        "Chọn lại hồ sơ trong Cài đặt, mục Mạng. OmniDL không dùng profile khác thay thế."
+    ),
+    "cookie.err.cdp_port_busy": (
+        "Cổng CDP {port} đang có một phiên trình duyệt khác (có thể là profile khác).\n"
+        "OmniDL không đọc cookies từ phiên này. Hãy thử lại."
+    ),
     "err.gdl_login_required": (
         "gallery-dl yêu cầu đăng nhập.\n"
         "Kiểm tra cookie file trong Settings → Network → Cookie file.\n"
         "Đảm bảo dùng cookie Instagram (không phải Facebook)."
     ),
     "err.gdl_rate_limited": (
-        "gallery-dl bị rate limit — Instagram đang chặn tạm thời.\n"
-        "Chờ 5–10 phút rồi thử lại."
+        "gallery-dl bị rate limit — Instagram đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại."
     ),
     "err.gdl_not_installed_short": "gallery-dl chưa được cài đặt.\nChạy: pip install gallery-dl",
     "err.gdl_private": "Nội dung này ở chế độ riêng tư —\ncần cookie tài khoản có quyền xem.",
     "err.gdl_unknown": "gallery-dl thất bại không rõ nguyên nhân.",
     "err.gdl_not_installed": (
-        "gallery-dl chưa được cài đặt.\n"
-        "Chạy: pip install gallery-dl\n"
-        "Sau đó khởi động lại OmniDL."
+        "gallery-dl chưa được cài đặt.\nChạy: pip install gallery-dl\nSau đó khởi động lại OmniDL."
     ),
     "err.gdl_no_content": (
-        "gallery-dl không tìm thấy nội dung tại URL này.\n"
-        "Kiểm tra URL hoặc thử refresh cookie."
+        "gallery-dl không tìm thấy nội dung tại URL này.\nKiểm tra URL hoặc thử refresh cookie."
     ),
     "err.fb_post_advert_only": (
         "Bài viết Facebook này chỉ chứa ảnh.\n"
@@ -1287,16 +1297,13 @@ VI: dict[str, str] = {
         "(vd: cf*cdn.com .m3u8)."
     ),
     "err.waaw_no_cdn_url": (
-        "Không tìm thấy CDN URL sau {seconds} giây.\n"
-        "waaw.ac có thể đã thay đổi cơ chế bảo vệ."
+        "Không tìm thấy CDN URL sau {seconds} giây.\nwaaw.ac có thể đã thay đổi cơ chế bảo vệ."
     ),
     "err.generic_error_word": "lỗi",
     "err.cancelled_by_user": "Đã hủy bởi người dùng.",
     "err.playwright_missing": "Thiếu thư viện Playwright.\nChạy: pip install playwright",
     "err.cdp_connect_failed": (
-        "Không kết nối được CDP.\n"
-        "Đóng trình duyệt hoàn toàn rồi thử lại.\n"
-        "(chi tiết: {err})"
+        "Không kết nối được CDP.\nĐóng trình duyệt hoàn toàn rồi thử lại.\n(chi tiết: {err})"
     ),
     "err.cdp_connect_failed_hard": (
         "Không kết nối được CDP.\n"
@@ -1373,8 +1380,7 @@ VI: dict[str, str] = {
     "docs.no_file_msg": "Hãy thêm ít nhất một tài liệu để chuyển đổi.",
     "docs.no_target_title": "Không có định dạng đích",
     "docs.no_target_msg": (
-        "Các tài liệu đang chọn không có định dạng đích chung. "
-        "Hãy chuyển đổi chúng theo từng nhóm."
+        "Các tài liệu đang chọn không có định dạng đích chung. Hãy chuyển đổi chúng theo từng nhóm."
     ),
     "docs.status.converting": "Đang chuyển đổi {name}... ({i}/{total})",
     "docs.status.done": "Xong: {ok}/{total} tài liệu → {dir}",
@@ -1418,6 +1424,9 @@ EN: dict[str, str] = {
     "topbar.theme_light": "☀ Light",
     "topbar.theme_dark": "🌙 Dark",
     "topbar.notifications": "Notifications",
+    "notification.title": "NOTIFICATIONS",
+    "notification.clear_all": "Clear all",
+    "notification.dismiss": "Dismiss",
     "topbar.hide_nav": "Hide navigation bar",
     "topbar.nav_strip": "Navigation bar",
     "topbar.toolbar_strip": "Analyse bar",
@@ -1551,6 +1560,7 @@ EN: dict[str, str] = {
     "archive.compress_individually": "Compress each file separately",
     "archive.encrypt_names": "Encrypt filenames (7z only)",
     "archive.password_label": "Password:",
+    "archive.toggle_password_visibility": "Show/hide password",
     "archive.password_placeholder": "Leave empty for no password",
     "archive.name_label": "Archive name:",
     "archive.use_orig_name": "Use original name",
@@ -1596,6 +1606,7 @@ EN: dict[str, str] = {
     "batch.select_all": "Select all",
     "batch.sequential": "Download sequentially",
     "batch.quality_label": "Quality:",
+    "batch.remove_item_tooltip": "Remove from list",
     "batch.retry_errors": "Retry errors",
     "batch.retry_count": "Retry {count} error(s)",
     "batch.queue_all": "Add all",
@@ -1687,11 +1698,15 @@ EN: dict[str, str] = {
     "editor.in_after_out_error": "In must be before Out",
     "editor.export_saved": "Saved: {name}",
     "editor.export_error": "Error: {msg}",
+    "editor.playback_error": "Playback error: {msg}",
+    "editor.export_blocked_by_preview": "Previewing, cannot export",
+    "editor.preview_blocked_by_export": "Exporting, cannot preview",
     "editor.choose_video_file": "Choose video file",
     "editor.all_files_filter": "All",
     "live.title": "Live monitor",
     "live.hint": "Paste a live stream URL — Instagram, YouTube, TikTok, Facebook, Twitch…  (up to {max})",
     "live.add_btn": "Add",
+    "live.remove_tooltip": "Remove from watch list",
     "live.check_interval_label": "Check every:",
     "live.seconds_label": "seconds",
     "live.pause": "Pause",
@@ -1761,8 +1776,7 @@ EN: dict[str, str] = {
     "convert.select_file_tip": "Include this file in the conversion.",
     "convert.parallel_label": "Parallel:",
     "convert.parallel_tip": (
-        "How many files convert at the same time (1-8). "
-        "Higher is faster but uses more CPU."
+        "How many files convert at the same time (1-8). Higher is faster but uses more CPU."
     ),
     "convert.settings_toggle_up": "⚙ Settings  ▲",
     "convert.settings_toggle_down": "⚙ Settings  ▼",
@@ -1798,6 +1812,8 @@ EN: dict[str, str] = {
     "convert.gpu_status": "GPU: {labels}",
     "convert.cpu_only_status": "CPU only",
     "convert.choose_videos_title": "Choose videos to convert",
+    "convert.file_filter_video": "Video files ({ext_filter})",
+    "convert.file_filter_all": "All files (*.*)",
     "convert.choose_folder_title": "Choose a folder with videos",
     "convert.scanning_folder": "Scanning folder…",
     "convert.no_video_in_folder": "No videos found in {folder}",
@@ -2150,6 +2166,11 @@ EN: dict[str, str] = {
     "settings.network.cdp_unsupported_use_browser": (
         "CDP only supports Brave/Chrome/Edge. Use 🔄 for {browser}."
     ),
+    "settings.network.cdp_no_profile": (
+        "No {browser} profile could be resolved. Pick a profile under Network before using CDP: "
+        "OmniDL will not fall back to the default one."
+    ),
+    "settings.network.cdp_no_profile_status": "❌ CDP: pick a browser profile first.",
     "settings.network.platform_cdp_failed_status": "❌ {platform} CDP: {err}",
     "settings.network.platform_cdp_failed_toast": "CDP {platform} failed: {err}",
     "settings.network.platform_cdp_saved_status": "✓ {platform}: {count} cookie(s) (CDP)",
@@ -2165,7 +2186,10 @@ EN: dict[str, str] = {
     "home.format_label": "Format",
     "home.folder_label": "Folder",
     "home.browse": "Browse",
+    "home.browse_tooltip": "Choose a different download folder for this item",
     "home.add_to_queue": "Add to queue",
+    "home.add_to_queue_tooltip": "Add the analysed media to the download queue",
+    "home.live": "LIVE",
     "home.no_preview": "No preview",
     "home.choose_dir": "Choose download folder",
     "home.photo_note": "Photo / image — downloading at best available resolution",
@@ -2360,8 +2384,7 @@ EN: dict[str, str] = {
     ),
     "err.account_suspended": "The account that posted this content has been suspended.",
     "err.members_only": (
-        "This content is for members/subscribers only.\n"
-        "Make sure you are logged in via cookies in Settings."
+        "This content is for members/subscribers only.\nMake sure you are logged in via cookies in Settings."
     ),
     "err.tiktok_10231": (
         "The TikTok API rejected the request (status 10231) even though the video is viewable.\n"
@@ -2381,16 +2404,14 @@ EN: dict[str, str] = {
         "• Or use a 'Video Downloader' browser extension."
     ),
     "err.ig_stories_cookies": (
-        "Instagram Stories require login cookies.\n"
-        "Set up a cookie file in Settings → Network → Cookie file."
+        "Instagram Stories require login cookies.\nSet up a cookie file in Settings → Network → Cookie file."
     ),
     "err.ig_live_cookies": (
         "Instagram Live streams require login cookies.\n"
         "Set up a cookie file in Settings → Network → Cookie file."
     ),
     "err.fb_live_cookies": (
-        "Facebook Live streams require cookies.\n"
-        "Set up a cookie file in Settings → Network → Cookie file."
+        "Facebook Live streams require cookies.\nSet up a cookie file in Settings → Network → Cookie file."
     ),
     "err.fb_stories_manual": (
         "Facebook Stories cannot be downloaded automatically.\n"
@@ -2407,7 +2428,7 @@ EN: dict[str, str] = {
         "The account may be private, or a cookie file may be required."
     ),
     "err.ffmpeg_not_found": "FFmpeg not found. Check your FFmpeg installation.",
-    "err.ffmpeg_stall": "FFmpeg stall watchdog: no data for 120 seconds — the stream may have ended.",
+    "err.ffmpeg_stall": "FFmpeg stall watchdog: no data for {seconds} seconds — the stream may have ended.",
     "err.no_error_detail": "No error details available.",
     "err.hls_stall": (
         "Stall watchdog: curl_cffi HLS received no new segment for {seconds}s — the stream may have ended."
@@ -2418,7 +2439,7 @@ EN: dict[str, str] = {
     ),
     "err.tiktok_audio_only": (
         "This item has audio only — there is no video track.\n"
-        "TikTok product/showcase and \"template effect\" / AR effect videos expose no video track through the"
+        'TikTok product/showcase and "template effect" / AR effect videos expose no video track through the'
         " "
         "API (audio stream only).\n"
         "How to save it: open the video in the TikTok app → Share → Save video."
@@ -2451,13 +2472,11 @@ EN: dict[str, str] = {
         "Export the cookie file again after logging in to Instagram."
     ),
     "err.ig_cookie_invalid": (
-        "The Instagram cookie expired or is invalid.\n"
-        "Refresh the cookie file in Settings → Network."
+        "The Instagram cookie expired or is invalid.\nRefresh the cookie file in Settings → Network."
     ),
     "err.ig_account_not_found": "Account @{username} was not found.",
     "err.ig_rate_limited": (
-        "Rate limited — Instagram is blocking temporarily.\n"
-        "Wait 5–10 minutes and try again."
+        "Rate limited — Instagram is blocking temporarily.\nWait 5–10 minutes and try again."
     ),
     "err.ig_forbidden": "Access denied (403). The cookie may have expired.",
     "err.ig_api_timeout": "The Instagram API timed out. Try again later.",
@@ -2479,13 +2498,11 @@ EN: dict[str, str] = {
         "Export the cookie file again after logging in to Facebook."
     ),
     "err.fb_cookie_invalid": (
-        "The Facebook cookie expired or is invalid.\n"
-        "Refresh the cookie file in Settings → Network."
+        "The Facebook cookie expired or is invalid.\nRefresh the cookie file in Settings → Network."
     ),
     "err.fb_page_not_found": "Facebook page {username} was not found.",
     "err.fb_rate_limited": (
-        "Rate limited — Facebook is blocking temporarily.\n"
-        "Wait 5–10 minutes and try again."
+        "Rate limited — Facebook is blocking temporarily.\nWait 5–10 minutes and try again."
     ),
     "err.fb_api_timeout": "Facebook timed out. Try again later.",
     "progress.recorded": "⏺ {size} recorded",
@@ -2530,16 +2547,13 @@ EN: dict[str, str] = {
         "you actually use (e.g. Brave ≠ Chrome)."
     ),
     "cookie.err.permission_denied": (
-        "Access to the browser cookie file was denied.\n"
-        "Try running OmniDL as Administrator."
+        "Access to the browser cookie file was denied.\nTry running OmniDL as Administrator."
     ),
     "cookie.err.browser_unsupported": (
-        "This browser is not supported by yt-dlp.\n"
-        "Try Chrome, Firefox or Edge."
+        "This browser is not supported by yt-dlp.\nTry Chrome, Firefox or Edge."
     ),
     "cookie.err.cdp_no_connection": (
-        "Could not connect to the browser.\n"
-        "Try again — the first launch can take a few seconds."
+        "Could not connect to the browser.\nTry again — the first launch can take a few seconds."
     ),
     "cookie.err.cdp_websocket": "WebSocket connection to the browser failed.\nTry again, or restart OmniDL.",
     "cookie.err.cdp_no_cookies": (
@@ -2557,24 +2571,20 @@ EN: dict[str, str] = {
         "Make sure you are logged in to {platform} in that browser."
     ),
     "cookie.err.platform_empty_browser": (
-        "No {platform} cookies found in {browser}.\n"
-        "Make sure you are logged in to {platform} in {browser}."
+        "No {platform} cookies found in {browser}.\nMake sure you are logged in to {platform} in {browser}."
     ),
     "cookie.err.cdp_windows_only": (
         "CDP mode (🦁) currently supports Windows only.\n"
         "On macOS/Linux use the 🔄 button (yt-dlp) or pick a cookie file manually."
     ),
     "cookie.err.browser_not_installed": (
-        "{browser} was not found on this machine.\n"
-        "Check that Brave/Chrome is installed."
+        "{browser} was not found on this machine.\nCheck that Brave/Chrome is installed."
     ),
     "cookie.err.cdp_zero_cookies": (
-        "The browser returned 0 cookies.\n"
-        "Log in to the sites before extracting cookies."
+        "The browser returned 0 cookies.\nLog in to the sites before extracting cookies."
     ),
     "cookie.err.cdp_timeout": (
-        "Could not connect to {browser} within 20 seconds.\n"
-        "Try again — the first launch can take longer."
+        "Could not connect to {browser} within 20 seconds.\nTry again — the first launch can take longer."
     ),
     "cookie.err.browser_running": (
         "{browser} is running — it must be closed briefly to read the cookies.\n"
@@ -2588,22 +2598,27 @@ EN: dict[str, str] = {
         "No profile directory found for {browser}.\n"
         "Check that Brave/Chrome is installed and has been logged in at least once."
     ),
+    "cookie.err.profile_not_found": (
+        '{browser} profile "{profile}" was not found.\n'
+        "Pick the profile again in Settings, Network. OmniDL never falls back to another profile."
+    ),
+    "cookie.err.cdp_port_busy": (
+        "CDP port {port} is already used by another browser session (possibly another profile).\n"
+        "OmniDL will not read cookies from it. Please try again."
+    ),
     "err.gdl_login_required": (
         "gallery-dl requires a login.\n"
         "Check the cookie file in Settings → Network → Cookie file.\n"
         "Make sure it is an Instagram cookie (not Facebook)."
     ),
     "err.gdl_rate_limited": (
-        "gallery-dl was rate limited — Instagram is blocking temporarily.\n"
-        "Wait 5–10 minutes and try again."
+        "gallery-dl was rate limited — Instagram is blocking temporarily.\nWait 5–10 minutes and try again."
     ),
     "err.gdl_not_installed_short": "gallery-dl is not installed.\nRun: pip install gallery-dl",
     "err.gdl_private": "This content is private —\na cookie for an account that can view it is required.",
     "err.gdl_unknown": "gallery-dl failed for an unknown reason.",
     "err.gdl_not_installed": (
-        "gallery-dl is not installed.\n"
-        "Run: pip install gallery-dl\n"
-        "Then restart OmniDL."
+        "gallery-dl is not installed.\nRun: pip install gallery-dl\nThen restart OmniDL."
     ),
     "err.gdl_no_content": "gallery-dl found no content at this URL.\nCheck the URL, or refresh the cookie.",
     "err.fb_post_advert_only": (
@@ -2689,16 +2704,13 @@ EN: dict[str, str] = {
         "elsewhere (e.g. cf*cdn.com .m3u8)."
     ),
     "err.waaw_no_cdn_url": (
-        "No CDN URL found after {seconds} seconds.\n"
-        "waaw.ac may have changed its protection scheme."
+        "No CDN URL found after {seconds} seconds.\nwaaw.ac may have changed its protection scheme."
     ),
     "err.generic_error_word": "error",
     "err.cancelled_by_user": "Cancelled by user.",
     "err.playwright_missing": "The Playwright library is missing.\nRun: pip install playwright",
     "err.cdp_connect_failed": (
-        "Could not connect over CDP.\n"
-        "Close the browser completely and try again.\n"
-        "(details: {err})"
+        "Could not connect over CDP.\nClose the browser completely and try again.\n(details: {err})"
     ),
     "err.cdp_connect_failed_hard": (
         "Could not connect over CDP.\n"
@@ -2711,8 +2723,7 @@ EN: dict[str, str] = {
         "Note: App Store builds do not support CDP — use the build from the official website."
     ),
     "err.fb_not_story_url": (
-        "This is not a Facebook Story URL.\n"
-        "Paste a URL of the form facebook.com/stories/..."
+        "This is not a Facebook Story URL.\nPaste a URL of the form facebook.com/stories/..."
     ),
     "err.no_download_dir": "The download folder has not been set",
     "err.fb_story_platform": "Facebook Story supports Windows and macOS only.\nLinux is not supported yet.",
@@ -2779,8 +2790,7 @@ EN: dict[str, str] = {
     "docs.no_file_msg": "Add at least one document to convert.",
     "docs.no_target_title": "No shared target format",
     "docs.no_target_msg": (
-        "The selected documents have no target format in common. "
-        "Convert them in separate batches."
+        "The selected documents have no target format in common. Convert them in separate batches."
     ),
     "docs.status.converting": "Converting {name}... ({i}/{total})",
     "docs.status.done": "Done: {ok}/{total} document(s) → {dir}",
@@ -2824,6 +2834,9 @@ ZH: dict[str, str] = {
     "topbar.theme_light": "☀ 浅色",
     "topbar.theme_dark": "🌙 深色",
     "topbar.notifications": "通知",
+    "notification.title": "通知",
+    "notification.clear_all": "全部清除",
+    "notification.dismiss": "关闭",
     "topbar.hide_nav": "隐藏导航栏",
     "topbar.nav_strip": "导航栏",
     "topbar.toolbar_strip": "解析栏",
@@ -2954,6 +2967,7 @@ ZH: dict[str, str] = {
     "archive.compress_individually": "分别压缩每个文件",
     "archive.encrypt_names": "加密文件名（仅 7z）",
     "archive.password_label": "密码：",
+    "archive.toggle_password_visibility": "显示/隐藏密码",
     "archive.password_placeholder": "留空则不设置密码",
     "archive.name_label": "压缩包名称：",
     "archive.use_orig_name": "使用原始名称",
@@ -2997,6 +3011,7 @@ ZH: dict[str, str] = {
     "batch.select_all": "全选",
     "batch.sequential": "顺序下载",
     "batch.quality_label": "画质：",
+    "batch.remove_item_tooltip": "从列表中移除",
     "batch.retry_errors": "重试失败项",
     "batch.retry_count": "重试 {count} 个失败项",
     "batch.queue_all": "全部添加",
@@ -3088,11 +3103,15 @@ ZH: dict[str, str] = {
     "editor.in_after_out_error": "入点必须早于出点",
     "editor.export_saved": "已保存：{name}",
     "editor.export_error": "错误：{msg}",
+    "editor.playback_error": "播放出错：{msg}",
+    "editor.export_blocked_by_preview": "正在预览，无法导出",
+    "editor.preview_blocked_by_export": "正在导出，无法预览",
     "editor.choose_video_file": "选择视频文件",
     "editor.all_files_filter": "全部",
     "live.title": "直播监控",
     "live.hint": "粘贴直播网址——Instagram、YouTube、TikTok、Facebook、Twitch 等（最多 {max} 个）",
     "live.add_btn": "添加",
+    "live.remove_tooltip": "从监控列表中移除",
     "live.check_interval_label": "检查间隔：",
     "live.seconds_label": "秒",
     "live.pause": "暂停",
@@ -3187,6 +3206,8 @@ ZH: dict[str, str] = {
     "convert.gpu_status": "GPU：{labels}",
     "convert.cpu_only_status": "仅 CPU",
     "convert.choose_videos_title": "选择要转换的视频",
+    "convert.file_filter_video": "视频文件 ({ext_filter})",
+    "convert.file_filter_all": "所有文件 (*.*)",
     "convert.choose_folder_title": "选择包含视频的文件夹",
     "convert.scanning_folder": "正在扫描文件夹…",
     "convert.no_video_in_folder": "在 {folder} 中未找到视频",
@@ -3495,6 +3516,10 @@ ZH: dict[str, str] = {
     "settings.network.platform_got_toast": "已从 {browser} 获取 {count} 个 {platform} Cookie。",
     "settings.network.reading_platform_status": "正在从 {browser} 读取 {platform} Cookie…",
     "settings.network.cdp_unsupported_use_browser": "CDP 仅支持 Brave/Chrome/Edge。请为 {browser} 使用 🔄。",
+    "settings.network.cdp_no_profile": (
+        "无法确定 {browser} 的配置文件。请先在网络页面选择配置文件再使用 CDP：OmniDL 不会改用默认配置文件。"
+    ),
+    "settings.network.cdp_no_profile_status": "❌ CDP：请先选择浏览器配置文件。",
     "settings.network.platform_cdp_failed_status": "❌ {platform} CDP：{err}",
     "settings.network.platform_cdp_failed_toast": "CDP {platform} 失败：{err}",
     "settings.network.platform_cdp_saved_status": "✓ {platform}：{count} 个 Cookie（CDP）",
@@ -3510,7 +3535,10 @@ ZH: dict[str, str] = {
     "home.format_label": "格式",
     "home.folder_label": "文件夹",
     "home.browse": "浏览",
+    "home.browse_tooltip": "为此次下载选择其他文件夹",
     "home.add_to_queue": "加入队列",
+    "home.add_to_queue_tooltip": "将已分析的媒体加入下载队列",
+    "home.live": "直播",
     "home.no_preview": "无预览",
     "home.choose_dir": "选择下载文件夹",
     "home.photo_note": "图片 — 以最高可用分辨率下载",
@@ -3653,8 +3681,7 @@ ZH: dict[str, str] = {
         "注意：Instagram Cookie 通常 1–2 周后过期。"
     ),
     "err.rate_limit": (
-        "已达到频率限制——短时间内请求过多。\n"
-        "请等待 5–10 分钟后重试。在设置中启用浏览器 Cookie 可能有帮助。"
+        "已达到频率限制——短时间内请求过多。\n请等待 5–10 分钟后重试。在设置中启用浏览器 Cookie 可能有帮助。"
     ),
     "err.tls_fingerprint": (
         "TLS 连接错误——服务器拒绝了默认的 TLS 指纹。\n"
@@ -3666,8 +3693,7 @@ ZH: dict[str, str] = {
     ),
     "err.fb_unavailable": "该 Facebook 内容不可用。可能需要登录，或仅限特定地区访问。",
     "err.geo_restricted": (
-        "该内容有地区限制，在你所在区域不可用。\n"
-        "可在 设置 → 网络 → Proxy URL 中启用 VPN 或代理。"
+        "该内容有地区限制，在你所在区域不可用。\n可在 设置 → 网络 → Proxy URL 中启用 VPN 或代理。"
     ),
     "err.ffmpeg_livestream": (
         "无法录制直播——ffmpeg 报错。\n"
@@ -3730,7 +3756,7 @@ ZH: dict[str, str] = {
     "err.no_data": "该 URL 未返回数据。请检查 URL，或在设置中添加 Cookie 文件。",
     "err.playlist_empty": "该播放列表/主页没有可用视频。\n账号可能为私密，或需要 Cookie 文件。",
     "err.ffmpeg_not_found": "找不到 FFmpeg。请检查 FFmpeg 安装。",
-    "err.ffmpeg_stall": "FFmpeg 停滞监控：120 秒无数据——直播可能已结束。",
+    "err.ffmpeg_stall": "FFmpeg 停滞监控：{seconds} 秒无数据——直播可能已结束。",
     "err.no_error_detail": "没有可用的错误信息。",
     "err.hls_stall": "停滞监控：curl_cffi HLS 已 {seconds} 秒未收到新分片——直播可能已结束。",
     "err.livestream_ended_relink": "直播已结束，或 HLS 链接已失效。\n可重新添加链接以监控下一次直播。",
@@ -3759,12 +3785,10 @@ ZH: dict[str, str] = {
     "err.http": "HTTP 错误：{err}",
     "err.cookie_unreadable": "无法读取 Cookie 文件：{err}",
     "err.ig_cookie_required": (
-        "检查直播状态需要 Instagram Cookie 文件。\n"
-        "请在 设置 → 网络 → Cookie 文件 中配置。"
+        "检查直播状态需要 Instagram Cookie 文件。\n请在 设置 → 网络 → Cookie 文件 中配置。"
     ),
     "err.ig_cookie_no_sessionid": (
-        "Cookie 文件中没有 Instagram 的 sessionid。\n"
-        "请登录 Instagram 后重新导出 Cookie 文件。"
+        "Cookie 文件中没有 Instagram 的 sessionid。\n请登录 Instagram 后重新导出 Cookie 文件。"
     ),
     "err.ig_cookie_invalid": "Instagram Cookie 已过期或无效。\n请在 设置 → 网络 中刷新 Cookie 文件。",
     "err.ig_account_not_found": "找不到账号 @{username}。",
@@ -3778,12 +3802,10 @@ ZH: dict[str, str] = {
         "监控 Facebook 主页需要 Facebook Cookie 文件。请在 设置 → 网络 → Cookie 文件 中配置。"
     ),
     "err.fb_cookie_required": (
-        "检查直播状态需要 Facebook Cookie 文件。\n"
-        "请在 设置 → 网络 → Cookie 文件 中配置。"
+        "检查直播状态需要 Facebook Cookie 文件。\n请在 设置 → 网络 → Cookie 文件 中配置。"
     ),
     "err.fb_cookie_no_session": (
-        "Cookie 文件中没有 Facebook 登录会话（缺少 c_user/xs）。\n"
-        "请登录 Facebook 后重新导出 Cookie 文件。"
+        "Cookie 文件中没有 Facebook 登录会话（缺少 c_user/xs）。\n请登录 Facebook 后重新导出 Cookie 文件。"
     ),
     "err.fb_cookie_invalid": "Facebook Cookie 已过期或无效。\n请在 设置 → 网络 中刷新 Cookie 文件。",
     "err.fb_page_not_found": "找不到 Facebook 主页 {username}。",
@@ -3818,8 +3840,7 @@ ZH: dict[str, str] = {
         "然后再次点击 🔄。"
     ),
     "cookie.err.db_locked": (
-        "无法读取 Cookie——浏览器正在运行并锁定了数据库。\n"
-        "请完全关闭浏览器（包括后台进程）后重试。"
+        "无法读取 Cookie——浏览器正在运行并锁定了数据库。\n请完全关闭浏览器（包括后台进程）后重试。"
     ),
     "cookie.err.decrypt_failed": "无法解密浏览器 Cookie。\n请尝试以管理员身份运行 OmniDL，或改选其他浏览器。",
     "cookie.err.profile_missing": (
@@ -3835,12 +3856,10 @@ ZH: dict[str, str] = {
     "cookie.err.read_failed": "无法读取 Cookie——浏览器可能未登录，或数据库被锁定。请尝试完全关闭浏览器。",
     "cookie.err.browser_empty": "该浏览器中没有任何 Cookie。请先登录你要下载的网站。",
     "cookie.err.platform_empty": (
-        "在浏览器中找不到 {platform} 的 Cookie。\n"
-        "请确认已在该浏览器中登录 {platform}。"
+        "在浏览器中找不到 {platform} 的 Cookie。\n请确认已在该浏览器中登录 {platform}。"
     ),
     "cookie.err.platform_empty_browser": (
-        "在 {browser} 中找不到 {platform} 的 Cookie。\n"
-        "请确认已在 {browser} 中登录 {platform}。"
+        "在 {browser} 中找不到 {platform} 的 Cookie。\n请确认已在 {browser} 中登录 {platform}。"
     ),
     "cookie.err.cdp_windows_only": (
         "CDP 模式（🦁）目前仅支持 Windows。\n"
@@ -3858,8 +3877,15 @@ ZH: dict[str, str] = {
         "原因：CDP 需要读取真实的配置文件，而该文件当前被 {browser} 锁定。"
     ),
     "cookie.err.profile_dir_missing": (
-        "找不到 {browser} 的配置文件目录。\n"
-        "请检查 Brave/Chrome 是否已安装并至少登录过一次。"
+        "找不到 {browser} 的配置文件目录。\n请检查 Brave/Chrome 是否已安装并至少登录过一次。"
+    ),
+    "cookie.err.profile_not_found": (
+        '找不到 {browser} 的配置文件 "{profile}"。\n'
+        "请在设置的网络页面重新选择配置文件。OmniDL 不会改用其他配置文件。"
+    ),
+    "cookie.err.cdp_port_busy": (
+        "CDP 端口 {port} 已被另一个浏览器会话占用（可能是其他配置文件）。\n"
+        "OmniDL 不会从该会话读取 Cookie。请重试。"
     ),
     "err.gdl_login_required": (
         "gallery-dl 需要登录。\n"
@@ -3944,14 +3970,10 @@ ZH: dict[str, str] = {
     "err.playwright_missing": "缺少 Playwright 库。\n请运行：pip install playwright",
     "err.cdp_connect_failed": "无法通过 CDP 连接。\n请完全关闭浏览器后重试。\n（详情：{err}）",
     "err.cdp_connect_failed_hard": (
-        "无法通过 CDP 连接。\n"
-        "\n"
-        "请完全关闭浏览器（包括系统托盘）后重试。\n"
-        "（详情：{err}）"
+        "无法通过 CDP 连接。\n\n请完全关闭浏览器（包括系统托盘）后重试。\n（详情：{err}）"
     ),
     "err.browser_not_found_cdp": (
-        "找不到 {browser}。请先安装该浏览器。\n"
-        "注意：App Store 版本不支持 CDP——请使用官网版本。"
+        "找不到 {browser}。请先安装该浏览器。\n注意：App Store 版本不支持 CDP——请使用官网版本。"
     ),
     "err.fb_not_story_url": "这不是 Facebook Story 链接。\n请粘贴形如 facebook.com/stories/... 的链接。",
     "err.no_download_dir": "尚未设置下载目录",
