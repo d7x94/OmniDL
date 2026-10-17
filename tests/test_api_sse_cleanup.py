@@ -96,17 +96,46 @@ class TestAnalyseCacheEviction:
     def test_size_cap_drops_oldest_first(self):
         base = time.monotonic()
         for i in range(srv._ANALYSE_CACHE_MAX_ENTRIES + 5):
+            done = threading.Event()
+            done.set()
             srv._analyse_cache[f"https://example.com/{i}"] = {
-                "done": threading.Event(),
-                "result": {},
-                "ts": 0.0,
+                "done": done,
+                "result": {"info": object()},
+                "ts": time.monotonic(),
                 "created": base + i,
-                "refs": 1,
+                "refs": 0,
             }
         srv._analyse_cache_cleanup()
         assert len(srv._analyse_cache) == srv._ANALYSE_CACHE_MAX_ENTRIES
         assert "https://example.com/0" not in srv._analyse_cache
         assert f"https://example.com/{srv._ANALYSE_CACHE_MAX_ENTRIES + 4}" in srv._analyse_cache
+
+    def test_size_cap_never_evicts_an_in_flight_entry(self):
+        """An in-flight job (not done, or refs > 0) must survive the overflow
+        cap even when it's the oldest entry: a concurrent SSE stream already
+        holds a direct reference and keeps working, but removing it from the
+        dict breaks dedup — the next request for the same URL would spawn a
+        duplicate extract instead of attaching to this one."""
+        base = time.monotonic()
+        srv._analyse_cache["https://example.com/in-flight"] = {
+            "done": threading.Event(),  # not set — job still running
+            "result": {},
+            "ts": 0.0,
+            "created": base - 10.0,  # oldest, but well under _ANALYSE_CACHE_MAX_AGE
+            "refs": 1,
+        }
+        for i in range(srv._ANALYSE_CACHE_MAX_ENTRIES + 5):
+            done = threading.Event()
+            done.set()
+            srv._analyse_cache[f"https://example.com/{i}"] = {
+                "done": done,
+                "result": {"info": object()},
+                "ts": time.monotonic(),
+                "created": base + i,
+                "refs": 0,
+            }
+        srv._analyse_cache_cleanup()
+        assert "https://example.com/in-flight" in srv._analyse_cache
 
     def test_refs_incremented_inside_the_generator(self):
         app = _make_app()
@@ -117,6 +146,61 @@ class TestAnalyseCacheEviction:
             entry = srv._analyse_cache.get("https://example.com/video")
             assert entry is not None
             assert entry["refs"] == 0  # generator never started
+
+        asyncio.run(_run())
+
+
+    def test_disconnect_mid_analysis_keeps_the_running_job(self):
+        """A reconnecting client must attach to the running job, not start a second one.
+
+        omnidl_debug.log 2026-09-22 18:50:27 / 18:51:15: the PWA's EventSource
+        dropped mid-analysis, the finally block evicted the still-running entry,
+        and the reconnect spawned a duplicate yt-dlp + gallery-dl extraction.
+        """
+        calls = []
+        callbacks = {}
+
+        def _analyse(url, on_done, on_error):
+            calls.append(url)
+            callbacks["on_done"] = on_done
+
+        service = SimpleNamespace(get_all_tasks=lambda: [], analyse_url=_analyse)
+        app = srv.create_app(service, SimpleNamespace(api_token=""))  # type: ignore[arg-type]
+        endpoint = _endpoint(app, "/api/analyse/stream")
+        url = "https://example.com/video"
+
+        async def _run():
+            response = await endpoint(url=url, _=None)
+            task = asyncio.ensure_future(response.body_iterator.__anext__())
+            await asyncio.sleep(0.1)
+            task.cancel()  # client disconnects while the job is still running
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await response.body_iterator.aclose()
+
+            assert url in srv._analyse_cache, "running job was evicted on disconnect"
+
+            await endpoint(url=url, _=None)  # client reconnects
+            assert len(calls) == 1, "reconnect spawned a duplicate extraction"
+
+        asyncio.run(_run())
+
+    def test_error_after_all_clients_left_is_not_cached(self):
+        """An error that lands with no listener is dropped, so a retry starts fresh."""
+        callbacks = {}
+
+        def _analyse(url, on_done, on_error):
+            callbacks["on_error"] = on_error
+
+        service = SimpleNamespace(get_all_tasks=lambda: [], analyse_url=_analyse)
+        app = srv.create_app(service, SimpleNamespace(api_token=""))  # type: ignore[arg-type]
+        endpoint = _endpoint(app, "/api/analyse/stream")
+        url = "https://example.com/video"
+
+        async def _run():
+            await endpoint(url=url, _=None)  # generator never started: refs == 0
+            callbacks["on_error"]("boom")
+            assert url not in srv._analyse_cache
 
         asyncio.run(_run())
 

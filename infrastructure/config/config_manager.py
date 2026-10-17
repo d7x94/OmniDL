@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -47,10 +48,13 @@ _DEFAULTS: dict[str, Any] = {
     "theme": "violet",
     "language": "en",
     "max_concurrent": 3,
+    # Parallel FFmpeg conversions (Convert tab + Remote API batch convert).
+    "convert_max_concurrent": 2,
     "max_retries": 3,
     "proxy": "",
     "use_cookies": False,
     "cookies_browser": "chrome",
+    "cookies_profile": "",  # Chromium profile dir ("Default", "Profile N"); "" = browser default
     "cookie_file": "",  # path to a Netscape-format .txt cookie file (global fallback)
     # Per-platform cookie files — take priority over cookie_file for each platform.
     # Keys: "tiktok", "instagram", "facebook", "twitter", "threads"
@@ -272,10 +276,34 @@ class ConfigManager:
         return str(self.get("theme", "violet"))
 
     @property
+    def language(self) -> str:
+        """UI language code — one of "en", "vi", "zh".
+
+        Validated through utils.i18n.normalize so a hand-edited or stale
+        config.json can never put an unsupported code into the UI.
+        """
+        from utils.i18n import normalize
+
+        return normalize(self.get("language", "en"))
+
+    @property
     def max_concurrent(self) -> int:
         # Clamp to [1, 10]: 0 would block all downloads; >10 is unnecessary
         # on a desktop machine and risks exhausting network/disk resources.
         return max(1, min(10, int(self.get("max_concurrent", 3))))
+
+    @property
+    def convert_max_concurrent(self) -> int:
+        """Parallel FFmpeg conversions allowed by the Convert tab / Remote API.
+
+        Clamped to [1, 8]: 0 would stall every conversion, and past ~8 the
+        FFmpeg processes only contend for the same CPU and disk.
+        """
+        try:
+            raw = int(self.get("convert_max_concurrent", 2))
+        except (TypeError, ValueError):
+            raw = 2
+        return max(1, min(8, raw))
 
     @property
     def max_retries(self) -> int:
@@ -319,6 +347,16 @@ class ConfigManager:
                 ", ".join(sorted(_VALID_BROWSERS)),
             )
             return "chrome"
+        return val
+
+    @property
+    def cookies_profile(self) -> str:
+        # Directory name only: a display name or a path would either open a
+        # new empty profile or escape the user-data-dir (CWE-22).
+        val = str(self.get("cookies_profile", "") or "")
+        if val and not re.fullmatch(r"Default|Profile \d+", val):
+            logger.warning("cookies_profile %r is not a profile directory name, ignoring.", val)
+            return ""
         return val
 
     @property

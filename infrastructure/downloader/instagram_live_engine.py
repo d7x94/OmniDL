@@ -390,6 +390,17 @@ def _cdp_intercept_hls_impl(
                     logger.debug("CDP[SW]: route(%s) failed (%s)", _stream_pattern, exc)
             logger.debug("CDP[SW]: context-level stream routes installed")
 
+            # BUG-IG-ROUTE-TEARDOWN: a live DASH player refetches the .mpd every
+            # few seconds, so a route.continue_() is almost always in flight when
+            # sync_playwright() exits. Teardown cancels it and asyncio logs two
+            # CancelledError tracebacks (BaseException, so _on_ctx_route's except
+            # misses it). Remove the routes and let in-flight handlers finish first.
+            def _unroute() -> None:
+                try:
+                    ctx.unroute_all(behavior="wait")
+                except Exception as exc:
+                    logger.debug("CDP[SW]: unroute_all failed (%s)", exc)
+
             # Layer A: Playwright request intercept (page-level)
             # Log ALL instagram/cdninstagram requests to help diagnose
             def _on_request(request) -> None:
@@ -567,6 +578,7 @@ def _cdp_intercept_hls_impl(
                 if hls_url:
                     break
                 if _cancelled():
+                    _unroute()
                     return None, {}
 
                 # Re-inject gesture every 5s -- Instagram SPA may render the
@@ -649,6 +661,8 @@ def _cdp_intercept_hls_impl(
                         pass
 
                 time.sleep(0.5)
+
+            _unroute()
 
             if not hls_url:
                 logger.warning(
@@ -739,7 +753,9 @@ class InstagramLiveEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         bid_match = _BROADCAST_ID_FROM_URL_RE.search(url)
-        broadcast_id = bid_match.group(1)[:12] if bid_match else "live"
+        # 30 bytes, same cap as the yt-dlp [%(id).30B] template: Instagram
+        # broadcast IDs are 17 digits and 12 truncated them into nonsense.
+        broadcast_id = bid_match.group(1)[:30] if bid_match else "live"
         rec_ts = time.strftime("%Y-%m-%d %H-%M")
         is_dash = bool(hls_url and ".mpd" in hls_url.lower())
         ext = ".mkv" if is_dash else ".ts"
@@ -772,6 +788,11 @@ class InstagramLiveEngine:
         empties = 0
         cancelled = False
         ffmpeg_err = False
+        # BUG-IG-FORMAT: Instagram can hand back a different delivery format on a
+        # re-capture (DASH .mpd <-> HLS .m3u8).  is_dash drives the FFmpeg input
+        # args, so it has to follow the URL actually being recorded, not the one
+        # captured first.
+        mixed_formats = False
 
         while attempt <= _MAX_RESUME_ATTEMPTS:
             part_path = Path(f"{output_path}.part{attempt}")
@@ -827,6 +848,14 @@ class InstagramLiveEngine:
                     len(parts),
                 )
                 break
+            _new_is_dash = ".mpd" in hls_url.lower()
+            if _new_is_dash != is_dash:
+                logger.info(
+                    "BUG-IG-FORMAT: stream switched to %s -- recording remaining parts with its args",
+                    "DASH" if _new_is_dash else "HLS",
+                )
+                is_dash = _new_is_dash
+                mixed_formats = True
             attempt += 1
 
         # Finalize: nothing usable -> raise; one part -> rename; many -> concat.
@@ -840,6 +869,13 @@ class InstagramLiveEngine:
                 "FFmpeg khong ghi duoc du lieu tu stream (stream da ket thuc hoac URL het han).\n"
                 "Thu lai ngay khi stream dang phat."
             )
+
+        if len(parts) > 1 and mixed_formats:
+            # Parts span both delivery formats; matroska is the only container
+            # that reliably holds every codec DASH and HLS may have produced.
+            output_path = output_path.with_suffix(".mkv")
+            with task._lock:
+                task.filename = str(output_path)
 
         if len(parts) == 1:
             parts[0].replace(output_path)
@@ -1024,6 +1060,9 @@ class InstagramLiveEngine:
             ) from exc
 
         # Drain stderr continuously so the pipe never fills and blocks FFmpeg.
+        # BUG-IG-STDERR-TAIL: log these whole lines, never a character tail -- a
+        # stream URL is ~400 chars and FFmpeg echoes it, so a 600-char slice cut
+        # off the one line that named the real error.
         _stderr_lines: deque[str] = deque(maxlen=40)
 
         def _drain_stderr(pipe, lines: "deque[str]") -> None:
@@ -1077,7 +1116,7 @@ class InstagramLiveEngine:
                         _data_ever_written = True
                         _STALL_TIMEOUT = 30.0
                 elif now - _last_growth_t > _STALL_TIMEOUT:
-                    _stall_msg = "\n".join(_stderr_lines)[-600:] or "(no stderr output)"
+                    _stall_msg = "\n".join(_stderr_lines) or "(no stderr output)"
                     logger.warning(
                         "InstagramLiveEngine: FFmpeg stalled"
                         " (no bytes written in %.0fs) -- terminating | stderr: %s",
@@ -1119,7 +1158,7 @@ class InstagramLiveEngine:
             logger.error(
                 "InstagramLiveEngine: FFmpeg exited %d | stderr: %s",
                 ret,
-                "\n".join(_stderr_lines)[-600:],
+                "\n".join(_stderr_lines),
             )
             return "ffmpeg_error", final_size
         if ret is None:

@@ -11,6 +11,7 @@ Fills coverage gaps:
 - add: prunes oldest when limit exceeded
 - add: deduplicates by id
 """
+
 import json
 from pathlib import Path
 
@@ -22,9 +23,8 @@ from infrastructure.storage.history_repository import HistoryRepository
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_task(
-    title="Test Video", url="https://youtube.com/watch?v=abc"
-) -> DownloadTask:
+
+def make_task(title="Test Video", url="https://youtube.com/watch?v=abc") -> DownloadTask:
     t = DownloadTask(url=url, format_id="best", output_ext="mp4")
     t.media_info = MediaInfo(url=url, title=title)
     t.status = DownloadStatus.COMPLETED
@@ -41,6 +41,7 @@ def write_jsonl(path: Path, entries: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 # get_by_id
 # ---------------------------------------------------------------------------
+
 
 class TestGetById:
     def test_returns_entry_when_found(self, tmp_path):
@@ -69,6 +70,7 @@ class TestGetById:
 # _load — file parsing edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestLoad:
     def test_missing_file_loads_empty(self, tmp_path):
         repo = HistoryRepository(tmp_path / "nonexistent.jsonl")
@@ -85,10 +87,7 @@ class TestLoad:
         good = {"id": "1", "title": "Good", "url": "https://example.com"}
         good2 = {"id": "2", "title": "Also Good", "url": "https://example.com"}
         path.write_text(
-            json.dumps(good) + "\n"
-            + "NOT VALID JSON {{{\n"
-            + json.dumps(good2)
-            + "\n",
+            json.dumps(good) + "\n" + "NOT VALID JSON {{{\n" + json.dumps(good2) + "\n",
             encoding="utf-8",
         )
         repo = HistoryRepository(path)
@@ -113,9 +112,7 @@ class TestLoad:
 
     def test_load_trims_and_rewrites_when_over_limit(self, tmp_path):
         path = tmp_path / "h.jsonl"
-        entries = [
-            {"id": str(i), "title": f"t{i}", "url": "https://example.com"} for i in range(5)
-        ]
+        entries = [{"id": str(i), "title": f"t{i}", "url": "https://example.com"} for i in range(5)]
         write_jsonl(path, entries)
         repo = HistoryRepository(path, limit=2)
         assert len(repo.all()) == 2
@@ -169,6 +166,7 @@ class TestRewriteFailureRecovery:
 # add — limit and deduplication
 # ---------------------------------------------------------------------------
 
+
 class TestAdd:
     def test_prunes_oldest_when_limit_exceeded(self, tmp_path):
         repo = HistoryRepository(tmp_path / "h.jsonl", limit=3)
@@ -197,6 +195,7 @@ class TestAdd:
 # remove
 # ---------------------------------------------------------------------------
 
+
 class TestRemove:
     def test_remove_deletes_entry(self, tmp_path):
         repo = HistoryRepository(tmp_path / "h.jsonl")
@@ -223,6 +222,29 @@ class TestRemove:
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
+
+
+class TestUpdateFilename:
+    def test_updates_existing_entry(self, tmp_path):
+        repo = HistoryRepository(tmp_path / "h.jsonl")
+        task = make_task()
+        repo.add(task)
+        assert repo.update_filename(task.id, "/new/path.mp4") is True
+        assert repo.get_by_id(task.id)["filename"] == "/new/path.mp4"
+
+    def test_persists_to_disk(self, tmp_path):
+        path = tmp_path / "h.jsonl"
+        repo = HistoryRepository(path)
+        task = make_task()
+        repo.add(task)
+        repo.update_filename(task.id, "/new/path.mp4")
+        repo2 = HistoryRepository(path)
+        assert repo2.get_by_id(task.id)["filename"] == "/new/path.mp4"
+
+    def test_returns_false_when_not_found(self, tmp_path):
+        repo = HistoryRepository(tmp_path / "h.jsonl")
+        assert repo.update_filename("does-not-exist", "/x.mp4") is False
+
 
 class TestSearch:
     def test_search_by_title(self, tmp_path):

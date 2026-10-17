@@ -249,7 +249,7 @@ def _call_pass0(ctx, session):
     strategy = Pass0WebcastApi()
     with patch(
         "utils.tiktok_detection.strategies.pass0_webcast_api.Pass0WebcastApi._all_10013_until",
-        {},
+        0.0,
     ):
         with patch(
             "utils.tiktok_live_checker._get_impersonate_session",
@@ -265,13 +265,16 @@ def _call_pass0(ctx, session):
 def test_pass0_cooldown_returns_none():
     import time
 
+    # The cooldown is one shared deadline, not a per-username entry: 10013
+    # ("signing required") is a property of the endpoint, not of an account.
     strategy = Pass0WebcastApi()
-    username = "cooldown_user_x"
-    Pass0WebcastApi._all_10013_until[username] = time.monotonic() + 999.0
-    ctx = _pass0_ctx(username=username)
-    result = strategy.check(ctx)
-    assert result is None
-    del Pass0WebcastApi._all_10013_until[username]
+    Pass0WebcastApi._all_10013_until = time.monotonic() + 999.0
+    try:
+        assert strategy.check(_pass0_ctx(username="cooldown_user_x")) is None
+        # A different account is suppressed by the same deadline.
+        assert strategy.check(_pass0_ctx(username="someone_else")) is None
+    finally:
+        Pass0WebcastApi._reset_cooldown()
 
 
 def test_pass0_http_non_200_returns_none():
@@ -286,7 +289,7 @@ def test_pass0_status_code_10013_all_combos_sets_cooldown():
     body = json.dumps({"status_code": 10013})
     session = _mock_session(body=body)
     strategy = Pass0WebcastApi()
-    Pass0WebcastApi._all_10013_until.pop("testuser", None)
+    Pass0WebcastApi._reset_cooldown()
     with patch(
         "utils.tiktok_live_checker._get_impersonate_session",
         return_value=session,
@@ -299,8 +302,8 @@ def test_pass0_status_code_10013_all_combos_sets_cooldown():
     assert result is None
     import time
 
-    assert Pass0WebcastApi._all_10013_until.get("testuser", 0) > time.monotonic()
-    del Pass0WebcastApi._all_10013_until["testuser"]
+    assert Pass0WebcastApi._all_10013_until > time.monotonic()
+    Pass0WebcastApi._reset_cooldown()
 
 
 def test_pass0_no_rooms_returns_none():
@@ -604,3 +607,92 @@ def test_detection_gate_verify_alive_true_returns_result(monkeypatch):
 
     result = ttlc.check_tiktok_live("gateuser")
     assert result == "https://www.tiktok.com/@gateuser/live"
+
+
+# ---------------------------------------------------------------------------
+# BUG-TT-PROBE-429 -- a non-200 is not a probe success
+# ---------------------------------------------------------------------------
+
+
+def test_pass0_non_200_sets_network_error():
+    ctx = _pass0_ctx()
+    assert _call_pass0(ctx, _mock_session(status_code=403)) is None
+    assert ctx.network_error is True
+
+
+def test_pass3_non_200_sets_network_error():
+    ctx = _pass3_ctx()
+    assert _call_pass3(ctx, _mock_session(status_code=429)) is None
+    assert ctx.network_error is True
+
+
+def test_pass4_non_200_sets_network_error():
+    ctx = _pass4_ctx()
+    assert _call_pass4(ctx, _mock_session(status_code=503)) is None
+    assert ctx.network_error is True
+
+
+def test_health_daemon_non_200_probe_does_not_re_enable():
+    """A 429 must not resurrect a strategy the daemon already disabled."""
+    registry = _make_health()
+    strategy = _make_strategy(name="pass3_user_api")
+
+    def _check(ctx):
+        ctx.network_error = True
+        return None
+
+    strategy.check.side_effect = _check
+
+    registry.record_probe_failure("pass3_user_api")
+    registry.record_probe_failure("pass3_user_api")
+    assert registry.is_enabled("pass3_user_api") is False
+
+    HealthDaemon(strategies=[strategy], registry=registry)._probe_all()
+    assert registry.is_enabled("pass3_user_api") is False
+
+
+# ---------------------------------------------------------------------------
+# BUG-TT-PASS4-REMARK -- _mark_room_ended is idempotent and TTL-bounded
+# ---------------------------------------------------------------------------
+
+
+def test_mark_room_ended_first_call_only():
+    import utils.tiktok_live_checker as ttlc
+
+    ttlc._ENDED_ROOM_IDS.clear()
+    assert ttlc._mark_room_ended("555111") is True
+    assert ttlc._mark_room_ended("555111") is False
+    assert ttlc._mark_room_ended("") is False
+
+
+def test_mark_room_ended_does_not_refresh_ttl():
+    """Re-marking must not push the expiry out, or the TTL never elapses."""
+    import time
+
+    import utils.tiktok_live_checker as ttlc
+
+    ttlc._ENDED_ROOM_IDS.clear()
+    ttlc._mark_room_ended("555222")
+    stamped = ttlc._ENDED_ROOM_IDS["555222"]
+
+    # Age the mark to just inside the TTL, then poll again like pass-4 does.
+    ttlc._ENDED_ROOM_IDS["555222"] = stamped - (ttlc._ENDED_ROOM_TTL - 1.0)
+    ttlc._mark_room_ended("555222")
+    assert ttlc._ENDED_ROOM_IDS["555222"] == stamped - (ttlc._ENDED_ROOM_TTL - 1.0)
+
+    # Past the TTL the mark is dropped, so a restarted broadcast reusing the
+    # same roomId is visible to pass-1/pass-2 again.
+    ttlc._ENDED_ROOM_IDS["555222"] = time.monotonic() - ttlc._ENDED_ROOM_TTL - 1.0
+    assert ttlc._room_recently_ended("555222") is False
+
+
+def test_pass4_marked_suffix_logged_once(caplog):
+    import utils.tiktok_live_checker as ttlc
+
+    ttlc._ENDED_ROOM_IDS.clear()
+    body = json.dumps({"statusCode": 0, "data": {"user": {"roomId": "555333", "status": 4}}})
+    with caplog.at_level("DEBUG", logger="utils.tiktok_detection.strategies.pass4_api_live_room"):
+        _call_pass4(_pass4_ctx(), _mock_session(body=body))
+        _call_pass4(_pass4_ctx(), _mock_session(body=body))
+    marked = [r for r in caplog.records if "marked room 555333 ended" in r.getMessage()]
+    assert len(marked) == 1

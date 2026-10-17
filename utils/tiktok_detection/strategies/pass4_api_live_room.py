@@ -61,6 +61,7 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
                 timeout=10,
             )
         except Exception as exc:  # noqa: BLE001
+            ctx.network_error = True
             logger.debug("tiktok_detection: @%s pass-4 network error: %s", ctx.username, exc)
             return None
         finally:
@@ -69,6 +70,10 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
             session.close()
 
         if resp.status_code != 200:
+            # BUG-TT-PROBE-429 FIX: see pass3_user_api — a non-200 is not an
+            # answer about live status, so HealthDaemon must record no verdict
+            # rather than a probe success.
+            ctx.network_error = True
             logger.debug("tiktok_detection: @%s pass-4 HTTP %s", ctx.username, resp.status_code)
             return None
 
@@ -76,6 +81,7 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
             data = json.loads(resp.text)
         except ValueError:
             if not resp.text.strip():
+                ctx.unavailable = True
                 logger.debug("tiktok_detection: @%s pass-4 empty body (bot-detection)", ctx.username)
             return None
 
@@ -89,7 +95,38 @@ class Pass4ApiLiveRoom(LiveDetectionStrategy):
         if status is None:
             status = room.get("liveRoom", {}).get("status")
         if status != 2:
-            logger.debug("tiktok_detection: @%s pass-4 status=%s (not live)", ctx.username, status)
+            # BUG-TT-PASS4-ENDED FIX: this endpoint is the canonical live
+            # status, but its verdict stayed local to pass-4.  Pass-1/pass-2
+            # kept reading the finished broadcast's roomId out of the page and
+            # check_alive kept answering alive=True for it, so the dispatcher
+            # announced "LIVE" every poll for an account pass-4 had already
+            # reported as ended (@tiktok room 7679022730909469458, every 5 min
+            # for the whole 10:55-11:26 window of omnidl_debug.log).  Publish
+            # the verdict to the shared ended-room set the page passes consult.
+            # One record per verdict.  Marking the room and reporting "not
+            # live" are the same event, but they were logged as two lines, so
+            # a finished broadcast polled every 55s wrote 836 of the 3,586
+            # lines in omnidl_debug.log (2026-09-19) on its own.
+            marked = ""
+            if status in (4, 5):
+                stale_room = _valid_room_id(user.get("roomId")) or _valid_room_id(
+                    room.get("liveRoom", {}).get("id_str") or room.get("liveRoom", {}).get("id")
+                )
+                if stale_room:
+                    from utils.tiktok_live_checker import _mark_room_ended
+
+                    # _mark_room_ended is idempotent and reports whether this
+                    # poll is the one that recorded the verdict, so the suffix
+                    # stays truthful instead of claiming a fresh mark on every
+                    # poll of a broadcast that ended hours ago.
+                    if _mark_room_ended(stale_room):
+                        marked = f" — marked room {stale_room} ended"
+            logger.debug(
+                "tiktok_detection: @%s pass-4 status=%s (not live)%s",
+                ctx.username,
+                status,
+                marked,
+            )
             return None
 
         room_id = _valid_room_id(user.get("roomId"))

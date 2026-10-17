@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from ui.themes.tokens import T
 from utils.helpers import open_folder, reveal_in_explorer
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -36,10 +38,19 @@ _STATUS_TOKENS = {
     "COMPLETED": ("success", "success_bg"),
     "FAILED": ("error", "error_bg"),
     "CANCELLED": ("text3", "surface2"),
+    "PARTIAL_SAVED": ("warning", "warning_bg"),
 }
-_FILTER_OPTIONS = ["Tất cả", "COMPLETED", "FAILED", "CANCELLED"]
-_FILTER_MAP = {"Tất cả": "All", "COMPLETED": "COMPLETED", "FAILED": "FAILED", "CANCELLED": "CANCELLED"}
-_STATUS_VI = {"COMPLETED": "Hoàn tất", "FAILED": "Lỗi", "CANCELLED": "Đã hủy"}
+_FILTER_STATUSES = ["All", "COMPLETED", "FAILED", "CANCELLED", "PARTIAL_SAVED"]
+
+
+def _status_label(status: str) -> str:
+    return {
+        "All": t("history.filter.all"),
+        "COMPLETED": t("history.status.completed"),
+        "FAILED": t("history.status.failed"),
+        "CANCELLED": t("history.status.cancelled"),
+        "PARTIAL_SAVED": t("item.status.partial"),
+    }.get(status, status)
 
 
 def _fmt_bytes(n: int) -> str:
@@ -71,6 +82,7 @@ class HistoryTab(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self.refresh)
         self._build()
+        T.register(self._on_theme)
 
         from PySide6.QtCore import QPropertyAnimation
         from PySide6.QtWidgets import QGraphicsOpacityEffect
@@ -93,19 +105,17 @@ class HistoryTab(QWidget):
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 14)
 
-        title = QLabel("Lịch sử tải xuống")
-        title.setObjectName("page_title")
-        hdr_layout.addWidget(title)
+        self._title_lbl = QLabel(t("history.title"))
+        self._title_lbl.setObjectName("page_title")
+        hdr_layout.addWidget(self._title_lbl)
         hdr_layout.addStretch()
 
-        clear_btn = QPushButton("Xóa tất cả")
-        clear_btn.setFixedHeight(32)
-        clear_btn.setStyleSheet(
-            f"background: {T.error_bg}; color: {T.error}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 14px;"
-        )
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.clicked.connect(self._clear_all)
-        hdr_layout.addWidget(clear_btn)
+        self._clear_btn = QPushButton(t("history.clear_all"))
+        self._clear_btn.setFixedHeight(32)
+        self._style_clear_btn()
+        self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_btn.clicked.connect(self._clear_all)
+        hdr_layout.addWidget(self._clear_btn)
 
         layout.addWidget(hdr)
 
@@ -117,15 +127,16 @@ class HistoryTab(QWidget):
         ctrl_layout.setSpacing(8)
 
         self._search_entry = QLineEdit()
-        self._search_entry.setPlaceholderText("Tìm theo tiêu đề, URL hoặc tên file...")
+        self._search_entry.setPlaceholderText(t("history.search_placeholder"))
         self._search_entry.setFixedHeight(40)
         self._search_entry.textChanged.connect(self._on_search_change)
         ctrl_layout.addWidget(self._search_entry, 1)
 
         self._filter_combo = QComboBox()
-        self._filter_combo.addItems(_FILTER_OPTIONS)
+        for status in _FILTER_STATUSES:
+            self._filter_combo.addItem(_status_label(status), status)
         self._filter_combo.setFixedSize(140, 40)
-        self._filter_combo.currentTextChanged.connect(self._on_search_change)
+        self._filter_combo.currentIndexChanged.connect(self._on_search_change)
         ctrl_layout.addWidget(self._filter_combo)
 
         layout.addWidget(ctrl)
@@ -146,12 +157,21 @@ class HistoryTab(QWidget):
         scroll.setWidget(self._scroll_content)
         layout.addWidget(scroll, 1)
 
+    def _style_clear_btn(self) -> None:
+        self._clear_btn.setStyleSheet(
+            f"background: {T.error_bg}; color: {T.error}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 14px;"
+        )
+
+    def _on_theme(self) -> None:
+        self._style_clear_btn()
+        self.refresh()
+
     def _on_search_change(self) -> None:
         self._debounce.start(300)
 
     def refresh(self) -> None:
         query = self._search_entry.text().strip()
-        status_filter = _FILTER_MAP.get(self._filter_combo.currentText(), "All")
+        status_filter = self._filter_combo.currentData() or "All"
 
         entries = self._app.service.search_history(query) if query else self._app.service.get_history()
 
@@ -169,7 +189,9 @@ class HistoryTab(QWidget):
 
         if not entries:
             empty = QLabel(
-                "Không tìm thấy kết quả" if (query or status_filter != "All") else "Chưa có lịch sử tải xuống"
+                t("history.empty_no_results")
+                if (query or status_filter != "All")
+                else t("history.empty_no_history")
             )
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setStyleSheet(f"color: {T.text3}; font-size: 14px; background: transparent;")
@@ -188,7 +210,7 @@ class HistoryTab(QWidget):
 
         remaining = len(self._entries) - self._rendered
         if remaining > 0:
-            load_more = QPushButton(f"Tải thêm ({remaining} mục còn lại)")
+            load_more = QPushButton(t("history.load_more", remaining=remaining))
             load_more.setFixedHeight(36)
             load_more.setStyleSheet(
                 f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 12px; font-weight: 500; padding: 0 16px;"
@@ -239,8 +261,7 @@ class HistoryTab(QWidget):
         title_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top.addWidget(title_lbl)
 
-        badge_text = _STATUS_VI.get(status, status)
-        badge = QLabel(badge_text)
+        badge = QLabel(_status_label(status))
         badge.setStyleSheet(
             f"color: {getattr(T, fg_key)}; font-size: 11px; font-weight: 700; background: transparent;"
         )
@@ -248,10 +269,12 @@ class HistoryTab(QWidget):
         card_layout.addLayout(top)
 
         # Filename
+        fname_lbl = None
         if fname:
             fname_lbl = QLabel(fname[-64:] if fname else "—")
             fname_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
             card_layout.addWidget(fname_lbl)
+        card._fname_lbl = fname_lbl
 
         # Meta + actions row
         bot = QHBoxLayout()
@@ -265,35 +288,45 @@ class HistoryTab(QWidget):
         # Action buttons
         _btn_ss = "font-size: 11px; font-weight: 600; border: none; border-radius: 6px; padding: 0 4px;"
         if url:
-            re_btn = QPushButton("Tải lại")
+            re_btn = QPushButton(t("history.redownload"))
             re_btn.setFixedSize(62, 26)
             re_btn.setStyleSheet(f"background: transparent; color: {T.text3}; {_btn_ss}")
-            re_btn.setToolTip("Tải xuống lại")
+            re_btn.setToolTip(t("history.redownload_tip"))
             re_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             re_btn.clicked.connect(lambda _=False, u=url: self._redownload(u))
             bot.addWidget(re_btn)
 
-            copy_btn = QPushButton("Copy URL")
+            copy_btn = QPushButton(t("history.copy_url"))
             copy_btn.setFixedSize(72, 26)
             copy_btn.setStyleSheet(f"background: transparent; color: {T.text3}; {_btn_ss}")
-            copy_btn.setToolTip("Sao chép URL")
+            copy_btn.setToolTip(t("history.copy_url_tip"))
             copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             copy_btn.clicked.connect(lambda _=False, u=url: QGuiApplication.clipboard().setText(u))
             bot.addWidget(copy_btn)
 
         if fname:
-            open_btn = QPushButton("Thư mục")
+            open_btn = QPushButton(t("history.folder"))
             open_btn.setFixedSize(72, 28)
             open_btn.setStyleSheet(f"background: {T.success_bg}; color: {T.success}; {_btn_ss}")
-            open_btn.setToolTip("Mở thư mục chứa file")
+            open_btn.setToolTip(t("history.folder_tip"))
             open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_btn.clicked.connect(lambda _=False, f=fname: self._open_file(f))
+            open_btn.clicked.connect(lambda _=False, tid=task_id: self._open_file(tid))
             bot.addWidget(open_btn)
 
-        del_btn = QPushButton("Xóa")
+            p = self._entry_path(task_id)
+            if p is None or not p.is_dir():
+                ren_btn = QPushButton(t("history.rename"))
+                ren_btn.setFixedSize(64, 28)
+                ren_btn.setStyleSheet(f"background: {T.surface2}; color: {T.text2}; {_btn_ss}")
+                ren_btn.setToolTip(t("history.rename_tip"))
+                ren_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                ren_btn.clicked.connect(lambda _=False, tid=task_id, c=card: self._rename_entry(tid, c))
+                bot.addWidget(ren_btn)
+
+        del_btn = QPushButton(t("history.delete"))
         del_btn.setFixedSize(44, 28)
         del_btn.setStyleSheet(f"background: {T.error_bg}; color: {T.error}; {_btn_ss}")
-        del_btn.setToolTip("Xóa khỏi lịch sử")
+        del_btn.setToolTip(t("history.delete_tip"))
         del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         del_btn.clicked.connect(lambda _=False, tid=task_id, c=card: self._delete_entry(tid, c))
         bot.addWidget(del_btn)
@@ -301,8 +334,30 @@ class HistoryTab(QWidget):
         card_layout.addLayout(bot)
         return card
 
-    def _open_file(self, path_str: str) -> None:
-        p = Path(path_str).resolve()
+    def _entry_path(self, task_id: str) -> Path | None:
+        """Current on-disk path of *task_id*, or None if the entry has no file.
+
+        Resolved at click time rather than captured when the card was built —
+        _rename_entry() rewrites entry["filename"] in place, and a lambda
+        holding the old name would send Folder to a path that no longer exists.
+        A relative filename is joined onto output_dir; Path.resolve() alone
+        would anchor it to the process CWD.
+        """
+        entry = next((e for e in self._entries if e.get("id") == task_id), None)
+        raw = (entry or {}).get("filename") or ""
+        if not raw:
+            return None
+        p = Path(raw)
+        if not p.is_absolute():
+            out_dir = entry.get("output_dir") or ""
+            if out_dir:
+                p = Path(out_dir) / p
+        return p.resolve()
+
+    def _open_file(self, task_id: str) -> None:
+        p = self._entry_path(task_id)
+        if p is None:
+            return
         if p.is_file():
             if not reveal_in_explorer(p):
                 open_folder(p.parent)
@@ -322,19 +377,66 @@ class HistoryTab(QWidget):
         self._rendered -= before - len(self._entries)
         card.setParent(None)
         card.deleteLater()
+        if not self._entries:
+            # Nothing left to show — re-render so the "no history" / "no
+            # results" placeholder appears instead of an empty scroll area.
+            self.refresh()
+
+    def _rename_entry(self, task_id: str, card: QFrame) -> None:
+        entry = next((e for e in self._entries if e.get("id") == task_id), None)
+        if entry is None:
+            return
+        old_path = Path(entry.get("filename", ""))
+        new_name, ok = QInputDialog.getText(
+            self, t("queue.rename_title"), t("queue.rename_label"), text=old_path.name
+        )
+        if not ok or not new_name.strip():
+            return
+        try:
+            new_path = self._app.service.rename_download(task_id, new_name.strip())
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "OmniDL", str(exc))
+            return
+        entry["filename"] = new_path
+        fname_lbl = getattr(card, "_fname_lbl", None)
+        if fname_lbl is not None:
+            fname_lbl.setText(new_path[-64:])
 
     def _clear_all(self) -> None:
         reply = QMessageBox.question(
             self,
             "OmniDL",
-            "Xóa toàn bộ lịch sử tải xuống?",
+            t("history.clear_confirm"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._app.service.clear_history()
+            try:
+                from api.server import tasks_with_active_convert
+
+                exclude = tasks_with_active_convert()
+            except ImportError:
+                exclude = frozenset()
+            self._app.service.clear_history(exclude_ids=exclude or None)
             self.refresh()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    def retranslate(self) -> None:
+        self._title_lbl.setText(t("history.title"))
+        self._clear_btn.setText(t("history.clear_all"))
+        self._search_entry.setPlaceholderText(t("history.search_placeholder"))
+
+        current_status = self._filter_combo.currentData() or "All"
+        self._filter_combo.blockSignals(True)
+        self._filter_combo.clear()
+        for status in _FILTER_STATUSES:
+            self._filter_combo.addItem(_status_label(status), status)
+        idx = self._filter_combo.findData(current_status)
+        if idx >= 0:
+            self._filter_combo.setCurrentIndex(idx)
+        self._filter_combo.blockSignals(False)
+
+        self.refresh()

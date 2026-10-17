@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from domain.models.download_task import MediaInfo
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -41,15 +42,16 @@ PLATFORM_COLORS = {
     "Dailymotion": "#0066DC",
 }
 
+# (i18n label key, yt-dlp format selector, icon) — labels resolve at render time
 QUALITY_PRESETS = [
-    ("Best Quality", "bestvideo+bestaudio/best", "🏆"),
-    ("4K / 2160p", "bestvideo[height<=2160]+bestaudio/best", "4K"),
-    ("1080p Full HD", "bestvideo[height<=1080]+bestaudio/best", "HD"),
-    ("720p HD", "bestvideo[height<=720]+bestaudio/best", "720"),
-    ("480p", "bestvideo[height<=480]+bestaudio/best", "480"),
-    ("360p", "bestvideo[height<=360]+bestaudio/best", "360"),
-    ("Audio Only MP3", "bestaudio/best", "♪"),
-    ("Audio Only M4A", "bestaudio[ext=m4a]/bestaudio", "♪"),
+    ("home.quality.best", "bestvideo+bestaudio/best", "🏆"),
+    ("home.quality.4k", "bestvideo[height<=2160]+bestaudio/best", "4K"),
+    ("home.quality.1080", "bestvideo[height<=1080]+bestaudio/best", "HD"),
+    ("home.quality.720", "bestvideo[height<=720]+bestaudio/best", "720"),
+    ("home.quality.480", "bestvideo[height<=480]+bestaudio/best", "480"),
+    ("home.quality.360", "bestvideo[height<=360]+bestaudio/best", "360"),
+    ("home.quality.audio_mp3", "bestaudio/best", "♪"),
+    ("home.quality.audio_m4a", "bestaudio[ext=m4a]/bestaudio", "♪"),
 ]
 
 FORMATS = ["mp4", "mkv", "webm", "mp3", "m4a", "flac"]
@@ -65,7 +67,11 @@ class HomeTab(QWidget):
         self._quality_cards: list[QFrame] = []
         self._thumb_token: int = 0
         self._custom_output_dir: Optional[Path] = None
+        self._status_color = T.text3
         self._build()
+        self._apply_styles()
+        self._theme_cb = self._on_theme
+        T.register(self._theme_cb)
 
     def _build(self) -> None:
         from PySide6.QtCore import QPropertyAnimation
@@ -119,21 +125,20 @@ class HomeTab(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(12)
 
-        icon = QLabel("↓")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet(f"color: {T.primary}; font-size: 56px; font-weight: 300; background: transparent;")
-        layout.addWidget(icon)
+        self._welcome_icon = QLabel("↓")
+        self._welcome_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._welcome_icon)
 
-        title = QLabel("Sẵn sàng tải xuống")
+        self._welcome_title_lbl = QLabel(t("home.welcome_title"))
+        title = self._welcome_title_lbl
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color: {T.text}; font-size: 24px; font-weight: 700; background: transparent;")
         layout.addWidget(title)
 
         layout.addSpacing(4)
 
-        sub = QLabel("Dán link video vào thanh trên và nhấn Phân tích")
+        self._welcome_sub_lbl = QLabel(t("home.welcome_sub"))
+        sub = self._welcome_sub_lbl
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet(f"color: {T.text2}; font-size: 14px; background: transparent;")
         layout.addWidget(sub)
 
         layout.addSpacing(16)
@@ -148,18 +153,14 @@ class HomeTab(QWidget):
             ("Twitter/X", "#1D9BF0"),
             ("Facebook", "#1877F2"),
             ("Twitch", "#9146FF"),
-            ("+ 1000 nền tảng", None),
+            (t("home.more_platforms"), None),
         ]
+        self._platform_chips: list[QLabel] = []
+        self._platform_chip_colors: list[Optional[str]] = []
         for label, color in platforms:
             chip = QLabel(label)
-            chip.setStyleSheet(f"""
-                color: {color or T.text3};
-                background-color: {T.surface2};
-                border-radius: 6px;
-                font-size: 11px;
-                font-weight: 600;
-                padding: 5px 10px;
-            """)
+            self._platform_chips.append(chip)
+            self._platform_chip_colors.append(color)
             chips_row.addWidget(chip)
         chips_widget = QWidget()
         chips_widget.setStyleSheet("background: transparent;")
@@ -174,14 +175,13 @@ class HomeTab(QWidget):
         layout = QVBoxLayout(w)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._loading_lbl = QLabel("⠋  Đang tải thông tin media...")
+        self._loading_lbl = QLabel(f"⠋  {t('home.loading')}")
         self._loading_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._loading_lbl.setStyleSheet(f"color: {T.text2}; font-size: 14px; background: transparent;")
         layout.addWidget(self._loading_lbl)
 
-        sub = QLabel("Có thể mất vài giây")
+        self._loading_sub_lbl = QLabel(t("home.loading_sub"))
+        sub = self._loading_sub_lbl
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet(f"color: {T.text3}; font-size: 12px; background: transparent;")
         layout.addWidget(sub)
 
         return w
@@ -199,7 +199,6 @@ class HomeTab(QWidget):
 
         self._thumb_lbl = QLabel()
         self._thumb_lbl.setFixedSize(180, 102)
-        self._thumb_lbl.setStyleSheet(f"background-color: {T.surface2}; border-radius: 8px;")
         self._thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._thumb_lbl.setText("...")
         info_row.addWidget(self._thumb_lbl)
@@ -208,30 +207,19 @@ class HomeTab(QWidget):
         meta.setSpacing(6)
 
         self._platform_badge = QLabel("")
-        self._platform_badge.setStyleSheet(
-            f"background-color: {T.primary}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 10px;"
-        )
         self._platform_badge.setMaximumHeight(22)
         meta.addWidget(self._platform_badge)
 
         self._title_lbl = QLabel("")
         self._title_lbl.setWordWrap(True)
-        self._title_lbl.setStyleSheet(
-            f"color: {T.text}; font-size: 15px; font-weight: bold; background: transparent;"
-        )
         meta.addWidget(self._title_lbl)
 
         meta_sub = QHBoxLayout()
         self._uploader_lbl = QLabel("")
-        self._uploader_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         meta_sub.addWidget(self._uploader_lbl)
         self._duration_lbl = QLabel("")
-        self._duration_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         meta_sub.addWidget(self._duration_lbl)
-        self._live_badge = QLabel("  🔴 LIVE  ")
-        self._live_badge.setStyleSheet(
-            f"background-color: {T.error}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 0;"
-        )
+        self._live_badge = QLabel(f"  🔴 {t('home.live')}  ")
         self._live_badge.hide()
         meta_sub.addWidget(self._live_badge)
         meta_sub.addStretch()
@@ -247,7 +235,6 @@ class HomeTab(QWidget):
         # Divider
         div1 = QFrame()
         div1.setFrameShape(QFrame.Shape.HLine)
-        div1.setStyleSheet(f"background-color: {T.border}; max-height: 1px;")
         layout.addWidget(div1)
 
         # Quality picker
@@ -257,9 +244,8 @@ class HomeTab(QWidget):
         q_layout.setContentsMargins(0, 0, 0, 0)
         q_layout.setSpacing(8)
 
-        qlbl = QLabel("CHẤT LƯỢNG")
-        qlbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; font-weight: bold; background: transparent;")
-        q_layout.addWidget(qlbl)
+        self._q_section_lbl = QLabel(t("home.quality_section"))
+        q_layout.addWidget(self._q_section_lbl)
 
         # Horizontal scroll for quality cards
         q_scroll = QScrollArea()
@@ -277,8 +263,10 @@ class HomeTab(QWidget):
         q_cards_row.setSpacing(8)
         q_cards_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        for idx, (label, fmt_id, icon) in enumerate(QUALITY_PRESETS):
-            card_w = self._make_quality_card(label, fmt_id, icon, idx)
+        self._quality_text_labels: list[QLabel] = []
+        self._quality_icon_lbls: list[tuple[QLabel, bool]] = []
+        for idx, (label_key, fmt_id, icon) in enumerate(QUALITY_PRESETS):
+            card_w = self._make_quality_card(t(label_key), fmt_id, icon, idx)
             q_cards_row.addWidget(card_w)
 
         q_cards_row.addStretch()
@@ -289,14 +277,15 @@ class HomeTab(QWidget):
         # Divider
         div2 = QFrame()
         div2.setFrameShape(QFrame.Shape.HLine)
-        div2.setStyleSheet(f"background-color: {T.border}; max-height: 1px;")
         layout.addWidget(div2)
+        self._dividers = [div1, div2]
 
         # Options row
         opts = QHBoxLayout()
         opts.setSpacing(8)
 
-        opts.addWidget(QLabel("Định dạng"))
+        self._format_lbl = QLabel(t("home.format_label"))
+        opts.addWidget(self._format_lbl)
         self._format_combo = QComboBox()
         self._format_combo.addItems(FORMATS)
         self._format_combo.setFixedWidth(90)
@@ -304,22 +293,25 @@ class HomeTab(QWidget):
 
         opts.addSpacing(16)
 
-        opts.addWidget(QLabel("Thư mục"))
+        self._folder_title_lbl = QLabel(t("home.folder_label"))
+        opts.addWidget(self._folder_title_lbl)
         self._folder_lbl = QLabel(self._short_path(self._app.service.get_download_dir()))
-        self._folder_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 11px; background: transparent;")
         opts.addWidget(self._folder_lbl)
 
-        browse_btn = QPushButton("Duyệt")
+        self._browse_btn = QPushButton(t("home.browse"))
+        browse_btn = self._browse_btn
         browse_btn.setFixedSize(72, 34)
+        browse_btn.setToolTip(t("home.browse_tooltip"))
         browse_btn.clicked.connect(self._browse_folder)
         opts.addWidget(browse_btn)
 
         opts.addSpacing(16)
 
-        self._download_btn = QPushButton("↓  Thêm vào hàng đợi")
+        self._download_btn = QPushButton(f"↓  {t('home.add_to_queue')}")
         self._download_btn.setObjectName("primary")
         self._download_btn.setFixedHeight(48)
         self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._download_btn.setToolTip(t("home.add_to_queue_tooltip"))
         self._download_btn.clicked.connect(self._add_to_queue)
         opts.addWidget(self._download_btn)
 
@@ -328,26 +320,81 @@ class HomeTab(QWidget):
 
         # Status
         self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
         layout.addWidget(self._status_lbl)
 
         return card
 
-    def _make_quality_card(self, label: str, fmt_id: str, icon: str, idx: int) -> QFrame:
-        card = QFrame()
-        card.setObjectName("qualityCard")
-        card.setFixedSize(120, 76)
-        is_selected = idx == 0
-        card.setStyleSheet(f"""
+    @staticmethod
+    def _quality_card_style(selected: bool) -> str:
+        return f"""
             QFrame#qualityCard {{
-                background-color: {"" + T.primary_dim if is_selected else T.surface2};
-                border: 1px solid {T.primary if is_selected else T.border};
+                background-color: {T.primary_dim if selected else T.surface2};
+                border: 1px solid {T.primary if selected else T.border};
                 border-radius: 12px;
             }}
             QFrame#qualityCard:hover {{
                 border-color: {T.primary};
             }}
-        """)
+        """
+
+    def _badge_style(self, color: str) -> str:
+        return f"background-color: {color}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 10px;"
+
+    def _apply_styles(self) -> None:
+        self._welcome_icon.setStyleSheet(
+            f"color: {T.primary}; font-size: 56px; font-weight: 300; background: transparent;"
+        )
+        self._welcome_title_lbl.setStyleSheet(
+            f"color: {T.text}; font-size: 24px; font-weight: 700; background: transparent;"
+        )
+        self._welcome_sub_lbl.setStyleSheet(f"color: {T.text2}; font-size: 14px; background: transparent;")
+        for chip, color in zip(self._platform_chips, self._platform_chip_colors, strict=True):
+            chip.setStyleSheet(f"""
+                color: {color or T.text3};
+                background-color: {T.surface2};
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 5px 10px;
+            """)
+        self._loading_lbl.setStyleSheet(f"color: {T.text2}; font-size: 14px; background: transparent;")
+        self._loading_sub_lbl.setStyleSheet(f"color: {T.text3}; font-size: 12px; background: transparent;")
+        self._thumb_lbl.setStyleSheet(f"background-color: {T.surface2}; border-radius: 8px;")
+        self._platform_badge.setStyleSheet(
+            self._badge_style(
+                PLATFORM_COLORS.get(self._media_info.platform, T.primary) if self._media_info else T.primary
+            )
+        )
+        self._title_lbl.setStyleSheet(f"color: {T.text}; font-size: 15px; font-weight: bold; background: transparent;")
+        self._uploader_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        self._duration_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        self._live_badge.setStyleSheet(
+            f"background-color: {T.error}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 0;"
+        )
+        for div in self._dividers:
+            div.setStyleSheet(f"background-color: {T.border}; max-height: 1px;")
+        self._q_section_lbl.setStyleSheet(
+            f"color: {T.text3}; font-size: 9px; font-weight: bold; background: transparent;"
+        )
+        for i, c in enumerate(self._quality_cards):
+            c.setStyleSheet(self._quality_card_style(i == self._selected_quality_idx))
+        for lbl, is_ascii in self._quality_icon_lbls:
+            lbl.setStyleSheet(
+                f"color: {T.primary_text}; {'font-size: 14px; font-weight: bold;' if is_ascii else 'font-size: 16px;'} background: transparent;"
+            )
+        for lbl in self._quality_text_labels:
+            lbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; background: transparent;")
+        self._folder_lbl.setStyleSheet(f"color: {T.primary_text}; font-size: 11px; background: transparent;")
+        self._set_status(self._status_lbl.text(), self._status_color)
+
+    def _on_theme(self) -> None:
+        self._apply_styles()
+
+    def _make_quality_card(self, label: str, fmt_id: str, icon: str, idx: int) -> QFrame:
+        card = QFrame()
+        card.setObjectName("qualityCard")
+        card.setFixedSize(120, 76)
+        card.setStyleSheet(self._quality_card_style(idx == self._selected_quality_idx))
         card.setCursor(Qt.CursorShape.PointingHandCursor)
 
         card_layout = QVBoxLayout(card)
@@ -358,8 +405,10 @@ class HomeTab(QWidget):
         icon_lbl = QLabel(icon)
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         is_ascii = len(icon) <= 3 and icon.isascii()
-        icon_style = "font-size: 14px; font-weight: bold;" if is_ascii else "font-size: 16px;"
-        icon_lbl.setStyleSheet(f"color: {T.primary_text}; {icon_style} background: transparent;")
+        icon_lbl.setStyleSheet(
+            f"color: {T.primary_text}; {'font-size: 14px; font-weight: bold;' if is_ascii else 'font-size: 16px;'} background: transparent;"
+        )
+        self._quality_icon_lbls.append((icon_lbl, is_ascii))
         card_layout.addWidget(icon_lbl)
 
         text_lbl = QLabel(label)
@@ -367,33 +416,13 @@ class HomeTab(QWidget):
         text_lbl.setStyleSheet(f"color: {T.text3}; font-size: 9px; background: transparent;")
         text_lbl.setWordWrap(True)
         card_layout.addWidget(text_lbl)
+        self._quality_text_labels.append(text_lbl)
 
         def on_click(_=None, fi=fmt_id, ci=idx) -> None:
             self._selected_quality = fi
             self._selected_quality_idx = ci
             for i, c in enumerate(self._quality_cards):
-                if i == ci:
-                    c.setStyleSheet(f"""
-                        QFrame#qualityCard {{
-                            background-color: {T.primary_dim};
-                            border: 1px solid {T.primary};
-                            border-radius: 12px;
-                        }}
-                        QFrame#qualityCard:hover {{
-                            border-color: {T.primary};
-                        }}
-                    """)
-                else:
-                    c.setStyleSheet(f"""
-                        QFrame#qualityCard {{
-                            background-color: {T.surface2};
-                            border: 1px solid {T.border};
-                            border-radius: 12px;
-                        }}
-                        QFrame#qualityCard:hover {{
-                            border-color: {T.primary};
-                        }}
-                    """)
+                c.setStyleSheet(self._quality_card_style(i == ci))
 
         card.mousePressEvent = on_click
         self._quality_cards.append(card)
@@ -411,7 +440,7 @@ class HomeTab(QWidget):
         self._welcome.hide()
         try:
             if not info or not info.title:
-                self.on_analysis_error("No media information returned.")
+                self.on_analysis_error(t("home.no_media_info"))
                 return
 
             if info.playlist_entries:
@@ -428,7 +457,7 @@ class HomeTab(QWidget):
                         ),
                     )
                 else:
-                    self.on_analysis_error("BatchTab not available.")
+                    self.on_analysis_error(t("home.batch_unavailable"))
                 return
 
             self._media_info = info
@@ -436,12 +465,15 @@ class HomeTab(QWidget):
             self._result_card.show()
         except Exception as exc:
             logger.exception("on_analysis_done crashed")
-            self._set_status(f"Display error: {exc}", T.error)
+            self._set_status(t("home.display_error", err=exc), T.error)
 
     def on_analysis_error(self, err: str) -> None:
         self._loading.hide()
         self._welcome.show()
         self._set_status(f"  {err[:120]}", T.error)
+        # _status_lbl lives inside _result_card, which is hidden here (welcome
+        # is shown instead), so the status text alone is never visible.
+        self._app.toast(err[:120], "error")
 
     def clear_result(self) -> None:
         self._result_card.hide()
@@ -451,7 +483,8 @@ class HomeTab(QWidget):
         self._set_status("", T.text3)
 
     def refresh(self) -> None:
-        self._folder_lbl.setText(self._short_path(self._app.service.get_download_dir()))
+        shown_dir = self._custom_output_dir or self._app.service.get_download_dir()
+        self._folder_lbl.setText(self._short_path(shown_dir))
 
     # ── Internal ──────────────────────────────────────────────────────────
 
@@ -459,9 +492,7 @@ class HomeTab(QWidget):
         platform_color = PLATFORM_COLORS.get(info.platform, T.primary)
 
         self._platform_badge.setText(f"  {info.platform}  ")
-        self._platform_badge.setStyleSheet(
-            f"background-color: {platform_color}; color: white; border-radius: 4px; font-size: 9px; font-weight: bold; padding: 3px 10px;"
-        )
+        self._platform_badge.setStyleSheet(self._badge_style(platform_color))
 
         if info.is_live:
             self._live_badge.show()
@@ -483,19 +514,20 @@ class HomeTab(QWidget):
         if is_photo:
             self._selected_quality = "best"
             self._q_sec.hide()
-            self._set_status("🖼  Photo / image — downloading at best available resolution", T.text2)
+            self._set_status(f"🖼  {t('home.photo_note')}", T.text2)
         else:
             self._selected_quality = QUALITY_PRESETS[self._selected_quality_idx][1]
             self._q_sec.show()
-            if not info.is_live:
-                self._set_status("", T.text3)
+            self._set_status("", T.text3)
 
         # Thumbnail — setPixmap clears any text, so set the placeholder after
         self._thumb_lbl.setPixmap(QPixmap())
         self._thumb_lbl.setText("...")
 
+        # Bump even without a thumbnail: a fetch still in flight for the
+        # previous item must not land on this card.
+        self._thumb_token += 1
         if info.thumbnail:
-            self._thumb_token += 1
             token = self._thumb_token
             self._app.service.fetch_thumbnail(
                 url=info.thumbnail,
@@ -505,7 +537,7 @@ class HomeTab(QWidget):
                 on_error=lambda _, t=token: ui_bridge.post(lambda: self._apply_thumb_error(t)),
             )
         else:
-            self._thumb_lbl.setText("Không có xem trước")
+            self._thumb_lbl.setText(t("home.no_preview"))
 
     def _apply_thumb(self, img, token: int) -> None:
         if token != self._thumb_token:
@@ -524,24 +556,28 @@ class HomeTab(QWidget):
             self._thumb_lbl.setPixmap(scaled)
             self._thumb_lbl.setText("")
         except Exception:
-            self._thumb_lbl.setText("Không có xem trước")
+            self._thumb_lbl.setText(t("home.no_preview"))
 
     def _apply_thumb_error(self, token: int) -> None:
         if token != self._thumb_token:
             return
-        self._thumb_lbl.setText("Không có xem trước")
+        self._thumb_lbl.setText(t("home.no_preview"))
 
     def _add_to_queue(self) -> None:
         if not self._media_info:
             return
-        self._app.service.start_download(
-            url=self._media_info.url,
-            media_info=self._media_info,
-            format_id=self._selected_quality,
-            output_ext=self._format_combo.currentText(),
-            output_dir=self._custom_output_dir,
-        )
-        self._app.toast(f"Added: {self._media_info.title[:40]}", "success")
+        try:
+            self._app.service.start_download(
+                url=self._media_info.url,
+                media_info=self._media_info,
+                format_id=self._selected_quality,
+                output_ext=self._format_combo.currentText(),
+                output_dir=self._custom_output_dir,
+            )
+        except Exception as exc:  # BUG-HOME-START-ERROR: e.g. unwritable download folder
+            self._app.toast(str(exc)[:80], "error")
+            return
+        self._app.toast(t("home.added_toast", title=self._media_info.title[:40]), "success")
         self._app.navigate_to("queue")
         self._result_card.hide()
         self._welcome.show()
@@ -555,7 +591,7 @@ class HomeTab(QWidget):
     def _browse_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
             self,
-            "Chọn thư mục tải",
+            t("home.choose_dir"),
             str(self._app.service.get_download_dir()),
         )
         if chosen:
@@ -563,6 +599,7 @@ class HomeTab(QWidget):
             self._folder_lbl.setText(self._short_path(Path(chosen)))
 
     def _set_status(self, text: str, color: str) -> None:
+        self._status_color = color
         self._status_lbl.setText(text)
         self._status_lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
 
@@ -570,6 +607,31 @@ class HomeTab(QWidget):
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    # ── i18n ─────────────────────────────────────────────────────────────
+
+    def retranslate(self) -> None:
+        self._welcome_title_lbl.setText(t("home.welcome_title"))
+        self._welcome_sub_lbl.setText(t("home.welcome_sub"))
+        if self._platform_chips:
+            self._platform_chips[-1].setText(t("home.more_platforms"))
+        self._loading_lbl.setText(f"⠋  {t('home.loading')}")
+        self._loading_sub_lbl.setText(t("home.loading_sub"))
+        self._q_section_lbl.setText(t("home.quality_section"))
+        for lbl, (label_key, _fmt, _icon) in zip(self._quality_text_labels, QUALITY_PRESETS, strict=False):
+            lbl.setText(t(label_key))
+        self._format_lbl.setText(t("home.format_label"))
+        self._folder_title_lbl.setText(t("home.folder_label"))
+        self._browse_btn.setText(t("home.browse"))
+        self._browse_btn.setToolTip(t("home.browse_tooltip"))
+        self._download_btn.setText(f"↓  {t('home.add_to_queue')}")
+        self._download_btn.setToolTip(t("home.add_to_queue_tooltip"))
+        self._live_badge.setText(f"  🔴 {t('home.live')}  ")
+        # The status line carries transient, already-formatted text; only the
+        # thumbnail placeholder is safe to rewrite here.
+        if not self._thumb_lbl.pixmap() or self._thumb_lbl.pixmap().isNull():
+            if self._media_info is not None and not self._media_info.thumbnail:
+                self._thumb_lbl.setText(t("home.no_preview"))
 
     @staticmethod
     def _short_path(p: Path) -> str:

@@ -171,3 +171,104 @@ def test_build_from_task_live_no_explicit_ts():
     result = build_filename_from_task(task, is_live=True, ext="ts")
     assert "[LIVE]" in result
     assert result.endswith(".ts")
+
+
+# ── to_ascii_filename (BUG-TD-NAME) ──────────────────────────────────────
+# Regression guard for the Taildrop fallback name.  The old code used
+# encode("ascii", "ignore"), which deleted characters instead of
+# transliterating them and produced unreadable names on the iPhone.
+
+
+def test_ascii_fallback_transliterates_vietnamese():
+    from utils.naming import to_ascii_filename
+
+    result = to_ascii_filename(
+        "1965dreamfootball - 2026-08-27 - YUSUKI cậu ấy thật đáng yêu [7678718864875719954].mp4"
+    )
+    assert result == (
+        "1965dreamfootball - 2026-08-27 - YUSUKI cau ay that dang yeu [7678718864875719954].mp4"
+    )
+
+
+def test_ascii_fallback_drops_emoji_without_double_space():
+    from utils.naming import to_ascii_filename
+
+    result = to_ascii_filename("ALEE ❗️ - 2026-08-28 - Video by aleeshgt_ [DckY25PMpqH].mp4")
+    assert result == "ALEE - 2026-08-28 - Video by aleeshgt_ [DckY25PMpqH].mp4"
+
+
+def test_ascii_fallback_drops_empty_cjk_segment():
+    from utils.naming import to_ascii_filename
+
+    result = to_ascii_filename("家有兩兄妹 - 2026-06-10 - Video [1661273081771069].mp4")
+    assert not result.startswith("-")
+    assert result == "2026-06-10 - Video [1661273081771069].mp4"
+
+
+def test_ascii_fallback_never_empty():
+    from utils.naming import to_ascii_filename
+
+    assert to_ascii_filename("家有兩兄妹.mp4") == "file.mp4"
+
+
+def test_ascii_fallback_leaves_ascii_untouched():
+    from utils.naming import to_ascii_filename
+
+    name = "user - 2026-01-01 - My Video [abc123].mp4"
+    assert to_ascii_filename(name) == name
+
+
+def test_control_chars_stripped():
+    assert sanitise_for_filesystem("bad\nname\tx.mp4") == "bad_name_x.mp4"
+
+
+def test_sanitise_strips_invisible_emoji_tag_characters():
+    """Taildrop peers answer 400 for the invisible U+E00xx payload of flag emoji.
+
+    The visible flag survives; only the tag characters go.  Regression for the
+    2026-09-02 12:11:08 / 2026-09-03 08:03:48 rejections of
+    "Морган Ерболат 🏴\U000e0067\U000e0062\U000e0065\U000e006e - ... .mp4",
+    whose ASCII retry dropped the Cyrillic uploader name entirely.
+    """
+    raw = "Морган Ерболат \U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e - 2026-08-31.mp4"
+    out = sanitise_for_filesystem(raw)
+    assert out == "Морган Ерболат \U0001f3f4 - 2026-08-31.mp4"
+    assert all(not (0xE0000 <= ord(c) <= 0xE007F) for c in out)
+
+
+def test_empty_uploader_keeps_title():
+    # "" is a prefix of every string — an empty uploader must not drop the title.
+    result = build_filename(uploader="", date_label="2026-01-01", title="My Clip", ext="mp4")
+    assert "My Clip" in result
+
+
+def test_build_from_task_rebuilds_name_for_directory_output(tmp_path):
+    # gallery-dl albums land in a directory named after the account only;
+    # that name carries no date/title/id, so it must not be reused verbatim.
+    album = tmp_path / "aleeshgt_"
+    album.mkdir()
+    task = SimpleNamespace(
+        filename=str(album),
+        media_info=SimpleNamespace(
+            uploader="aleeshgt_", title="Beach day", video_id="DckY25PMpqH",
+            is_live=False, was_live=False,
+        ),
+        finished_at=1748008800.0,
+        created_at=1748008800.0,
+    )
+    result = build_filename_from_task(task, ext="")
+    assert result.startswith("aleeshgt_ - ")
+    assert "Beach day" in result
+    assert "[DckY25PMpqH]" in result
+
+
+def test_build_from_task_keeps_full_tiktok_id():
+    task = SimpleNamespace(
+        filename="",
+        media_info=SimpleNamespace(
+            uploader="u", title="", video_id="7678718864875719954", is_live=False, was_live=False
+        ),
+        finished_at=1748008800.0,
+        created_at=1748008800.0,
+    )
+    assert "[7678718864875719954]" in build_filename_from_task(task, ext="mp4")

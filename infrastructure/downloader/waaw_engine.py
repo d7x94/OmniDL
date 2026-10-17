@@ -32,6 +32,8 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
+from utils.i18n import t
+
 if TYPE_CHECKING:
     from domain.models.download_task import DownloadTask
     from infrastructure.config.config_manager import ConfigManager
@@ -298,12 +300,12 @@ def _cdp_intercept_waaw(
 ) -> str:
     """Launch browser, navigate to waaw.ac URL, return CDN video URL."""
     if sys.platform not in ("win32", "darwin"):
-        raise RuntimeError("waaw.ac engine yêu cầu Windows hoặc macOS.")
+        raise RuntimeError(t("err.waaw_platform"))
 
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as err:
-        raise RuntimeError("Thiếu thư viện Playwright.\nChạy: pip install playwright") from err
+        raise RuntimeError(t("err.playwright_missing")) from err
 
     import os
     import subprocess
@@ -342,7 +344,7 @@ def _cdp_intercept_waaw(
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
     ]
-    _prog(8, "Đang khởi động trình duyệt...")
+    _prog(8, t("progress.browser_start"))
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -355,7 +357,7 @@ def _cdp_intercept_waaw(
 
     try:
         with sync_playwright() as pw:
-            _prog(10, "Đang kết nối CDP...")
+            _prog(10, t("progress.cdp_connect"))
             cdp_browser = None
             deadline = time.monotonic() + 30.0
             last_exc: Optional[Exception] = None
@@ -372,11 +374,7 @@ def _cdp_intercept_waaw(
                     time.sleep(0.8)
 
             if cdp_browser is None:
-                raise RuntimeError(
-                    "Không kết nối được CDP.\n"
-                    "Đóng trình duyệt hoàn toàn rồi thử lại.\n"
-                    f"(chi tiết: {last_exc})"
-                )
+                raise RuntimeError(t("err.cdp_connect_failed", err=last_exc))
 
             ctx = cdp_browser.contexts[0]
             page = ctx.new_page()
@@ -463,7 +461,7 @@ def _cdp_intercept_waaw(
 
             page.on("console", _on_console)
 
-            _prog(12, "Đang mở trang waaw.ac...")
+            _prog(12, t("progress.waaw_open_page"))
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             except Exception:
@@ -475,7 +473,7 @@ def _cdp_intercept_waaw(
             video_ever_found = False
             clicking_enabled = True
             captcha_notified = False
-            _prog(15, "Đang chờ CDN URL...")
+            _prog(15, t("progress.waaw_wait_cdn"))
 
             # page.evaluate() has no timeout param — if waaw.ac's JS thread
             # stalls (ad dialog / anti-bot WASM), the call blocks forever and
@@ -503,7 +501,7 @@ def _cdp_intercept_waaw(
             try:
                 while time.monotonic() < deadline_box[0]:
                     if cancel_check and cancel_check():
-                        raise RuntimeError("Đã hủy bởi người dùng.")
+                        raise RuntimeError(t("err.cancelled_by_user"))
 
                     if captcha_event.is_set() and not captcha_notified:
                         captcha_notified = True
@@ -511,7 +509,7 @@ def _cdp_intercept_waaw(
                         logger.info("waaw: captcha wall detected — waiting for user to solve it in browser")
                         _prog(
                             18,
-                            "Trang yêu cầu captcha — hãy giải captcha trong cửa sổ trình duyệt vừa mở...",
+                            t("progress.waaw_captcha"),
                         )
                         deadline_box[0] = time.monotonic() + 180.0
 
@@ -606,19 +604,13 @@ def _cdp_intercept_waaw(
                     len(seen_requests),
                     trail,
                 )
-                sample = "; ".join(f"{t:.1f}s {u[:100]}" for t, u in list(seen_requests)[-5:]) or "none"
+                sample = "; ".join(f"{ts:.1f}s {u[:100]}" for ts, u in list(seen_requests)[-5:]) or "none"
                 if captcha_notified:
-                    raise RuntimeError(
-                        "Không giải captcha kịp thời gian.\n"
-                        "Thử lại và giải captcha trong cửa sổ trình duyệt vừa mở, "
-                        "hoặc dán link CDN mới lấy từ công cụ khác (vd: cf*cdn.com .m3u8)."
-                    )
+                    raise RuntimeError(t("err.waaw_captcha_timeout"))
                 raise RuntimeError(
-                    f"Không tìm thấy CDN URL sau {int(timeout)} giây.\n"
-                    "waaw.ac có thể đã thay đổi cơ chế bảo vệ.\n"
-                    f"(video_found={video_ever_found}, console_errors={len(console_errors)}, "
-                    f"last_error={last_err})\n"
-                    f"Recent requests: {sample}"
+                    t("err.waaw_no_cdn_url", seconds=int(timeout))
+                    + f"\n(video_found={video_ever_found}, console_errors={len(console_errors)}, "
+                    f"last_error={last_err})\nRecent requests: {sample}"
                 )
     finally:
         try:
@@ -640,7 +632,7 @@ _UA = (
 
 # CDN links are IP+time-signed; once expired or hit from a different IP the
 # host 404s. Not recoverable in code — only the error message can be honest.
-_CDN_EXPIRED_MSG = "Link CDN đã hết hạn hoặc bị khoá theo IP - hãy mở lại trang waaw.ac/f/... để lấy link mới"
+_CDN_EXPIRED_KEY = "err.waaw_cdn_expired"
 
 
 def _hls_download(
@@ -657,7 +649,7 @@ def _hls_download(
     def _mp4_fallback() -> None:
         path, sep, query = cdn_url.partition("?")
         if not path.endswith(".m3u8"):
-            raise RuntimeError("Không tải được HLS stream và không có URL MP4 thay thế.")
+            raise RuntimeError(t("err.waaw_hls_no_fallback"))
         _stream_download(path[: -len(".m3u8")] + sep + query, dest, on_progress=on_progress)
 
     loc = locate_ffmpeg()
@@ -668,7 +660,7 @@ def _hls_download(
 
     if on_progress:
         try:
-            on_progress(50, "", "ffmpeg đang tải HLS stream...")
+            on_progress(50, "", t("progress.ffmpeg_hls"))
         except Exception:
             pass
 
@@ -716,14 +708,14 @@ def _hls_download(
         part.unlink(missing_ok=True)
 
     if "404 Not Found" in tail:
-        raise RuntimeError(_CDN_EXPIRED_MSG)
+        raise RuntimeError(t(_CDN_EXPIRED_KEY))
 
     logger.info("waaw: ffmpeg failed — trying bare .mp4 URL")
     try:
         _mp4_fallback()
     except Exception as exc:
         raise RuntimeError(
-            f"Không tải được HLS stream (ffmpeg: {tail or 'lỗi'}; fallback MP4: {exc})"
+            t("err.waaw_hls_failed", tail=tail or t("err.generic_error_word"), err=exc)
         ) from exc
 
 
@@ -744,7 +736,7 @@ def _stream_download(
     part = dest.with_suffix(".part")
     resp = requests.get(cdn_url, headers=headers, stream=True, timeout=30)
     if resp.status_code == 404:
-        raise RuntimeError(_CDN_EXPIRED_MSG)
+        raise RuntimeError(t(_CDN_EXPIRED_KEY))
     resp.raise_for_status()
     total = int(resp.headers.get("content-length", 0))
     downloaded = 0
@@ -769,11 +761,11 @@ def _stream_download(
 
     if part.stat().st_size < 10_240:
         part.unlink(missing_ok=True)
-        raise RuntimeError("File tải về quá nhỏ (< 10 KB) — CDN có thể đã chặn.")
+        raise RuntimeError(t("err.waaw_file_too_small"))
     hdr = part.read_bytes()[:12]
     if hdr[4:8] not in (b"ftyp", b"mdat", b"moov", b"wide", b"free"):
         part.unlink(missing_ok=True)
-        raise RuntimeError("File tải về không phải MP4 — CDN URL có thể đã hết hạn.")
+        raise RuntimeError(t("err.waaw_not_mp4"))
 
     part.rename(dest)
 
@@ -817,7 +809,7 @@ class WaawEngine:
                     vid_id = vid_id[: -len(suffix)]
         else:
             if sys.platform not in ("win32", "darwin"):
-                raise RuntimeError("waaw.ac engine yêu cầu Windows hoặc macOS.\nLinux chưa được hỗ trợ.")
+                raise RuntimeError(t("err.waaw_platform_linux"))
             m = re.search(r"waaw\.ac/f/([A-Za-z0-9_-]+)", task.url, re.I)
             vid_id = m.group(1) if m else ""
             cdn_url = _cdp_intercept_waaw(

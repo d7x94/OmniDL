@@ -19,5 +19,9 @@ class LiveDetectionStrategy(ABC):
 
     @abstractmethod
     def check(self, ctx: LiveCheckContext) -> Optional[LiveCheckResult]:
-        """None = not live; raise RuntimeError for hard fail (404, 429, network)."""
+        """None = not live; raise RuntimeError for hard fail (404, 429, network).
+
+        Set ``ctx.unavailable`` before returning None when the strategy could
+        not function at all (blocked endpoint, bot-detection body).
+        """
         ...

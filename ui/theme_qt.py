@@ -5,12 +5,70 @@ from __future__ import annotations
 from pathlib import Path
 from string import Template
 
-from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPalette, QPen
+from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
 from ui.themes.tokens import T
 
 _THEMES_DIR = Path(__file__).parent / "themes"
+
+
+class CheckBoxStyle(QProxyStyle):
+    """Paints the checkbox indicator with QPainter instead of a QSS image.
+
+    QStyleSheetStyle's ::indicator image compositing is unreliable on the
+    native Windows paint engine — the checkmark silently fails to draw even
+    with a valid absolute path and a decoded pixmap. Painting it directly
+    sidesteps that engine entirely.
+    """
+
+    def pixelMetric(self, metric, option=None, widget=None) -> int:
+        if metric in (
+            QStyle.PixelMetric.PM_IndicatorWidth,
+            QStyle.PixelMetric.PM_IndicatorHeight,
+        ):
+            return 16
+        if metric == QStyle.PixelMetric.PM_CheckBoxLabelSpacing:
+            return 8
+        return super().pixelMetric(metric, option, widget)
+
+    def drawPrimitive(self, element, option, painter, widget=None) -> None:
+        if element != QStyle.PrimitiveElement.PE_IndicatorCheckBox:
+            super().drawPrimitive(element, option, painter, widget)
+            return
+
+        checked = bool(option.state & QStyle.StateFlag.State_On)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
+
+        rect = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)
+        fill = QColor(T.primary if checked else T.surface2)
+        border = QColor(T.primary if (checked or hovered) else T.border2)
+        if not enabled:
+            fill.setAlpha(120)
+            border.setAlpha(120)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(fill)
+        painter.setPen(QPen(border, 1))
+        painter.drawRoundedRect(rect, 4, 4)
+
+        if checked:
+            pen = QPen(QColor("#FFFFFF"), 1.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            if not enabled:
+                pen.setColor(QColor(255, 255, 255, 160))
+            painter.setPen(pen)
+            x, y, w, h = rect.left(), rect.top(), rect.width(), rect.height()
+            p1 = QPointF(x + w * 0.24, y + h * 0.52)
+            p2 = QPointF(x + w * 0.42, y + h * 0.72)
+            p3 = QPointF(x + w * 0.78, y + h * 0.26)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p2, p3)
+        painter.restore()
 
 
 def get_stylesheet() -> str:
@@ -39,6 +97,7 @@ def _build_palette() -> QPalette:
     p.setColor(QPalette.ColorRole.ToolTipText, c(T.text))
     p.setColor(QPalette.ColorRole.PlaceholderText, c(T.text3))
     p.setColor(QPalette.ColorRole.Link, c(T.primary))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, c(T.text3))
     return p
 
 

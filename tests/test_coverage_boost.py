@@ -209,6 +209,9 @@ class TestCheckTiktokProfileLive:
                 on_error=errors.append,
             )
         assert _wait(errors)
+        # on_error fires inside `except`, the unlink inside the `finally` that
+        # follows it — waiting only on `errors` reads `unlinked` too early.
+        assert _wait(unlinked)
         assert "/tmp/temp_tt_cookie2.txt" in unlinked  # nosec B108
 
 
@@ -321,10 +324,12 @@ class TestDownloadManagerPhotoFallback:
         yt_engine = MagicMock()
         gallery_engine = MagicMock()
 
-        orphan = tmp_path / "partial_ytdlp.mp4"
+        orphan = tmp_path / "partial_ytdlp [vid1].mp4"
         orphan.write_bytes(b"fake")
 
         def fake_yt_dl(task, on_progress=None, on_postprocess=None):
+            # BUG-BU-SWEEP: only files named after an id yt-dlp recorded are swept.
+            task.ytdlp_ids.append("vid1")
             raise RuntimeError("no video formats found")
 
         def fake_gallery_dl(task, on_progress=None, on_postprocess=None):

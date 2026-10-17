@@ -24,6 +24,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from utils.i18n import t
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -389,12 +391,14 @@ class TestNetworkErrors:
     def test_connection_error(self):
         # curl_cffi exceptions are not requests.exceptions subclasses — the
         # checker matches by message substring instead.
-        with pytest.raises(RuntimeError, match="kết nối"):
+        with pytest.raises(RuntimeError) as excinfo:
             self._run_with_session_error(Exception("Connection refused"))
+        assert str(excinfo.value) == t("err.network", err="Connection refused")
 
     def test_timeout_error(self):
-        with pytest.raises(RuntimeError, match="thời gian"):
+        with pytest.raises(RuntimeError) as excinfo:
             self._run_with_session_error(Exception("Request timeout"))
+        assert str(excinfo.value) == t("err.ig_api_timeout")
 
     def test_generic_request_error(self):
         with pytest.raises(RuntimeError, match="HTTP"):
@@ -1064,7 +1068,7 @@ class TestCheckProfileLiveDecryptsCookie:
     "'charmap' codec can't decode byte 0x9d in position 6".
     """
 
-    def _run(self, tmp_path, prepare_side_effect):
+    def _run(self, tmp_path, prepare_side_effect, on_done_hook=None):
         """Drive check_profile_live to completion; return (called_with, done, err)."""
         import threading
 
@@ -1086,6 +1090,8 @@ class TestCheckProfileLiveDecryptsCookie:
         result = {"done": "__unset__", "err": None}
 
         def on_done(live_url):
+            if on_done_hook:
+                on_done_hook()
             result["done"] = live_url
             done_event.set()
 
@@ -1127,6 +1133,20 @@ class TestCheckProfileLiveDecryptsCookie:
         self._run(tmp_path, prepare_side_effect=lambda p: (str(decrypted), True))
 
         assert not decrypted.exists(), "temp decrypted cookie was not cleaned up"
+
+    def test_temp_cookie_unlinked_before_on_done(self, tmp_path):
+        # on_done used to fire before the finally unlink, so callers could race the cleanup.
+        decrypted = tmp_path / "omnidl_dec_test.txt"
+        decrypted.write_text(_NETSCAPE_HEADER)
+        seen = []
+
+        self._run(
+            tmp_path,
+            prepare_side_effect=lambda p: (str(decrypted), True),
+            on_done_hook=lambda: seen.append(decrypted.exists()),
+        )
+
+        assert seen == [False]
 
     def test_plaintext_cookie_not_unlinked(self, tmp_path):
         # is_temp=False (plaintext .txt) must NOT be deleted.

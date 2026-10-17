@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from typing import Any, Optional
+
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +50,70 @@ _REQUEST_TIMEOUT = 15  # seconds
 _ROOM_ID_CACHE: dict[str, tuple[str, float]] = {}  # username -> (room_id, ts)
 _ROOM_ID_CACHE_TTL = 5400.0  # 90 minutes (covers typical live session duration)
 
+# BUG-TT-ENDEDROOM FIX: rooms webcast/room/info reported as finished.
+# After a broadcast ends TikTok keeps serving the old roomId in the live
+# page's SIGI_STATE, and check_alive keeps answering alive=True for it, so
+# pass-1/pass-2 announced "LIVE" on every poll and the caller then paid two
+# more webcast calls to reject it -- @tomluoc211 room 7679856087437429522 ran
+# that loop for 9.5 hours after the stream finished.  Remembering the verdict
+# lets those passes bail out before check_alive.
+# A restarted broadcast can reuse the same roomId, so the mark is TTL-bounded
+# and is cleared the moment room/info reports status=2 again.  Pass-4 does not
+# consult this set, so a genuine restart is still detected immediately.
+_ENDED_ROOM_IDS: dict[str, float] = {}  # room_id -> ts
+_ENDED_ROOM_TTL = 1800.0  # 30 minutes
+_ENDED_ROOM_LOCK = threading.Lock()
+
+
+def _mark_room_ended(room_id: str) -> bool:
+    """Record room_id as finished.  Return True only on the first mark.
+
+    BUG-TT-PASS4-REMARK FIX: pass-4 calls this on every poll of an account whose
+    broadcast already ended, and re-stamping the timestamp each time meant
+    _ENDED_ROOM_TTL never elapsed.  The room stayed blacklisted for pass-1 and
+    pass-2 for as long as the monitor ran, which voids the TTL guarantee stated
+    above for a restarted broadcast that reuses the same roomId -- pass-4 is
+    then the only pass that can still see it, and pass-0/pass-3 were already
+    disabled by the health daemon in the same session.  The repeated mark also
+    wrote 2,866 duplicate "marked room ... ended" lines into omnidl_debug.log
+    (984 of them for room 7687256489811020565 alone).
+    """
+    if not room_id:
+        return False
+    now = time.monotonic()
+    with _ENDED_ROOM_LOCK:
+        for rid, ts in list(_ENDED_ROOM_IDS.items()):
+            if now - ts >= _ENDED_ROOM_TTL:
+                del _ENDED_ROOM_IDS[rid]
+        if room_id in _ENDED_ROOM_IDS:
+            return False
+        _ENDED_ROOM_IDS[room_id] = now
+        return True
+
+
+def _clear_room_ended(room_id: str) -> None:
+    with _ENDED_ROOM_LOCK:
+        _ENDED_ROOM_IDS.pop(room_id, None)
+
+
+def _room_recently_ended(room_id: str) -> bool:
+    with _ENDED_ROOM_LOCK:
+        ts = _ENDED_ROOM_IDS.get(room_id)
+        if ts is None:
+            return False
+        if time.monotonic() - ts >= _ENDED_ROOM_TTL:
+            del _ENDED_ROOM_IDS[room_id]
+            return False
+        return True
+
+
 # Profile URL pattern -- matches /@username but NOT /live/, /video/, /tag/, etc.
 # TikTok usernames: letters, digits, underscores, dots (1-24 chars).
 # Accepts both trailing slash and bare query string: /@user, /@user/, /@user?lang=en
+# The mobile host m.tiktok.com serves the same @user paths and is what the
+# TikTok app puts on the clipboard, so both hosts must match.
 _PROFILE_RE = re.compile(
-    r"^https?://(?:www\.)?tiktok\.com/"
+    r"^https?://(?:www\.|m\.)?tiktok\.com/"
     r"@([A-Za-z0-9_.]{1,24})"
     r"(?:/|\?[^/]*)?$",
     re.I,
@@ -64,7 +126,7 @@ _PROFILE_RE = re.compile(
 # (e.g. @user/live?lang=vi) and fragment anchors are correctly recognised as
 # live URLs instead of falling through to _PROFILE_RE which doesn't match /live.
 _LIVE_URL_RE = re.compile(
-    r"^https?://(?:www\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live(?:/|\?|#|$)",
+    r"^https?://(?:www\.|m\.)?tiktok\.com/@([A-Za-z0-9_.]{1,24})/live(?:/|\?|#|$)",
     re.I,
 )
 
@@ -102,8 +164,13 @@ def _get_chrome_impersonate_target() -> "Any":
     causes 'ImpersonateTarget' object has no attribute 'encode' at request time.
 
     Strategy:
-    1. Probe CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP for any chrome key.
-    2. Return the map VALUE (curl_cffi string, e.g. "chrome131").
+    1. Probe CurlCFFIRH._SUPPORTED_IMPERSONATE_TARGET_MAP for a chrome146 key
+       (matches _CHROME_UA above) so the result is a deliberate, deterministic
+       pick rather than "whichever chrome key the map lists first" -- that
+       order shifts with every curl_cffi release (0.16 added chrome142/145/146
+       ahead of the older entries), which would otherwise silently move the
+       TLS fingerprint away from what _CHROME_UA claims.
+    2. Fall back to any chrome key if chrome146 is not listed (older curl_cffi).
     3. Fall back to "chrome" if map lookup fails or module not available.
     """
     try:
@@ -111,8 +178,10 @@ def _get_chrome_impersonate_target() -> "Any":
         from yt_dlp.networking.impersonate import ImpersonateTarget as _IT  # noqa: PLC0415
 
         _map = getattr(_RH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
-        # Find the ImpersonateTarget key with client=='chrome'
         chrome_key = next(
+            (k for k, v in _map.items() if getattr(k, "client", None) == "chrome" and v == "chrome146"),
+            None,
+        ) or next(
             (k for k in _map if getattr(k, "client", None) == "chrome"),
             None,
         )
@@ -369,10 +438,10 @@ def _fetch_tiktok_profile_page(username: str, proxy: str = "", cookie_file: str 
     except Exception as exc:
         exc_s = str(exc)
         if "connection" in exc_s.lower() or "connect" in exc_s.lower():
-            raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
+            raise RuntimeError(t("err.network", err=exc)) from exc
         if "timeout" in exc_s.lower():
-            raise RuntimeError("TikTok API hết thời gian chờ. Thử lại sau.") from None
-        raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
+            raise RuntimeError(t("err.tiktok_api_timeout")) from None
+        raise RuntimeError(t("err.http", err=exc)) from exc
     finally:
         # Each unclosed curl_cffi Session pins a libcurl easy handle whose
         # native memory CPython's GC thresholds cannot see. The response body
@@ -752,6 +821,7 @@ def _fetch_hls_from_webcast_room_info(
         status = room_data.get("status")
         if status != 2:
             if status in (4, 5):
+                _mark_room_ended(room_id)
                 logger.debug(
                     "BUG-TT-25: room/info status=%s (ended) for room %s",
                     status,
@@ -764,6 +834,9 @@ def _fetch_hls_from_webcast_room_info(
                     room_id,
                 )
             return None
+        # status=2: the room is broadcasting again -- a restarted stream may
+        # reuse the roomId that was marked ended earlier.
+        _clear_room_ended(room_id)
         stream_url = room_data.get("stream_url") or {}
         # Collect all CDN variants: primary first, then hls_pull_url_map entries.
         # Different quality variants (HD/SD/LD) may be on different CDN nodes —
@@ -989,7 +1062,17 @@ def _check_tiktok_live_with_room_id(
         cookie_file=cookie_file,
         share_url=share_url,
     )
-    result = _get_dispatcher().check(ctx)
+    # A hard error (429 / 404 / network) is held, not raised yet: the whole
+    # point of _ROOM_ID_CACHE is to answer during a rate-limit window via
+    # check_alive, which does not share the HTML-scraping limit. Raising here
+    # would skip that path exactly when it applies. Re-raised below if the
+    # cache cannot answer either.
+    _hard_error: "Optional[RuntimeError]" = None
+    try:
+        result = _get_dispatcher().check(ctx)
+    except RuntimeError as exc:
+        _hard_error = exc
+        result = None
 
     if result is not None:
         if _verify_room_alive(result[1], username, proxy=proxy, cookie_file=cookie_file):
@@ -1001,10 +1084,10 @@ def _check_tiktok_live_with_room_id(
             )
             if hls_check is None:
                 logger.debug(
-                    "tiktok_live_checker: @%s roomId=%s alive but room/info status!=2"
-                    " -- scheduled stream, not live yet",
+                    "tiktok_live_checker: @%s roomId=%s alive but room/info status!=2 -- %s",
                     username,
                     result[1],
+                    "stream ended" if _room_recently_ended(result[1]) else "scheduled, not live yet",
                 )
                 return None
             _ROOM_ID_CACHE[username] = (result[1], time.monotonic())
@@ -1029,7 +1112,7 @@ def _check_tiktok_live_with_room_id(
                         username,
                         cached_room_id,
                     )
-                    del _ROOM_ID_CACHE[username]
+                    _ROOM_ID_CACHE.pop(username, None)
                     return None
                 logger.info(
                     "tiktok_live_checker: @%s LIVE via cached roomId=%s (detection blocked)",
@@ -1037,13 +1120,17 @@ def _check_tiktok_live_with_room_id(
                     cached_room_id,
                 )
                 return (f"https://www.tiktok.com/@{username}/live", cached_room_id)
-            # check_alive confirmed not live -- evict stale cache entry
-            del _ROOM_ID_CACHE[username]
+            # check_alive confirmed not live -- evict stale cache entry.
+            # This is authoritative, so it also settles a held rate-limit error.
+            _ROOM_ID_CACHE.pop(username, None)
+            return None
         else:
             # TTL expired: previously this fell straight through to `return None`
             # and left the entry pinned for the process lifetime.
-            del _ROOM_ID_CACHE[username]
+            _ROOM_ID_CACHE.pop(username, None)
 
+    if _hard_error is not None:
+        raise _hard_error
     return None
 
 

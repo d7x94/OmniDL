@@ -607,13 +607,20 @@ class TestYouTubeLiveAdaptiveFormat:
         opts = self._capture_opts(task)
         assert opts["format"] == "best/best"
 
-    def test_instagram_live_still_uses_bare_best(self):
-        """Non-YouTube live platforms are unaffected — still plain 'best'."""
+    def test_instagram_live_still_prefers_bare_best(self):
+        """Non-YouTube live platforms still pick 'best' first.
+
+        BUG-FB-LIVE-FMT added a "/bv*+ba" tail so a DASH-only Facebook broadcast
+        (video-only + audio-only representations, no muxed format) stops aborting
+        with "Requested format is not available". Instagram/Twitch expose a muxed
+        HLS format, so the first branch still wins and behaviour is unchanged.
+        """
         url = "https://www.instagram.com/someuser/live/"
         task = DownloadTask(url=url, format_id="bestvideo+bestaudio/best", output_ext="mp4")
         task.media_info = MediaInfo(url=url, title="IG Live", is_live=True)
         opts = self._capture_opts(task)
-        assert opts["format"] == "best"
+        assert opts["format"].split("/")[0] == "best"
+        assert opts["format"] == "best/bv*+ba"
 
     def test_tiktok_live_regression_unaffected(self):
         """TikTok live keeps its HLS-safe chain — YouTube change must not leak in."""

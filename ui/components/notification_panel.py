@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.themes.tokens import T
+from utils.i18n import t
 
 _MAX_ENTRIES = 5
 _AUTO_DISMISS_MS = 8000
@@ -48,13 +49,13 @@ class NotificationPanel(QFrame):
         hrow.setContentsMargins(12, 10, 8, 10)
         hrow.setSpacing(0)
 
-        title = QLabel("THONG BAO")
-        title.setStyleSheet(
+        self._title_lbl = QLabel(t("notification.title"))
+        self._title_lbl.setStyleSheet(
             f"color: {T.text}; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; background: transparent;"
         )
-        hrow.addWidget(title, 1)
+        hrow.addWidget(self._title_lbl, 1)
 
-        self._clear_btn = QPushButton("Xoa het")
+        self._clear_btn = QPushButton(t("notification.clear_all"))
         self._clear_btn.setFixedHeight(22)
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_btn.setStyleSheet(f"""
@@ -154,6 +155,7 @@ class NotificationPanel(QFrame):
         dismiss_btn = QPushButton("x")
         dismiss_btn.setFixedSize(16, 16)
         dismiss_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dismiss_btn.setToolTip(t("notification.dismiss"))
         dismiss_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
@@ -264,3 +266,7 @@ class NotificationPanel(QFrame):
         scroll_h = min(content_h, _PANEL_MAX_H - 44)
         self._scroll.setFixedHeight(max(scroll_h, 0))
         self.adjustSize()
+
+    def retranslate(self) -> None:
+        self._title_lbl.setText(t("notification.title"))
+        self._clear_btn.setText(t("notification.clear_all"))

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from ui.signals import ui_bridge
 from ui.tabs.settings._base_panel import _BasePanel
 from ui.themes.tokens import T
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
@@ -46,16 +47,14 @@ class TaildropPanel(_BasePanel):
 
         self._row_label(
             td_card,
-            "Sau khi tải xong, tự động gửi file sang iPhone qua Taildrop (Tailscale).\n"
-            "Yêu cầu: Tailscale CLI trên PC và Taildrop bật trên iPhone.\n"
-            "File xuất hiện trong ứng dụng Files của iOS.",
+            t("settings.taildrop.description"),
             wrap=True,
         )
 
         # ── Enable toggle ────────────────────────────────────────────────
         self._td_switch = self._switch_row(
             td_card,
-            "Bật Taildrop",
+            t("settings.taildrop.enable"),
             bool(getattr(cfg, "taildrop_enabled", False)),
             self._on_taildrop_toggle,
         )
@@ -70,7 +69,7 @@ class TaildropPanel(_BasePanel):
         self._separator(td_card)
 
         # ── Send mode ────────────────────────────────────────────────────
-        mode_hdr = QLabel("📤  Chế độ gửi file")
+        mode_hdr = QLabel(t("settings.taildrop.mode_header"))
         mode_hdr.setStyleSheet(
             f"color: {T.text2}; font-size: 11px; font-weight: bold; background: transparent; padding: 0 16px 4px;"
         )
@@ -80,12 +79,12 @@ class TaildropPanel(_BasePanel):
         mode_row.setStyleSheet("background: transparent;")
         mhl = QHBoxLayout(mode_row)
         mhl.setContentsMargins(16, 0, 16, 4)
-        self._td_mode_auto_btn = QPushButton("🔄  Tự động")
+        self._td_mode_auto_btn = QPushButton(t("settings.taildrop.mode_auto_btn"))
         self._td_mode_auto_btn.setFixedHeight(30)
         self._td_mode_auto_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._td_mode_auto_btn.clicked.connect(lambda: self._on_taildrop_mode_change("always"))
         mhl.addWidget(self._td_mode_auto_btn)
-        self._td_mode_manual_btn = QPushButton("🖱️  Thủ công")
+        self._td_mode_manual_btn = QPushButton(t("settings.taildrop.mode_manual_btn"))
         self._td_mode_manual_btn.setFixedHeight(30)
         self._td_mode_manual_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._td_mode_manual_btn.clicked.connect(lambda: self._on_taildrop_mode_change("ask"))
@@ -103,13 +102,13 @@ class TaildropPanel(_BasePanel):
         self._separator(td_card)
 
         # ── Target nodes ──────────────────────────────────────────────────
-        nodes_hdr = QLabel("📱  Thiết bị đích (chọn một hoặc nhiều máy)")
+        nodes_hdr = QLabel(t("settings.taildrop.nodes_header"))
         nodes_hdr.setStyleSheet(
             f"color: {T.text2}; font-size: 11px; font-weight: bold; background: transparent; padding: 0 16px 4px;"
         )
         td_card.layout().addWidget(nodes_hdr)
 
-        nodes_hint = QLabel("Nhấn 🔍 Tìm thiết bị để quét. Tích chọn máy muốn gửi file.")
+        nodes_hint = QLabel(t("settings.taildrop.nodes_hint"))
         nodes_hint.setStyleSheet(
             f"color: {T.text3}; font-size: 10px; background: transparent; padding: 0 16px 6px;"
         )
@@ -149,14 +148,14 @@ class TaildropPanel(_BasePanel):
         manual_row.setStyleSheet("background: transparent;")
         mnl = QHBoxLayout(manual_row)
         mnl.setContentsMargins(16, 0, 16, 4)
-        lbl = QLabel("Hoặc nhập tên node thủ công:")
+        lbl = QLabel(t("settings.taildrop.manual_label"))
         lbl.setStyleSheet(f"color: {T.text3}; font-size: 10px; background: transparent;")
         mnl.addWidget(lbl)
         self._td_node_entry = QLineEdit()
-        self._td_node_entry.setPlaceholderText("vd: iphone hoặc 100.64.x.x")
+        self._td_node_entry.setPlaceholderText(t("settings.taildrop.manual_placeholder"))
         self._td_node_entry.setFixedSize(200, 30)
         mnl.addWidget(self._td_node_entry)
-        add_btn = QPushButton("➕ Thêm")
+        add_btn = QPushButton(t("settings.taildrop.add_btn"))
         add_btn.setFixedSize(80, 30)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setStyleSheet(
@@ -172,7 +171,7 @@ class TaildropPanel(_BasePanel):
         action_row.setStyleSheet("background: transparent;")
         ahl = QHBoxLayout(action_row)
         ahl.setContentsMargins(16, 0, 16, 14)
-        self._td_scan_btn = QPushButton("🔍  Tìm thiết bị Tailscale")
+        self._td_scan_btn = QPushButton(t("settings.taildrop.scan_btn"))
         self._td_scan_btn.setFixedHeight(32)
         self._td_scan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._td_scan_btn.setStyleSheet(
@@ -198,12 +197,12 @@ class TaildropPanel(_BasePanel):
             import shutil
 
             if shutil.which("tailscale"):
-                lbl.setText("✅  tailscale CLI phát hiện trên PATH")
+                lbl.setText(t("settings.taildrop.cli_found"))
                 lbl.setStyleSheet(
-                    "color: #22c55e; font-size: 11px; background: transparent; padding: 2px 16px 6px;"
+                    f"color: {T.success}; font-size: 11px; background: transparent; padding: 2px 16px 6px;"
                 )
             else:
-                lbl.setText("⚠️  Không tìm thấy tailscale CLI — cài Tailscale trên PC này")
+                lbl.setText(t("settings.taildrop.cli_not_found"))
                 lbl.setStyleSheet(
                     f"color: {T.warning_text}; font-size: 11px; background: transparent; padding: 2px 16px 6px;"
                 )
@@ -213,19 +212,19 @@ class TaildropPanel(_BasePanel):
     def _on_taildrop_toggle(self, enabled: bool) -> None:
         self._app.config.set("taildrop_enabled", enabled)
         self._app.config.save()
-        state = "bật" if enabled else "tắt"
-        self._app.toast(f"📲  Taildrop {state}.", "success" if enabled else "info")
+        msg = t("settings.taildrop.toggle_on") if enabled else t("settings.taildrop.toggle_off")
+        self._app.toast(msg, "success" if enabled else "info")
 
     def _on_taildrop_mode_change(self, mode: str) -> None:
         self._app.config.set("taildrop_send_mode", mode)
         self._app.config.save()
         self._refresh_taildrop_mode_buttons()
         label = (
-            "Tự động — gửi ngay sau mỗi lần tải xong"
+            t("settings.taildrop.mode_auto_label")
             if mode == "always"
-            else "Thủ công — chỉ gửi khi bạn yêu cầu"
+            else t("settings.taildrop.mode_manual_label")
         )
-        self._app.toast(f"📤  Chế độ Taildrop: {label}.", "success")
+        self._app.toast(t("settings.taildrop.mode_toast", label=label), "success")
 
     def _refresh_taildrop_mode_buttons(self) -> None:
         auto_btn = getattr(self, "_td_mode_auto_btn", None)
@@ -242,7 +241,7 @@ class TaildropPanel(_BasePanel):
                 f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 11px; padding: 4px 12px;"
             )
             if desc_lbl:
-                desc_lbl.setText("⚡ File sẽ tự động gửi sang iPhone ngay sau mỗi lần tải xong.")
+                desc_lbl.setText(t("settings.taildrop.mode_auto_desc"))
         else:
             auto_btn.setStyleSheet(
                 f"background: {T.surface3}; color: {T.text2}; border-radius: 8px; border: none; font-size: 11px; padding: 4px 12px;"
@@ -251,16 +250,14 @@ class TaildropPanel(_BasePanel):
                 f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 8px; border: none; font-size: 11px; padding: 4px 12px;"
             )
             if desc_lbl:
-                desc_lbl.setText("🖱️ File chỉ được gửi khi bạn nhấn Transfer thủ công trong Remote UI.")
+                desc_lbl.setText(t("settings.taildrop.mode_manual_desc"))
 
     def _on_taildrop_add_manual(self) -> None:
         node = self._td_node_entry.text().strip()
         if not node:
             return
         if not _NODE_RE.match(node):
-            self._app.toast(
-                "❌  Tên node không hợp lệ — chỉ chứa chữ, số, dấu gạch ngang, dấu chấm.", "error"
-            )
+            self._app.toast(t("settings.taildrop.invalid_node"), "error")
             return
         current = list(self._td_node_vars.keys())
         if node not in current:
@@ -271,7 +268,7 @@ class TaildropPanel(_BasePanel):
             self._td_node_vars[node].setChecked(True)
         self._td_node_entry.clear()
         self._save_selected_nodes()
-        self._app.toast(f"➕  Đã thêm node: {node}", "success")
+        self._app.toast(t("settings.taildrop.node_added", node=node), "success")
 
     def _render_node_checkboxes(self, all_nodes: list, selected_nodes: list) -> None:
         while self._td_nodes_layout.count():
@@ -281,7 +278,7 @@ class TaildropPanel(_BasePanel):
         self._td_node_vars.clear()
 
         if not all_nodes:
-            lbl = QLabel("Chưa có thiết bị nào. Nhấn 🔍 để quét.")
+            lbl = QLabel(t("settings.taildrop.no_nodes"))
             lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent; padding: 4px;")
             self._td_nodes_layout.addWidget(lbl)
             return
@@ -301,7 +298,7 @@ class TaildropPanel(_BasePanel):
         self._saved_nodes = selected
 
     def _on_taildrop_scan(self) -> None:
-        self._td_status_lbl.setText("⏳  Đang quét...")
+        self._td_status_lbl.setText(t("settings.taildrop.scanning"))
         self._td_status_lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; background: transparent;")
         self._td_scan_btn.setEnabled(False)
 
@@ -320,10 +317,7 @@ class TaildropPanel(_BasePanel):
             def _update():
                 self._td_scan_btn.setEnabled(True)
                 if not nodes:
-                    self._td_status_lbl.setText(
-                        "⚠️  Không tìm thấy thiết bị nào khác online.\n"
-                        "→ Mở app Tailscale trên iPhone và đảm bảo đang kết nối."
-                    )
+                    self._td_status_lbl.setText(t("settings.taildrop.no_devices_found"))
                     self._td_status_lbl.setStyleSheet(
                         f"color: {T.warning_text}; font-size: 11px; background: transparent;"
                     )
@@ -334,8 +328,10 @@ class TaildropPanel(_BasePanel):
                     self._saved_nodes
                 )
                 self._render_node_checkboxes(all_nodes, currently_selected)
-                self._td_status_lbl.setText(f"✅  Tìm thấy {len(nodes)} thiết bị. Tích chọn máy muốn gửi.")
-                self._td_status_lbl.setStyleSheet("color: #22c55e; font-size: 11px; background: transparent;")
+                self._td_status_lbl.setText(t("settings.taildrop.devices_found", count=len(nodes)))
+                self._td_status_lbl.setStyleSheet(
+                    f"color: {T.success}; font-size: 11px; background: transparent;"
+                )
 
             ui_bridge.post(_update)
 

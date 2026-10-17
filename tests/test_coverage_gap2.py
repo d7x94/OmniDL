@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from utils.i18n import t
+
 # ---------------------------------------------------------------------------
 # config_manager.py  lines 370, 378-379, 384
 # ---------------------------------------------------------------------------
@@ -265,7 +267,7 @@ class TestFfmpegConvertPublicApi:
         with patch.object(svc, "_convert_sync", side_effect=ConversionCancelledError("x")):
             svc._run(src, "standard", tmp_path, None, None, on_error)
 
-        on_error.assert_called_once_with("Đã huỷ")
+        on_error.assert_called_once_with(t("convert.cancelled"))
 
     def test_convert_dispatches_background_thread(self, tmp_path):
         from app.services.ffmpeg_convert_service import FfmpegConvertService

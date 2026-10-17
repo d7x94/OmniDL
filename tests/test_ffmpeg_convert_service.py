@@ -33,6 +33,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -302,7 +304,7 @@ class TestConvertSync:
     def test_raises_for_missing_source(self, tmp_path: Path):
         svc = FfmpegConvertService()
         missing = tmp_path / "does_not_exist.mkv"
-        with pytest.raises(ConversionError, match="không tồn tại"):
+        with pytest.raises(ConversionError, match=re.escape(str(missing))):
             svc._convert_sync(missing, "standard", None, None)
 
     def test_resume_skipped_when_no_partial(self, tmp_path: Path):
@@ -595,6 +597,9 @@ class TestHwEncoderCatalog:
             "nvenc_av1",
             "qsv_av1",
             "amf_av1",
+            "mf",
+            "mf_hevc",
+            "mf_av1",
         }
         assert expected == set(_HW_ENCODER_CATALOG.keys())
 
@@ -681,14 +686,27 @@ class TestDetectAvailableEncoders:
             result = detect_available_encoders(ffmpeg_bin=ffmpeg)
         assert result == {"cpu"}
 
-    def test_videotoolbox_detected_by_codec_name(self, tmp_path: Path):
-        fake_output = " V..... h264_videotoolbox   VideoToolbox H.264\n"
+    def test_videotoolbox_probed_only_on_macos(self, tmp_path: Path):
+        """VideoToolbox has no driver off macOS — probing it there is a wasted
+        subprocess that then logs a bogus "no driver" miss on every start."""
+        from app.services.ffmpeg_convert_service import _PROBE_CODECS
+
+        keys = {k for k, _ in _PROBE_CODECS}
+        if sys.platform == "darwin":
+            assert keys == {"videotoolbox"}
+        else:
+            assert "videotoolbox" not in keys
+            assert {"nvenc", "qsv", "amf"} <= keys
+
+    def test_videotoolbox_detected_when_probed(self, tmp_path: Path):
         ffmpeg = tmp_path / "ffmpeg"
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-        fake_result.stdout = fake_output
-        fake_result.stderr = ""
-        with patch("subprocess.run", return_value=fake_result):
+        with (
+            patch(
+                "app.services.ffmpeg_convert_service._PROBE_CODECS",
+                [("videotoolbox", "h264_videotoolbox")],
+            ),
+            patch("app.services.ffmpeg_convert_service._validate_encoder_codec", return_value=True),
+        ):
             result = detect_available_encoders(ffmpeg_bin=ffmpeg)
         assert "videotoolbox" in result
 
@@ -1042,6 +1060,7 @@ class TestConvertQueueEncodeSettings:
             encode_settings=None,
             cancel_event=None,
             target_ext="mp4",
+            on_result=None,
         ):
             received.append(encode_settings)
             done_event.set()
@@ -1075,6 +1094,7 @@ class TestConvertQueueEncodeSettings:
             encode_settings=None,
             cancel_event=None,
             target_ext="mp4",
+            on_result=None,
         ):
             received.append(encode_settings)
             done_event.set()

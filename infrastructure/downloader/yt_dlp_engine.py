@@ -12,8 +12,9 @@ import shlex
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlparse as _urlparse
 
 import yt_dlp
@@ -62,8 +63,20 @@ try:
         _supported_map = getattr(_CurlCFFIRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
         # First try exact match (curl_cffi < 0.15 — unversioned keys)
         if _IMPERSONATE_TARGET not in _supported_map:
-            # curl_cffi >= 0.15: scan for any chrome target in the map
+            # curl_cffi >= 0.15: pin to a specific, known-good Chrome version
+            # rather than "whichever chrome key curl_cffi lists first" — that
+            # order shifts with every curl_cffi release (0.16 starts at
+            # chrome146 instead of chrome136), which silently changes the TLS
+            # fingerprint out from under the manually-set UA strings below
+            # that were written to match an older pick.
             _chrome_target = next(
+                (
+                    k
+                    for k, v in _supported_map.items()
+                    if getattr(k, "client", None) == "chrome" and v == "chrome131"
+                ),
+                None,
+            ) or next(
                 (k for k in _supported_map if getattr(k, "client", None) == "chrome"),
                 None,
             )
@@ -109,20 +122,116 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import DownloadTask, MediaInfo
 from infrastructure.config.config_manager import ConfigManager
 from utils.ffmpeg_locator import get_ffmpeg_path
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
-# BUG-IG-ANTIBOT: yt-dlp's InstagramBaseIE defaults to the private mobile API
-# host (i.instagram.com) while sending web app-id/headers — a host/identity
-# combination only a script produces. Point it at the web host instead, the
-# same one a real browser tab calls. Guarded: a yt-dlp upgrade that renames
-# the attribute degrades to yt-dlp's own default rather than crashing.
-try:
-    from yt_dlp.extractor.instagram import InstagramBaseIE as _InstagramBaseIE
+# BUG-IG-ANTIBOT: previously monkeypatched InstagramBaseIE._API_BASE_URL to
+# force the web API host — yt-dlp's own host was hardcoded to the private
+# mobile API host (i.instagram.com) while sending web app-id/headers, a
+# combination only a script produces. Fixed upstream (yt-dlp #17278):
+# _API_BASE_URL is now a property that already picks the web host for the
+# web app_id, so the patch is gone — assigning a plain string here would
+# override that property and force the web host for every app_id again.
 
-    _InstagramBaseIE._API_BASE_URL = "https://www.instagram.com/api/v1"
-except Exception as _ig_patch_err:
-    logger.debug("BUG-IG-ANTIBOT: InstagramBaseIE._API_BASE_URL patch skipped: %s", _ig_patch_err)
+# BUG-TT-WAF: TikTok's edge blocks the newest Chrome TLS fingerprints on the
+# video watch page (/@user/video/<id>). It answers HTTP 200 with a 537-byte
+# "Site Maintenance" page that carries neither rehydration JSON nor the JS
+# challenge, so yt-dlp fails with "Unexpected response from webpage request".
+# Older Chrome and current Safari fingerprints still get the real page.
+# Two things are needed to route around it:
+#
+# 1. yt-dlp's TikTok extractor requests impersonate=True, which becomes the
+#    wildcard ImpersonateTarget() in request.extensions. _get_request_target
+#    prefers that extension over the handler's configured target, and the
+#    wildcard resolves to the FIRST entry of the supported-target map — the
+#    newest Chrome, i.e. exactly the blocked one. opts["impersonate"] was
+#    therefore ignored for every TikTok request. Patch the wildcard case so an
+#    explicitly configured target wins; behaviour is unchanged when no target
+#    is configured, and unchanged for callers that pass a specific target.
+# 2. _TIKTOK_IMPERSONATE_TARGETS: TikTok-safe targets in preference order.
+#    The first one goes into opts; the rest are retry candidates, because the
+#    block is partly probabilistic (~1 in 6 requests is rejected even with a
+#    good fingerprint).
+_TIKTOK_IMPERSONATE_TARGETS: list[Any] = []
+if _CURL_CFFI_AVAILABLE:
+    try:
+        from yt_dlp.networking._curlcffi import CurlCFFIRH as _TTRH  # type: ignore[import]
+        from yt_dlp.networking.impersonate import (
+            ImpersonateRequestHandler as _TTImpRH,
+        )
+        from yt_dlp.networking.impersonate import (
+            ImpersonateTarget as _TTTarget,
+        )
+
+        _tt_supported = getattr(_TTRH, "_SUPPORTED_IMPERSONATE_TARGET_MAP", {})
+        # safari-18.4 stays first (the primary opts target, unchanged).
+        # safari-26.0 and firefox-147 added (curl_cffi 0.16): a different
+        # fingerprint family from the chrome-* entries already here, so a
+        # block that catches every Chrome/Safari variant still has a retry
+        # left before falling back to the app_info attempts.
+        for _tt_cand in (
+            "safari-18.4",
+            "safari-26.0",
+            "firefox-147",
+            "chrome-131",
+            "chrome-124",
+            "chrome-110",
+        ):
+            _tt_wanted = _TTTarget.from_str(_tt_cand)
+            _tt_resolved = next((k for k in _tt_supported if _tt_wanted in k), None)
+            if _tt_resolved is not None:
+                _TIKTOK_IMPERSONATE_TARGETS.append(_tt_resolved)
+
+        _TT_WILDCARD = _TTTarget()
+        _tt_orig_get_target = _TTImpRH._get_request_target
+
+        def _get_request_target_prefer_configured(self, request):  # type: ignore[no-untyped-def]
+            if request.extensions.get("impersonate") == _TT_WILDCARD and self.impersonate:
+                return self._resolve_target(self.impersonate)
+            return _tt_orig_get_target(self, request)
+
+        _TTImpRH._get_request_target = _get_request_target_prefer_configured
+    except Exception as _tt_waf_err:
+        logger.warning(
+            "BUG-TT-WAF: impersonate override unavailable (%s) — TikTok VOD extraction may fail",
+            _tt_waf_err,
+        )
+
+# First TikTok-safe target, or the generic one when the probe found nothing.
+_TIKTOK_IMPERSONATE_TARGET = (
+    _TIKTOK_IMPERSONATE_TARGETS[0] if _TIKTOK_IMPERSONATE_TARGETS else _IMPERSONATE_TARGET
+)
+
+
+def _impersonate_target_for(url: str) -> Any:
+    """Return the impersonate target to use for `url` (BUG-TT-WAF)."""
+    if platform_for_url(url) == "tiktok":
+        return _TIKTOK_IMPERSONATE_TARGET
+    return _IMPERSONATE_TARGET
+
+
+def _tiktok_web_block_fallbacks() -> list[tuple[str, dict[str, Any]]]:
+    """yt-dlp opts overrides to retry with after TikTok blocked the web page.
+
+    Alternate TLS fingerprints come first (BUG-TT-WAF) — they are what actually
+    gets past the edge block, and one retry is needed anyway because the block
+    is partly probabilistic. The Android app_info attempts stay last: they only
+    ever helped the older 10231 status and the app API now answers with an empty
+    body unless the request is signed.
+    """
+    fallbacks: list[tuple[str, dict[str, Any]]] = [
+        (f"impersonate={_t}", {"impersonate": _t}) for _t in _TIKTOK_IMPERSONATE_TARGETS[1:]
+    ]
+    fallbacks += [
+        (f"app_info={_a}", {"extractor_args": {"tiktok": {"app_info": [_a]}}})
+        for _a in (
+            "/trill/35.1.3/2023501030/1180",
+            "/musical_ly/35.1.3/2023501030/1233",
+            "/aweme/35.1.3/2023501030/1128",
+        )
+    ]
+    return fallbacks
 
 
 class _PlatformRateLimiter:
@@ -180,7 +289,7 @@ def _validate_cookie_path(config: "ConfigManager") -> str | None:
         return None
 
     if cp.is_file():
-        logger.info("Using cookie file: %s", cp)
+        logger.debug("Using cookie file: %s", cp)
         return str(cp)
 
     # Auto-fallback: config stores .txt but encrypt_cookie_file renamed to .enc
@@ -233,6 +342,7 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("fb.watch", "facebook"),
     ("twitter.com", "twitter"),
     ("x.com", "twitter"),
+    ("t.co", "twitter"),  # X link shortener; yt-dlp resolves it (TwitterShortenerIE)
     ("threads.net", "threads"),
     ("threads.com", "threads"),  # new domain (2024+)
     ("kuaishou.com", "kuaishou"),
@@ -241,6 +351,10 @@ _COOKIE_PLATFORM_MAP: list[tuple[str, str]] = [
     ("ok.ru", "ok_ru"),
     ("m.ok.ru", "ok_ru"),
 ]
+
+# yt-dlp TwitterIE texts for a tweet that holds only photos: raise_no_formats()
+# on a plain /status/ URL, "Media #N is not a video" on a /photo/N URL.
+_X_PHOTO_ONLY_MSGS = ("no video could be found in this tweet", "is not a video")
 
 _IG_RL = _PlatformRateLimiter(1.5)
 _FB_RL = _PlatformRateLimiter(1.0)
@@ -310,7 +424,7 @@ def _resolve_cookie(url: str, config: "ConfigManager", override: "str | None" = 
         candidate = config.get_cookie_for_platform(platform_key).strip()
         validated = _validate_cookie_path_raw(candidate, config)
         if validated:
-            logger.info("Using %s cookie: %s", platform_key, validated)
+            logger.debug("Using %s cookie: %s", platform_key, validated)
             return validated
 
     # ── Step 3: global cookie fallback ───────────────────────────────────
@@ -405,12 +519,15 @@ def _detect_platform(url: str) -> str:
     return "Web"
 
 
-def _build_ffmpeg_cookie_header(cookie_file: str) -> str:
-    """Parse a Netscape cookie file and return a 'name=val; ...' string for tiktok.com.
+def _build_ffmpeg_cookie_header(cookie_file: str, domain_keyword: str = "tiktok") -> str:
+    """Parse a Netscape cookie file and return a 'name=val; ...' string for one site.
 
     BUG-TT-20C: TikTok stage CDN nodes require session cookies in HTTP headers
     even when the HLS URL is signed. Used to build the -headers Cookie: argument
     for direct FFmpeg calls.
+    BUG-FB-LIVE-HDR: the same helper now serves Facebook Live, whose cookie file
+    holds no "tiktok" domain at all — the hardcoded filter made it return "" and
+    the caller then skipped -headers entirely, dropping the Facebook Referer too.
     Returns empty string on any error so callers can skip -headers gracefully.
     """
     if not cookie_file:
@@ -420,14 +537,15 @@ def _build_ffmpeg_cookie_header(cookie_file: str) -> str:
 
         pairs: list[str] = []
         for line in _P(cookie_file).read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
+            # BUG-COOKIE-HTTPONLY: "#HttpOnly_" marks a cookie (sessionid), not a comment.
+            line = line.strip().removeprefix("#HttpOnly_")
             if not line or line.startswith("#"):
                 continue
             parts = line.split("\t")
             if len(parts) < 7:
                 continue
             domain = parts[0].lstrip(".")
-            if "tiktok" not in domain:
+            if domain_keyword not in domain:
                 continue
             name, value = parts[5], parts[6]
             if name and value:
@@ -437,143 +555,107 @@ def _build_ffmpeg_cookie_header(cookie_file: str) -> str:
         return ""
 
 
-def _friendly_error(msg: str) -> str:
+# ── Error classification ──────────────────────────────────────────────────
+# _error_key() maps a raw yt-dlp / ffmpeg message onto a stable ``err.*``
+# catalogue key; _friendly_error() renders that key in the active UI language.
+#
+# Retry and fallback decisions elsewhere (download_manager, download_service)
+# MUST branch on the key, never on the rendered text — the text changes with the
+# UI language, the key does not.  ``_friendly_exc()`` carries the key on the
+# raised exception so those callers can read it back.
+def _error_key(msg: str) -> str | None:
+    """Classify *msg* into an ``err.*`` translation key, or None if unknown."""
     msg_l = msg.lower()
     if "private" in msg_l:
-        return "Content is private. Try enabling cookies in Settings."
+        return "err.private"
     if "not found" in msg_l or "404" in msg_l:
-        return "URL not found or content was removed."
+        return "err.not_found"
     if "unsupported url" in msg_l:
-        return "This platform is not supported by yt-dlp."
+        return "err.unsupported_platform"
     if "not start" in msg_l and "live" in msg_l:
-        return "Live stream has not started yet."
+        return "err.live_not_started"
     if "not currently live" in msg_l or "channel is not currently live" in msg_l:
-        return "channel is not currently live"
+        return "err.not_currently_live"
     if "ended" in msg_l and "live" in msg_l:
-        return "Live stream has ended."
+        return "err.live_ended"
     # Instagram photo — no video stream in post
     if "no video in this post" in msg_l or "no video formats found" in msg_l:
-        return (
-            "Bài đăng này chỉ có ảnh, không có video.\n"
-            "OmniDL sẽ thử tải ảnh với format='best'.\n"
-            "Nếu vẫn lỗi, hãy đảm bảo đang dùng cookie Instagram "
-            "(không phải Facebook) và yt-dlp phiên bản mới nhất."
-        )
+        return "err.ig_photo_only"
     # yt-dlp internal extractor bug (e.g. KeyError('=') on base64 shortcodes)
     if "extractor error" in msg_l or "keyerror" in msg_l:
-        return (
-            "yt-dlp gặp lỗi nội bộ khi phân tích URL này.\n"
-            "Hãy cập nhật yt-dlp lên phiên bản mới nhất:\n"
-            "Settings → Cập nhật yt-dlp, hoặc chạy: pip install -U yt-dlp"
-        )
+        return "err.ytdlp_internal"
     # Instagram-specific errors
     if "checkpoint" in msg_l or "challenge_required" in msg_l:
-        return (
-            "Instagram yêu cầu xác minh tài khoản.\n"
-            "1. Mở Instagram trên trình duyệt, hoàn tất xác minh.\n"
-            "2. Export cookies mới (dùng tiện ích 'Get cookies.txt LOCALLY').\n"
-            "3. Cập nhật cookie file trong Settings → Network → Cookie file.\n"
-            "Lưu ý: Cookie Instagram thường hết hạn sau 1–2 tuần."
-        )
+        return "err.ig_checkpoint"
     if (
         "rate" in msg_l
         and ("limit" in msg_l or "429" in msg_l or "too many" in msg_l)
         or "429" in msg_l
         or "too many requests" in msg_l
     ):
-        return (
-            "Rate limit reached — too many requests in a short time.\n"
-            "Wait 5–10 minutes and try again. "
-            "Enabling browser cookies in Settings may help."
-        )
+        return "err.rate_limit"
     # TLS fingerprint rejection - Kuaishou and similar CDNs (BUG-CC)
     if "ssl routines" in msg_l or "tls connect error" in msg_l or "curl: (35)" in msg_l:
-        return (
-            "Loi ket noi TLS - server tu choi TLS fingerprint mac dinh.\n"
-            "OmniDL dung curl_cffi (Chrome impersonation) de bypass loi nay.\n"
-            "Neu loi van xay ra:\n"
-            "  1. Kiem tra antivirus/proxy khong intercept HTTPS\n"
-            "  2. Thu bat proxy trong Settings -> Network -> Proxy URL\n"
-            "  3. Chay: pip install -U curl-cffi"
-        )
+        return "err.tls_fingerprint"
     # Facebook-specific errors
     if "content not available" in msg_l or "this content isn" in msg_l:
-        return (
-            "This Facebook content is not available. "
-            "It may require login or be restricted to a specific region."
-        )
+        return "err.fb_unavailable"
     # Geographic / copyright restrictions
     if "geo" in msg_l or "region" in msg_l or "country" in msg_l:
-        return (
-            "This content is geo-restricted and not available in your region.\n"
-            "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
-        )
+        return "err.geo_restricted"
     # ffmpeg exit code on livestream — HLS URL expired or stream ended/unavailable.
     # 3419392776 = 0xCBAE0008 = STATUS_PIPE_NOT_AVAILABLE (Windows named pipe).
     # Also covers non-Windows ffmpeg failures (any non-zero exit from ffmpeg).
     if "ffmpeg exited with code" in msg_l:
-        return (
-            "Không thể ghi livestream — ffmpeg báo lỗi.\n"
-            "Nguyên nhân thường gặp:\n"
-            "  • Link livestream đã hết hạn (URL TikTok expire sau ~1–2 phút)\n"
-            "    → Sao chép lại link và thử tải ngay lập tức\n"
-            "  • Livestream đã kết thúc hoặc bị tạm dừng\n"
-            "  • Kết nối mạng không ổn định trong quá trình ghi\n"
-            "Nếu lỗi vẫn xảy ra: thử tải lại link hoặc đợi livestream ổn định."
-        )
+        return "err.ffmpeg_livestream"
     if "your ip" in msg_l and "blocked" in msg_l:
-        return (
-            "IP của bạn bị TikTok/nền tảng chặn truy cập bài đăng này.\n"
-            "Nguyên nhân thường gặp:\n"
-            "  • IP bị đưa vào danh sách đen do quá nhiều request (rate-limit tạm thời)\n"
-            "  • ISP/VPS/datacenter IP bị chặn theo chính sách địa lý\n"
-            "Giải pháp:\n"
-            "  1. Bật proxy/VPN trong Settings → Network → Proxy URL\n"
-            "     (ví dụ: socks5://127.0.0.1:1080 nếu dùng local proxy)\n"
-            "  2. Chờ 5–15 phút rồi thử lại (nếu là rate-limit tạm thời)\n"
-            "  3. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
-        )
+        return "err.ip_blocked"
     if "not comfortable" in msg_l or "log in for access" in msg_l:
-        return (
-            "TikTok yêu cầu đăng nhập để tải video này.\n"
-            "Cookie pool có thể đã hết hạn hoặc dùng tài khoản khác.\n"
-            "Giải pháp: Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok"
-        )
+        return "err.tiktok_login_required"
     if "copyright" in msg_l:
-        return "This content has been blocked due to a copyright claim."
+        return "err.copyright"
     if "blocked" in msg_l:
-        return (
-            "This content is blocked or access was denied.\n"
-            "Try enabling a VPN or proxy in Settings → Network → Proxy URL."
-        )
+        return "err.blocked"
     # Account issues
     if "suspended" in msg_l or ("account" in msg_l and "disabled" in msg_l):
-        return "The account that posted this content has been suspended."
+        return "err.account_suspended"
     if "members only" in msg_l or "subscriber" in msg_l:
-        return (
-            "This content is for members/subscribers only.\n"
-            "Make sure you are logged in via cookies in Settings."
-        )
+        return "err.members_only"
     # TikTok API status 10231 — API parameter issue, video still accessible in browser
     if "status code 10231" in msg_l:
-        return (
-            "TikTok API từ chối request (status 10231) dù video vẫn xem được.\n"
-            "Thử:\n"
-            "  1. Refresh cookie TikTok: Settings → Per-Platform Cookies → TikTok\n"
-            "  2. Bật proxy/VPN trong Settings → Network → Proxy URL"
-        )
+        return "err.tiktok_10231"
     # TikTok / platform deleted or unavailable video
     if (
         "currently not available" in msg_l
         or "video does not exist" in msg_l
         or "this video is not available" in msg_l
     ):
-        return (
-            "Video này không còn tồn tại hoặc đã bị xóa.\n"
-            "Kiểm tra lại URL — nếu link rút gọn (vt.tiktok.com), "
-            "thử mở trong trình duyệt để lấy link đầy đủ."
-        )
-    return msg[:200]
+        return "err.video_deleted"
+    return None
+
+
+def _friendly_error(msg: str) -> str:
+    """Render *msg* for the user in the active UI language."""
+    key = _error_key(msg)
+    return t(key) if key else msg[:200]
+
+
+def _keyed_exc(key: str, **kwargs: Any) -> RuntimeError:
+    """RuntimeError whose text is ``t(key)`` and whose ``.error_key`` is *key*."""
+    exc = RuntimeError(t(key, **kwargs))
+    exc.error_key = key  # type: ignore[attr-defined]
+    return exc
+
+
+def _friendly_exc(msg: str) -> RuntimeError:
+    """Build the RuntimeError to raise for *msg*.
+
+    The translated text goes in the exception message; the stable ``err.*`` key
+    is attached as ``.error_key`` so retry logic never has to match on text.
+    """
+    exc = RuntimeError(_friendly_error(msg))
+    exc.error_key = _error_key(msg)  # type: ignore[attr-defined]
+    return exc
 
 
 # Profile / channel / playlist URL patterns — these return multiple items.
@@ -601,15 +683,14 @@ _PROFILE_URL_RE = re.compile(
 # Known URL patterns that yt-dlp cannot handle, with actionable messages.
 # Checked before calling yt-dlp to give a better UX than a generic error.
 # Patterns that are ALWAYS blocked (no cookie can help)
+# The tuples hold a translation KEY, not text — _check_unsupported_url()
+# renders it in the active UI language at call time.
 _ALWAYS_BLOCKED: list[tuple[re.Pattern, str]] = [
     (
         # threads.com — Meta's new domain (2024+). Neither yt-dlp nor gallery-dl
         # has an extractor for this domain yet. threads.net posts also unsupported.
         re.compile(r"threads\.(com|net)/.*/(post|p)/", re.I),
-        "Threads posts chưa được yt-dlp hỗ trợ.\n\n"
-        "Cách tải video Threads:\n"
-        "• Mở post trong trình duyệt → nhấn ... → Lưu\n"
-        "• Hoặc dùng tiện ích 'Video Downloader' trên trình duyệt.",
+        "err.threads_unsupported",
     ),
 ]
 
@@ -618,18 +699,17 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
     (
         # Instagram Stories — both /stories/ path and reel-style archive URLs
         re.compile(r"instagram\.com/stories/", re.I),
-        "Instagram Stories require login cookies.\nSet up a cookie file in Settings → Network → Cookie file.",
+        "err.ig_stories_cookies",
     ),
     (
         # Instagram Live — old format (/username/live/) AND new 2024+ format (/live/shortcode/)
         re.compile(r"instagram\.com/(?:[^/]+/live|live/[^/]+)(?:/|$)", re.I),
-        "Instagram Live streams require login cookies.\n"
-        "Set up a cookie file in Settings → Network → Cookie file.",
+        "err.ig_live_cookies",
     ),
     (
         # Facebook Live — facebook.com/live/ path
         re.compile(r"facebook\.com/live/", re.I),
-        "Facebook Live streams require cookies.\nSet up a cookie file in Settings → Network → Cookie file.",
+        "err.fb_live_cookies",
     ),
     (
         # Facebook Stories — covers /stories/, story.php, permalink story, share/r/
@@ -643,10 +723,7 @@ _NEEDS_COOKIES: list[tuple[re.Pattern, str]] = [
             r")",
             re.I,
         ),
-        "Facebook Stories không thể tải tự động.\n\n"
-        "Cách tải Story Facebook:\n"
-        "• Mở Story trong trình duyệt → nhấn ... → Lưu video\n"
-        "• Hoặc dùng tiện ích 'Video Downloader' trên trình duyệt.",
+        "err.fb_stories_manual",
     ),
 ]
 
@@ -657,13 +734,13 @@ def _check_unsupported_url(url: str, has_cookies: bool = False) -> str | None:
     has_cookies=True means a cookie file or browser cookies are configured,
     so cookie-required URLs (Stories, Live) are allowed through to yt-dlp.
     """
-    for pattern, message in _ALWAYS_BLOCKED:
+    for pattern, key in _ALWAYS_BLOCKED:
         if pattern.search(url):
-            return message
+            return t(key)
     if not has_cookies:
-        for pattern, message in _NEEDS_COOKIES:
+        for pattern, key in _NEEDS_COOKIES:
             if pattern.search(url):
-                return message
+                return t(key)
     return None
 
 
@@ -805,6 +882,115 @@ def _resolve_facebook_share_url(url: str) -> str:
     return url
 
 
+# BUG-FB-LIVE: hosts that may legitimately serve a Facebook HLS playlist or
+# DASH manifest.  The URL comes out of yt-dlp's extraction of a user-supplied
+# facebook.com link, so it is still attacker-influenced; the probe below
+# fetches it only when it points at Facebook's own CDN.
+_FB_CDN_HOST_RE = re.compile(r"(?:^|\.)(?:fbcdn\.net|facebook\.com)$", re.I)
+
+
+# BUG-FB-LIVE-DASH: an MPEG-DASH manifest declares MPD@type="dynamic" while
+# the broadcast is running and "static" once it is a finished recording — the
+# DASH equivalent of the HLS #EXT-X-ENDLIST tag probed below.
+_FB_MPD_DYNAMIC_RE = re.compile(r'<MPD\b[^>]*\btype\s*=\s*["\']dynamic["\']', re.I)
+
+
+def _fb_fetch_manifest(url: str) -> "str | None":
+    """Fetch a manifest from Facebook's CDN; None for a foreign host or any failure."""
+    _parsed = _urlparse(url)
+    if _parsed.scheme not in ("http", "https"):
+        return None
+    if not _FB_CDN_HOST_RE.search(_parsed.hostname or ""):
+        return None
+    try:
+        if _CURL_CFFI_AVAILABLE:
+            from curl_cffi import requests as _cffi_req  # noqa: PLC0415
+
+            return (
+                _cffi_req.get(
+                    url,
+                    impersonate=_IMPERSONATE_STRING,  # type: ignore[arg-type]
+                    timeout=15,
+                ).text
+                or ""
+            )
+        import urllib.request  # noqa: PLC0415
+
+        # only http/https reach here: the scheme is checked at the top
+        with urllib.request.urlopen(url, timeout=15) as _resp:  # noqa: S310  # nosec B310
+            return _resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        logger.debug("BUG-FB-LIVE: manifest probe failed (%s)", exc)
+        return None
+
+
+def _facebook_live_manifest_url(formats: "list[Any] | None") -> "str | None":
+    """Return Facebook's live manifest URL while the broadcast is still running.
+
+    BUG-FB-LIVE: yt-dlp's FacebookIE never sets is_live or live_status
+    (checked against yt-dlp 2026.08.19 — the only assignment in facebook.py is
+    inside a test fixture), so info["is_live"] is None for every Facebook URL
+    and YoutubeDL._fill_common_fields leaves it that way.  An ongoing broadcast
+    therefore takes the VOD path: get_suitable_downloader picks HlsFD instead
+    of FFmpegFD, HlsFD downloads the segments the playlist listed at that
+    instant and stops, and the user gets a short clip of an hours-long stream
+    reported as a completed download.
+
+    Ask the protocol instead.  An HLS media playlist carries #EXT-X-ENDLIST
+    only once the stream is complete, and a DASH manifest carries
+    MPD@type="dynamic" only while it is still growing.  Returns the manifest
+    URL when either says "still live"; returns None for a finished stream, a
+    plain VOD, or any failure, which keeps the previous VOD behaviour.
+
+    BUG-FB-LIVE-DASH: story.php and /<page>/videos/<id> pages serve DASH-only
+    formats (format ids like "dash-lp-pst-v" or a bare representation id), so
+    the HLS-only probe never fired and every such broadcast was still captured
+    as a truncated VOD.  Probe the MPD too.
+    """
+    _urls = [
+        f["url"]
+        for f in (formats or [])
+        if isinstance(f, dict)
+        and isinstance(f.get("url"), str)
+        and str(f.get("protocol") or "").startswith("m3u8")
+    ]
+    # yt-dlp orders formats worst → best; probe the best one first.
+    for _u in reversed(_urls):
+        _body = _fb_fetch_manifest(_u)
+        if _body is None:
+            continue
+        if "#EXTINF" not in _body:
+            continue  # master playlist or an error page — try the next variant
+        if "#EXT-X-ENDLIST" in _body:
+            return None
+        logger.debug("BUG-FB-LIVE: playlist has no #EXT-X-ENDLIST — broadcast is live")
+        return _u
+
+    # No HLS variant answered — fall back to the DASH manifest.  Every
+    # representation of one manifest carries the same manifest_url, so
+    # de-duplicate before fetching.
+    _mpds = list(
+        dict.fromkeys(
+            f["manifest_url"]
+            for f in (formats or [])
+            if isinstance(f, dict)
+            and isinstance(f.get("manifest_url"), str)
+            and str(f.get("protocol") or "").startswith("http_dash_segments")
+        )
+    )
+    for _u in reversed(_mpds):
+        _body = _fb_fetch_manifest(_u)
+        if _body is None:
+            continue
+        if "<MPD" not in _body:
+            continue  # not a manifest — try the next one
+        if not _FB_MPD_DYNAMIC_RE.search(_body):
+            return None
+        logger.debug('BUG-FB-LIVE: MPD type="dynamic" — broadcast is live')
+        return _u
+    return None
+
+
 class _FacebookMetaFixupPP(yt_dlp.postprocessor.common.PostProcessor):
     """Correct uploader/title before outtmpl renders, for Facebook's generic-page fallback.
 
@@ -846,19 +1032,52 @@ _DIAG_KEYWORDS: tuple[str, ...] = (
 )
 
 
+# yt-dlp colours its own ERROR:/WARNING: prefixes; with quiet=True the check
+# that suppresses colour for a non-tty never runs, so raw escapes ended up in
+# omnidl_debug.log ("\x1b[0;31mERROR:\x1b[0m [TikTok] ...").
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
 class _DiagLogger:
+    # BUG-TT-RETRYNOISE FIX: the TikTok fallback ladders (BUG-TT-10231 and
+    # BUG-TT-10231-DL) build a YoutubeDL per attempt from `{**opts, **override}`,
+    # so this logger is inherited by every attempt. Each failed *attempt* wrote
+    # an ERROR record even though the ladder went on to succeed — 39 ERROR
+    # lines on 2026-08-30/31 for a window in which 41/41 downloads completed.
+    # The ladder already logs each attempt at DEBUG with its own label, so while
+    # it is running errors here are demoted to DEBUG.
+    errors_are_recoverable: bool = False
+
     def debug(self, msg: str) -> None:
         if any(kw in msg.lower() for kw in _DIAG_KEYWORDS):
-            logger.debug("[yt-dlp diag] %s", msg.strip())
+            logger.debug("[yt-dlp diag] %s", _ANSI_RE.sub("", msg).strip())
 
     def info(self, msg: str) -> None:
         pass  # progress bar lines — skip
 
     def warning(self, msg: str) -> None:
-        logger.warning("[yt-dlp] %s", msg.strip())
+        logger.warning("[yt-dlp] %s", _ANSI_RE.sub("", msg).strip())
 
     def error(self, msg: str) -> None:
-        logger.error("[yt-dlp] %s", msg.strip())
+        clean = _ANSI_RE.sub("", msg).strip()
+        if self.errors_are_recoverable:
+            logger.debug("[yt-dlp retry] %s", clean)
+        else:
+            logger.error("[yt-dlp] %s", clean)
+
+
+@contextmanager
+def _recoverable_yt_dlp_errors(diag_logger: object, enabled: bool = True) -> "Iterator[None]":
+    """Demote yt-dlp's own ERROR records to DEBUG for the duration of a retry ladder."""
+    if not enabled or not isinstance(diag_logger, _DiagLogger):
+        yield
+        return
+    previous = diag_logger.errors_are_recoverable
+    diag_logger.errors_are_recoverable = True
+    try:
+        yield
+    finally:
+        diag_logger.errors_are_recoverable = previous
 
 
 # BUG-IG-COOKIE FIX: yt-dlp's Instagram extractor detects an expired/invalid
@@ -884,7 +1103,7 @@ class _IGCookieLogger(_DiagLogger):
         super().warning(msg)
 
 
-_IG_COOKIE_EXPIRED_MSG = "Cookie Instagram hết hạn - làm mới cookie trong Settings"
+_IG_COOKIE_EXPIRED_KEY = "err.ig_cookie_expired"
 
 
 def _tt29_cookie_sources(
@@ -893,8 +1112,9 @@ def _tt29_cookie_sources(
     """Return (cookie_path, label) pairs for BUG-TT-29 rotation.
 
     Sequence: pool → global-tiktok → anon → pool → global-tiktok.
-    Consecutive duplicates are removed so identical cookie files don't
-    burn retries (e.g. when pool override == per-platform cookie).
+    Duplicates (by cookie value, anywhere in the list) are removed so
+    identical cookie files don't burn retries (e.g. when pool override
+    == per-platform cookie).
     """
     pool = _resolve_cookie(task_url, config, override) or ""
     global_tt = _resolve_cookie(task_url, config, None) or ""
@@ -906,13 +1126,45 @@ def _tt29_cookie_sources(
         (global_tt, "global"),
     ]
     out: list[tuple[str, str]] = []
-    last: object = object()
+    seen: set[str] = set()
     for c, lbl in raw:
-        if c == last:
+        if c in seen:
             continue
+        seen.add(c)
         out.append((c, lbl))
-        last = c
     return out
+
+
+# BUG-FB-LIVE-RESUME: hard ceiling on resumed FFmpeg runs for one broadcast, so a
+# manifest that stays "dynamic" forever cannot spin the worker thread indefinitely.
+_FB_LIVE_MAX_RESUMES = 720
+
+
+def _fb_append_seg(main_path: str, seg_path: str, attempt: int) -> None:
+    """Append a resumed .segN recording onto the main .ts and delete it.
+
+    BUG-FB-LIVE-RESUME: mpegts is a concatenable container, so the resumed runs
+    are joined by appending bytes — the same trick BUG-TT-CANCEL-SEG uses for
+    TikTok.  No-op for the first run, which writes the main file directly.
+    """
+    if attempt == 0 or seg_path == main_path:
+        return
+    import shutil as _shutil_seg  # noqa: PLC0415
+
+    _seg = Path(seg_path)
+    try:
+        if _seg.is_file() and _seg.stat().st_size > 0:
+            with open(main_path, "ab") as _fo, open(seg_path, "rb") as _fi:
+                _shutil_seg.copyfileobj(_fi, _fo)
+            logger.info(
+                "BUG-FB-LIVE-RESUME: appended run %d (%s)", attempt + 1, _fmt_bytes(_seg.stat().st_size)
+            )
+    except OSError as exc:
+        logger.warning("BUG-FB-LIVE-RESUME: append of run %d failed: %s", attempt + 1, exc)
+    try:
+        _seg.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _live_final_name(task: "DownloadTask", rec_ts: str, live_vid_id: str) -> str:
@@ -924,7 +1176,17 @@ def _live_final_name(task: "DownloadTask", rec_ts: str, live_vid_id: str) -> str
     if not uploader:
         _upl_url = (_mi.url if _mi and _mi.url else "") or task.url or ""
         _m = re.search(r"tiktok\.com/@([A-Za-z0-9_.]+)", _upl_url, re.I)
-        uploader = _m.group(1) if _m else "Unknown"
+        if _m:
+            uploader = _m.group(1)
+        else:
+            # BUG-FB-LIVE-NAME: FacebookIE leaves uploader empty for a story.php
+            # broadcast, so every Facebook Live was saved as "Unknown - [LIVE] ...".
+            # The page id is in the URL; use the same FB_<id> shape that
+            # _FacebookMetaFixupPP writes for the non-live path.
+            _fb_m = re.search(r"facebook\.com/([A-Za-z0-9.]+)/(?:videos|live)", _upl_url, re.I) or re.search(
+                r"facebook\.com/[^?]*\?(?:.*&)?id=(\d+)", _upl_url, re.I
+            )
+            uploader = f"FB_{_fb_m.group(1)}" if _fb_m else "Unknown"
     title = (_mi.title if _mi and _mi.title else "") or ""
     video_id = (_mi.video_id if _mi and _mi.video_id else live_vid_id)[:20]
     return _bfn(uploader=uploader, date_label=f"[LIVE] {rec_ts}", title=title, video_id=video_id, ext="ts")
@@ -963,21 +1225,24 @@ class YtDlpEngine:
         # has_cookies allows Stories and Live URLs through when cookies are
         # configured by the user (intent check).  Security validation of the
         # actual cookie path happens in _validate_cookie_path() below.
+        # Per-platform: any(platform_cookies.values()) let a YouTube-only cookie
+        # unlock Instagram Stories / Facebook Live, which then failed deep inside
+        # yt-dlp with a raw error instead of the actionable message below.
         has_cookies = bool(
             self._config.cookie_file.strip()
             or self._config.use_cookies
-            or any(self._config.platform_cookies.values())
+            or self._config.get_cookie_for_platform(platform_for_url(url) or "").strip()
         )
         early_msg = _check_unsupported_url(url, has_cookies=has_cookies)
         if early_msg:
             raise RuntimeError(early_msg)
 
-        # BUG-CC FIX: Pre-resolve Kuaishou short URLs before passing to yt-dlp.
-        # yt-dlp's Generic extractor fails with TLS WRONG_VERSION_NUMBER when
-        # following v.kuaishou.com redirect chains.  Resolving the final URL
-        # here via curl_cffi bypasses the problematic CDN hop entirely.
-        if _KUAISHOU_SHORT_RE.search(url):
-            url = _resolve_kuaishou_url(url)
+        # NOTE: _KUAISHOU_SHORT_RE ⊆ is_kuaishou_url's own regex, so any URL
+        # that would match it already returned via extract_info_kuaishou()
+        # above — a pre-resolve call here was unreachable dead code. See
+        # _resolve_kuaishou_url / _KUAISHOU_SHORT_RE below (still exercised
+        # directly by tests) if that ever needs reviving for a URL shape
+        # is_kuaishou_url doesn't cover.
 
         # BUG-FB FIX: Resolve Facebook /share/{v,r,p}/ links to their canonical
         # story.php / reel URL.  yt-dlp's FacebookIE does not match the /share/
@@ -1011,6 +1276,17 @@ class YtDlpEngine:
         opts: dict[str, object] = {
             "quiet": True,
             "no_warnings": True,
+            # quiet=True skips yt-dlp's own is-a-tty check, so without this
+            # its coloured ERROR:/WARNING: prefixes reach omnidl_debug.log as
+            # raw "\x1b[0;31m" escapes.
+            # "color", not the deprecated "no_color": YoutubeDL keeps the dict
+            # we pass (self.params = params, no copy) and writes
+            # params["color"] = "no_color" into it.  Every retry that reuses or
+            # shallow-copies these opts then had both keys set and yt-dlp logged
+            # 'Overwriting params from "color" with "no_color"' -- appended to a
+            # params["_warnings"] list that {**opts} shares by reference, so the
+            # warnings piled up and were replayed on each further retry.
+            "color": "no_color",
             "skip_download": True,
             "noplaylist": True,
             "socket_timeout": 20,  # DEF-007: prevent hang on stalled server
@@ -1021,8 +1297,9 @@ class YtDlpEngine:
             "logger": _ig_cookie_logger,
         }
         # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
+        # BUG-TT-WAF: TikTok URLs need a fingerprint its edge does not block.
         if _CURL_CFFI_AVAILABLE:
-            opts["impersonate"] = _IMPERSONATE_TARGET
+            opts["impersonate"] = _impersonate_target_for(url)
         # Deno PATH is injected once at startup (main.py) — not per-call.
         # os.environ.update() from worker threads is not thread-safe on CPython.
         _ffmpeg_dir = get_ffmpeg_path()
@@ -1036,24 +1313,35 @@ class YtDlpEngine:
         # to prevent subdomain-spoofing. CWE-22 guard applied inside.
         _cookie_path = _resolve_cookie(url, self._config)
         _cookie_temp_ei: str | None = None  # temp file to clean up after extract
+
+        def _drop_temp_cookie() -> None:
+            """Delete the decrypted cookie file.  Safe to call more than once."""
+            if _cookie_temp_ei:
+                try:
+                    Path(_cookie_temp_ei).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
         if _cookie_path:
             _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
             opts["cookiefile"] = _usable
             if _is_temp:
                 _cookie_temp_ei = _usable
         if not opts.get("cookiefile") and self._config.use_cookies:
-            opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+            # BUG-COOKIE-PROFILE-DL: without a profile yt-dlp reads the newest
+            # Cookies DB of any profile, not the one picked in Settings.
+            opts["cookiesfrombrowser"] = (self._config.cookies_browser, self._config.cookies_profile or None)
 
         # Profile / channel fast-path (after opts are built so cookie/proxy
         # are included in the flat playlist fetch).
         if _PROFILE_URL_RE.search(url):
-            # Clean temp cookie before early return (playlist path)
-            if _cookie_temp_ei:
-                try:
-                    Path(_cookie_temp_ei).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return self._extract_playlist_flat(url, opts)
+            # BUG-PROFILE-COOKIE: delete only after the flat extract -- opts
+            # still points yt-dlp at this file, and YoutubeDL.close() saves
+            # the jar back to it.
+            try:
+                return self._extract_playlist_flat(url, opts)
+            finally:
+                _drop_temp_cookie()
 
         # Rate-limit per-platform to reduce HTTP 429 risk when analyse and download
         # fire concurrently (shared per-platform limiter with _extract_tiktok_live_hls_url).
@@ -1093,7 +1381,7 @@ class YtDlpEngine:
                             Path(_cookie_temp_ei).unlink(missing_ok=True)
                         except Exception:
                             pass
-                    raise RuntimeError(_IG_COOKIE_EXPIRED_MSG) from exc
+                    raise _keyed_exc(_IG_COOKIE_EXPIRED_KEY) from exc
 
                 # FIX-A: Instagram photo posts raise one of two errors during
                 # extract_info depending on the yt-dlp version and whether
@@ -1104,14 +1392,38 @@ class YtDlpEngine:
                 # We intercept both and return synthetic MediaInfo(formats=[],
                 # duration=0) so BUG Z photo detection in home_tab activates.
                 # The download() call then uses format="best" to fetch the image.
+                # BUG-FB-PHOTO-ANALYSE: the same two errors are raised for a
+                # Facebook photo-only post, and gallery-dl handles facebook.com
+                # (see gallery_dl_engine._SUPPORTED_RE).  Keying this branch on
+                # the Instagram post regex alone made analyse hard-fail for every
+                # Facebook photo post, so the task could never be enqueued and
+                # DownloadManager's gallery-dl fallback was unreachable.
                 _is_photo_error = "no video in this post" in msg_l or "no video formats found" in msg_l
-                if _is_photo_error and _ig_photo_re.search(url):
+                _photo_platform = platform_for_url(url)
+                # BUG-FB-PARSE: a Facebook photo post never raises either message
+                # above.  FacebookIE walks the page looking for video_data, finds
+                # none, and ends at `raise ExtractorError('Cannot parse data')`
+                # (yt_dlp/extractor/facebook.py) — an error this branch did not
+                # recognise and _hard did not list, so analyse burned three
+                # retries and then failed the whole post.  gallery-dl parses the
+                # same URL into a photo set, so treat it as the photo signal.
+                if _photo_platform == "facebook" and "cannot parse data" in msg_l:
+                    _is_photo_error = True
+                # BUG-X-PHOTO: TwitterIE drops photo media and ends an image-only
+                # tweet with this message; gallery-dl downloads the images.
+                if _photo_platform == "twitter" and any(m in msg_l for m in _X_PHOTO_ONLY_MSGS):
+                    _is_photo_error = True
+                if _is_photo_error and _photo_platform in ("instagram", "facebook", "twitter"):
                     m = _ig_photo_re.search(url)
                     shortcode = m.group(1) if m else ""
+                    _photo_label = {"instagram": "Instagram", "facebook": "Facebook"}.get(
+                        _photo_platform, "Twitter/X"
+                    )
                     logger.info(
-                        "Instagram photo detected (no video stream) — "
+                        "%s photo detected (no video stream) — "
                         "returning synthetic MediaInfo for photo path: %s",
-                        shortcode,
+                        _photo_label,
+                        shortcode or url,
                     )
                     # Clean temp cookie before early return (photo path)
                     if _cookie_temp_ei:
@@ -1119,13 +1431,38 @@ class YtDlpEngine:
                             Path(_cookie_temp_ei).unlink(missing_ok=True)
                         except Exception:
                             pass
+                    # BUG-FB-PHOTO-UPLOADER: this synthetic MediaInfo left
+                    # uploader empty, and every later name is derived from it —
+                    # the gallery-dl output folder fell back to
+                    # "facebook_<date>_<id>" and Taildrop shipped the album as
+                    # "Unknown - <date> - Facebook Photo.zip".  gallery-dl is
+                    # the engine that will do the download anyway and its
+                    # --dump-json already carries uploader/title/thumbnail, so
+                    # ask it now instead of inventing a blank author.
+                    try:
+                        from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                            GalleryDlEngine,
+                        )
+                        from infrastructure.downloader.gallery_dl_engine import (
+                            is_gallery_dl_url as _gdl_supported,
+                        )
+
+                        if _gdl_supported(url):
+                            return GalleryDlEngine(self._config).extract_info(url)
+                    except Exception as _gdl_exc:  # noqa: BLE001
+                        logger.debug(
+                            "%s photo: gallery-dl metadata lookup failed (%s) — "
+                            "falling back to synthetic MediaInfo",
+                            _photo_label,
+                            _gdl_exc,
+                        )
                     return MediaInfo(
                         url=url,
-                        title=shortcode or "Instagram Photo",
+                        title=shortcode or f"{_photo_label} Photo",
                         uploader="",
                         duration=0,
                         thumbnail="",
-                        platform="Instagram",
+                        platform=_photo_label,
                         formats=[],
                         is_live=False,
                         was_live=False,
@@ -1159,9 +1496,15 @@ class YtDlpEngine:
                     "curl: (35)",  # BUG-CC: curl SSL connect error code
                     "is not available",  # BUG-CD: impersonate target missing in EXE
                     "not currently live",  # TikTok/IG channel is offline — not an error
+                    "requires authentication",  # BUG-X-AUTH: X NSFW tweet, needs cookies
+                    "not authorized to view",  # BUG-X-AUTH: X protected tweet
                 )
                 if any(k in msg_l for k in _hard):
-                    raise RuntimeError(_friendly_error(msg)) from exc
+                    # BUG-FB-COOKIE-LEAK FIX: this raise used to skip the
+                    # cleanup below, leaving the decrypted plaintext session
+                    # cookie on disk for every hard analyse failure.
+                    _drop_temp_cookie()
+                    raise _friendly_exc(msg) from exc
                 # NOTE: With remote_components=ejs:github, most YouTube errors
                 # are resolved automatically. Retries here handle transient issues.
                 last_exc = exc
@@ -1172,19 +1515,20 @@ class YtDlpEngine:
                 # FIX-B: KeyError('=') manifests as a generic Exception with
                 # "extractor error" in the string representation.  Don't retry.
                 if "extractor error" in msg.lower() or "keyerror" in msg.lower():
-                    raise RuntimeError(_friendly_error(msg)) from exc
+                    _drop_temp_cookie()  # BUG-FB-COOKIE-LEAK FIX
+                    raise _friendly_exc(msg) from exc
                 last_exc = exc
                 if attempt < 2:
                     time.sleep(2**attempt)
         if info is None:
             # BUG-TT-10231: TikTok web extraction returns status 10231 for some videos.
-            # BUG-TT-CHALLENGE: TikTok also serves an anti-bot JS challenge page that
-            # yt-dlp cannot solve, raising "Unexpected response from webpage request".
-            # Both are bypassed by routing to the Android mobile API via app_info.
+            # BUG-TT-CHALLENGE: TikTok also serves a block/challenge page that yt-dlp
+            # cannot parse, raising "Unexpected response from webpage request".
+            # Retry with the fallbacks from _tiktok_web_block_fallbacks(): alternate
+            # TLS fingerprints (BUG-TT-WAF) first, then the Android mobile API via
+            # app_info (app_name alone is ignored by TikTokIE when app_info is absent:
+            # _KNOWN_APP_INFO stays [] → yt-dlp skips the app API → web extraction).
             # Use _saw_10231 (not just last_exc) — last retry may have been a 429.
-            # Fix: use app_info (not app_name) to trigger _extract_aweme_app() (Android
-            # mobile API). app_name alone is ignored by TikTokIE when app_info is absent:
-            # _KNOWN_APP_INFO stays [] → yt-dlp skips app API → web extraction → 10231.
             _tt_web_blocked_ei = _saw_10231 or (
                 last_exc
                 and (
@@ -1195,21 +1539,21 @@ class YtDlpEngine:
                 )
             )
             if _tt_web_blocked_ei:
-                for _fb_app_info in (
-                    "/trill/35.1.3/2023501030/1180",
-                    "/musical_ly/35.1.3/2023501030/1233",
-                    "/aweme/35.1.3/2023501030/1128",
-                ):
-                    _tt_opts = dict(opts)
-                    _tt_opts["extractor_args"] = {"tiktok": {"app_info": [_fb_app_info]}}
-                    try:
-                        with yt_dlp.YoutubeDL(_tt_opts) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                        logger.debug("BUG-TT-10231: %s retry succeeded for %s", _fb_app_info, url)
-                        break
-                    except Exception as _tt_exc:
-                        logger.debug("BUG-TT-10231: %s retry failed: %s", _fb_app_info, _tt_exc)
-                        last_exc = _tt_exc
+                # BUG-TT-RETRYNOISE FIX: each attempt below is expected to fail
+                # until one works; the loop already records every outcome at
+                # DEBUG, so yt-dlp's own ERROR lines are demoted for its
+                # duration instead of being reported as download failures.
+                with _recoverable_yt_dlp_errors(opts.get("logger")):
+                    for _fb_label, _fb_override in _tiktok_web_block_fallbacks():
+                        _tt_opts = {**opts, **_fb_override}
+                        try:
+                            with yt_dlp.YoutubeDL(_tt_opts) as ydl:
+                                info = ydl.extract_info(url, download=False)
+                            logger.debug("BUG-TT-10231: %s retry succeeded for %s", _fb_label, url)
+                            break
+                        except Exception as _tt_exc:
+                            logger.debug("BUG-TT-10231: %s retry failed: %s", _fb_label, _tt_exc)
+                            last_exc = _tt_exc
 
         if info is None:
             msg = str(last_exc) if last_exc else "No response from server"
@@ -1220,7 +1564,73 @@ class YtDlpEngine:
                     "Wait 2-3 minutes and try again. "
                     "Tip: enable browser cookies in Settings -> Network."
                 )
-            raise RuntimeError(_friendly_error(msg)) from last_exc
+            _drop_temp_cookie()  # BUG-FB-COOKIE-LEAK FIX
+            raise _friendly_exc(msg) from last_exc
+
+        # BUG-FB-ADVID FIX: FacebookIE harvests every `Video` node in the post
+        # page's relay payload (parse_attachment over `nodes`), and Facebook
+        # injects suggested / sponsored stories into that same payload.  On a
+        # photo post the requested story contributes no video, so the only entry
+        # left is the advert — and yt-dlp returns it as though it were the post.
+        # Log evidence (omnidl_debug.log 2026-09-20): posts 1750153570452113 and
+        # 122230506620352435, two unrelated owners, both analysed as video
+        # 1767163571189463, which was then downloaded and sent over Taildrop.
+        #
+        # uploader_id cannot tell them apart: a single-video result is
+        # merge_dicts(webpage_info, video_info) and webpage_info carries the
+        # *post* owner, so the advert inherits it.  gallery-dl reading a photo
+        # set off the same post is positive proof the post is not that video,
+        # so ask gallery-dl whenever the returned id is not the requested story.
+        if platform_for_url(url) == "facebook":
+            from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                GalleryDlEngine,
+                facebook_owner_id,
+                facebook_story_id,
+            )
+            from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                is_gallery_dl_url as _gdl_supported,
+            )
+
+            _fb_story_id = facebook_story_id(url)
+            if _fb_story_id and str(info.get("id") or "") != _fb_story_id and _gdl_supported(url):
+                try:
+                    _photo_info = GalleryDlEngine(self._config).extract_info(url)
+                except Exception as _gdl_exc:  # noqa: BLE001
+                    # BUG-FB-ADVID-2: gallery-dl could not confirm the post either
+                    # way.  The video is still not the requested story, so hand it
+                    # over only while it belongs to the post owner — a different
+                    # numeric owner is proof it is one of the suggested /
+                    # sponsored stories Facebook injected into the same page, and
+                    # returning it means the queue downloads an advert.
+                    _fb_owner_id = facebook_owner_id(url)
+                    _fb_uploader_id = str(info.get("uploader_id") or info.get("channel_id") or "")
+                    if _fb_owner_id and _fb_uploader_id.isdigit() and _fb_uploader_id != _fb_owner_id:
+                        logger.warning(
+                            "BUG-FB-ADVID: story %s — yt-dlp returned video %s owned by %s, "
+                            "not by the post owner %s; refusing the advert",
+                            _fb_story_id,
+                            info.get("id"),
+                            _fb_uploader_id,
+                            _fb_owner_id,
+                        )
+                        _drop_temp_cookie()
+                        raise _friendly_exc(t("err.fb_post_advert_only")) from _gdl_exc
+                    logger.warning(
+                        "BUG-FB-ADVID: gallery-dl found no photo set for story %s (%s) — "
+                        "keeping yt-dlp video %s",
+                        _fb_story_id,
+                        _gdl_exc,
+                        info.get("id"),
+                    )
+                else:
+                    logger.info(
+                        "BUG-FB-ADVID: story %s is a photo post — yt-dlp returned foreign "
+                        "video %s, using the gallery-dl photo set instead",
+                        _fb_story_id,
+                        info.get("id"),
+                    )
+                    _drop_temp_cookie()
+                    return _photo_info
 
         # Single-video path — profile URLs were already handled above by
         # _extract_playlist_flat() and returned early.  At this point info
@@ -1250,6 +1660,15 @@ class YtDlpEngine:
             # resolved URL.  is_live=True means the short link resolved to
             # a live stream; is_live=False means it resolved to a VOD.
             is_live_resolved = bool(info.get("is_live"))
+        elif platform_for_url(url) == "facebook":
+            # BUG-FB-LIVE FIX: FacebookIE never reports live status, so
+            # info["is_live"] is always None here.  Probe the HLS playlist for
+            # #EXT-X-ENDLIST / MPD@type instead — see _facebook_live_manifest_url().
+            is_live_resolved = (
+                bool(info.get("is_live")) or _facebook_live_manifest_url(info.get("formats")) is not None
+            )
+            if is_live_resolved:
+                logger.info("BUG-FB-LIVE: %s is an in-progress Facebook broadcast", url)
         else:
             is_live_resolved = bool(info.get("is_live")) or bool(_ig_live_re.search(url))
 
@@ -1329,14 +1748,12 @@ class YtDlpEngine:
             with yt_dlp.YoutubeDL(opts_flat) as ydl:
                 info = ydl.extract_info(url, download=False)
         except yt_dlp.utils.DownloadError as exc:
-            raise RuntimeError(_friendly_error(str(exc))) from exc
+            raise _friendly_exc(str(exc)) from exc
         except Exception as exc:
-            raise RuntimeError(f"Không thể lấy danh sách từ URL này: {exc}") from exc
+            raise _keyed_exc("err.playlist_failed", err=exc) from exc
 
         if not info:
-            raise RuntimeError(
-                "Không nhận được dữ liệu từ URL. Kiểm tra lại URL hoặc thêm cookie file trong Settings."
-            )
+            raise _keyed_exc("err.no_data")
 
         # Flatten nested playlist (e.g. YouTube channel has a playlist of
         # playlists) — we only want leaf-level video entries.
@@ -1372,10 +1789,7 @@ class YtDlpEngine:
         )
 
         if not entry_urls:
-            raise RuntimeError(
-                "Playlist/profile không có video nào khả dụng.\n"
-                "Có thể tài khoản private hoặc cần cookie file."
-            )
+            raise _keyed_exc("err.playlist_empty")
 
         # Use playlist-level title/uploader for display
         playlist_title = info.get("title") or info.get("uploader") or info.get("channel") or ""
@@ -1404,6 +1818,33 @@ class YtDlpEngine:
         task: DownloadTask,
         on_progress: Optional[Callable[[DownloadTask], None]] = None,
         on_postprocess: Optional[Callable[[DownloadTask], None]] = None,
+    ) -> None:
+        """Execute the download for *task*, always erasing decrypted cookie copies.
+
+        BUG-COOKIE-LEAK FIX: _download_impl ends with an unlink of the temp file
+        that _prepare_cookie_for_use decrypted, but it is a plain statement at the
+        end of the body, not a finally — so every raising path (a failed live
+        recording, "Requested format is not available", a cancel) left a plaintext
+        session-cookie file behind in the cookies directory until the next launch
+        swept it. The list is filled by _download_impl and drained here.
+        """
+        _temp_cookies: list[str] = []
+        try:
+            self._download_impl(task, on_progress, on_postprocess, _temp_cookies)
+        finally:
+            for _tc in _temp_cookies:
+                try:
+                    Path(_tc).unlink(missing_ok=True)
+                    logger.debug("Cleaned up temp cookie file: %s", _tc)
+                except OSError:
+                    pass
+
+    def _download_impl(
+        self,
+        task: DownloadTask,
+        on_progress: Optional[Callable[[DownloadTask], None]],
+        on_postprocess: Optional[Callable[[DownloadTask], None]],
+        _temp_cookies: "list[str]",
     ) -> None:
         """
         Execute the download for *task*.
@@ -1459,10 +1900,15 @@ class YtDlpEngine:
         #                                             appears when a date exists;
         #                                             falls back to empty string
         #   %(title).100B                            title capped at 100 bytes
-        #   [%(id).12B]                              first 12 chars of video ID
-        #                                            (enough for uniqueness on
-        #                                            all platforms; avoids the
-        #                                            32+ char Facebook IDs)
+        #   [%(id).30B]                              first 30 chars of video ID.
+        #                                            12 was NOT enough: TikTok
+        #                                            IDs are 19 digits, so
+        #                                            7678718864875719954 landed
+        #                                            in the name as 767871886487
+        #                                            — an ID that resolves to
+        #                                            nothing.  30 covers TikTok,
+        #                                            Twitter (19) and Facebook
+        #                                            (16) in full.
         #
         # LIVE template uses a local recording timestamp instead of upload_date
         # (which is unavailable mid-stream) and prefixes [LIVE] for clarity.
@@ -1476,7 +1922,10 @@ class YtDlpEngine:
         # even with a long download directory.
 
         if is_live:
-            rec_ts = time.strftime("%Y-%m-%d %H-%M")
+            # Seconds matter: rec_ts is the only unique component of the live
+            # outtmpl, and with overwrites=False a same-minute collision makes
+            # yt-dlp skip the download and report the older file as finished.
+            rec_ts = time.strftime("%Y-%m-%d %H-%M-%S")
             # BUG-BW FIX: On Windows, yt-dlp derives the named pipe path from
             # outtmpl.  If outtmpl expands to a Unicode string (Vietnamese
             # uploader name, emoji in title), Windows cannot create the pipe
@@ -1506,7 +1955,7 @@ class YtDlpEngine:
                 _live_outtmpl_dir = output_dir
                 outtmpl = str(
                     _live_outtmpl_dir
-                    / (f"%(uploader,channel|Unknown).50B - [LIVE] {rec_ts} %(title).80B [%(id).12B].ts")
+                    / (f"%(uploader,channel|Unknown).50B - [LIVE] {rec_ts} %(title).80B [%(id).30B].ts")
                 )
         else:
             outtmpl = str(
@@ -1514,7 +1963,7 @@ class YtDlpEngine:
                 / (
                     "%(uploader,channel|Unknown).50B"
                     " - %(upload_date>%Y-%m-%d - ,release_date>%Y-%m-%d - |)s"
-                    "%(title).100B [%(id).12B].%(ext)s"
+                    "%(title).100B [%(id).30B].%(ext)s"
                 )
             )
 
@@ -1570,6 +2019,14 @@ class YtDlpEngine:
         # logic can route to FFmpegExtractAudio instead of merge_output_format.
         _out_ext = task.output_ext.lower().lstrip(".")
         _is_audio_output = _out_ext in _AUDIO_ONLY_EXTS
+
+        # BUG-FB-DIAG FIX: yt-dlp logger selection.  _ig_dl_cookie_logger is an
+        # _IGCookieLogger (a _DiagLogger subclass) and is only set for
+        # Instagram, so it wins there; everything else that is worth diagnosing
+        # gets a plain _DiagLogger.
+        _dl_logger: "_DiagLogger | None" = _ig_dl_cookie_logger
+        if _dl_logger is None and (is_live or _is_tiktok_vod or platform_for_url(task.url) == "facebook"):
+            _dl_logger = _DiagLogger()
 
         # BUG-BT FIX: When the user requests an audio-only output format
         # (mp3, m4a, flac …) but the format_id still pulls both video and audio
@@ -1701,8 +2158,16 @@ class YtDlpEngine:
             "format": (
                 "best[protocol=m3u8_native]/best[protocol^=m3u8]/best[protocol^=https]/best"
                 if (is_live and (_TIKTOK_LIVE_RE.search(task.url) or _TIKTOK_SHORT_RE.search(task.url)))
+                # BUG-FB-LIVE-FMT FIX: bare "best" means "best *muxed*
+                # format". A Facebook broadcast is DASH-only — every
+                # representation is video-only or audio-only — so "best"
+                # matched nothing and yt-dlp aborted the fallback with
+                # "Requested format is not available", turning a recoverable
+                # direct-FFmpeg failure into a dead task. The "/bv*+ba"
+                # tail only fires when no muxed format exists, so HLS live
+                # platforms (Instagram, Twitch) still pick "best" as before.
                 else (
-                    (f"{_format_id}/best" if platform_for_url(task.url) == "youtube" else "best")
+                    (f"{_format_id}/best" if platform_for_url(task.url) == "youtube" else "best/bv*+ba")
                     if is_live
                     else _format_id
                 )
@@ -1715,15 +2180,23 @@ class YtDlpEngine:
             "outtmpl": outtmpl,
             "quiet": True,
             "no_warnings": True,
+            # quiet=True skips yt-dlp's own is-a-tty check, so without this
+            # its coloured ERROR:/WARNING: prefixes reach omnidl_debug.log as
+            # raw "\x1b[0;31m" escapes.
+            "color": "no_color",
             # BUG-CB FIX: impersonate Chrome TLS fingerprint when curl_cffi is available.
             # Required for sites that reject Python's default TLS fingerprint (e.g. Kuaishou).
-            **({"impersonate": _IMPERSONATE_TARGET} if _CURL_CFFI_AVAILABLE else {}),
+            # BUG-TT-WAF: TikTok URLs need a fingerprint its edge does not block.
+            **({"impersonate": _impersonate_target_for(task.url)} if _CURL_CFFI_AVAILABLE else {}),
             # BUG-BQ: diagnostic logger — None safely ignored by yt-dlp.
             # Also enable for TikTok live to log which protocol/format is selected.
             # BUG-IG-COOKIE: also enable for Instagram to catch cookie-invalidation.
-            "logger": _DiagLogger()
-            if (_is_tiktok_vod and not is_live) or (is_live and _TIKTOK_LIVE_RE.search(task.url))
-            else _ig_dl_cookie_logger,
+            # BUG-FB-DIAG FIX: Facebook had no logger attached, and with
+            # quiet/no_warnings set that made every Facebook download totally
+            # silent in the debug log — a failed Facebook Live left no trace of
+            # what yt-dlp actually did.  _IGCookieLogger subclasses _DiagLogger,
+            # so Instagram keeps both behaviours.
+            "logger": _dl_logger,
             "ignoreerrors": False,
             "retries": self._config.max_retries,
             # BUG-TT-03 FIX: fragment_retries=0 caused entire live recordings to
@@ -1928,14 +2401,16 @@ class YtDlpEngine:
         # If cookie is DPAPI-encrypted (.enc), decrypt to temp file for this download.
         _task_cookie_override = getattr(task, "_cookie_override", None)
         _cookie_path = _resolve_cookie(task.url, self._config, _task_cookie_override)
-        _cookie_temp_dl: str | None = None  # temp file to clean up in finally
         if _cookie_path:
             _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
             opts["cookiefile"] = _usable
             if _is_temp:
-                _cookie_temp_dl = _usable
+                # Erased by download()'s finally, so a raising path cannot leak it.
+                _temp_cookies.append(_usable)
         if not opts.get("cookiefile") and self._config.use_cookies:
-            opts["cookiesfrombrowser"] = (self._config.cookies_browser,)
+            # BUG-COOKIE-PROFILE-DL: without a profile yt-dlp reads the newest
+            # Cookies DB of any profile, not the one picked in Settings.
+            opts["cookiesfrombrowser"] = (self._config.cookies_browser, self._config.cookies_profile or None)
 
         # Rate-limit per-platform on the download path too — extract_info()
         # already acquires this; without it here, an analyse+download pair
@@ -1974,9 +2449,16 @@ class YtDlpEngine:
                 _info = d.get("info_dict") or {}
                 # BUG-TT-EFF: record vcodec from the first finished event (before
                 # any remux may change the info_dict).
+                # BUG-TT-EFF-FP FIX: a pre_process postprocessor (_FacebookMetaFixupPP)
+                # fires "finished" with an info_dict that has no vcodec at all, so the
+                # first event recorded "" — which the audit below treats the same as
+                # "none". Every TikTok VOD therefore ran the BUG-TT-EFF path, spending
+                # an FFprobe per download and *deleting* the finished file whenever
+                # FFprobe was unavailable. Only a real vcodec value counts.
                 if not _selected_vcodec:
                     _vc = _info.get("vcodec") or ""
-                    _selected_vcodec.append(_vc)
+                    if _vc:
+                        _selected_vcodec.append(_vc)
                 fp = _info.get("filepath") or _info.get("__real_download_filename") or ""
                 if fp:
                     p = Path(fp)
@@ -2065,8 +2547,9 @@ class YtDlpEngine:
                     )
             else:
                 logger.debug(
-                    "[BUG-BR fmt-audit] No formats in task.media_info "
-                    "(extract_info may not have returned format list)"
+                    "[BUG-BR fmt-audit] No formats in task.media_info — expected "
+                    "when the task came from the Remote API, which rebuilds a "
+                    "minimal MediaInfo from the request body"
                 )
 
         # BUG-TT-16 FIX: for TikTok live, bypass yt-dlp download and call
@@ -2186,7 +2669,7 @@ class YtDlpEngine:
                                     on_progress,
                                 )
                             else:
-                                self._download_tiktok_live_direct(
+                                self._download_live_hls_direct(
                                     _tt16_current_hls,
                                     _seg_path,
                                     task,
@@ -2551,7 +3034,7 @@ class YtDlpEngine:
                             _seg_clean.unlink(missing_ok=True)
                         except OSError:
                             pass
-                    # BUG-TT-23 FIX: _download_tiktok_live_direct overwrites
+                    # BUG-TT-23 FIX: _download_live_hls_direct overwrites
                     # task.filename with the last segment path (e.g. .seg1).
                     # After that segment is appended+deleted, task.filename points
                     # to a non-existent file → filename resolution falls through to
@@ -2567,11 +3050,123 @@ class YtDlpEngine:
                 else:
                     logger.debug("BUG-TT-16: HLS URL extraction failed, falling back to yt-dlp")
 
+        # BUG-FB-LIVE FIX: Facebook Live cannot be recorded through yt-dlp at
+        # all.  FacebookIE never sets is_live, so get_suitable_downloader picks
+        # HlsFD, which downloads the segments the playlist listed at that
+        # instant and stops — an ongoing broadcast comes out as a short clip
+        # reported as a completed download.  Forcing is_live into the info dict
+        # is not a fix either: yt-dlp would then use FFmpegFD, and FFmpegFD only
+        # calls _hook_progress once the process exits, so Cancel would never
+        # fire (the same reason BUG-TT-16 records TikTok live directly).
+        # Record the playlist with our own FFmpeg instead — cancel, pause,
+        # progress and the stall watchdog all keep working.
+        if is_live and not _direct_ffmpeg_ok and platform_for_url(task.url) == "facebook":
+            _fb_manifest = self._extract_facebook_live_manifest_url(task.url, _task_cookie_override)
+            if not _fb_manifest:
+                logger.debug(
+                    "BUG-FB-LIVE: no live manifest for task %s — falling back to yt-dlp",
+                    task.id,
+                )
+            else:
+                import shutil as _shutil_fb
+                import sys as _sys_fb
+
+                # Same ASCII-safe temp dir the live outtmpl uses on Windows:
+                # a Unicode path breaks FFmpeg's file handle (BUG-BW).
+                _fb_out_dir = (
+                    Path(tempfile.gettempdir()) / "omnidl_live" if _sys_fb.platform == "win32" else output_dir
+                )
+                _fb_out_dir.mkdir(parents=True, exist_ok=True)
+                _live_vid_id = (task.media_info.video_id if task.media_info else "") or ""
+                _direct_out_path = str(_fb_out_dir / f"live_{rec_ts}_{_live_vid_id[:20] or 'fb'}.ts")
+                task.filename = _direct_out_path
+                logger.info("BUG-FB-LIVE: recording Facebook live via direct FFmpeg for task %s", task.id)
+                # BUG-FB-LIVE-RESUME: one FFmpeg run is not one broadcast.  FFmpeg
+                # returns as soon as the DASH manifest stops yielding segments —
+                # a CDN token rotation, a manifest refresh gap or the 20s stall
+                # watchdog all end the run while the broadcast is still on air, and
+                # the task was then reported complete with a few minutes recorded.
+                # Re-probe MPD@type after every run and keep recording into .segN
+                # parts that are appended to the main .ts (mpegts concatenates).
+                _fb_attempt = 0
+                _fb_prev_bytes = 0
+                while True:
+                    _fb_target = (
+                        _direct_out_path if _fb_attempt == 0 else f"{_direct_out_path}.seg{_fb_attempt}"
+                    )
+                    _fb_exc: "Exception | None" = None
+                    try:
+                        self._download_live_hls_direct(
+                            _fb_manifest,
+                            _fb_target,
+                            task,
+                            _resolve_cookie(task.url, self._config, _task_cookie_override) or "",
+                            on_progress,
+                            referer="https://www.facebook.com/",
+                        )
+                    except yt_dlp.utils.DownloadError:
+                        # Cancelled by the user.  Finalise or drop the partial here,
+                        # then let _run_task make the CANCELLED / PARTIAL_SAVED
+                        # transition — the is_live finalize block further down is
+                        # skipped when we re-raise.
+                        _fb_append_seg(_direct_out_path, _fb_target, _fb_attempt)
+                        task.filename = _direct_out_path
+                        _fb_partial = Path(_direct_out_path)
+                        if task.keep_partial and _fb_partial.is_file() and _fb_partial.stat().st_size > 0:
+                            _fb_dst = output_dir / _live_final_name(task, rec_ts, _live_vid_id)
+                            try:
+                                _shutil_fb.move(str(_fb_partial), str(_fb_dst))
+                                task.filename = str(_fb_dst)
+                            except OSError as _fb_mv:
+                                logger.warning("BUG-FB-LIVE: keeping partial in place (%s)", _fb_mv)
+                            logger.info("Partial Facebook live saved on cancel: %s", task.filename)
+                        else:
+                            try:
+                                _fb_partial.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                        raise
+                    except Exception as _run_exc:
+                        _fb_exc = _run_exc
+                    _fb_append_seg(_direct_out_path, _fb_target, _fb_attempt)
+                    # _download_live_hls_direct sets task.filename to the path it
+                    # writes; after an appended .segN that path no longer exists.
+                    task.filename = _direct_out_path
+                    try:
+                        _fb_bytes = Path(_direct_out_path).stat().st_size
+                    except OSError:
+                        _fb_bytes = 0
+                    if _fb_bytes == 0:
+                        logger.warning(
+                            "BUG-FB-LIVE: direct FFmpeg failed (%s) — falling back to yt-dlp",
+                            _fb_exc or t("err.no_error_detail"),
+                        )
+                        break
+                    _direct_ffmpeg_ok = True
+                    if task.is_cancellation_requested or _fb_attempt >= _FB_LIVE_MAX_RESUMES:
+                        break
+                    if _fb_attempt > 0 and _fb_bytes <= _fb_prev_bytes:
+                        # The resumed run recorded nothing; another one would spin.
+                        logger.info("BUG-FB-LIVE-RESUME: resume produced no new data — stopping")
+                        break
+                    _fb_prev_bytes = _fb_bytes
+                    _fb_next = self._extract_facebook_live_manifest_url(task.url, _task_cookie_override)
+                    if not _fb_next:
+                        logger.info("BUG-FB-LIVE-RESUME: broadcast ended after %d run(s)", _fb_attempt + 1)
+                        break
+                    _fb_attempt += 1
+                    logger.info(
+                        "BUG-FB-LIVE-RESUME: still live after %s — resuming (run %d)",
+                        _fmt_bytes(_fb_bytes),
+                        _fb_attempt + 1,
+                    )
+                    _fb_manifest = _fb_next
+
         if not _direct_ffmpeg_ok:
             # BUG-YTDLP-PROGRESS FIX: yt-dlp's FFmpegFD for live streams may
             # not emit progress hook updates reliably (0 bytes during startup,
             # then sparse). Add a file-size polling thread identical to the
-            # direct FFmpeg path so the UI shows "⏺ X MiB đã ghi" instead of
+            # direct FFmpeg path so the UI shows the translated "recorded" label instead of
             # silent "0%". Thread reads task.filename (set by progress hook at
             # line 2717-2718 once yt-dlp opens the output file) and polls size.
             _ytdlp_poll_stop = None
@@ -2595,16 +3190,36 @@ class YtDlpEngine:
                             continue
                         if _sz > 0:
                             _task.downloaded_bytes = _sz
-                            _task.eta = f"⏺ {_fmt_bytes(_sz)} đã ghi"
+                            _task.eta = t("progress.recorded", size=_fmt_bytes(_sz))
                             _cb(_task)
 
                 _th_ytdlp.Thread(target=_ytdlp_live_poller, daemon=True).start()
 
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
+                # BUG-TT-RETRYNOISE FIX: for TikTok VODs this first attempt is
+                # the first rung of the BUG-TT-10231-DL ladder below, not a
+                # final verdict — TikTok answers the opening webpage request
+                # with an anti-bot challenge and an alternate TLS fingerprint
+                # then succeeds.  Logging it at ERROR reported a failure for
+                # downloads that completed (2026-09-02 11:41:50 and 21:19:19).
+                # A download that really fails is still logged at ERROR by
+                # DownloadManager ("Task failed after N attempt(s)").
+                # The same reasoning covers every platform whenever
+                # DownloadManager still holds a retry: a Facebook "Cannot parse
+                # data" that attempt 2 recovered from was reported at ERROR
+                # (2026-09-09 15:23:56, task c6e5e53b completed at 15:24:40).
+                _errors_recoverable = (bool(_is_tiktok_vod) and not is_live) or task.has_retry_remaining
+                with (
+                    _recoverable_yt_dlp_errors(opts.get("logger"), _errors_recoverable),
+                    yt_dlp.YoutubeDL(opts) as ydl,
+                ):
                     # BUG-FB-META FIX: fix garbage uploader/title before outtmpl
                     # renders, for Facebook's generic-page metadata fallback.
-                    ydl.add_post_processor(_FacebookMetaFixupPP(), when="pre_process")
+                    # Registered for Facebook only: on other platforms it is a no-op
+                    # that still emits a pre_process "finished" pp_hook event with an
+                    # empty info_dict (see BUG-TT-EFF-FP in _capturing_pp_hook).
+                    if platform_for_url(task.url) == "facebook":
+                        ydl.add_post_processor(_FacebookMetaFixupPP(), when="pre_process")
                     ydl.download([task.url])
             except yt_dlp.utils.DownloadError as exc:
                 # Check the task's own cancellation flag rather than parsing the
@@ -2657,7 +3272,7 @@ class YtDlpEngine:
                 # fail fast with an actionable message (matches the "retries
                 # never help" note in download_manager.py).
                 if _ig_dl_cookie_logger is not None and _ig_dl_cookie_logger.cookie_invalid:
-                    raise RuntimeError(_IG_COOKIE_EXPIRED_MSG) from exc
+                    raise _keyed_exc(_IG_COOKIE_EXPIRED_KEY) from exc
 
                 # BUG-TT-02 FIX: TikTok HLS tokens expire after ~1-2 minutes.
                 # When ffmpeg exits with an error on a live stream, re-extract a
@@ -2729,12 +3344,12 @@ class YtDlpEngine:
                                 "not currently live" not in _bt12_l
                                 and "channel is not currently live" not in _bt12_l
                             ):
-                                raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                                raise _friendly_exc(str(retry_exc)) from retry_exc
                             _bt12_last_exc = retry_exc
                         except Exception as retry_exc:
                             raise RuntimeError(str(retry_exc)) from retry_exc
                     if _bt12_last_exc is not None:
-                        raise RuntimeError(_friendly_error(str(_bt12_last_exc))) from _bt12_last_exc
+                        raise _friendly_exc(str(_bt12_last_exc)) from _bt12_last_exc
                 elif _is_hls_expired:
                     logger.info(
                         "BUG-TT-02: TikTok live HLS expired for task %s — re-extracting",
@@ -2811,25 +3426,23 @@ class YtDlpEngine:
                             with yt_dlp.YoutubeDL(opts) as ydl:
                                 ydl.download([task.url])
                         else:
-                            raise RuntimeError(
-                                "Livestream đã kết thúc hoặc HLS URL không còn hợp lệ.\n"
-                                "Thêm lại link để theo dõi lần phát tiếp theo."
-                            ) from exc
+                            raise _keyed_exc("err.livestream_ended_relink") from exc
                     except yt_dlp.utils.DownloadError as retry_exc:
                         if task.is_cancellation_requested:
                             raise
-                        raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                        raise _friendly_exc(str(retry_exc)) from retry_exc
                     except RuntimeError:
                         raise
                     except Exception as retry_exc:
-                        raise RuntimeError(_friendly_error(str(retry_exc))) from retry_exc
+                        raise _friendly_exc(str(retry_exc)) from retry_exc
                 else:
                     # BUG-TT-10231-DL: 10231 during download — yt-dlp re-runs extract_info
-                    # internally in ydl.download(). Use app_info to trigger the Android
-                    # mobile API (_extract_aweme_app) which bypasses the web path that
-                    # returns 10231. app_name alone has no effect (see BUG-TT-10231).
-                    # BUG-TT-CHALLENGE: same Android API fallback for the anti-bot JS
-                    # challenge ("Unexpected response from webpage request").
+                    # internally in ydl.download(), so the web block hits here too.
+                    # Retry with the same fallbacks as the extract path: alternate TLS
+                    # fingerprints (BUG-TT-WAF) first, then the Android mobile API via
+                    # app_info (app_name alone has no effect — see BUG-TT-10231).
+                    # BUG-TT-CHALLENGE: same fallbacks for the anti-bot challenge page
+                    # ("Unexpected response from webpage request").
                     # BUG-TT-REHYDRATE: TikTok sometimes serves a bot/challenge webpage
                     # with no rehydration JSON ("Unable to extract universal data for
                     # rehydration"). It is transient (re-adding the same link succeeds);
@@ -2841,31 +3454,30 @@ class YtDlpEngine:
                     )
                     if _tt_web_blocked and _is_tiktok_vod and not is_live:
                         _10231_dl_ok = False
-                        for _fb_app_info in (
-                            "/trill/35.1.3/2023501030/1180",
-                            "/musical_ly/35.1.3/2023501030/1233",
-                            "/aweme/35.1.3/2023501030/1128",
-                        ):
-                            _fb_opts = dict(opts)
-                            _fb_opts["extractor_args"] = {"tiktok": {"app_info": [_fb_app_info]}}
-                            try:
-                                with yt_dlp.YoutubeDL(_fb_opts) as ydl:
-                                    ydl.download([task.url])
-                                logger.debug(
-                                    "BUG-TT-10231-DL: %s retry succeeded for %s",
-                                    _fb_app_info,
-                                    task.url,
-                                )
-                                _10231_dl_ok = True
-                                break
-                            except Exception as _fb_exc:
-                                logger.debug(
-                                    "BUG-TT-10231-DL: %s retry failed: %s",
-                                    _fb_app_info,
-                                    _fb_exc,
-                                )
+                        # BUG-TT-RETRYNOISE FIX: attempts here are expected to
+                        # fail until one works and are all logged at DEBUG
+                        # below — do not report them as download errors.
+                        with _recoverable_yt_dlp_errors(opts.get("logger")):
+                            for _fb_label, _fb_override in _tiktok_web_block_fallbacks():
+                                _fb_opts = {**opts, **_fb_override}
+                                try:
+                                    with yt_dlp.YoutubeDL(_fb_opts) as ydl:
+                                        ydl.download([task.url])
+                                    logger.debug(
+                                        "BUG-TT-10231-DL: %s retry succeeded for %s",
+                                        _fb_label,
+                                        task.url,
+                                    )
+                                    _10231_dl_ok = True
+                                    break
+                                except Exception as _fb_exc:
+                                    logger.debug(
+                                        "BUG-TT-10231-DL: %s retry failed: %s",
+                                        _fb_label,
+                                        _fb_exc,
+                                    )
                         if not _10231_dl_ok:
-                            raise RuntimeError(_friendly_error(_exc_str)) from exc
+                            raise _friendly_exc(_exc_str) from exc
                     else:
                         # BUG-TT-SENSITIVE: pool cookie may be stale / wrong account.
                         # Retry with per-platform cookie (no pool override) before failing.
@@ -2905,7 +3517,7 @@ class YtDlpEngine:
                                     except OSError:
                                         pass
                             if not _global_ok:
-                                raise RuntimeError(_friendly_error(_exc_str)) from exc
+                                raise _friendly_exc(_exc_str) from exc
                         else:
                             # BUG-TT-SHOP-4 FIX: shopping/product videos sometimes expose
                             # NO format matching the custom format string — not even /best —
@@ -2946,9 +3558,9 @@ class YtDlpEngine:
                                             _s4_exc,
                                         )
                                 if not _shop4_ok:
-                                    raise RuntimeError(_friendly_error(_exc_str)) from exc
+                                    raise _friendly_exc(_exc_str) from exc
                             else:
-                                raise RuntimeError(_friendly_error(_exc_str)) from exc
+                                raise _friendly_exc(_exc_str) from exc
             except Exception as exc:
                 if task.is_cancellation_requested:
                     raise yt_dlp.utils.DownloadError("Cancelled by user") from exc
@@ -3132,12 +3744,7 @@ class YtDlpEngine:
                                     Path(_broken5).unlink(missing_ok=True)
                                 except OSError:
                                     pass
-                            raise RuntimeError(
-                                "Video này không thể tải — TikTok chặn hoàn toàn URL video.\n"
-                                "Đây là video E-Commerce/sản phẩm (isECVideo=1): TikTok không"
-                                " cung cấp video URL cho bất kỳ API client nào.\n"
-                                "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
-                            )
+                            raise _keyed_exc("err.tiktok_ec_blocked")
                         # BUG-TT-SHOP-5: web path succeeded — fall through to filename resolution
                     else:
                         if _retry_broken:
@@ -3145,12 +3752,7 @@ class YtDlpEngine:
                                 Path(_retry_broken).unlink(missing_ok=True)
                             except OSError:
                                 pass
-                        raise RuntimeError(
-                            "Video này chỉ có âm thanh — không có video track.\n"
-                            'TikTok product/showcase và "template effect" / AR effect videos'
-                            " không cung cấp video track qua API (chỉ expose audio stream).\n"
-                            "Cách tải: mở video trên TikTok app → chia sẻ → Lưu video."
-                        )
+                        raise _keyed_exc("err.tiktok_audio_only")
                 # BUG-TT-SHOP-3/5: retry succeeded — fall through to filename resolution
         if _final_filepath:
             # Best case: pp_hook told us exactly where the merged file is
@@ -3215,13 +3817,7 @@ class YtDlpEngine:
                         except Exception as _rn_exc:
                             logger.warning("Failed to rename live recording in place: %s", _rn_exc)
 
-        # Always clean up the decrypted temp cookie file, even on error
-        if _cookie_temp_dl:
-            try:
-                Path(_cookie_temp_dl).unlink(missing_ok=True)
-                logger.debug("Cleaned up temp cookie file: %s", _cookie_temp_dl)
-            except Exception:
-                pass
+        # The decrypted temp cookie file is erased by download()'s finally.
 
     # ── TikTok live direct-FFmpeg helpers ─────────────────────────────────
     # BUG-TT-16 FIX: yt-dlp's downloader selection hard-codes FFmpegFD for
@@ -3243,6 +3839,54 @@ class YtDlpEngine:
     # any HTTP error, which covers CDN token rotation transparently.
     # Progress is polled by watching the output file size.
 
+    def _extract_facebook_live_manifest_url(
+        self,
+        task_url: str,
+        cookie_override: "str | None" = None,
+    ) -> "str | None":
+        """Re-extract Facebook's live manifest URL immediately before recording.
+
+        Facebook CDN manifest URLs are signed and short-lived, so the URL seen
+        during analyse is usually stale by the time the download starts.
+        Returns None when the broadcast has ended or extraction fails, in which
+        case the caller falls back to the normal yt-dlp path.
+        """
+        opts_ei: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            # quiet=True skips yt-dlp's own is-a-tty check, so without this
+            # its coloured ERROR:/WARNING: prefixes reach omnidl_debug.log as
+            # raw "\x1b[0;31m" escapes.
+            "color": "no_color",
+            "skip_download": True,
+            "noplaylist": True,
+            "socket_timeout": 20,
+        }
+        if _CURL_CFFI_AVAILABLE:
+            opts_ei["impersonate"] = _IMPERSONATE_TARGET
+        if self._config.proxy:
+            opts_ei["proxy"] = self._config.proxy
+        _cookie_temp: str | None = None
+        _cookie_path = _resolve_cookie(task_url, self._config, cookie_override)
+        if _cookie_path:
+            _usable, _is_temp = _prepare_cookie_for_use(_cookie_path)
+            opts_ei["cookiefile"] = _usable
+            if _is_temp:
+                _cookie_temp = _usable
+        try:
+            with yt_dlp.YoutubeDL(opts_ei) as ydl:
+                info = ydl.extract_info(task_url, download=False)
+        except Exception as exc:
+            logger.debug("BUG-FB-LIVE: live manifest re-extraction failed: %s", exc)
+            return None
+        finally:
+            if _cookie_temp:
+                try:
+                    Path(_cookie_temp).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return _facebook_live_manifest_url((info or {}).get("formats"))
+
     def _extract_tiktok_live_hls_url(
         self,
         task_url: str,
@@ -3263,6 +3907,10 @@ class YtDlpEngine:
         opts_ei: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
+            # quiet=True skips yt-dlp's own is-a-tty check, so without this
+            # its coloured ERROR:/WARNING: prefixes reach omnidl_debug.log as
+            # raw "\x1b[0;31m" escapes.
+            "color": "no_color",
             "skip_download": True,
             "noplaylist": True,
             "socket_timeout": 20,
@@ -3301,7 +3949,7 @@ class YtDlpEngine:
                     from utils.tiktok_live_checker import (  # noqa: PLC0415
                         _fetch_hls_from_live_page,
                         _fetch_hls_from_webcast_room_info,
-                        _verify_room_alive,
+                        _room_recently_ended,
                     )
 
                     if room_id:
@@ -3415,17 +4063,20 @@ class YtDlpEngine:
                                         Path(_r29_txt).unlink(missing_ok=True)
                                     except OSError:
                                         pass
-                        # Final check: only return () if check_alive also says dead.
-                        _final29 = _verify_room_alive(room_id, _u25, proxy=_proxy29, cookie_file="")
-                        if not _final29:
-                            logger.debug(
-                                "BUG-TT-29: check_alive confirms room %s ended -- confirmed ended",
-                                room_id,
-                            )
-                            return None
+                        # BUG-TT-29-FINAL FIX: both outcomes of the old
+                        # check_alive gate returned None, so the extra webcast
+                        # round-trip only ever picked a log line -- and it picked
+                        # the wrong one, because check_alive answers alive=True
+                        # for a finished room (room 7687256489811020565 at
+                        # 22:48:49 in omnidl_debug.log, 65s before room/info
+                        # evicted the same roomId).  _room_recently_ended reads
+                        # pass-4's authoritative verdict for free.
                         logger.debug(
-                            "BUG-TT-29: room %s still alive after retries -- letting yt-dlp try",
+                            "BUG-TT-29: room %s %s -- letting yt-dlp try",
                             room_id,
+                            "already reported ended by room/info"
+                            if _room_recently_ended(room_id)
+                            else "still alive after retries",
                         )
                         return None
             logger.debug("BUG-TT-16: HLS extract failed: %s", exc)
@@ -3505,18 +4156,21 @@ class YtDlpEngine:
         logger.debug("BUG-TT-16: extracted HLS URL for %s (id=%s)", task_url[:60], video_id)
         return hls_url, video_id, uploader, title
 
-    def _download_tiktok_live_direct(
+    def _download_live_hls_direct(
         self,
         hls_url: str,
         out_path: str,
         task: DownloadTask,
         cookie_path: str,
         on_progress: "Optional[Callable[[DownloadTask], None]]",
+        referer: str = "https://www.tiktok.com/",
     ) -> None:
-        """Download TikTok live HLS to out_path using FFmpeg with reconnect flags.
+        """Record a live HLS/DASH/FLV stream to out_path with FFmpeg + reconnect flags.
 
         BUG-TT-16: bypasses yt-dlp's forced FFmpegFD (no reconnect) by calling
         FFmpeg directly with -reconnect flags that handle CDN token rotation.
+        BUG-FB-LIVE reuses this for Facebook Live, which needs the same
+        treatment plus a Facebook Referer — hence the parameter.
 
         Raises RuntimeError on failure. Raises yt_dlp.utils.DownloadError on cancel.
         """
@@ -3542,7 +4196,12 @@ class YtDlpEngine:
             # BUG-TT-20C FIX: TikTok's stage CDN requires session cookies in
             # HTTP request headers even when the URL is signed (expire+sign).
             # Parse the decrypted cookie file and pass via -headers to FFmpeg.
-            _ffmpeg_cookie_hdr = _build_ffmpeg_cookie_header(_usable)
+            # BUG-FB-LIVE-HDR: pick the cookie domain from the Referer so a
+            # Facebook recording sends facebook.com cookies, not zero cookies.
+            _ffmpeg_cookie_hdr = _build_ffmpeg_cookie_header(
+                _usable,
+                (_urlparse(referer).hostname or "").removeprefix("www.").split(".")[0] or "tiktok",
+            )
 
         import threading
         from collections import deque
@@ -3553,6 +4212,11 @@ class YtDlpEngine:
         # FLV inputs and cause "Option http_persistent not found" → exit code
         # 2880417800. Detect FLV and skip those options.
         _is_flv_url = ".flv" in hls_url.lower()
+        # BUG-FB-LIVE-DASH: -http_persistent belongs to FFmpeg's HLS demuxer only,
+        # so a Facebook Live DASH manifest must not be given it; the dash demuxer
+        # needs its extension allow-list opened instead, because Facebook serves
+        # segments under paths FFmpeg does not recognise by default.
+        _is_mpd_url = ".mpd" in hls_url.lower()
 
         cmd = [
             ffmpeg_bin,
@@ -3570,13 +4234,22 @@ class YtDlpEngine:
             cmd += [
                 "-reconnect_on_http_error",
                 "403,404,503",
-                "-reconnect_at_eof",
-                "1",
                 "-reconnect_max_retries",
                 "10",
-                "-http_persistent",
-                "0",
             ]
+            if _is_mpd_url:
+                # BUG-FB-LIVE-EOF FIX: -reconnect_at_eof makes the http protocol
+                # re-request at the current offset whenever it hits EOF.  The DASH
+                # demuxer reads the whole manifest and then checks avio_feof(), so
+                # that EOF is turned into an endless "Will reconnect at <size> in 0
+                # second(s), error=End of file." loop and dashdec gives up with
+                # "Unable to read to manifest '<url>'" / AVERROR(EIO) (Windows exit
+                # code 4294967291).  Reproduced against a local .mpd with FFmpeg
+                # 8.0.1: identical command minus this flag parses the manifest.
+                # HLS is unaffected — hls.c reads the playlist with its own handle.
+                cmd += ["-allowed_extensions", "ALL"]
+            else:
+                cmd += ["-reconnect_at_eof", "1", "-http_persistent", "0"]
         cmd += [
             "-user_agent",
             (
@@ -3585,11 +4258,17 @@ class YtDlpEngine:
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
         ]
+        # BUG-FB-LIVE-HDR FIX: the Referer used to live inside the cookie branch,
+        # so a site whose cookie file yielded no pairs (Facebook, before the
+        # domain_keyword fix above) got no -headers at all and its CDN saw a
+        # Referer-less request. Build the two headers independently.
+        _ffmpeg_headers = ""
         if _ffmpeg_cookie_hdr:
-            cmd += [
-                "-headers",
-                f"Cookie: {_ffmpeg_cookie_hdr}\r\nReferer: https://www.tiktok.com/\r\n",
-            ]
+            _ffmpeg_headers += f"Cookie: {_ffmpeg_cookie_hdr}\r\n"
+        if referer:
+            _ffmpeg_headers += f"Referer: {referer}\r\n"
+        if _ffmpeg_headers:
+            cmd += ["-headers", _ffmpeg_headers]
         # -use_wallclock_as_timestamps: timestamp each received packet using
         # actual receive time instead of the stream's encoded wall-clock PTS.
         # TikTok HLS segments carry absolute stream-position timestamps (e.g.
@@ -3616,7 +4295,7 @@ class YtDlpEngine:
                 creationflags=_CREATE_NO_WINDOW,
             )
         except FileNotFoundError as err:
-            raise RuntimeError("FFmpeg không tìm thấy. Kiểm tra cài đặt FFmpeg.") from err
+            raise _keyed_exc("err.ffmpeg_not_found") from err
         finally:
             if _cookie_temp_direct:
                 try:
@@ -3676,7 +4355,7 @@ class YtDlpEngine:
                     task.eta = (
                         f"⏺ {_fmt_bytes(cur_size)} | {elapsed}"
                         if elapsed
-                        else f"⏺ {_fmt_bytes(cur_size)} đã ghi"
+                        else t("progress.recorded", size=_fmt_bytes(cur_size))
                     )
                     _last_size = cur_size
                     _stall_seconds = 0
@@ -3686,9 +4365,7 @@ class YtDlpEngine:
                         task.eta = f"⏺ {elapsed}"
                     if _stall_seconds >= _STALL_LIMIT_S:
                         proc.kill()
-                        raise RuntimeError(
-                            "FFmpeg stall watchdog: không có dữ liệu trong 120s — stream có thể đã kết thúc."
-                        )
+                        raise _keyed_exc("err.ffmpeg_stall", seconds=_STALL_LIMIT_S)
 
                 if on_progress:
                     on_progress(task)
@@ -3701,8 +4378,13 @@ class YtDlpEngine:
         _stderr_thread.join(timeout=2)
         ret = proc.returncode
         if ret != 0:
-            err_msg = "\n".join(_stderr_lines)[-300:]
-            raise RuntimeError(f"FFmpeg exited with code {ret}.\n{err_msg or 'Không có thông tin lỗi.'}")
+            # BUG-FB-LIVE-DIAG FIX: a bare [-300:] tail kept only FFmpeg's closing
+            # summary ("Error opening input files: I/O error") and cut away the
+            # line that names the real cause — "[tls @ ..] handshake failed",
+            # "[https @ ..] HTTP error 403". Keep the head as well as the tail.
+            _err_full = "\n".join(_stderr_lines)
+            err_msg = _err_full if len(_err_full) <= 900 else f"{_err_full[:500]}\n[...]\n{_err_full[-400:]}"
+            raise RuntimeError(f"FFmpeg exited with code {ret}.\n{err_msg or t('err.no_error_detail')}")
 
         # Mark progress done
         task.progress = 100.0
@@ -3722,7 +4404,7 @@ class YtDlpEngine:
         BUG-TT-CURLHLS FIX: TikTok's CDN (pull-hls-*.tiktokcdn.com) silently
         blocks FFmpeg's OpenSSL TLS fingerprint — connection hangs with 0 bytes.
         curl_cffi with Chrome impersonation bypasses this.  Primary downloader
-        for TikTok live; _download_tiktok_live_direct (FFmpeg) is the fallback.
+        for TikTok live; _download_live_hls_direct (FFmpeg) is the fallback.
 
         Raises RuntimeError with patterns that match the existing _tt16 retry
         logic — "stall watchdog" for no-data, "404 Not Found"/"403 Forbidden"
@@ -3730,7 +4412,11 @@ class YtDlpEngine:
         """
         from urllib.parse import urljoin
 
-        from utils.tiktok_live_checker import _get_impersonate_session, _load_cookie_jar  # noqa: PLC0415
+        from utils.tiktok_live_checker import (  # noqa: PLC0415
+            _CHROME_UA,
+            _get_impersonate_session,
+            _load_cookie_jar,
+        )
 
         _STALL_TIMEOUT_S = 20
         _POLL_INTERVAL_S = 2
@@ -3750,11 +4436,11 @@ class YtDlpEngine:
 
         session = _get_impersonate_session(jar)
         _curl_headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
+            # Matches the TLS fingerprint _get_impersonate_session() actually
+            # sends (see tiktok_live_checker._get_chrome_impersonate_target());
+            # a hardcoded UA of a different Chrome version here would disagree
+            # with the impersonated TLS ClientHello.
+            "User-Agent": _CHROME_UA,
             "Referer": "https://www.tiktok.com/",
             "Origin": "https://www.tiktok.com",
         }
@@ -3774,10 +4460,7 @@ class YtDlpEngine:
                     task.wait_if_paused()
 
                     if time.time() - last_new_seg_ts > _STALL_TIMEOUT_S:
-                        raise RuntimeError(
-                            f"stall watchdog: curl_cffi HLS không có segment mới trong "
-                            f"{_STALL_TIMEOUT_S}s — stream có thể đã kết thúc."
-                        )
+                        raise _keyed_exc("err.hls_stall", seconds=_STALL_TIMEOUT_S)
 
                     try:
                         _m3u8_resp = session.get(
@@ -3839,7 +4522,7 @@ class YtDlpEngine:
                             task.eta = (
                                 f"⏺ {_fmt_bytes(total_bytes)} | {_elapsed_curl}"
                                 if _elapsed_curl
-                                else f"⏺ {_fmt_bytes(total_bytes)} đã ghi"
+                                else t("progress.recorded", size=_fmt_bytes(total_bytes))
                             )
                             if on_progress:
                                 on_progress(task)
@@ -3877,6 +4560,9 @@ class YtDlpEngine:
                 raise yt_dlp.utils.DownloadError("Cancelled by user")
 
             status = d.get("status", "")
+            _vid = str((d.get("info_dict") or {}).get("id") or "")
+            if _vid and _vid not in task.ytdlp_ids:
+                task.ytdlp_ids.append(_vid)
             if status == "downloading":
                 task.status = DownloadStatus.DOWNLOADING
                 task.downloaded_bytes = d.get("downloaded_bytes") or 0
@@ -3895,7 +4581,7 @@ class YtDlpEngine:
                     if task.downloaded_bytes > 0 and elapsed:
                         task.eta = f"⏺ {_fmt_bytes(task.downloaded_bytes)} | {elapsed}"
                     elif task.downloaded_bytes > 0:
-                        task.eta = f"⏺ {_fmt_bytes(task.downloaded_bytes)} đã ghi"
+                        task.eta = t("progress.recorded", size=_fmt_bytes(task.downloaded_bytes))
                     elif elapsed:
                         task.eta = f"⏺ {elapsed}"
                 elif eta is not None:

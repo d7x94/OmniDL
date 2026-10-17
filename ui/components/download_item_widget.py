@@ -22,20 +22,23 @@ from domain.models.download_task import DownloadTask
 from ui.components.progress_bar import OmniProgressBar
 from ui.themes.tokens import T
 from utils.helpers import fmt_bytes, open_file, open_folder, reveal_in_explorer
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
 _VIDEO_EXTS = frozenset({".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".flv", ".wmv"})
 
+# (label i18n key, foreground token, background token) — labels resolve at
+# render time so a language switch only needs a refresh(), not a rebuild.
 _STATUS: dict = {
-    DownloadStatus.QUEUED: ("Chờ", "text3", "surface3"),
-    DownloadStatus.DOWNLOADING: ("Đang tải", "primary", "primary_dim"),
-    DownloadStatus.PROCESSING: ("Xử lý", "warning", "warning_bg"),
-    DownloadStatus.PAUSED: ("Tạm dừng", "text3", "surface3"),
-    DownloadStatus.COMPLETED: ("Hoàn tất", "success", "success_bg"),
-    DownloadStatus.FAILED: ("Lỗi", "error", "error_bg"),
-    DownloadStatus.CANCELLED: ("Đã hủy", "text3", "surface2"),
-    DownloadStatus.PARTIAL_SAVED: ("Lưu tạm", "warning", "warning_bg"),
+    DownloadStatus.QUEUED: ("item.status.queued", "text3", "surface3"),
+    DownloadStatus.DOWNLOADING: ("item.status.downloading", "primary", "primary_dim"),
+    DownloadStatus.PROCESSING: ("item.status.processing", "warning", "warning_bg"),
+    DownloadStatus.PAUSED: ("item.status.paused", "text3", "surface3"),
+    DownloadStatus.COMPLETED: ("item.status.completed", "success", "success_bg"),
+    DownloadStatus.FAILED: ("item.status.failed", "error", "error_bg"),
+    DownloadStatus.CANCELLED: ("item.status.cancelled", "text3", "surface2"),
+    DownloadStatus.PARTIAL_SAVED: ("item.status.partial", "warning", "warning_bg"),
 }
 
 _PROG_STATE: dict = {
@@ -60,6 +63,7 @@ class DownloadItemWidget(QFrame):
         on_convert: Optional[Callable] = None,
         on_send: Optional[Callable] = None,
         on_edit: Optional[Callable] = None,
+        on_rename: Optional[Callable] = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -68,6 +72,7 @@ class DownloadItemWidget(QFrame):
         self._on_convert = on_convert
         self._on_send = on_send
         self._on_edit = on_edit
+        self._on_rename = on_rename
         self._completed_path: str = ""
         self._converting = False
         self._checkbox = None  # QCheckBox, created by set_select_mode
@@ -105,7 +110,7 @@ class DownloadItemWidget(QFrame):
         self._title_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top.addWidget(self._title_lbl, 1)
 
-        self._status_badge = QLabel("Chờ")
+        self._status_badge = QLabel(t("item.status.queued"))
         self._status_badge.setStyleSheet(f"""
             color: {T.text3}; background-color: {T.surface3};
             border-radius: 8px; font-size: 10px; font-weight: 600;
@@ -133,7 +138,7 @@ class DownloadItemWidget(QFrame):
             QPushButton:hover {{ background: {T.primary}; color: white; }}
         """)
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pause_btn.setToolTip("Tạm dừng / Tiếp tục")
+        self._pause_btn.setToolTip(t("item.pause_tip"))
         self._pause_btn.clicked.connect(lambda: self._on_pause(self.task.id))
         btn_row.addWidget(self._pause_btn)
 
@@ -149,35 +154,35 @@ class DownloadItemWidget(QFrame):
             QPushButton:hover {{ background: {T.error}; color: white; }}
         """)
         self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._cancel_btn.setToolTip("Hủy tải xuống")
+        self._cancel_btn.setToolTip(t("item.cancel_tip"))
         self._cancel_btn.clicked.connect(self._on_cancel_click)
         btn_row.addWidget(self._cancel_btn)
 
-        self._folder_btn = QPushButton("📂  Mở")
+        self._folder_btn = QPushButton(f"📂  {t('item.open')}")
         self._folder_btn.setFixedHeight(30)
         self._folder_btn.setStyleSheet(
             f"background: {T.success_bg}; color: {T.success_text}; border-radius: 10px; border: none; font-size: 11px; font-weight: 600; padding: 0 12px;"
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._folder_btn.setToolTip("Mở thư mục chứa file")
+        self._folder_btn.setToolTip(t("item.open_tip"))
         self._folder_btn.clicked.connect(self._open_folder)
         self._folder_btn.hide()
         btn_row.addWidget(self._folder_btn)
 
-        self._preview_btn = QPushButton("▶  Xem")
+        self._preview_btn = QPushButton(f"▶  {t('item.preview')}")
         self._preview_btn.setFixedHeight(30)
         self._preview_btn.setStyleSheet(
             f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 10px; border: none; font-size: 11px; font-weight: 600; padding: 0 12px;"
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._preview_btn.setToolTip("Xem / phát file")
+        self._preview_btn.setToolTip(t("item.preview_tip"))
         self._preview_btn.clicked.connect(self._open_preview)
         self._preview_btn.hide()
         btn_row.addWidget(self._preview_btn)
 
-        self._convert_btn = QPushButton("🔄  Chuyển")
+        self._convert_btn = QPushButton(f"🔄  {t('item.convert')}")
         self._convert_btn.setFixedHeight(30)
         self._convert_btn.setStyleSheet(
             f"background: {T.warning_bg}; color: {T.warning}; border-radius: 10px; border: none;"
@@ -185,12 +190,12 @@ class DownloadItemWidget(QFrame):
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._convert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._convert_btn.setToolTip("Chuyển đổi định dạng")
+        self._convert_btn.setToolTip(t("item.convert_tip"))
         self._convert_btn.clicked.connect(self._on_convert_click)
         self._convert_btn.hide()
         btn_row.addWidget(self._convert_btn)
 
-        self._edit_btn = QPushButton("✂  Sửa")
+        self._edit_btn = QPushButton(f"✂  {t('item.edit')}")
         self._edit_btn.setFixedHeight(30)
         self._edit_btn.setStyleSheet(
             f"background: {T.edit_bg}; color: {T.edit_text}; border-radius: 10px; border: none;"
@@ -198,10 +203,36 @@ class DownloadItemWidget(QFrame):
             f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
         )
         self._edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._edit_btn.setToolTip("Cắt / chỉnh sửa video")
+        self._edit_btn.setToolTip(t("item.edit_tip"))
         self._edit_btn.clicked.connect(self._on_edit_click)
         self._edit_btn.hide()
         btn_row.addWidget(self._edit_btn)
+
+        self._send_btn = QPushButton(f"📲  {t('item.send')}")
+        self._send_btn.setFixedHeight(30)
+        self._send_btn.setStyleSheet(
+            f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 10px; border: none;"
+            f" font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._send_btn.setToolTip(t("item.send_tip"))
+        self._send_btn.clicked.connect(self._on_send_click)
+        self._send_btn.hide()
+        btn_row.addWidget(self._send_btn)
+
+        self._rename_btn = QPushButton(f"✎  {t('item.rename')}")
+        self._rename_btn.setFixedHeight(30)
+        self._rename_btn.setStyleSheet(
+            f"background: {T.surface3}; color: {T.text2}; border-radius: 10px; border: none;"
+            f" font-size: 11px; font-weight: 600; padding: 0 12px;"
+            f' font-family: "Segoe UI Symbol", "Segoe UI Emoji", "Segoe UI", sans-serif;'
+        )
+        self._rename_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._rename_btn.setToolTip(t("item.rename_tip"))
+        self._rename_btn.clicked.connect(self._on_rename_click)
+        self._rename_btn.hide()
+        btn_row.addWidget(self._rename_btn)
 
         top.addWidget(self._btn_box)
         outer.addLayout(top)
@@ -250,7 +281,8 @@ class DownloadItemWidget(QFrame):
     def refresh(self, task: DownloadTask) -> None:
         self.task = task
         st = task.status
-        s_label, s_dot_key, s_bg_key = _STATUS.get(st, ("Unknown", "text3", "surface2"))
+        s_label_key, s_dot_key, s_bg_key = _STATUS.get(st, ("item.status.unknown", "text3", "surface2"))
+        s_label = t(s_label_key)
 
         self._title_lbl.setText(self._trunc(task.title, 72))
 
@@ -326,14 +358,23 @@ class DownloadItemWidget(QFrame):
                 self._convert_btn.show()
             if self._on_edit and Path(self._completed_path).suffix.lower() in _VIDEO_EXTS:
                 self._edit_btn.show()
+            if self._on_rename and not Path(self._completed_path).is_dir():
+                self._rename_btn.show()
+            if self._on_send:
+                self._send_btn.show()
             self._pause_btn.hide()
             self._cancel_btn.hide()
-        elif not terminal:
+        else:
+            # Also covers a COMPLETED task whose file was deleted elsewhere
+            # (the Remote API clears task.filename): the old `elif not
+            # terminal` left every file action visible on a dead path.
             self._completed_path = ""
             self._folder_btn.hide()
             self._preview_btn.hide()
             self._convert_btn.hide()
             self._edit_btn.hide()
+            self._rename_btn.hide()
+            self._send_btn.hide()
 
         is_active = st in (DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING, DownloadStatus.QUEUED)
         self._set_active_accent(is_active)
@@ -385,6 +426,30 @@ class DownloadItemWidget(QFrame):
         except Exception as exc:
             logger.warning("on_edit raised: %s", exc)
 
+    def _on_send_click(self) -> None:
+        if not self._completed_path or not self._on_send:
+            return
+
+        def _restore() -> None:
+            self._send_btn.setEnabled(True)
+            self._send_btn.setText(f"📲  {t('item.send')}")
+
+        self._send_btn.setEnabled(False)
+        self._send_btn.setText(t("item.sending"))
+        try:
+            self._on_send(Path(self._completed_path), _restore, self.task)
+        except Exception as exc:
+            logger.warning("on_send raised: %s", exc)
+            _restore()
+
+    def _on_rename_click(self) -> None:
+        if not self._completed_path or not self._on_rename:
+            return
+        try:
+            self._on_rename(self.task.id, self._completed_path)
+        except Exception as exc:
+            logger.warning("on_rename raised: %s", exc)
+
     def _on_convert_click(self) -> None:
         if not self._completed_path or not self._on_convert:
             return
@@ -435,6 +500,13 @@ class DownloadItemWidget(QFrame):
             open_folder(p.parent)
 
     def set_select_mode(self, enabled: bool, on_toggle) -> None:
+        """Show / hide this card's selection checkbox.
+
+        Safe to call repeatedly with the same argument — the queue polls and
+        re-applies select mode on every refresh so that a task which *finishes*
+        while select mode is on still gets a checkbox (it had none while it was
+        running, because only terminal tasks are selectable).
+        """
         from PySide6.QtWidgets import QCheckBox  # noqa: PLC0415
 
         if enabled:
@@ -448,21 +520,40 @@ class DownloadItemWidget(QFrame):
                 top_layout = self.layout().itemAt(0).layout()
                 top_layout.insertWidget(0, cb)
                 self._checkbox = cb
+                if on_toggle:
+                    tid = self.task.id
+                    cb.toggled.connect(lambda checked, t=tid: on_toggle(t, checked))
             self._checkbox.setVisible(True)
-            try:
-                self._checkbox.toggled.disconnect()
-            except RuntimeError:
-                pass
-            if on_toggle:
-                tid = self.task.id
-                self._checkbox.toggled.connect(lambda checked, t=tid: on_toggle(t, checked))
         else:
             if self._checkbox is not None:
                 self._checkbox.setVisible(False)
-                try:
-                    self._checkbox.toggled.disconnect()
-                except RuntimeError:
-                    pass
+                # Reset the tick.  Leaving it checked while the owner clears its
+                # selection set made a re-entered select mode show ticked rows
+                # that were not actually selected, so "Clear selected" silently
+                # fell back to clearing *every* finished task.
+                self._checkbox.blockSignals(True)
+                self._checkbox.setChecked(False)
+                self._checkbox.blockSignals(False)
+
+    def retranslate(self) -> None:
+        self._pause_btn.setToolTip(t("item.pause_tip"))
+        self._cancel_btn.setToolTip(t("item.cancel_tip"))
+        for btn, icon, label_key, tip_key in (
+            (self._folder_btn, "📂", "item.open", "item.open_tip"),
+            (self._preview_btn, "▶", "item.preview", "item.preview_tip"),
+            (self._convert_btn, "🔄", "item.convert", "item.convert_tip"),
+            (self._edit_btn, "✂", "item.edit", "item.edit_tip"),
+            (self._send_btn, "📲", "item.send", "item.send_tip"),
+            (self._rename_btn, "✎", "item.rename", "item.rename_tip"),
+        ):
+            # The Send button carries transient "Sending…" text while a
+            # Taildrop transfer is in flight — leave that one alone.
+            if btn is self._send_btn and not btn.isEnabled():
+                btn.setToolTip(t(tip_key))
+                continue
+            btn.setText(f"{icon}  {t(label_key)}")
+            btn.setToolTip(t(tip_key))
+        self.refresh(self.task)
 
     def deleteLater(self) -> None:
         T.unregister(self._theme_cb)

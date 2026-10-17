@@ -27,6 +27,7 @@ class _StubApp:
     def __init__(self):
         self.toasts = []
         self.config = types.SimpleNamespace(proxy="", cookie_file="")
+        self.service = types.SimpleNamespace(has_cookie_for=lambda url: True)
 
     def toast(self, msg, level="info"):
         self.toasts.append((msg, level))
@@ -199,8 +200,10 @@ class TestAddUrlDedupe:
         tab._url_entry = _StubEntry("https://www.tiktok.com/@someuser")
         LiveMonitorTab._add_url(tab)
 
+        from utils.i18n import t
+
         assert len(tab._items) == 1
-        assert any("theo dõi" in msg for msg, _ in tab._app.toasts)
+        assert any(msg == t("live.already_watching") for msg, _ in tab._app.toasts)
 
     def test_ended_item_does_not_block_readd(self):
         from ui.tabs.live_monitor_tab import LiveMonitorTab, _MonitorState

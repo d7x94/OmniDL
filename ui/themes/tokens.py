@@ -178,6 +178,11 @@ _CTK_BASE: dict[str, str] = {
 # Ordered list of all custom theme names — exported for Settings UI.
 THEME_NAMES: list[str] = list(_PALETTES.keys())
 
+
+def theme_is_dark(name: str) -> bool:
+    return _CTK_BASE.get(name, "dark") == "dark"
+
+
 # ── Tab accents ────────────────────────────────────────────────────────────────
 
 TAB_ACCENTS: dict[str, dict[str, str]] = {
@@ -190,6 +195,7 @@ TAB_ACCENTS: dict[str, dict[str, str]] = {
     "settings": {"accent": "#6B7A8E", "text": "#94A3B8"},
     "special_dl": {"accent": "#A78BFA", "text": "#C4B5FD"},
     "editor": {"accent": "#EC4899", "text": "#F9A8D4"},
+    "docs": {"accent": "#0EA5E9", "text": "#7DD3FC"},
 }
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -25,16 +26,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
+# (target ext, label i18n key) — labels resolve at render time so the picker
+# follows the active language.
 CONVERT_FORMATS: list[tuple[str, str]] = [
-    ("mp4", "MP4 — H.264 / AAC (iPhone, Android)"),
-    ("mp3", "MP3 — Audio only"),
-    ("mkv", "MKV — Lossless container"),
-    ("avi", "AVI — Legacy compatibility"),
-    ("custom", "Tuỳ chỉnh (chất lượng + encoder)..."),
+    ("mp4", "pda.fmt.mp4"),
+    ("mp3", "pda.fmt.mp3"),
+    ("mkv", "pda.fmt.mkv"),
+    ("avi", "pda.fmt.avi"),
+    ("custom", "pda.fmt.custom"),
 ]
 
 
@@ -61,6 +66,7 @@ class PostDownloadActions(QWidget):
         self._file_path: Optional[Path] = None
         self._gallery_dl_files: Optional[list] = None
         self._converting = False
+        self._pending_conversions = 0
 
         self._build()
 
@@ -72,7 +78,7 @@ class PostDownloadActions(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
 
-        self._convert_btn = QPushButton("🔄 Conv" if self._compact else "🔄 Convert")
+        self._convert_btn = QPushButton(self._convert_label())
         self._convert_btn.setFixedHeight(28)
         self._convert_btn.setStyleSheet(
             f"background: {T.primary_dim}; color: {T.primary_text}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
@@ -81,7 +87,7 @@ class PostDownloadActions(QWidget):
         self._convert_btn.clicked.connect(self._on_convert_click)
         btn_row.addWidget(self._convert_btn)
 
-        self._send_btn = QPushButton("📲 Gửi")
+        self._send_btn = QPushButton(f"📲 {t('pda.send')}")
         self._send_btn.setFixedHeight(28)
         self._send_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
@@ -90,7 +96,7 @@ class PostDownloadActions(QWidget):
         self._send_btn.clicked.connect(self._on_send_click)
         btn_row.addWidget(self._send_btn)
 
-        self._delete_btn = QPushButton("🗑 Xoá")
+        self._delete_btn = QPushButton(f"🗑 {t('pda.delete')}")
         self._delete_btn.setFixedHeight(28)
         self._delete_btn.setStyleSheet(
             f"background: {T.error_bg}; color: {T.error}; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
@@ -99,7 +105,7 @@ class PostDownloadActions(QWidget):
         self._delete_btn.clicked.connect(self._on_delete_click)
         btn_row.addWidget(self._delete_btn)
 
-        self._edit_btn = QPushButton("✂ Sửa")
+        self._edit_btn = QPushButton(f"✂ {t('pda.edit')}")
         self._edit_btn.setFixedHeight(28)
         self._edit_btn.setStyleSheet(
             "background: #FCE7F3; color: #EC4899; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; padding: 0 8px;"
@@ -157,19 +163,25 @@ class PostDownloadActions(QWidget):
         self.setVisible(False)
 
     def notify_convert_done(self, output_path: Path) -> None:
-        self._converting = False
-        self._convert_btn.setText("✓ Done")
-        self._convert_btn.setEnabled(False)
+        self._pending_conversions = max(0, self._pending_conversions - 1)
         if self._gallery_dl_files:
             self._file_path = output_path.parent
         else:
             self._file_path = output_path
+        if self._pending_conversions > 0:
+            return
+        self._converting = False
+        self._convert_btn.setText(f"✓ {t('pda.done')}")
+        self._convert_btn.setEnabled(False)
 
     def notify_convert_error(self, msg: str) -> None:
+        self._pending_conversions = max(0, self._pending_conversions - 1)
+        self._set_status(t("pda.convert_failed", msg=msg[:80]))
+        if self._pending_conversions > 0:
+            return
         self._converting = False
-        self._convert_btn.setText("🔄 Conv" if self._compact else "🔄 Convert")
+        self._convert_btn.setText(self._convert_label())
         self._convert_btn.setEnabled(True)
-        self._set_status(f"Convert thất bại: {msg[:80]}")
 
     # ── Handlers ──────────────────────────────────────────────────────────
 
@@ -195,12 +207,14 @@ class PostDownloadActions(QWidget):
         self._format_panel.hide()
         self._converting = True
         display_ext = target_ext if target_ext != "custom" else "mp4 (custom)"
-        self._convert_btn.setText(f"Converting → .{display_ext}..." if not self._compact else "Converting...")
+        self._convert_btn.setText(
+            t("pda.converting_short") if self._compact else t("pda.converting", ext=display_ext)
+        )
         self._convert_btn.setEnabled(False)
 
         if not self._on_convert:
             self._converting = False
-            self._convert_btn.setText("🔄 Conv" if self._compact else "🔄 Convert")
+            self._convert_btn.setText(self._convert_label())
             self._convert_btn.setEnabled(True)
             return
 
@@ -208,24 +222,35 @@ class PostDownloadActions(QWidget):
         gdl = self._gallery_dl_files
         if gdl:
             video_files = [Path(f) for f in gdl if Path(f).suffix.lower() in _vid_exts and Path(f).is_file()]
+            if not video_files:
+                self._converting = False
+                self._convert_btn.setText(self._convert_label())
+                self._convert_btn.setEnabled(True)
+                self._set_status(t("pda.empty_folder"))
+                return
+            self._pending_conversions = len(video_files)
             for vf in video_files:
                 try:
                     self._on_convert(vf, target_ext, encode_settings)
                 except Exception as exc:
                     logger.warning("PostDownloadActions on_convert raised: %s", exc)
-                    self._set_status(f"Lỗi convert {vf.name}: {exc}")
-                    self._converting = False
-                    self._convert_btn.setText("🔄 Conv" if self._compact else "🔄 Convert")
-                    self._convert_btn.setEnabled(True)
+                    self._set_status(t("pda.convert_error_file", name=vf.name, err=exc))
+                    self._pending_conversions -= 1
+                    if self._pending_conversions <= 0:
+                        self._converting = False
+                        self._convert_btn.setText(self._convert_label())
+                        self._convert_btn.setEnabled(True)
                     return
         else:
+            self._pending_conversions = 1
             try:
                 self._on_convert(self._file_path, target_ext, encode_settings)
             except Exception as exc:
                 logger.warning("PostDownloadActions on_convert raised: %s", exc)
-                self._set_status(f"Lỗi convert: {exc}")
+                self._set_status(t("pda.convert_error", err=exc))
+                self._pending_conversions = 0
                 self._converting = False
-                self._convert_btn.setText("🔄 Convert" if not self._compact else "🔄 Conv")
+                self._convert_btn.setText(self._convert_label())
                 self._convert_btn.setEnabled(True)
 
     def _on_send_click(self) -> None:
@@ -237,24 +262,27 @@ class PostDownloadActions(QWidget):
         if path.is_dir() and not self._gallery_dl_files:
             files = sorted(f for f in path.iterdir() if f.is_file())
             if not files:
-                self._set_status("Thư mục rỗng.")
+                self._set_status(t("pda.empty_folder"))
                 return
             if len(files) == 1:
                 specific_files = files
             else:
                 dlg = _FolderFilePickerDialog(
-                    self, directory=path, title="Chọn file cần gửi", confirm_text="📲  Gửi đã chọn"
+                    self,
+                    directory=path,
+                    title=t("pda.pick_send_title"),
+                    confirm_text=f"📲  {t('pda.pick_send_confirm')}",
                 )
                 if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected:
                     return
                 specific_files = dlg.selected
 
         self._send_btn.setEnabled(False)
-        self._send_btn.setText("📲 Đang gửi...")
+        self._send_btn.setText(f"📲 {t('pda.sending')}")
 
         def _restore() -> None:
             self._send_btn.setEnabled(True)
-            self._send_btn.setText("📲 Gửi")
+            self._send_btn.setText(f"📲 {t('pda.send')}")
 
         if self._on_send:
             try:
@@ -277,7 +305,11 @@ class PostDownloadActions(QWidget):
         if gdl:
             from PySide6.QtWidgets import QMessageBox
 
-            r = QMessageBox.question(self, "Xác nhận xoá", f"Xoá tất cả {len(gdl)} file của bài đăng này?")
+            r = QMessageBox.question(
+                self,
+                t("pda.confirm_delete_title"),
+                t("pda.confirm_delete_all", count=len(gdl)),
+            )
             if r != QMessageBox.StandardButton.Yes:
                 return
             for f_str in gdl:
@@ -298,17 +330,24 @@ class PostDownloadActions(QWidget):
             if not files:
                 from PySide6.QtWidgets import QMessageBox
 
-                r = QMessageBox.question(self, "Xác nhận xoá", f"Xoá thư mục rỗng '{path.name}'?")
+                r = QMessageBox.question(
+                    self,
+                    t("pda.confirm_delete_title"),
+                    t("pda.confirm_delete_empty_dir", name=path.name),
+                )
                 if r != QMessageBox.StandardButton.Yes:
                     return
                 try:
                     path.rmdir()
                 except OSError as exc:
-                    self._set_status(f"Không xoá được: {exc.strerror}")
+                    self._set_status(t("pda.delete_failed", err=exc.strerror))
                     return
             else:
                 dlg = _FolderFilePickerDialog(
-                    self, directory=path, title="Chọn file cần xoá", confirm_text="🗑  Xoá đã chọn"
+                    self,
+                    directory=path,
+                    title=t("pda.pick_delete_title"),
+                    confirm_text=f"🗑  {t('pda.pick_delete_confirm')}",
                 )
                 if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected:
                     return
@@ -327,7 +366,9 @@ class PostDownloadActions(QWidget):
             from PySide6.QtWidgets import QMessageBox
 
             r = QMessageBox.question(
-                self, "Xác nhận xoá", f"Bạn có chắc muốn xoá file này?\n{path.name[:80]}"
+                self,
+                t("pda.confirm_delete_title"),
+                t("pda.confirm_delete_file", name=path.name[:80]),
             )
             if r != QMessageBox.StandardButton.Yes:
                 return
@@ -335,7 +376,7 @@ class PostDownloadActions(QWidget):
                 if path.exists():
                     os.remove(path)
             except OSError as exc:
-                self._set_status(f"Không xoá được: {exc.strerror}")
+                self._set_status(t("pda.delete_failed", err=exc.strerror))
                 return
 
         self._file_path = None
@@ -345,6 +386,9 @@ class PostDownloadActions(QWidget):
                 self._on_delete(path)
             except Exception as exc:
                 logger.warning("on_delete raised: %s", exc)
+
+    def _convert_label(self) -> str:
+        return f"🔄 {t('pda.convert_compact') if self._compact else t('pda.convert')}"
 
     def _set_status(self, text: str) -> None:
         self._status_lbl.setText(text)
@@ -374,8 +418,7 @@ class _FormatPickerPanel(QFrame):
         layout.setContentsMargins(10, 8, 10, 10)
         layout.setSpacing(4)
 
-        QLabel("Chọn định dạng đích:", self).setParent(None)
-        lbl = QLabel("Chọn định dạng đích:")
+        lbl = QLabel(t("pda.target_format"))
         lbl.setStyleSheet(
             f"color: {T.text2}; font-weight: bold; font-size: 11px; background: transparent; border: none;"
         )
@@ -384,8 +427,8 @@ class _FormatPickerPanel(QFrame):
         self._btn_group = QButtonGroup(self)
         self._radios: list[tuple[str, QRadioButton]] = []
 
-        for ext, label in CONVERT_FORMATS:
-            rb = QRadioButton(label)
+        for ext, label_key in CONVERT_FORMATS:
+            rb = QRadioButton(t(label_key))
             rb.setStyleSheet(f"color: {T.text}; font-size: 11px; background: transparent; border: none;")
             self._btn_group.addButton(rb)
             self._radios.append((ext, rb))
@@ -404,7 +447,7 @@ class _FormatPickerPanel(QFrame):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
-        cancel_btn = QPushButton("✕  Huỷ")
+        cancel_btn = QPushButton(f"✕  {t('archive.cancel')}")
         cancel_btn.setFixedHeight(26)
         cancel_btn.setStyleSheet(
             f"background: {T.surface3}; color: {T.text3}; border-radius: 6px; border: none; font-size: 11px; padding: 0 8px;"
@@ -412,7 +455,7 @@ class _FormatPickerPanel(QFrame):
         cancel_btn.clicked.connect(self.cancelled)
         btn_row.addWidget(cancel_btn)
 
-        confirm_btn = QPushButton("✓  Convert")
+        confirm_btn = QPushButton(f"✓  {t('pda.convert')}")
         confirm_btn.setFixedHeight(26)
         confirm_btn.setObjectName("primary")
         confirm_btn.setFixedHeight(26)
@@ -444,34 +487,57 @@ class _CustomEncodePanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setStyleSheet("background: transparent; border: none;")
+        self._encoder_keys: list[str] = ["cpu"]
         self._build()
+        threading.Thread(
+            target=self._detect_encoders_async,
+            daemon=True,
+            name="omnidl-pda-encoder-probe",
+        ).start()
+
+    def _detect_encoders_async(self) -> None:
+        from app.services.ffmpeg_convert_service import get_available_encoder_options
+
+        available = get_available_encoder_options()
+        ui_bridge.post(lambda opts=available: self._apply_available_encoders(opts))
+
+    def _apply_available_encoders(self, available: list[tuple[str, str]]) -> None:
+        self._encoder_combo.clear()
+        self._encoder_keys = [k for k, _ in available]
+        self._encoder_combo.addItems([lbl for _, lbl in available])
+        self._encoder_combo.setEnabled(True)
 
     def _build(self) -> None:
-        from app.services.ffmpeg_convert_service import SPEED_OPTIONS, get_available_encoder_options
+        from app.services.ffmpeg_convert_service import SPEED_OPTIONS
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        # Encoder
+        # Encoder — populated off-thread once the probe (which may test-encode
+        # each GPU codec via subprocess) finishes; see _detect_encoders_async.
         row1 = QHBoxLayout()
-        lbl = QLabel("Encoder:")
+        lbl = QLabel(t("pda.encoder"))
         lbl.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-weight: bold;")
         row1.addWidget(lbl)
         self._encoder_combo = QComboBox()
-        available = get_available_encoder_options()
-        self._encoder_keys = [k for k, _ in available]
-        self._encoder_combo.addItems([lbl for _, lbl in available])
+        self._encoder_combo.addItem(t("live.state.checking"))
+        self._encoder_combo.setEnabled(False)
         row1.addWidget(self._encoder_combo)
         layout.addLayout(row1)
 
         # Quality
         row2 = QHBoxLayout()
-        lbl2 = QLabel("Chất lượng:")
+        lbl2 = QLabel(t("pda.quality"))
         lbl2.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-weight: bold;")
         row2.addWidget(lbl2)
         self._quality_combo = QComboBox()
-        self._quality_labels = ["Cao (CRF 18)", "Chuẩn (CRF 23)", "Nhỏ 720p (CRF 28)", "CRF tuỳ chỉnh"]
+        self._quality_labels = [
+            t("pda.q.high"),
+            t("pda.q.standard"),
+            t("pda.q.small"),
+            t("pda.q.custom"),
+        ]
         self._quality_keys = ["high", "standard", "small", "custom"]
         self._quality_combo.addItems(self._quality_labels)
         self._quality_combo.setCurrentIndex(1)
@@ -483,7 +549,7 @@ class _CustomEncodePanel(QWidget):
         self._crf_row = QWidget()
         crf_layout = QHBoxLayout(self._crf_row)
         crf_layout.setContentsMargins(0, 0, 0, 0)
-        lbl3 = QLabel("CRF:")
+        lbl3 = QLabel(t("pda.crf"))
         lbl3.setStyleSheet(f"color: {T.text2}; font-size: 11px;")
         crf_layout.addWidget(lbl3)
         self._crf_slider = QSlider(Qt.Orientation.Horizontal)
@@ -499,12 +565,12 @@ class _CustomEncodePanel(QWidget):
 
         # Speed
         row3 = QHBoxLayout()
-        lbl4 = QLabel("Tốc độ:")
+        lbl4 = QLabel(t("pda.speed"))
         lbl4.setStyleSheet(f"color: {T.text2}; font-size: 11px; font-weight: bold;")
         row3.addWidget(lbl4)
         self._speed_combo = QComboBox()
         self._speed_keys = [k for k, _ in SPEED_OPTIONS]
-        self._speed_combo.addItems([lbl for _, lbl in SPEED_OPTIONS])
+        self._speed_combo.addItems([t(key) for _, key in SPEED_OPTIONS])
         self._speed_combo.setCurrentIndex(1)
         row3.addWidget(self._speed_combo)
         layout.addLayout(row3)
@@ -541,7 +607,7 @@ class _FolderFilePickerDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"📁  {directory.name}"))
-        layout.addWidget(QLabel("Chọn file cần thực hiện:"))
+        layout.addWidget(QLabel(t("pda.pick_files_label")))
 
         scroll = QScrollArea()
         scroll.setFixedHeight(200)
@@ -563,9 +629,9 @@ class _FolderFilePickerDialog(QDialog):
         layout.addWidget(scroll)
 
         sel_row = QHBoxLayout()
-        sel_all = QPushButton("Chọn tất cả")
+        sel_all = QPushButton(t("pda.select_all"))
         sel_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self._checks.values()])
-        desel_all = QPushButton("Bỏ chọn")
+        desel_all = QPushButton(t("pda.deselect_all"))
         desel_all.clicked.connect(lambda: [cb.setChecked(False) for cb in self._checks.values()])
         sel_row.addWidget(sel_all)
         sel_row.addWidget(desel_all)
@@ -573,7 +639,7 @@ class _FolderFilePickerDialog(QDialog):
         layout.addLayout(sel_row)
 
         btn_box = QDialogButtonBox()
-        cancel_btn = btn_box.addButton("Huỷ", QDialogButtonBox.ButtonRole.RejectRole)
+        cancel_btn = btn_box.addButton(t("archive.cancel"), QDialogButtonBox.ButtonRole.RejectRole)
         confirm_btn = btn_box.addButton(confirm_text, QDialogButtonBox.ButtonRole.AcceptRole)
         cancel_btn.clicked.connect(self.reject)
         confirm_btn.clicked.connect(self._on_confirm)

@@ -70,6 +70,16 @@ class HistoryRepository:
                         self._entries.append(json.loads(line))
                     except json.JSONDecodeError:
                         logger.warning("Skipping malformed history line: %s", line[:80])
+            # add() keeps self._entries newest-first, but _append_line() writes
+            # each new record to the END of the file, so reading the JSONL back
+            # top-to-bottom yields OLDEST-first. Two consequences before this
+            # sort existed: the History tab listed the oldest downloads at the
+            # top after every restart, and the over-limit trim below (which
+            # keeps the FIRST _limit entries) permanently erased the NEWEST
+            # records from disk. Sorting on finished_at restores newest-first
+            # regardless of how the file was written, so files produced by
+            # older builds heal themselves on the next launch.
+            self._entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
             logger.debug("History loaded: %d entries", len(self._entries))
         except Exception as exc:
             logger.warning("History load failed (%s)", exc)
@@ -109,7 +119,7 @@ class HistoryRepository:
         """
         self._rewrite_unlocked(self._entries)
 
-    def _rewrite_unlocked(self, entries: list[dict]) -> None:
+    def _rewrite_unlocked(self, entries: list[dict]) -> bool:
         """Write *entries* atomically to disk without requiring ``self._lock``.
 
         Accepts a consistent snapshot so the caller can release the lock
@@ -132,6 +142,7 @@ class HistoryRepository:
             # Remove backup only after successful replacement.
             if backup.exists():
                 backup.unlink(missing_ok=True)
+            return True
         except OSError as exc:
             logger.error("History rewrite failed: %s", exc)
             # Restore from backup if available.
@@ -141,6 +152,7 @@ class HistoryRepository:
                     logger.info("History restored from backup after failed rewrite")
                 except OSError as rb_exc:
                     logger.error("History backup restore failed: %s", rb_exc)
+            return False
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -194,15 +206,33 @@ class HistoryRepository:
     def remove(self, task_id: str) -> None:
         with self._io_lock:
             with self._lock:
-                self._entries = [e for e in self._entries if e.get("id") != task_id]
-                snapshot = list(self._entries)
-            self._rewrite_unlocked(snapshot)
+                snapshot = [e for e in self._entries if e.get("id") != task_id]
+            # Drop from memory only once disk agrees, else the row returns after restart.
+            if self._rewrite_unlocked(snapshot):
+                with self._lock:
+                    self._entries = snapshot
 
     def clear(self) -> None:
         with self._io_lock:
+            if self._rewrite_unlocked([]):
+                with self._lock:
+                    self._entries = []
+
+    def update_filename(self, task_id: str, new_filename: str) -> bool:
+        """Patch the ``filename`` field of one entry. Returns False if not found."""
+        with self._io_lock:
             with self._lock:
-                self._entries = []
-            self._rewrite_unlocked([])
+                found = False
+                for e in self._entries:
+                    if e.get("id") == task_id:
+                        e["filename"] = new_filename
+                        found = True
+                        break
+                if not found:
+                    return False
+                snapshot = list(self._entries)
+            self._rewrite_unlocked(snapshot)
+            return True
 
     def get_by_id(self, task_id: str) -> Optional[dict]:
         with self._lock:

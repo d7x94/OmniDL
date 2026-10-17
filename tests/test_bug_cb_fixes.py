@@ -426,60 +426,30 @@ class TestKuaishhouPreResolver:
             result = mod._resolve_kuaishou_url(original)
             assert result == original
 
-    def test_extract_info_calls_resolver_for_kuaishou(self):
-        """extract_info must pre-resolve Kuaishou URLs before passing to yt-dlp."""
+    def test_extract_info_routes_kuaishou_via_kuaishou_engine(self):
+        """extract_info must route Kuaishou URLs to KuaishouEngine, not yt-dlp.
+
+        is_kuaishou_url's regex is a superset of _KUAISHOU_SHORT_RE, so any URL
+        _resolve_kuaishou_url would handle is already routed away from yt-dlp
+        before that pre-resolve code would ever run (see BUG-KS-DEAD note in
+        yt_dlp_engine.extract_info).
+        """
         from unittest.mock import patch
 
         import infrastructure.downloader.yt_dlp_engine as mod
 
-        resolved = "https://www.kuaishou.com/short-video/resolved123"
         cfg = _make_config()
         engine = mod.YtDlpEngine(cfg)
 
-        fake_info = {
-            "id": "resolved123",
-            "title": "Test",
-            "url": resolved,
-            "ext": "mp4",
-            "duration": 30,
-            "thumbnail": "",
-            "formats": [{"format_id": "best", "ext": "mp4", "url": resolved}],
-            "is_live": False,
-            "was_live": False,
-        }
-        captured_urls = []
+        with patch(
+            "infrastructure.downloader.kuaishou_engine.extract_info_kuaishou",
+            return_value="sentinel",
+        ) as mock_extract:
+            result = engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
 
-        class FakeYDL:
-            def __init__(self, opts):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                pass
-
-            def add_post_processor(self, pp, when=None):
-                pass
-
-            def extract_info(self, url, download=False):
-                captured_urls.append(url)
-                return fake_info
-
-        import re as _re
-
-        import infrastructure.downloader.kuaishou_engine as ks_mod
-
-        with (
-            patch.object(mod, "_KUAISHOU_SHORT_RE", mod.re.compile(r"v\.kuaishou\.com/", mod.re.I)),
-            patch.object(mod, "_resolve_kuaishou_url", return_value=resolved) as mock_resolve,
-            patch.object(ks_mod, "_KUAISHOU_RE", _re.compile(r"(?!)")),
-            patch.object(mod.yt_dlp, "YoutubeDL", FakeYDL),
-        ):
-            engine.extract_info("https://v.kuaishou.com/nsLRaZq3")
-
-        mock_resolve.assert_called_once_with("https://v.kuaishou.com/nsLRaZq3")
-        assert captured_urls == [resolved]
+        mock_extract.assert_called_once()
+        assert mock_extract.call_args[0][0] == "https://v.kuaishou.com/nsLRaZq3"
+        assert result == "sentinel"
 
 
 class TestFacebookSharePreResolver:

@@ -47,8 +47,22 @@ _TEMP_PREFIX = "omnidl_dec_"
 
 # In-memory plaintext cache: path_str -> (plaintext_bytes, enc_mtime)
 # Avoids repeated DPAPI/Fernet syscalls for the same cookie file within a session.
+# Bounded: decrypted session cookies are the most sensitive data OmniDL holds,
+# so the cache keeps only the few files actually in use (oldest entry evicted).
+_COOKIE_CACHE_MAX = 16
 _cookie_cache: dict[str, tuple[bytes, float]] = {}
 _cookie_cache_lock = threading.Lock()
+
+
+def invalidate_cookie_cache(path: "Path | str") -> None:
+    """Drop the cached plaintext for *path* (call when the file is deleted).
+
+    Without this the decrypted cookies of an account the user just removed
+    stayed resident in memory for the rest of the session.
+    """
+    key = str(path)
+    with _cookie_cache_lock:
+        _cookie_cache.pop(key, None)
 
 _KEYCHAIN_SERVICE = "OmniDL"
 _KEYCHAIN_ACCOUNT = "cookie_encryption_key_v1"
@@ -275,6 +289,8 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
         _cached = _cookie_cache.get(_cache_key)
         plaintext: bytes | None = _cached[0] if (_cached and _cached[1] == _enc_mtime) else None
 
+    _from_cache = plaintext is not None
+
     if plaintext is None:
         try:
             ciphertext = enc_path.read_bytes()
@@ -299,6 +315,8 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
                 )
 
         with _cookie_cache_lock:
+            while len(_cookie_cache) >= _COOKIE_CACHE_MAX:
+                _cookie_cache.pop(next(iter(_cookie_cache)))
             _cookie_cache[_cache_key] = (plaintext, _enc_mtime)
 
     tmp_fd, tmp_str = tempfile.mkstemp(suffix=".txt", prefix=_TEMP_PREFIX, dir=enc_path.parent)
@@ -318,22 +336,43 @@ def decrypt_to_tempfile(enc_path: Path) -> Path:
         except OSError as exc:
             logger.warning("decrypt_to_tempfile: chmod 0o600 failed for %s — %s", tmp_path.name, exc)
 
-    logger.debug("Decrypted %s → temp %s", enc_path.name, tmp_path.name)
+    # The cache above means DPAPI/Fernet runs once per file, but this line
+    # still claimed "Decrypted" on every hit: 355 of the 3,586 lines in
+    # omnidl_debug.log (2026-09-19) reported a decryption that never ran.
+    logger.debug(
+        "%s %s → temp %s",
+        "Reused cached plaintext of" if _from_cache else "Decrypted",
+        enc_path.name,
+        tmp_path.name,
+    )
     return tmp_path
 
 
-def cleanup_stale_cookies(safe_dir: Path, max_age_days: int = 30) -> int:
-    """Delete .txt and .enc cookie files older than max_age_days. Returns count deleted."""
+def cleanup_stale_cookies(
+    safe_dir: Path, max_age_days: int = 30, keep: "set[str] | None" = None
+) -> int:
+    """Delete .txt and .enc cookie files older than max_age_days. Returns count deleted.
+
+    *keep* holds paths the config still references (account pool, global and
+    per-platform cookies).  They are never deleted regardless of age: mtime
+    only changes when cookies are re-extracted, so a working account added 31
+    days ago used to have its jar wiped at startup while the config kept
+    pointing at the now-missing file.
+    """
     import time
 
     if not safe_dir.is_dir():
         return 0
+    protected = {str(Path(k).resolve()) for k in (keep or set()) if k}
     now = time.time()
     deleted = 0
     for f in safe_dir.iterdir():
         if f.name.startswith("_tmp_") or f.name.startswith(_TEMP_PREFIX):
             continue
         if f.suffix not in (".txt", ENCRYPTED_SUFFIX):
+            continue
+        if str(f.resolve()) in protected:
+            logger.debug("Stale cookie cleanup: keeping in-use file %s", f.name)
             continue
         try:
             age_days = (now - f.stat().st_mtime) / 86400
@@ -359,7 +398,7 @@ def encrypt_plaintext_cookies(safe_dir: Path) -> int:
         return 0
     encrypted_count = 0
     for f in safe_dir.glob("*.txt"):
-        if f.name.startswith(_TEMP_PREFIX):
+        if f.name.startswith(_TEMP_PREFIX) or f.name.startswith("_tmp_"):
             continue
         try:
             result = encrypt_cookie_file(f)
@@ -392,7 +431,9 @@ def cleanup_leftover_temp_files(safe_dir: Path) -> None:
 
     atexit.register(_atexit_cleanup)
 
-    for f in safe_dir.glob(f"{_TEMP_PREFIX}*.txt"):
+    # BUG-COOKIE-TMP-JAR: "_tmp_*" is the full browser jar extract_browser_cookies()
+    # writes before filtering. Nothing extracts at startup, so any copy is a leftover.
+    for f in [*safe_dir.glob(f"{_TEMP_PREFIX}*.txt"), *safe_dir.glob("_tmp_*")]:
         try:
             f.unlink()
             logger.info("Cleaned up leftover temp cookie file: %s", f.name)

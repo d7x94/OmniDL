@@ -4,6 +4,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from utils.tiktok_detection.strategy import StreamConfirmedEndedError
+
 if TYPE_CHECKING:
     from utils.tiktok_detection.strategy import LiveDetectionStrategy
 
@@ -79,13 +81,36 @@ class HealthDaemon:
             return
         from utils.tiktok_detection.context import LiveCheckContext
 
-        ctx = LiveCheckContext(username=_CANARY_USERNAME)
         for strategy in self._strategies:
+            # One context per strategy: it is the probe's private output slot.
+            ctx = LiveCheckContext(username=_CANARY_USERNAME)
             try:
                 result = strategy.check(ctx)
-                # None = not live, that's fine - strategy is working
+                if ctx.network_error:
+                    # Never got a usable answer — the request never reached
+                    # TikTok, or it came back non-200.  No evidence either way
+                    # about this strategy.  Recording a success here reset the
+                    # failure counter of an endpoint that is permanently blocked.
+                    logger.debug(
+                        "tiktok_detection: probe %s skipped (no usable answer)",
+                        strategy.name,
+                    )
+                elif ctx.unavailable:
+                    # The strategy reached the network but could not function
+                    # (blocked endpoint / bot-detection body). None here does
+                    # not mean "the canary is offline".
+                    self._registry.record_probe_failure(strategy.name)
+                    logger.debug(
+                        "tiktok_detection: probe %s unavailable (endpoint blocked)",
+                        strategy.name,
+                    )
+                else:
+                    # None = not live, that's fine - strategy is working
+                    self._registry.record_probe_success(strategy.name)
+                    logger.debug("tiktok_detection: probe %s ok (result=%s)", strategy.name, result)
+            except StreamConfirmedEndedError:
+                # Strategy correctly detected the canary's stream ended - working as intended.
                 self._registry.record_probe_success(strategy.name)
-                logger.debug("tiktok_detection: probe %s ok (result=%s)", strategy.name, result)
             except RuntimeError as exc:
                 msg = str(exc).lower()
                 if "not found" in msg or "404" in msg:

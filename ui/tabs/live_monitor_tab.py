@@ -28,7 +28,12 @@ from domain.enums.download_status import DownloadStatus
 from domain.models.download_task import MediaInfo
 from ui.signals import ui_bridge
 from ui.themes.tokens import T
+from utils.facebook_live_checker import (
+    extract_facebook_username,
+    is_facebook_profile_url,
+)
 from utils.helpers import is_valid_url, open_folder, reveal_in_explorer
+from utils.i18n import t
 from utils.instagram_live_checker import (
     extract_instagram_username,
     is_instagram_profile_url,
@@ -74,14 +79,19 @@ class _MonitorState(Enum):
     ERROR = auto()
 
 
-_STATE_LABEL: dict[_MonitorState, str] = {
-    _MonitorState.WAITING: "Chờ live",
-    _MonitorState.CHECKING: "Đang kiểm tra…",
-    _MonitorState.LIVE: "Đang LIVE",
-    _MonitorState.RECORDING: "Đang ghi",
-    _MonitorState.ENDED: "Đã ghi xong",
-    _MonitorState.ERROR: "Lỗi",
+_STATE_KEY: dict[_MonitorState, str] = {
+    _MonitorState.WAITING: "live.state.waiting",
+    _MonitorState.CHECKING: "live.state.checking",
+    _MonitorState.LIVE: "live.state.live",
+    _MonitorState.RECORDING: "live.state.recording",
+    _MonitorState.ENDED: "live.state.ended",
+    _MonitorState.ERROR: "archive.error_title",
 }
+
+
+def _state_label(state: "_MonitorState") -> str:
+    return t(_STATE_KEY[state])
+
 
 _STATE_COLOR: dict[_MonitorState, str] = {
     _MonitorState.WAITING: "text3",
@@ -91,6 +101,18 @@ _STATE_COLOR: dict[_MonitorState, str] = {
     _MonitorState.ENDED: "text2",
     _MonitorState.ERROR: "error",
 }
+
+
+_ACTIVE_STATES: set[_MonitorState] = {
+    _MonitorState.WAITING,
+    _MonitorState.CHECKING,
+    _MonitorState.LIVE,
+    _MonitorState.RECORDING,
+}
+
+
+def _active_count(items: "list[_MonitorItem]") -> int:
+    return sum(1 for i in items if i.state in _ACTIVE_STATES)
 
 
 @dataclass
@@ -168,9 +190,9 @@ class LiveMonitorTab(QWidget):
         hdr.setStyleSheet("background: transparent;")
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(28, 24, 28, 0)
-        title = QLabel("Theo dõi trực tiếp")
-        title.setObjectName("page_title")
-        hdr_layout.addWidget(title)
+        self._title_lbl = QLabel(t("live.title"))
+        self._title_lbl.setObjectName("page_title")
+        hdr_layout.addWidget(self._title_lbl)
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
         hdr_layout.addWidget(self._status_lbl)
@@ -213,12 +235,9 @@ class LiveMonitorTab(QWidget):
         ic_layout.setContentsMargins(16, 12, 16, 12)
         ic_layout.setSpacing(8)
 
-        hint = QLabel(
-            f"Dán URL live stream — Instagram, YouTube, TikTok, Facebook, Twitch…"
-            f"  (tối đa {MAX_MONITOR_URLS})"
-        )
-        hint.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
-        ic_layout.addWidget(hint)
+        self._hint_lbl = QLabel(t("live.hint", max=MAX_MONITOR_URLS))
+        self._hint_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px; background: transparent;")
+        ic_layout.addWidget(self._hint_lbl)
 
         entry_row = QWidget()
         entry_row.setStyleSheet("background: transparent;")
@@ -242,7 +261,7 @@ class LiveMonitorTab(QWidget):
         self._url_entry.returnPressed.connect(self._add_url)
         er_layout.addWidget(self._url_entry, 1)
 
-        self._add_btn = QPushButton("Thêm")
+        self._add_btn = QPushButton(t("live.add_btn"))
         self._add_btn.setFixedSize(100, 36)
         self._add_btn.setStyleSheet(
             f"QPushButton {{ background: {T.primary_dim}; color: {T.primary_text}; border: none; border-radius: 8px; font-size: 12px; }}"
@@ -260,9 +279,9 @@ class LiveMonitorTab(QWidget):
         cr_layout.setContentsMargins(0, 0, 0, 0)
         cr_layout.setSpacing(6)
 
-        ck_lbl = QLabel("Kiểm tra mới:")
-        ck_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        cr_layout.addWidget(ck_lbl)
+        self._ck_lbl = QLabel(t("live.check_interval_label"))
+        self._ck_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        cr_layout.addWidget(self._ck_lbl)
 
         self._interval_combo = QComboBox()
         self._interval_combo.addItems(["60", "180", "300", "600"])
@@ -270,22 +289,22 @@ class LiveMonitorTab(QWidget):
         self._interval_combo.setFixedSize(80, 28)
         cr_layout.addWidget(self._interval_combo)
 
-        s_lbl = QLabel("giây")
-        s_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
-        cr_layout.addWidget(s_lbl)
+        self._s_lbl = QLabel(t("live.seconds_label"))
+        self._s_lbl.setStyleSheet(f"color: {T.text3}; font-size: 11px;")
+        cr_layout.addWidget(self._s_lbl)
         cr_layout.addStretch()
 
-        clear_all_btn = QPushButton("Xóa tất cả")
-        clear_all_btn.setFixedSize(90, 28)
-        clear_all_btn.setStyleSheet(
+        self._clear_all_btn = QPushButton(t("history.clear_all"))
+        self._clear_all_btn.setFixedSize(90, 28)
+        self._clear_all_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 11px; }}"
             f"QPushButton:hover {{ background: {T.surface3}; color: {T.text}; }}"
         )
-        clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_all_btn.clicked.connect(self._clear_all)
-        cr_layout.addWidget(clear_all_btn)
+        self._clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_all_btn.clicked.connect(self._clear_all)
+        cr_layout.addWidget(self._clear_all_btn)
 
-        self._pause_btn = QPushButton("Tạm ngưng")
+        self._pause_btn = QPushButton(t("live.pause"))
         self._pause_btn.setFixedSize(100, 28)
         self._pause_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.text3}; border: none; border-radius: 8px; font-size: 11px; }}"
@@ -312,9 +331,7 @@ class LiveMonitorTab(QWidget):
         self._items_layout.setSpacing(6)
         self._items_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self._empty_lbl = QLabel(
-            "Chưa có URL nào được theo dõi\nDán URL live stream ở trên để bắt đầu tự động ghi"
-        )
+        self._empty_lbl = QLabel(t("live.empty"))
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet(f"color: {T.text3}; font-size: 14px; background: transparent;")
         self._empty_lbl.setMinimumHeight(160)
@@ -330,10 +347,10 @@ class LiveMonitorTab(QWidget):
         if not url:
             return
         if not is_valid_url(url):
-            self._app.toast("URL không hợp lệ — phải bắt đầu bằng http:// hoặc https://", "error")
+            self._app.toast(t("live.invalid_url"), "error")
             return
-        if len(self._items) >= MAX_MONITOR_URLS:
-            self._app.toast(f"Đã đạt giới hạn {MAX_MONITOR_URLS} URL.", "error")
+        if _active_count(self._items) >= MAX_MONITOR_URLS:
+            self._app.toast(t("live.limit_reached", max=MAX_MONITOR_URLS), "error")
             return
 
         is_ig_profile = is_instagram_profile_url(url)
@@ -351,7 +368,13 @@ class LiveMonitorTab(QWidget):
         _tiktok_live_username = extract_tiktok_username_from_live_url(url) or ""
         is_tiktok_profile = _is_short_link or bool(_tiktok_live_username) or is_tiktok_profile_url(url)
 
-        is_profile = is_ig_profile or is_tiktok_profile
+        is_fb_profile = not is_ig_profile and not is_tiktok_profile and is_facebook_profile_url(url)
+        if is_fb_profile:
+            # Normalise the /live tab back to the plain page URL so the same
+            # page added twice (with and without /live) is caught as duplicate.
+            url = f"https://www.facebook.com/{extract_facebook_username(url) or ''}"
+
+        is_profile = is_ig_profile or is_tiktok_profile or is_fb_profile
 
         if is_ig_profile:
             username = _ig_live_username or extract_instagram_username(url) or ""
@@ -363,18 +386,15 @@ class LiveMonitorTab(QWidget):
             if not username and not _is_short_link:
                 username = extract_tiktok_username(url) or ""
             profile_platform = "tiktok"
+        elif is_fb_profile:
+            username = extract_facebook_username(url) or ""
+            profile_platform = "facebook"
         else:
             username = ""
             profile_platform = ""
 
-        active_states = {
-            _MonitorState.WAITING,
-            _MonitorState.CHECKING,
-            _MonitorState.LIVE,
-            _MonitorState.RECORDING,
-        }
         for i in self._items:
-            if i.state not in active_states:
+            if i.state not in _ACTIVE_STATES:
                 continue
             same_profile = (
                 bool(username)
@@ -383,18 +403,17 @@ class LiveMonitorTab(QWidget):
                 and i.username == username
             )
             if i.url == url or same_profile:
-                self._app.toast("URL này đang được theo dõi.", "info")
+                self._app.toast(t("live.already_watching"), "info")
                 return
 
         if is_ig_profile:
-            from infrastructure.downloader.yt_dlp_engine import _resolve_cookie
+            if not self._app.service.has_cookie_for("https://www.instagram.com/"):
+                self._app.toast(t("live.ig_cookie_needed"), "error")
+                return
 
-            if not _resolve_cookie("https://www.instagram.com/", self._app.config):
-                self._app.toast(
-                    "Profile watcher cần cookie file Instagram.\n"
-                    "Cấu hình trong Settings → Network → Cookie file.",
-                    "error",
-                )
+        if is_fb_profile:
+            if not self._app.service.has_cookie_for("https://www.facebook.com/"):
+                self._app.toast(t("err.profile_watch_needs_fb_cookie"), "error")
                 return
 
         item = _MonitorItem(
@@ -412,13 +431,16 @@ class LiveMonitorTab(QWidget):
 
         if is_profile:
             label = f"@{username}" if username else self._short_url(url, 40)
-            self._app.toast(f"Đang theo dõi {label} — sẽ tự ghi khi live bắt đầu.", "info")
+            self._app.toast(t("live.watching_toast", label=label), "info")
 
     def _remove_item(self, item: _MonitorItem) -> None:
         if self._checking_item is item:
             self._checking_item = None
         if item.task_id:
             try:
+                task = self._app.service.get_task(item.task_id)
+                if task is not None:
+                    task.keep_partial = True
                 self._app.service.cancel_download(item.task_id)
             except Exception:
                 pass
@@ -433,6 +455,9 @@ class LiveMonitorTab(QWidget):
         for item in list(self._items):
             if item.task_id:
                 try:
+                    task = self._app.service.get_task(item.task_id)
+                    if task is not None:
+                        task.keep_partial = True
                     self._app.service.cancel_download(item.task_id)
                 except Exception:
                     pass
@@ -499,7 +524,7 @@ class LiveMonitorTab(QWidget):
         color_attr = _STATE_COLOR[item.state]
         color = getattr(T, color_attr, T.text3)
 
-        state_lbl = QLabel(_STATE_LABEL[item.state])
+        state_lbl = QLabel(_state_label(item.state))
         state_lbl.setStyleSheet(
             f"color: {color}; font-size: 12px; font-weight: bold; background: transparent;"
         )
@@ -519,7 +544,7 @@ class LiveMonitorTab(QWidget):
 
         # Title / URL label
         title_text = (
-            f"@{item.username}  (profile watch)"
+            f"@{item.username}  {t('live.profile_watch_suffix')}"
             if item.is_profile_watch and item.username
             else self._short_url(item.url)
         )
@@ -551,7 +576,7 @@ class LiveMonitorTab(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
 
-        pause_btn = QPushButton("Tạm ngưng")
+        pause_btn = QPushButton(t("live.pause"))
         pause_btn.setFixedSize(90, 28)
         pause_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 11px; padding: 0; }}"
@@ -559,10 +584,11 @@ class LiveMonitorTab(QWidget):
         )
         pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         pause_btn.clicked.connect(lambda _=False, i=item: self._toggle_item_pause(i))
+        pause_btn.setToolTip(t("live.pause"))
         right_layout.addWidget(pause_btn)
         item.pause_btn = pause_btn
 
-        check_now_btn = QPushButton("Kiểm tra")
+        check_now_btn = QPushButton(t("live.check_now"))
         check_now_btn.setFixedSize(70, 28)
         check_now_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 11px; padding: 0; }}"
@@ -570,10 +596,11 @@ class LiveMonitorTab(QWidget):
         )
         check_now_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         check_now_btn.clicked.connect(lambda _=False, i=item: self._force_check_now(i))
+        check_now_btn.setToolTip(t("live.check_now"))
         right_layout.addWidget(check_now_btn)
         item.check_now_btn = check_now_btn
 
-        cancel_btn = QPushButton("Dừng")
+        cancel_btn = QPushButton(t("toolbar.stop"))
         cancel_btn.setFixedSize(46, 28)
         cancel_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.warning}; border: none; border-radius: 8px; font-size: 12px; padding: 0; }}"
@@ -582,10 +609,11 @@ class LiveMonitorTab(QWidget):
         )
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(lambda _=False, i=item: self._cancel_item(i))
+        cancel_btn.setToolTip(t("toolbar.stop"))
         right_layout.addWidget(cancel_btn)
         item.cancel_btn = cancel_btn
 
-        open_folder_btn = QPushButton("Mở")
+        open_folder_btn = QPushButton(t("live.open"))
         open_folder_btn.setFixedSize(46, 28)
         open_folder_btn.setStyleSheet(
             f"QPushButton {{ background: {T.success_bg}; color: {T.success_text}; border: none; border-radius: 8px; font-size: 12px; padding: 0; }}"
@@ -593,11 +621,12 @@ class LiveMonitorTab(QWidget):
         )
         open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_folder_btn.clicked.connect(lambda _=False, i=item: self._open_folder_for_item(i))
+        open_folder_btn.setToolTip(t("live.open"))
         open_folder_btn.hide()
         right_layout.addWidget(open_folder_btn)
         item.open_folder_btn = open_folder_btn
 
-        send_to_conv_btn = QPushButton("Chuyển")
+        send_to_conv_btn = QPushButton(t("live.convert_btn"))
         send_to_conv_btn.setFixedSize(46, 28)
         send_to_conv_btn.setStyleSheet(
             f"QPushButton {{ background: {T.surface2}; color: {T.text2}; border: none; border-radius: 8px; font-size: 13px; padding: 0; }}"
@@ -605,6 +634,7 @@ class LiveMonitorTab(QWidget):
         )
         send_to_conv_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         send_to_conv_btn.clicked.connect(lambda _=False, i=item: self._send_to_convert_tab(i))
+        send_to_conv_btn.setToolTip(t("live.convert_btn"))
         send_to_conv_btn.hide()
         right_layout.addWidget(send_to_conv_btn)
         item.send_to_conv_btn = send_to_conv_btn
@@ -617,6 +647,7 @@ class LiveMonitorTab(QWidget):
         )
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remove_btn.clicked.connect(lambda _=False, i=item: self._remove_item(i))
+        remove_btn.setToolTip(t("live.remove_tooltip"))
         right_layout.addWidget(remove_btn)
         item.remove_btn = remove_btn
 
@@ -633,13 +664,13 @@ class LiveMonitorTab(QWidget):
         color = getattr(T, color_attr, T.text3)
 
         if item.state_lbl:
-            item.state_lbl.setText(_STATE_LABEL[state])
+            item.state_lbl.setText(_state_label(state))
             item.state_lbl.setStyleSheet(
                 f"color: {color}; font-size: 12px; font-weight: bold; background: transparent;"
             )
 
         if item.platform_lbl:
-            platform = item.media_info.platform if item.media_info else ""
+            platform = (item.media_info.platform if item.media_info else "") or item.profile_platform
             if platform:
                 item.platform_lbl.setText(f"  {platform}  ")
                 item.platform_lbl.show()
@@ -664,14 +695,8 @@ class LiveMonitorTab(QWidget):
                 item.progress_lbl.hide()
 
         if item.pause_btn:
-            active = state in (
-                _MonitorState.WAITING,
-                _MonitorState.CHECKING,
-                _MonitorState.LIVE,
-                _MonitorState.RECORDING,
-            )
-            if active:
-                item.pause_btn.setText("Tiếp tục" if item.paused else "Tạm ngưng")
+            if state in _ACTIVE_STATES:
+                item.pause_btn.setText(t("live.resume") if item.paused else t("live.pause"))
                 item.pause_btn.show()
             else:
                 item.pause_btn.hide()
@@ -700,7 +725,7 @@ class LiveMonitorTab(QWidget):
         if item.cookie_warn:
             age = self._cookie_age_days()
             if age is not None and age > _COOKIE_WARN_DAYS:
-                item.cookie_warn.setText(f"Cookie cũ {age} ngày — có thể bị lỗi auth")
+                item.cookie_warn.setText(t("live.cookie_old", age=age))
                 item.cookie_warn.show()
             else:
                 item.cookie_warn.hide()
@@ -709,26 +734,26 @@ class LiveMonitorTab(QWidget):
         state = item.state
         if state == _MonitorState.WAITING:
             if item.paused:
-                return "Đã tạm ngưng"
+                return t("live.paused_status")
             now = time.time()
             if item.rate_limited_until > now:
                 wait = int(item.rate_limited_until - now)
-                return f"Rate limited — thử lại sau {wait}s"
+                return t("live.rate_limited", wait=wait)
             interval = self._current_interval()
             if item.last_check > 0:
                 elapsed = int(time.time() - item.last_check)
                 remaining = max(0, interval - elapsed)
                 fail_hint = (
-                    f"  (lỗi {item.consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})"
+                    t("live.fail_hint", failed=item.consecutive_failures, max=MAX_CONSECUTIVE_FAILURES)
                     if item.consecutive_failures > 0
                     else ""
                 )
-                return f"Kiểm tra lại sau {remaining}s{fail_hint}"
-            return f"Kiểm tra mới {interval}s"
+                return t("live.recheck_in", remaining=remaining, fail_hint=fail_hint)
+            return t("live.new_check_in", interval=interval)
         if state == _MonitorState.CHECKING:
-            return "Đang kiểm tra stream…"
+            return t("live.checking_stream")
         if state == _MonitorState.LIVE:
-            return "Stream đang phát — đang khởi động ghi…"
+            return t("live.stream_live_starting")
         if state == _MonitorState.RECORDING and item.task_id:
             task = self._app.service.get_task(item.task_id)
             if task:
@@ -741,16 +766,16 @@ class LiveMonitorTab(QWidget):
                 if snap.get("downloaded_bytes", 0) > 0:
                     mb = snap["downloaded_bytes"] / 1024 / 1024
                     parts.append(f"{mb:.1f} MiB")
-                return "  ·  ".join(parts) if parts else "Đang ghi…"
+                return "  ·  ".join(parts) if parts else t("live.recording_dots")
         if state == _MonitorState.ENDED:
             if item.task_id:
                 task = self._app.service.get_task(item.task_id)
                 if task and task.filename:
                     p = Path(task.filename)
-                    return f"Đã lưu: {p.name}"
-            return "Đã ghi xong"
+                    return t("editor.export_saved", name=p.name)
+            return t("live.state.ended")
         if state == _MonitorState.ERROR:
-            return item.error_msg[:80] if item.error_msg else "Lỗi không xác định"
+            return item.error_msg[:80] if item.error_msg else t("toolbar.error.unknown")
         return ""
 
     # ── Cookie helpers ─────────────────────────────────────────────────────────
@@ -771,11 +796,7 @@ class LiveMonitorTab(QWidget):
     def _update_cookie_banner(self) -> None:
         age = self._cookie_age_days()
         if age is not None and age > _COOKIE_WARN_DAYS and self._items:
-            text = (
-                f"Cookie file đã {age} ngày tuổi — Instagram/TikTok Live "
-                f"có thể thất bại. Refresh cookie trong Settings → Network."
-            )
-            self._cookie_banner_lbl.setText(text)
+            self._cookie_banner_lbl.setText(t("live.cookie_banner", age=age))
             self._cookie_banner.show()
         else:
             self._cookie_banner.hide()
@@ -814,7 +835,7 @@ class LiveMonitorTab(QWidget):
                 item.consecutive_failures += 1
                 if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     item.state = _MonitorState.ERROR
-                    item.error_msg = f"Kiểm tra bị treo {int(elapsed)}s. Thử lại hoặc kiểm tra kết nối mạng."
+                    item.error_msg = t("live.check_stuck_error", elapsed=int(elapsed))
                 else:
                     item.state = _MonitorState.WAITING
                 self._refresh_item_ui(item)
@@ -834,7 +855,8 @@ class LiveMonitorTab(QWidget):
                 continue
             snap = task.snapshot()
             status = snap.get("status")
-            if status == DownloadStatus.COMPLETED:
+            # BUG-MON-PARTIAL: see LiveMonitorService._refresh_recording_items.
+            if status in (DownloadStatus.COMPLETED, DownloadStatus.PARTIAL_SAVED):
                 item.state = _MonitorState.ENDED
                 item.filename = snap.get("filename", "") or ""
                 if item.is_profile_watch:
@@ -846,30 +868,26 @@ class LiveMonitorTab(QWidget):
                 item.consecutive_failures += 1
                 if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     item.state = _MonitorState.ERROR
-                    item.error_msg = snap.get("error_msg", "Tải xuống thất bại")
+                    item.error_msg = snap.get("error_msg") or t("live.download_failed")
                 else:
                     item.state = _MonitorState.WAITING
                     item.last_check = time.time()
                     item.error_msg = ""
             elif status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED):
                 item.state = _MonitorState.ERROR
-                item.error_msg = snap.get("error_msg", "Tải xuống thất bại")
+                item.error_msg = snap.get("error_msg") or t("live.download_failed")
             self._refresh_item_ui(item)
 
     def _respawn_watch(self, finished: _MonitorItem) -> None:
         # The finished row keeps its ENDED state (file / MP4 buttons); a fresh
         # WAITING item carries the profile watch forward.
-        if not finished.watch_url or len(self._items) >= MAX_MONITOR_URLS:
+        # ENDED / ERROR rows are history, not watches -- counting them against
+        # the cap silently killed the profile watch after ~20 recordings.
+        if not finished.watch_url or _active_count(self._items) >= MAX_MONITOR_URLS:
             return
-        active = {
-            _MonitorState.WAITING,
-            _MonitorState.CHECKING,
-            _MonitorState.LIVE,
-            _MonitorState.RECORDING,
-        }
         for i in self._items:
             if (
-                i.state in active
+                i.state in _ACTIVE_STATES
                 and i.is_profile_watch
                 and i.profile_platform == finished.profile_platform
                 and i.username == finished.username
@@ -938,6 +956,8 @@ class LiveMonitorTab(QWidget):
 
             if item.profile_platform == "tiktok":
                 self._app.service.check_tiktok_profile_live(url=url, on_done=on_done, on_error=on_error)
+            elif item.profile_platform == "facebook":
+                self._app.service.check_facebook_profile_live(url=url, on_done=on_done, on_error=on_error)
             else:
                 self._app.service.check_profile_live(url=url, on_done=on_done, on_error=on_error, deep=deep)
         else:
@@ -1011,6 +1031,7 @@ class LiveMonitorTab(QWidget):
         item.media_info = info
         item.url = live_url
         if not info.is_live:
+            item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
             item.state = _MonitorState.WAITING
             self._refresh_item_ui(item)
             return
@@ -1102,10 +1123,8 @@ class LiveMonitorTab(QWidget):
             item.consecutive_failures += 1
             if item.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 item.state = _MonitorState.ERROR
-                item.error_msg = (
-                    f"Da thu {item.consecutive_failures} lan that bai. "
-                    f"Loi cuoi: {err[:80]}\n"
-                    "Kiem tra cookie Instagram hoac ket noi mang, roi nhan x va them lai URL."
+                item.error_msg = t(
+                    "live.retry_failure_error", failures=item.consecutive_failures, err=err[:80]
                 )
             else:
                 item.state = _MonitorState.WAITING
@@ -1125,6 +1144,7 @@ class LiveMonitorTab(QWidget):
                 and existing.url == item.url
                 and existing.state == _MonitorState.RECORDING
             ):
+                item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
                 item.state = _MonitorState.WAITING
                 self._refresh_item_ui(item)
                 return
@@ -1149,10 +1169,26 @@ class LiveMonitorTab(QWidget):
     def _force_check_now(self, item: _MonitorItem) -> None:
         if item.state not in (_MonitorState.WAITING, _MonitorState.ERROR):
             return
+        if item.state == _MonitorState.ERROR:
+            if _active_count(self._items) >= MAX_MONITOR_URLS:
+                self._app.toast(t("live.limit_reached", max=MAX_MONITOR_URLS), "error")
+                return
+            for other in self._items:
+                if (
+                    other is not item
+                    and other.state in _ACTIVE_STATES
+                    and item.is_profile_watch
+                    and other.is_profile_watch
+                    and other.profile_platform == item.profile_platform
+                    and other.username == item.username
+                ):
+                    self._app.toast(t("live.already_watching"), "info")
+                    return
         item.rate_limited_until = 0.0
         item.last_check = 0.0
         item.consecutive_failures = 0
         item.error_msg = ""
+        item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
         item.state = _MonitorState.WAITING
         self._refresh_item_ui(item)
         if self._checking_item is None and not self._paused and not item.paused:
@@ -1168,8 +1204,9 @@ class LiveMonitorTab(QWidget):
             except Exception as exc:
                 logger.warning("LiveMonitor: cancel failed: %s", exc)
         item.task_id = None
+        item.url = item.watch_url or item.url  # BUG-MON-URL: poll the page again
         item.state = _MonitorState.WAITING
-        item.last_check = 0.0
+        item.last_check = time.time()
         self._refresh_item_ui(item)
 
     def _open_folder_for_item(self, item: _MonitorItem) -> None:
@@ -1185,13 +1222,15 @@ class LiveMonitorTab(QWidget):
                 open_folder(p.parent)
         elif p.parent.is_dir():
             open_folder(p.parent)
+        else:
+            self._app.toast(t("live.file_not_found"), "error")
 
     def _send_to_convert_tab(self, item: _MonitorItem) -> None:
         if not item.filename:
             return
         path = Path(item.filename)
         if not path.is_file():
-            self._app.toast("File .ts khong tim thay.", "error")
+            self._app.toast(t("live.file_not_found"), "error")
             return
         self._app.navigate_to("convert", str(path))
 
@@ -1204,7 +1243,7 @@ class LiveMonitorTab(QWidget):
 
     def _toggle_pause(self) -> None:
         self._paused = not self._paused
-        self._pause_btn.setText("Tiếp tục" if self._paused else "Tạm ngưng")
+        self._pause_btn.setText(t("live.resume") if self._paused else t("live.pause"))
         self._update_status()
 
     def _update_status(self) -> None:
@@ -1213,13 +1252,13 @@ class LiveMonitorTab(QWidget):
         ended = sum(1 for i in self._items if i.state == _MonitorState.ENDED)
         parts = []
         if self._paused:
-            parts.append("Đã tạm ngưng")
+            parts.append(t("live.paused_status"))
         if recording:
-            parts.append(f"{recording} đang ghi")
+            parts.append(t("live.status_recording", count=recording))
         if waiting:
-            parts.append(f"{waiting} đang chờ")
+            parts.append(t("live.status_waiting", count=waiting))
         if ended:
-            parts.append(f"{ended} đã xong")
+            parts.append(t("live.status_ended", count=ended))
         self._status_lbl.setText("  ·  ".join(parts))
 
     def _update_empty_state(self) -> None:
@@ -1243,3 +1282,19 @@ class LiveMonitorTab(QWidget):
         super().showEvent(event)
         self._fade_anim.stop()
         self._fade_anim.start()
+
+    # ── i18n ─────────────────────────────────────────────────────────────
+
+    def retranslate(self) -> None:
+        self._title_lbl.setText(t("live.title"))
+        self._hint_lbl.setText(t("live.hint", max=MAX_MONITOR_URLS))
+        self._add_btn.setText(t("live.add_btn"))
+        self._ck_lbl.setText(t("live.check_interval_label"))
+        self._s_lbl.setText(t("live.seconds_label"))
+        self._clear_all_btn.setText(t("history.clear_all"))
+        self._pause_btn.setText(t("live.resume") if self._paused else t("live.pause"))
+        self._empty_lbl.setText(t("live.empty"))
+        self._update_cookie_banner()
+        self._update_status()
+        for item in self._items:
+            self._refresh_item_ui(item)

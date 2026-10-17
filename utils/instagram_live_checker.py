@@ -30,6 +30,7 @@ from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.i18n import t
 from utils.instagram_http import (
     WWW_API_BASE,
     build_web_headers,
@@ -128,25 +129,19 @@ def check_instagram_live(
     RuntimeError: On authentication failure, network error, or missing cookie
     """
     if not cookie_file or not Path(cookie_file).is_file():
-        raise RuntimeError(
-            "login: Cần cookie file Instagram để kiểm tra live status.\n"
-            "Cấu hình trong Settings → Network → Cookie file."
-        )
+        raise RuntimeError("login: " + t("err.ig_cookie_required"))
 
     # Load cookies from Netscape file using stdlib MozillaCookieJar
     jar = MozillaCookieJar()
     try:
         jar.load(cookie_file, ignore_discard=True, ignore_expires=True)
     except Exception as exc:
-        raise RuntimeError(f"login: Không đọc được cookie file: {exc}") from exc
+        raise RuntimeError("login: " + t("err.cookie_unreadable", err=exc)) from exc
 
     # Verify we have the required sessionid cookie
     session_cookies = {c.name: c.value for c in jar if "instagram.com" in c.domain}
     if "sessionid" not in session_cookies:
-        raise RuntimeError(
-            "login: Cookie file không có sessionid Instagram.\n"
-            "Export lại cookie file sau khi đăng nhập Instagram."
-        )
+        raise RuntimeError("login: " + t("err.ig_cookie_no_sessionid"))
 
     # Extract CSRF token from cookies — required by Instagram's internal API
     # since late 2023. Without it the API returns empty user data or 403.
@@ -184,10 +179,10 @@ def check_instagram_live(
         # match by message like tiktok_live_checker._fetch_tiktok_profile_page.
         exc_s = str(exc)
         if "connection" in exc_s.lower() or "connect" in exc_s.lower():
-            raise RuntimeError(f"Lỗi kết nối mạng: {exc}") from exc
+            raise RuntimeError(t("err.network", err=exc)) from exc
         if "timeout" in exc_s.lower():
-            raise RuntimeError("Instagram API hết thời gian chờ. Thử lại sau.") from None
-        raise RuntimeError(f"Lỗi HTTP: {exc}") from exc
+            raise RuntimeError(t("err.ig_api_timeout")) from None
+        raise RuntimeError(t("err.http", err=exc)) from exc
 
     record_www_claim(resp.headers)
 
@@ -202,16 +197,13 @@ def check_instagram_live(
 
     # Handle auth errors
     if resp.status_code == 401:
-        raise RuntimeError(
-            "login: Cookie Instagram đã hết hạn hoặc không hợp lệ.\n"
-            "Refresh cookie file trong Settings → Network."
-        )
+        raise RuntimeError("login: " + t("err.ig_cookie_invalid"))
     if resp.status_code == 404:
-        raise RuntimeError("not found: Tài khoản @{username} không tìm thấy.".format(username=username))
+        raise RuntimeError("not found: " + t("err.ig_account_not_found", username=username))
     if resp.status_code == 429:
-        raise RuntimeError("blocked: Rate limit — Instagram đang chặn tạm thời.\nChờ 5–10 phút rồi thử lại.")
+        raise RuntimeError("blocked: " + t("err.ig_rate_limited"))
     if resp.status_code == 403:
-        raise RuntimeError("login: Truy cập bị từ chối (403). Cookie có thể đã hết hạn.")
+        raise RuntimeError("login: " + t("err.ig_forbidden"))
 
     try:
         data = resp.json()
@@ -222,9 +214,7 @@ def check_instagram_live(
             resp.status_code,
             resp.text[:80],
         )
-        raise RuntimeError(
-            "Instagram trả về phản hồi không hợp lệ. Thử lại sau hoặc kiểm tra cookie file."
-        ) from exc
+        raise RuntimeError(t("err.ig_bad_response")) from exc
 
     # --- Parse live status from response -----------------------------------
     # The API returns: {"data": {"user": { ...fields... }}}

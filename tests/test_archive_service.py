@@ -151,6 +151,20 @@ class TestCompressValidation:
         with pytest.raises(ArchiveError, match="cancelled"):
             svc.compress([f1, f2], tmp_path / "out", "zip", individually=True, cancel_event=cancel_event)
 
+    def test_compress_combined_cancelled_mid_write_cleans_up_partial_archive(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        f1 = tmp_path / "one.txt"
+        f1.write_text("1")
+        f2 = tmp_path / "two.txt"
+        f2.write_text("2")
+
+        cancel_event = MagicMock()
+        cancel_event.is_set.side_effect = [False, False, True]
+
+        with pytest.raises(ArchiveError, match="cancelled"):
+            svc.compress([f1, f2], tmp_path / "out", "zip", archive_name="bundle", cancel_event=cancel_event)
+        assert not (tmp_path / "out" / "bundle.zip").exists()
+
 
 # ---------------------------------------------------------------------------
 # extract() validation
@@ -181,6 +195,19 @@ class TestExtractValidation:
         cancel_event.set()
         with pytest.raises(ArchiveError, match="cancelled"):
             svc.extract(archive, tmp_path / "dest", cancel_event=cancel_event)
+
+    def test_extract_zip_cancelled_mid_loop_leaves_dest_untouched(self, tmp_path: Path) -> None:
+        svc = _make_service()
+        src = _make_src_dir(tmp_path)
+        [archive] = svc.compress([src], tmp_path / "out", "zip", archive_name="bundle")
+
+        cancel_event = MagicMock()
+        cancel_event.is_set.side_effect = [False, False, True]
+
+        dest = tmp_path / "dest"
+        with pytest.raises(ArchiveError, match="cancelled"):
+            svc.extract(archive, dest, cancel_event=cancel_event)
+        assert not dest.exists()
 
     def test_unrecognisable_magic_bytes_raises_value_error(self, tmp_path: Path) -> None:
         svc = _make_service()

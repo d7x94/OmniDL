@@ -59,6 +59,7 @@ class Pass3UserApi(LiveDetectionStrategy):
                 timeout=10,
             )
         except Exception as exc:
+            ctx.network_error = True
             logger.debug("tiktok_detection: @%s pass-3 network error: %s", ctx.username, exc)
             return None
         finally:
@@ -67,6 +68,15 @@ class Pass3UserApi(LiveDetectionStrategy):
             session.close()
 
         if resp.status_code != 200:
+            # BUG-TT-PROBE-429 FIX: "not authoritative" has to reach HealthDaemon
+            # too.  With no flag set the daemon read the bare None as "strategy
+            # works, user not live" and called record_probe_success, which
+            # re-enabled this permanently bot-blocked pass off a single 429
+            # (omnidl_debug.log 22:19:48 and 10:33:57, both re-disabled ~10 min
+            # later).  network_error means "no verdict": neither a success that
+            # resurrects a dead pass, nor a failure that kills a healthy one on
+            # a transient rate limit.
+            ctx.network_error = True
             logger.debug(
                 "tiktok_detection: @%s pass-3 HTTP %s (not authoritative, returning None)",
                 ctx.username,
@@ -78,6 +88,11 @@ class Pass3UserApi(LiveDetectionStrategy):
             data = json.loads(resp.text)
         except ValueError as exc:
             if not resp.text.strip():
+                # An empty body is bot-detection, not an answer about live
+                # status — tell HealthDaemon the strategy is not functioning
+                # so a permanently blocked pass can be disabled instead of
+                # being called on every poll (2,401 times over 33 hours).
+                ctx.unavailable = True
                 logger.debug(
                     "tiktok_detection: @%s pass-3 empty response body (bot-detection suspected)",
                     ctx.username,

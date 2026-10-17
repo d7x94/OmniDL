@@ -27,7 +27,8 @@ from infrastructure.downloader.yt_dlp_engine import (
     _resolve_cookie,
 )
 from infrastructure.storage.history_repository import HistoryRepository
-from utils.helpers import is_valid_url
+from utils.helpers import is_valid_url, sanitise_filename
+from utils.i18n import t
 
 if TYPE_CHECKING:
     from infrastructure.downloader.gallery_dl_engine import GalleryDlEngine
@@ -51,11 +52,33 @@ def _should_fallback_to_gallery_dl(url: str, error_msg: str) -> bool:
     Only triggers for photo-specific errors on supported image platforms.
     Auth / rate-limit errors won't be helped by gallery-dl — don't fall back.
     """
-    from infrastructure.downloader.gallery_dl_engine import is_gallery_dl_url
+    from infrastructure.downloader.gallery_dl_engine import (
+        is_facebook_photo_url,
+        is_gallery_dl_url,
+    )
 
     if not is_gallery_dl_url(url):
         return False
-    return any(k in error_msg.lower() for k in _PHOTO_ERRORS)
+    msg = error_msg.lower()
+    # A Facebook photo/album URL yt-dlp cannot even parse reports "Unsupported
+    # URL", not a photo error — gallery-dl is still the right engine for it.
+    if is_facebook_photo_url(url) and "unsupported url" in msg:
+        return True
+    # BUG-FB-PARSE: FacebookIE ends a photo-only post at "Cannot parse data"
+    # rather than any of _PHOTO_ERRORS, so this fallback never fired for a
+    # Facebook post URL (story.php / permalink.php / <user>/posts/).
+    if "facebook.com" in url.lower() and "cannot parse data" in msg:
+        return True
+    return any(k in msg for k in _PHOTO_ERRORS)
+
+
+def _is_at_or_under(raw_path: str, root: Path) -> bool:
+    """True when *raw_path* is *root* itself or lives inside it."""
+    try:
+        candidate = Path(raw_path).resolve()
+    except OSError:
+        return False
+    return candidate == root or root in candidate.parents
 
 
 class DownloadService:
@@ -87,7 +110,15 @@ class DownloadService:
             max_workers=1, thread_name_prefix="omnidl-history"
         )
 
-        self._convert_queue = ConvertQueue(max_concurrent=2)
+        # Same limit as the Convert tab and the Remote API, so post-download
+        # conversions cannot ignore the user's parallel setting.
+        try:
+            _parallel = int(config.convert_max_concurrent)
+        except (AttributeError, TypeError, ValueError):
+            _parallel = 2
+        self._convert_queue = ConvertQueue(
+            max_concurrent=max(1, min(ConvertQueue.MAX_CONCURRENT_LIMIT, _parallel))
+        )
         self._thumbnail_svc = ThumbnailService()
 
         # Wire completion → history save (DEF-018: one handler for all terminal states)
@@ -153,11 +184,14 @@ class DownloadService:
 
                 # Facebook Story URLs are not handled by yt-dlp or gallery-dl;
                 # skip extract_info and return synthetic MediaInfo immediately.
+                # Permalink-only: is_facebook_story_url() also matches fb.watch,
+                # which fronts ordinary videos.  Stubbing those out here robbed
+                # the user of the real title/format list yt-dlp can resolve.
                 from infrastructure.downloader.facebook_story_engine import (  # noqa: PLC0415
-                    is_facebook_story_url,
+                    is_facebook_story_permalink,
                 )
 
-                if is_facebook_story_url(url):
+                if is_facebook_story_permalink(url):
                     import re as _re  # noqa: PLC0415
 
                     _sm = _re.search(r"/stories/(\d+)", url)
@@ -168,6 +202,21 @@ class DownloadService:
                         platform="facebook",
                         source_engine="facebook_story",
                     )
+                    self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
+                    on_done(info)
+                    return
+
+                # Facebook photo / album URLs: yt-dlp's FacebookIE matches none
+                # of these forms and raises "Unsupported URL", a hard error that
+                # the photo-error fallback below never sees.  Go to gallery-dl
+                # directly so both the desktop tab and the Remote API get a
+                # MediaInfo with source_engine="gallery_dl".
+                from infrastructure.downloader.gallery_dl_engine import (  # noqa: PLC0415
+                    is_facebook_photo_url,
+                )
+
+                if is_facebook_photo_url(url) and self._gallery_engine is not None:
+                    info = self._gallery_engine.extract_info(url)
                     self._bus.publish(EventBus.ANALYSIS_DONE, info=info)
                     on_done(info)
                     return
@@ -270,12 +319,24 @@ class DownloadService:
                     r"(?:(?:vt|vm)\.tiktok\.com/|tiktok\.com/@[A-Za-z0-9_.]+/live)",
                     _re.I,
                 )
+                # Match on the engine's language-independent error key first;
+                # the text checks stay as a fallback for engines that raise a
+                # plain RuntimeError without one.
+                _err_key = getattr(exc, "error_key", "") or ""
                 if _tiktok_any_live_re.search(url) and (
-                    "not currently live" in err_l
+                    _err_key in ("err.not_currently_live", "err.rate_limit")
+                    or "not currently live" in err_l
                     or "channel is not currently live" in err_l
                     or "429" in err_l
                     or "too many requests" in err_l
                 ):
+                    # Initialised before the try: the finally below reads both,
+                    # and _resolve_cookie() / the imports can raise before the
+                    # in-body assignment is reached. An UnboundLocalError there
+                    # escapes _worker entirely, so on_error() is never called and
+                    # the caller hangs until its 180 s analyse timeout.
+                    _tt_cookie_txt = ""
+                    _tt_cookie_is_temp = False
                     try:
                         from utils.tiktok_live_checker import (  # noqa: PLC0415
                             _check_tiktok_live_with_room_id,
@@ -305,8 +366,6 @@ class DownloadService:
                                         )
                             except Exception:
                                 pass
-                        _tt_cookie_txt = ""
-                        _tt_cookie_is_temp = False
                         if _tt_cookie_raw:
                             _tt_cookie_txt, _tt_cookie_is_temp = _prepare_cookie_for_use(_tt_cookie_raw)
                         # Resolve short link first if needed.
@@ -492,19 +551,6 @@ class DownloadService:
         existing task is returned immediately — no duplicate is created.
         Re-downloading a COMPLETED/FAILED/CANCELLED URL always starts a new job.
         """
-        # Duplicate guard: only block active (not terminal) duplicates.
-        for existing in self._manager.get_all_tasks():
-            if existing.url == url and existing.status in DownloadStatus.active_states():
-                logger.info(
-                    "Duplicate URL ignored — task %s already active: %s",
-                    existing.id,
-                    url,
-                )
-                return existing
-
-        resolved_dir = output_dir or self._config.download_dir
-        resolved_dir.mkdir(parents=True, exist_ok=True)
-
         # If media_info carries a resolved canonical URL (e.g. TikTok short-link
         # resolved to /@user/live during analyse), use it as task.url so yt-dlp
         # receives the canonical URL directly instead of re-resolving the short
@@ -518,6 +564,21 @@ class DownloadService:
         ):
             task_url = media_info.url
 
+        # Duplicate guard: only block active (not terminal) duplicates.
+        # BUG-DUP-CANONICAL: tasks are stored under task_url, so compare that
+        # too -- the same short link posted twice was never caught.
+        for existing in self._manager.get_all_tasks():
+            if existing.url in (url, task_url) and existing.status in DownloadStatus.active_states():
+                logger.info(
+                    "Duplicate URL ignored — task %s already active: %s",
+                    existing.id,
+                    url,
+                )
+                return existing
+
+        resolved_dir = output_dir or self._config.download_dir
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+
         task = DownloadTask(
             url=task_url,
             media_info=media_info,
@@ -528,20 +589,22 @@ class DownloadService:
         self._manager.enqueue(task)
         return task
 
-    def pause_download(self, task_id: str) -> None:
-        self._manager.pause(task_id)
+    def pause_download(self, task_id: str) -> bool:
+        """Pause a task.  False when its state does not allow pausing."""
+        return self._manager.pause(task_id)
 
-    def resume_download(self, task_id: str) -> None:
-        self._manager.resume(task_id)
+    def resume_download(self, task_id: str) -> bool:
+        """Resume a paused task.  False when it was not paused."""
+        return self._manager.resume(task_id)
 
     def cancel_download(self, task_id: str) -> None:
         self._manager.cancel(task_id)
 
-    def clear_finished(self, exclude_ids: "frozenset[str] | None" = None) -> None:
-        self._manager.clear_terminal(exclude_ids=exclude_ids)
+    def clear_finished(self, exclude_ids: "frozenset[str] | None" = None) -> list[str]:
+        return self._manager.clear_terminal(exclude_ids=exclude_ids)
 
-    def clear_specific(self, ids: list[str]) -> None:
-        self._manager.clear_specific(ids)
+    def clear_specific(self, ids: list[str]) -> list[str]:
+        return self._manager.clear_specific(ids)
 
     def rebuild_tiktok_pool(self) -> None:
         self._manager.rebuild_tiktok_pool()
@@ -561,11 +624,84 @@ class DownloadService:
     def search_history(self, query: str) -> list[dict]:
         return self._history.search(query)
 
-    def clear_history(self) -> None:
+    def clear_history(self, exclude_ids: "frozenset[str] | None" = None) -> None:
         self._history.clear()
+        # Also drop terminal tasks from the manager — otherwise their
+        # MediaInfo/format data stays resident even though the persisted
+        # history record is gone (memory leak: "cleared" history, RAM stays up).
+        self._manager.clear_terminal(exclude_ids=exclude_ids)
 
     def delete_history_entry(self, task_id: str) -> None:
         self._history.remove(task_id)
+
+    def clear_file_record(self, deleted_path: Path) -> int:
+        """
+        Forget every task / history record that pointed at *deleted_path*.
+
+        The counterpart to rename_download() for deletions.  Deleting a file
+        straight off disk (the web Files tab) otherwise leaves task.filename and
+        the history row on a path that no longer exists, so the Queue and
+        History cards keep offering Preview / Send / Convert / Rename and every
+        one of them 404s.  *deleted_path* may be a directory, in which case any
+        record living underneath it is cleared too.
+
+        Returns the number of records cleared.
+        """
+        cleared = 0
+        for task in self._manager.get_all_tasks():
+            raw = getattr(task, "filename", "") or ""
+            if raw and _is_at_or_under(raw, deleted_path):
+                task.filename = ""
+                cleared += 1
+        for entry in self._history.all():
+            raw = entry.get("filename") or ""
+            if raw and _is_at_or_under(raw, deleted_path):
+                self._history.update_filename(entry.get("id", ""), "")
+                cleared += 1
+        return cleared
+
+    def rename_download(self, task_id: str, new_name: str) -> str:
+        """
+        Rename the output file of a task on disk and sync both the in-memory
+        task (if still queued) and the history entry (if already persisted).
+
+        Raises FileNotFoundError / FileExistsError / ValueError on failure.
+        """
+        task = self._manager.get_task(task_id)
+        entry = self._history.get_by_id(task_id)
+        raw = (task.filename if task else "") or ((entry or {}).get("filename") or "")
+        if not raw:
+            raise FileNotFoundError("No file recorded for this task")
+
+        old_path = Path(raw)
+        if not old_path.is_absolute():
+            out_dir = (task.output_dir if task else "") or (entry or {}).get("output_dir", "")
+            if out_dir:
+                old_path = Path(out_dir) / old_path
+        old_path = old_path.resolve()
+
+        if old_path.is_dir():
+            raise ValueError("Cannot rename a multi-file (gallery-dl) download")
+        if not old_path.exists():
+            raise FileNotFoundError(f"File not found: {old_path}")
+
+        safe_name = sanitise_filename(new_name)
+        new_path = old_path.parent / safe_name
+        if str(new_path) == str(old_path):
+            return str(new_path)
+        # new_path.exists() can be True for a case-only rename on case-insensitive
+        # filesystems (Windows) — it resolves back to old_path itself. Compare
+        # inodes so a genuine same-name collision still raises, but a pure case
+        # change (e.g. video.mp4 -> Video.MP4) proceeds instead of silently no-op'ing.
+        if new_path.exists() and new_path.stat().st_ino != old_path.stat().st_ino:
+            raise FileExistsError(f"A file named '{safe_name}' already exists")
+
+        old_path.rename(new_path)
+
+        if task:
+            task.filename = str(new_path)
+        self._history.update_filename(task_id, str(new_path))
+        return str(new_path)
 
     def get_history_stats(self) -> dict:
         entries = self._history.all()
@@ -637,6 +773,14 @@ class DownloadService:
             on_error=on_error,
         )
 
+    def has_cookie_for(self, platform_url: str) -> bool:
+        """True if a usable cookie resolves for the given platform URL.
+
+        Thin wrapper so UI code never has to import infrastructure/ directly
+        just to check cookie presence (see BUG-LM-INFRA-IMPORT).
+        """
+        return bool(_resolve_cookie(platform_url, self._config))
+
     def check_profile_live(
         self,
         url: str,
@@ -659,7 +803,7 @@ class DownloadService:
 
         username = extract_instagram_username(url)
         if not username:
-            on_error("Không thể lấy username từ URL.")
+            on_error(t("err.no_username_from_url"))
             return
 
         # Use Instagram-specific cookie when available — instagram_live_checker
@@ -675,25 +819,27 @@ class DownloadService:
             cookie_txt = ""
             cookie_is_temp = False
             try:
-                if cookie_raw:
-                    cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
-                live_url = check_instagram_live(
-                    username=username,
-                    cookie_file=cookie_txt,
-                    proxy=proxy,
-                    deep=deep,
-                )
+                # Unlink before the callbacks so callers never see the temp cookie still on disk.
+                try:
+                    if cookie_raw:
+                        cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
+                    live_url = check_instagram_live(
+                        username=username,
+                        cookie_file=cookie_txt,
+                        proxy=proxy,
+                        deep=deep,
+                    )
+                finally:
+                    if cookie_is_temp and cookie_txt:
+                        try:
+                            import os as _os  # noqa: PLC0415
+
+                            _os.unlink(cookie_txt)
+                        except OSError:
+                            pass
                 on_done(live_url)
             except Exception as exc:
                 on_error(str(exc))
-            finally:
-                if cookie_is_temp and cookie_txt:
-                    try:
-                        import os as _os  # noqa: PLC0415
-
-                        _os.unlink(cookie_txt)
-                    except OSError:
-                        pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -709,7 +855,11 @@ class DownloadService:
         Calls on_done(live_url_or_None) or on_error(message).
         Callers must use after() / _ui_queue to marshal UI updates.
 
-        Does NOT require cookies — TikTok's live-check API is public.
+        Works without cookies, but detection is far weaker that way: with no
+        TikTok cookie configured, the profile page and the user-detail API
+        both come back stripped by bot-detection (0 hits in 2,401 checks on
+        2026-08-30/31) and only the api-live/user/room endpoint still answers.
+        A per-platform TikTok cookie is resolved here when one is set.
         """
         import threading
 
@@ -733,7 +883,7 @@ class DownloadService:
                     target = _resolve_short_link(url, proxy=proxy)
                 username = extract_tiktok_username(target) or extract_tiktok_username_from_live_url(target)
                 if not username:
-                    on_error("Không thể lấy username từ URL TikTok.")
+                    on_error(t("err.no_username_from_tiktok_url"))
                     return
 
                 # BUG-TT-07 FIX: resolve and decrypt TikTok cookie so
@@ -756,6 +906,64 @@ class DownloadService:
                         import os as _os  # noqa: PLC0415
 
                         _os.unlink(_tt_cookie_txt)
+                    except OSError:
+                        pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def check_facebook_profile_live(
+        self,
+        url: str,
+        on_done: "Callable[[Optional[str]], None]",
+        on_error: "Callable[[str], None]",
+    ) -> None:
+        """Check if a Facebook page / profile URL is currently live.
+
+        Spawns a daemon thread (same pattern as check_profile_live).
+        Calls on_done(live_url_or_None) or on_error(message).
+        Callers must use after() / ui_bridge to marshal UI updates.
+
+        A Facebook cookie is mandatory: logged-out page HTML carries no live
+        markers at all, so without one every check would report "not live".
+        """
+        import threading
+
+        from utils.facebook_live_checker import (
+            check_facebook_live,
+            extract_facebook_username,
+        )
+
+        username = extract_facebook_username(url)
+        if not username:
+            on_error(t("err.no_username_from_facebook_url"))
+            return
+
+        cookie_raw = _resolve_cookie("https://www.facebook.com/", self._config) or ""
+        proxy = self._config.proxy
+
+        def _worker() -> None:
+            # _resolve_cookie returns the encrypted .enc path on Windows —
+            # decrypt it before MozillaCookieJar.load reads it as text
+            # (same fix as check_profile_live / BUG-TT-07).
+            cookie_txt = ""
+            cookie_is_temp = False
+            try:
+                if cookie_raw:
+                    cookie_txt, cookie_is_temp = _prepare_cookie_for_use(cookie_raw)
+                live_url = check_facebook_live(
+                    username=username,
+                    cookie_file=cookie_txt,
+                    proxy=proxy,
+                )
+                on_done(live_url)
+            except Exception as exc:
+                on_error(str(exc))
+            finally:
+                if cookie_is_temp and cookie_txt:
+                    try:
+                        import os as _os  # noqa: PLC0415
+
+                        _os.unlink(cookie_txt)
                     except OSError:
                         pass
 

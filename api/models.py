@@ -10,12 +10,16 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 # ── Requests ──────────────────────────────────────────────────────────────────
 
 # Extract first URL from mixed clipboard/share text (e.g. Kuaishou share text).
 _URL_RE = re.compile(r"https?://\S+")
+
+
+# Matches MAX_BATCH_URLS in ui/tabs/batch_tab.py and the web UI.
+MAX_BATCH_ITEMS = 500
 
 
 class AnalyseRequest(BaseModel):
@@ -72,7 +76,20 @@ class DownloadRequest(BaseModel):
     @field_validator("source_engine")
     @classmethod
     def _validate_engine(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"yt_dlp", "gallery_dl", "kuaishou", "instagram_live", "waaw", "facebook_story", None}
+        # "ig_cdn" is returned by /api/analyse for a pasted, pre-signed
+        # Instagram/Facebook CDN link.  Omitting it here made every client
+        # that echoes AnalyseResponse.source_engine back (the bundled web UI
+        # included) fail the download with HTTP 422.
+        allowed = {
+            "yt_dlp",
+            "gallery_dl",
+            "kuaishou",
+            "instagram_live",
+            "waaw",
+            "facebook_story",
+            "ig_cdn",
+            None,
+        }
         if v not in allowed:
             raise ValueError(f"source_engine must be one of {allowed - {None}}")
         return v
@@ -80,7 +97,9 @@ class DownloadRequest(BaseModel):
     @field_validator("output_ext")
     @classmethod
     def _validate_output_ext(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"mp4", "mkv", "webm", "mov", "mp3", "m4a", None, ""}
+        # "ts" is the container the web UI sends for every live stream
+        # (index.html doDownload) and the one the live monitor records into.
+        allowed = {"mp4", "mkv", "webm", "mov", "mp3", "m4a", "ts", None, ""}
         if v not in allowed:
             raise ValueError(f"output_ext must be one of {allowed - {None, ''}}")
         return v
@@ -113,6 +132,56 @@ class AnalyseResponse(BaseModel):
     # must be forwarded to /api/download so the engine can use the signed
     # room/info API instead of yt-dlp's unsigned path (which returns "not live").
     tiktok_room_id: str = ""
+    # Member URLs of a playlist/channel result, capped server-side.  The
+    # desktop app hands these to its Batch tab instead of queueing the
+    # playlist as one task; without them the web UI has no way to do the same.
+    playlist_entries: list[str] = []
+
+
+class BatchDownloadItem(DownloadRequest):
+    """One entry of a batch enqueue request.
+
+    Subclasses DownloadRequest rather than repeating its fields: the copy left
+    out its three validators, so /api/download/batch accepted a url, an
+    output_ext and a source_engine that /api/download rejects with 422.
+    """
+
+
+class BatchDownloadRequest(BaseModel):
+    """Enqueue up to MAX_BATCH_ITEMS downloads in a single call.
+
+    The Batch tab used to POST /api/download once per URL.  With auth disabled
+    every request counts against the 60 req/min limiter, so a list longer than
+    60 was rejected halfway through; one call keeps the whole batch atomic
+    from the limiter's point of view.
+    """
+
+    items: list[BatchDownloadItem]
+
+    @field_validator("items")
+    @classmethod
+    def _not_empty(cls, v: list) -> list:
+        if not v:
+            raise ValueError("items must not be empty")
+        if len(v) > MAX_BATCH_ITEMS:
+            raise ValueError(f"at most {MAX_BATCH_ITEMS} items per batch")
+        return v
+
+
+class BatchDownloadResult(BaseModel):
+    """Outcome for one item of a batch enqueue."""
+
+    url: str
+    task_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BatchDownloadResponse(BaseModel):
+    """Per-item outcomes, in request order."""
+
+    results: list[BatchDownloadResult]
+    queued: int
+    failed: int
 
 
 class TaskResponse(BaseModel):
@@ -132,6 +201,9 @@ class TaskResponse(BaseModel):
     error_msg: str
     created_at: float  # Unix timestamp
     is_live: bool = False
+    # "yt_dlp" or "gallery_dl".  gallery-dl downloads cannot be paused (the
+    # engine has no wait_if_paused() hook), so clients hide the Pause button.
+    source_engine: str = "yt_dlp"
 
 
 class ClearItemsRequest(BaseModel):
@@ -168,6 +240,12 @@ class FileInfoResponse(BaseModel):
 # ── Remote Convert ────────────────────────────────────────────────────────────
 
 
+# Output containers both convert endpoints accept.  "webm" is excluded on
+# purpose: the pipeline emits H.264 + AAC and remuxes with "-c copy", which the
+# WebM muxer rejects (VP8/VP9/AV1 + Vorbis/Opus only).
+_ALLOWED_TARGET_EXTS: set = {"mp4", "mkv", "mov", "avi", "mp3", None}
+
+
 class ConvertRequest(BaseModel):
     """Start a remote conversion job for a completed download task."""
 
@@ -178,8 +256,31 @@ class ConvertRequest(BaseModel):
     speed_preset: Optional[str] = "balanced"
     # CRF value used when quality=="custom" (0–51)
     custom_crf: Optional[int] = 23
-    # "h264" | "hevc" | "av1"
+    # "h264" | "hevc" | "av1" — rejected with 422 when the server's FFmpeg
+    # build cannot encode it (GET /api/convert/codecs lists what is available)
     output_codec: Optional[str] = "h264"
+    # Transcribe the audio to a sidecar .srt with FFmpeg's whisper filter.
+    # Requires an FFmpeg build compiled with --enable-whisper; the server
+    # returns 422 when it is unavailable.
+    generate_subtitles: Optional[bool] = False
+    # ISO-639-1 code or "auto" for automatic detection
+    subtitle_language: Optional[str] = "auto"
+    # "tiny" | "base" | "small" | "medium" — GET /api/convert/codecs lists what
+    # is available. Larger models are more accurate but slower and bigger to
+    # download on first use.
+    subtitle_model: Optional[str] = "base"
+    # Score the output against the source with VMAF (roughly doubles job time)
+    compute_vmaf: Optional[bool] = False
+    # Output container. Matches FileConvertRequest so both convert entry points
+    # offer the same formats; previously this endpoint was hard-wired to MP4.
+    target_ext: Optional[str] = "mp4"
+
+    @field_validator("target_ext")
+    @classmethod
+    def _validate_ext(cls, v: Optional[str]) -> Optional[str]:
+        if v not in _ALLOWED_TARGET_EXTS:
+            raise ValueError(f"target_ext must be one of {_ALLOWED_TARGET_EXTS - {None}}")
+        return v
 
 
 class ConvertJobResponse(BaseModel):
@@ -202,6 +303,16 @@ class ConvertJobResponse(BaseModel):
     # True once the converted output file has been deleted from disk.
     # Clients use this to hide the Delete/Preview buttons without re-polling.
     output_deleted: bool = False
+    # basename of the generated .srt, empty when not requested or no speech found
+    subtitle_filename: str = ""
+    # why subtitle generation produced nothing; the conversion itself still succeeded
+    subtitle_error: str = ""
+    # mean VMAF score 0-100 of output vs source, None when not requested
+    vmaf_score: Optional[float] = None
+    # True for a transcribe-only job: there is no converted video, so a client
+    # must keep offering "Convert" for this file instead of treating the job as
+    # a finished conversion.
+    subtitles_only: bool = False
 
 
 class EncoderOption(BaseModel):
@@ -209,6 +320,33 @@ class EncoderOption(BaseModel):
 
     key: str  # e.g. "nvenc"
     label: str  # e.g. "NVIDIA NVENC"
+
+
+class CodecOption(BaseModel):
+    """One available output codec returned by GET /api/convert/codecs."""
+
+    key: str  # "h264" | "hevc" | "av1"
+    label: str  # human-readable description
+
+
+class SubtitleModelOption(BaseModel):
+    """One whisper model entry returned by GET /api/convert/codecs."""
+
+    key: str  # "tiny" | "base" | "small" | "medium"
+    label: str  # human-readable description, includes download size
+    size_mb: int  # download size of the model file
+
+
+class ConvertCapabilities(BaseModel):
+    """What the server's FFmpeg build can do, returned by GET /api/convert/codecs."""
+
+    codecs: list[CodecOption]
+    # True when the FFmpeg build has the whisper filter (auto-subtitles)
+    subtitles: bool
+    # Languages accepted by ConvertRequest.subtitle_language
+    subtitle_languages: list[str]
+    # Models accepted by ConvertRequest.subtitle_model, smallest first
+    subtitle_models: list[SubtitleModelOption]
 
 
 # ── Remote File Browse / Standalone Convert ───────────────────────────────────
@@ -242,20 +380,93 @@ class FileConvertRequest(BaseModel):
     speed_preset: Optional[str] = "balanced"
     custom_crf: Optional[int] = 23
     output_codec: Optional[str] = "h264"
+    generate_subtitles: Optional[bool] = False
+    subtitle_language: Optional[str] = "auto"
+    subtitle_model: Optional[str] = "base"
+    compute_vmaf: Optional[bool] = False
 
     @field_validator("target_ext")
     @classmethod
     def _validate_ext(cls, v: Optional[str]) -> Optional[str]:
-        allowed = {"mp4", "mkv", "mov", "avi", "webm", "mp3", None}
-        if v not in allowed:
-            raise ValueError(f"target_ext must be one of {allowed - {None}}")
+        if v not in _ALLOWED_TARGET_EXTS:
+            raise ValueError(f"target_ext must be one of {_ALLOWED_TARGET_EXTS - {None}}")
         return v
+
+
+class SubtitleRequest(BaseModel):
+    """Start a subtitle-only job on a completed download task."""
+
+    # ISO-639-1 code or "auto"; rejected with 422 when unknown
+    subtitle_language: Optional[str] = "auto"
+    # "tiny" | "base" | "small" | "medium"
+    subtitle_model: Optional[str] = "base"
+
+
+class FileSubtitleRequest(SubtitleRequest):
+    """Start a subtitle-only job on an arbitrary local file."""
+
+    # Absolute path on the server, must be within download_dir.
+    file_path: str
 
 
 class FileConvertJobResponse(BaseModel):
     """Returned by POST /api/files/convert — client polls /api/convert/{job_id}."""
 
     job_id: str
+
+
+class BatchFileConvertRequest(FileConvertRequest):
+    """Convert several local files with one set of settings.
+
+    Inherits every encode field (and the target_ext validator) from
+    FileConvertRequest; ``file_path`` is unused here and defaults to "" so a
+    client only has to send ``file_paths``.
+    """
+
+    file_path: str = ""
+    # Capped at 100: each accepted entry becomes a queued job, and
+    # remote_convert_service.MAX_ACTIVE_JOBS refuses the rest anyway.
+    file_paths: list[str] = Field(default_factory=list, min_length=1, max_length=100)
+
+
+class BatchConvertItemError(BaseModel):
+    """One file in a batch that could not be queued, and why."""
+
+    file_path: str
+    error: str
+
+
+class BatchConvertResponse(BaseModel):
+    """Result of POST /api/files/convert/batch.
+
+    Partial success is normal: a batch where some paths are missing still
+    queues the rest, so the client gets both lists rather than a 4xx that
+    hides the jobs that did start.
+    """
+
+    job_ids: list[str] = Field(default_factory=list)
+    errors: list[BatchConvertItemError] = Field(default_factory=list)
+    queued: int = 0
+    failed: int = 0
+
+
+class ConvertConcurrencyRequest(BaseModel):
+    """Set how many conversions may run at once."""
+
+    max_concurrent: int = Field(ge=1, le=8)
+
+
+class ConvertConcurrencyResponse(BaseModel):
+    """Current parallel-conversion limit and the maximum this server allows."""
+
+    max_concurrent: int
+    limit: int
+
+
+class FileRenameRequest(BaseModel):
+    """Rename the output file of a completed task."""
+
+    new_name: str  # new basename (with extension); sanitised server-side
 
 
 class FileDeleteRequest(BaseModel):
@@ -269,6 +480,21 @@ class FileDeleteResponse(BaseModel):
 
     path: str
     action: str  # "deleted"
+    detail: str = ""
+
+
+class FileRenameByPathRequest(BaseModel):
+    """Rename a file within download_dir, addressed by path (file browser)."""
+
+    path: str
+    new_name: str  # new basename (with extension); sanitised server-side
+
+
+class FileRenameByPathResponse(BaseModel):
+    """Result of a file-browser rename."""
+
+    path: str
+    action: str  # "renamed"
     detail: str = ""
 
 
@@ -318,6 +544,17 @@ class MonitorAddRequest(BaseModel):
 
     url: str
 
+    @field_validator("url")
+    @classmethod
+    def _url_must_be_http(cls, v: str) -> str:
+        # Without this, any string was accepted: LiveMonitorService._classify()
+        # falls through to a non-profile watch and the poll loop then re-checks
+        # a value that can never resolve.  Mirrors DownloadRequest.url.
+        m = _URL_RE.search(v)
+        if not m:
+            raise ValueError("URL must start with http:// or https://")
+        return m.group(0).rstrip(".,;\"')")
+
 
 class MonitorItemResponse(BaseModel):
     id: str
@@ -337,12 +574,19 @@ class MonitorItemResponse(BaseModel):
 
 
 class MonitorIntervalRequest(BaseModel):
-    interval: int
+    # Bounded to the range both UIs offer (60 / 180 / 300 / 600 s).  Unbounded,
+    # a raw API call could set an interval of years: set_check_interval() only
+    # clamps the lower end, so the server answered 200 OK while silently
+    # switching live monitoring off, and the client's <select> then had no
+    # matching option to display.
+    interval: int = Field(ge=60, le=600)
 
 
 class MonitorListResponse(BaseModel):
     items: list[MonitorItemResponse]
-    interval: int = 30
+    # Mirrors LiveMonitorService.DEFAULT_CHECK_INTERVAL; 30 was below the
+    # service's MIN_CHECK_INTERVAL and could never be the real value.
+    interval: int = 180
     paused: bool = False
 
 
@@ -396,3 +640,79 @@ class ArchiveExtractResponse(BaseModel):
     dest_dir: str
     extracted_paths: list[str]
     total_bytes: int
+
+
+# ── Document convert (Markdown / HTML / Office <-> PDF) ───────────────────────
+
+
+class DocConvertRequest(BaseModel):
+    """Convert one document (inside download_dir) to another document format."""
+
+    source_path: str
+    target_format: str
+    # Defaults to the source file's own folder when omitted.
+    out_dir: Optional[str] = None
+
+    @field_validator("target_format")
+    @classmethod
+    def _validate_target(cls, v: str) -> str:
+        normalised = (v or "").strip().lower().lstrip(".")
+        if normalised not in ("pdf", "html", "md", "docx"):
+            raise ValueError("target_format must be one of: pdf, html, md, docx")
+        return normalised
+
+
+class DocConvertResponse(BaseModel):
+    output_path: str
+    filename: str
+    size: int
+    target_format: str
+
+
+class DocConvertCapabilitiesResponse(BaseModel):
+    """Which document back-ends this host has, and which routes they enable."""
+
+    markdown: bool
+    weasyprint: bool
+    pypdf: bool
+    libreoffice: bool
+    # "md->pdf" -> True/False
+    routes: dict[str, bool]
+    source_extensions: list[str]
+    target_formats: list[str]
+
+
+# ── UI language ───────────────────────────────────────────────────────────────
+
+
+class LanguageOption(BaseModel):
+    """One selectable UI language."""
+
+    code: str
+    label: str
+
+
+class LanguageResponse(BaseModel):
+    """Current UI language plus everything the client may switch to."""
+
+    language: str
+    available: list[LanguageOption]
+
+
+class LanguageRequest(BaseModel):
+    """Set the UI language.  Unsupported codes are rejected with 422."""
+
+    language: str
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, v: str) -> str:
+        from utils.i18n import LANGUAGES, normalize
+
+        code = normalize(v)
+        # normalize() falls back to the default for anything it does not know,
+        # so an unsupported code would be accepted silently.  Reject it unless
+        # the input really named the language that came back.
+        if v.strip().lower().replace("_", "-").split("-")[0] != code:
+            raise ValueError(f"language must be one of: {', '.join(LANGUAGES)}")
+        return code
