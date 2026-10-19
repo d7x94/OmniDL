@@ -647,7 +647,7 @@ class ConvertTab(QWidget):
         hdr_layout.addWidget(self._folder_btn)
 
         self._clear_btn = QPushButton(t("convert.clear_done"))
-        self._clear_btn.setFixedSize(110, 30)
+        self._clear_btn.setFixedHeight(30)
         self._clear_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text2}; border: none; border-radius: 7px; font-size: 11px;"
         )
@@ -963,7 +963,7 @@ class ConvertTab(QWidget):
         bar_layout.addWidget(self._status_lbl, 1)
 
         self._subs_btn = QPushButton(t("convert.generate_subs_btn"))
-        self._subs_btn.setFixedSize(130, 40)
+        self._subs_btn.setFixedHeight(40)
         self._subs_btn.setStyleSheet(
             f"background: {T.surface2}; color: {T.text}; border: 1px solid {T.border}; "
             "border-radius: 8px; font-size: 13px; font-weight: bold;"
