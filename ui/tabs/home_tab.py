@@ -300,7 +300,7 @@ class HomeTab(QWidget):
 
         self._browse_btn = QPushButton(t("home.browse"))
         browse_btn = self._browse_btn
-        browse_btn.setFixedSize(72, 34)
+        browse_btn.setFixedHeight(34)
         browse_btn.setToolTip(t("home.browse_tooltip"))
         browse_btn.clicked.connect(self._browse_folder)
         opts.addWidget(browse_btn)
