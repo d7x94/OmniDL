@@ -117,7 +117,7 @@ class MainWindow(QMainWindow):
 
         # Theme toggle button
         self._theme_btn = QPushButton(t("topbar.theme_light"))
-        self._theme_btn.setFixedSize(80, 28)
+        self._theme_btn.setFixedHeight(28)
         self._theme_btn.clicked.connect(self._toggle_theme)
         top_bar_layout.addWidget(self._theme_btn)
 
