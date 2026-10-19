@@ -289,7 +289,7 @@ class HistoryTab(QWidget):
         _btn_ss = "font-size: 11px; font-weight: 600; border: none; border-radius: 6px; padding: 0 4px;"
         if url:
             re_btn = QPushButton(t("history.redownload"))
-            re_btn.setFixedSize(62, 26)
+            re_btn.setFixedHeight(26)
             re_btn.setStyleSheet(f"background: transparent; color: {T.text3}; {_btn_ss}")
             re_btn.setToolTip(t("history.redownload_tip"))
             re_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -297,7 +297,7 @@ class HistoryTab(QWidget):
             bot.addWidget(re_btn)
 
             copy_btn = QPushButton(t("history.copy_url"))
-            copy_btn.setFixedSize(72, 26)
+            copy_btn.setFixedHeight(26)
             copy_btn.setStyleSheet(f"background: transparent; color: {T.text3}; {_btn_ss}")
             copy_btn.setToolTip(t("history.copy_url_tip"))
             copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -306,7 +306,7 @@ class HistoryTab(QWidget):
 
         if fname:
             open_btn = QPushButton(t("history.folder"))
-            open_btn.setFixedSize(72, 28)
+            open_btn.setFixedHeight(28)
             open_btn.setStyleSheet(f"background: {T.success_bg}; color: {T.success}; {_btn_ss}")
             open_btn.setToolTip(t("history.folder_tip"))
             open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -316,7 +316,7 @@ class HistoryTab(QWidget):
             p = self._entry_path(task_id)
             if p is None or not p.is_dir():
                 ren_btn = QPushButton(t("history.rename"))
-                ren_btn.setFixedSize(64, 28)
+                ren_btn.setFixedHeight(28)
                 ren_btn.setStyleSheet(f"background: {T.surface2}; color: {T.text2}; {_btn_ss}")
                 ren_btn.setToolTip(t("history.rename_tip"))
                 ren_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -324,7 +324,7 @@ class HistoryTab(QWidget):
                 bot.addWidget(ren_btn)
 
         del_btn = QPushButton(t("history.delete"))
-        del_btn.setFixedSize(44, 28)
+        del_btn.setFixedHeight(28)
         del_btn.setStyleSheet(f"background: {T.error_bg}; color: {T.error}; {_btn_ss}")
         del_btn.setToolTip(t("history.delete_tip"))
         del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
