@@ -1160,6 +1160,8 @@ class InstagramLiveEngine:
                 ret,
                 "\n".join(_stderr_lines),
             )
+            if is_dash and any("Unable to read to manifest" in ln for ln in _stderr_lines):
+                _probe_manifest(hls_url, headers_arg)
             return "ffmpeg_error", final_size
         if ret is None:
             return "stall", final_size
@@ -1352,6 +1354,32 @@ class InstagramLiveEngine:
         if cookie_header:
             parts += f"Cookie: {cookie_header}\r\n"
         return parts
+
+
+def _probe_manifest(url: str, headers_arg: str) -> None:
+    # IG-DASH-DIAG: dashdec reports a failed manifest read as a bare EIO
+    # (an rw-timeout gives no HTTP line at -loglevel warning). Fetch it once
+    # with the same headers and log how the CDN answered.
+    from utils.tiktok_live_checker import _get_impersonate_session  # noqa: PLC0415
+
+    headers = dict(ln.split(": ", 1) for ln in headers_arg.split("\r\n") if ": " in ln)
+    t0 = time.monotonic()
+    try:
+        r = _get_impersonate_session().get(url, headers=headers, timeout=15)
+        logger.warning(
+            "IG-DASH-DIAG: manifest status=%s bytes=%d complete=%s content-length=%s"
+            " transfer-encoding=%s content-encoding=%s content-type=%s in %.1fs",
+            r.status_code,
+            len(r.content),
+            b"</MPD>" in r.content,
+            r.headers.get("Content-Length"),
+            r.headers.get("Transfer-Encoding"),
+            r.headers.get("Content-Encoding"),
+            r.headers.get("Content-Type"),
+            time.monotonic() - t0,
+        )
+    except Exception as exc:
+        logger.warning("IG-DASH-DIAG: manifest fetch failed after %.1fs: %s", time.monotonic() - t0, exc)
 
 
 def _concat_parts(ffmpeg_bin: str, parts: "list[Path]", output: Path) -> None:
