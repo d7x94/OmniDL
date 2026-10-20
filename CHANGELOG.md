@@ -15,6 +15,14 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.26 - 2026-10-20
+
+### Changed
+
+- Instagram Live: when FFmpeg fails with "Unable to read to manifest" on a live DASH stream, the debug log now records how the Instagram CDN answered a single fetch of the manifest (status, size, transfer encoding, whether it was complete), to find the cause of this failure
+
+---
+
 ## v20.3.25 - 2026-10-19
 
 ### Fixed
