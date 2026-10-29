@@ -32,13 +32,13 @@
 ## 安装
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 ```
 
 需要 Remote API 支持：
 
 ```bash
-uv sync --extra api --extra dev
+uv sync --extra api --group dev
 ```
 
 ## 快速开始
@@ -98,7 +98,7 @@ tests/           pytest unit tests. Mock-only — no real network or subprocess.
 ## 开发与测试
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 uv run python main.py
 uv run pytest --cov=. --cov-report=term-missing
 ```
@@ -114,7 +114,7 @@ CI 在每次 push/PR 时运行：`ruff check → mypy → pytest`（Python 3.11/
 本地构建（Python 3.13）：
 
 ```bash
-uv sync --extra build --extra dev
+uv sync --extra build --group dev
 # Windows: dist\OmniDL\OmniDL.exe
 # macOS:   dist/OmniDL/OmniDL
 ```
@@ -135,7 +135,7 @@ uv sync --extra build --extra dev
 
 - 电脑和 iPhone 都已安装 Tailscale —— [tailscale.com](https://tailscale.com)
 - 两台设备登录同一个 Tailscale 账号（同一个 tailnet）
-- 已安装 Remote API 依赖组：`uv sync --extra api --extra dev`
+- 已安装 Remote API 依赖组：`uv sync --extra api --group dev`
 
 ### 1. 用 Tailscale 连接两台设备
 
@@ -229,7 +229,7 @@ iPhone (Safari/PWA)                     Computer (OmniDL)
 | fastapi | >=0.111.0 | ASGI web framework for the remote-control API |
 | uvicorn[standard] | >=0.29.0 | ASGI server — runs as a daemon thread alongside the Qt event loop |
 
-开发/构建依赖位于 `pyproject.toml` 的 `dev` 和 `build` 可选依赖组中（`uv sync --extra dev`）。
+开发依赖位于 `pyproject.toml` 的 `dev` 依赖组中，构建依赖位于 `build` 可选依赖中（`uv sync --group dev`、`uv sync --extra build`）。
 
 ## 文档转换
 

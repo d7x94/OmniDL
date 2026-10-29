@@ -32,13 +32,13 @@ A desktop media downloader for YouTube, TikTok, Instagram, Twitter/X, Facebook, 
 ## Installation
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 ```
 
 With Remote API support:
 
 ```bash
-uv sync --extra api --extra dev
+uv sync --extra api --group dev
 ```
 
 ## Quick Start
@@ -98,7 +98,7 @@ Dependency direction: `ui -> app -> domain`, `infrastructure -> domain`, `utils`
 ## Development and Testing
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 uv run python main.py
 uv run pytest --cov=. --cov-report=term-missing
 ```
@@ -114,7 +114,7 @@ Release builds run automatically in CI (`.github/workflows/build.yml`) when a `v
 To build locally (Python 3.13):
 
 ```bash
-uv sync --extra build --extra dev
+uv sync --extra build --group dev
 # Windows: dist\OmniDL\OmniDL.exe
 # macOS:   dist/OmniDL/OmniDL
 ```
@@ -135,7 +135,7 @@ Control OmniDL from an iPhone, and send finished downloads straight to it, over 
 
 - Tailscale installed on both computer and iPhone — [tailscale.com](https://tailscale.com)
 - Both devices signed into the same Tailscale account (same tailnet)
-- Remote API extra installed: `uv sync --extra api --extra dev`
+- Remote API extra installed: `uv sync --extra api --group dev`
 
 ### 1. Connect both devices with Tailscale
 
@@ -229,7 +229,7 @@ Create a shortcut to `OmniDL.exe`, press `Win + R`, type `shell:startup`, and dr
 | fastapi | >=0.111.0 | ASGI web framework for the remote-control API |
 | uvicorn[standard] | >=0.29.0 | ASGI server — runs as a daemon thread alongside the Qt event loop |
 
-Dev/build deps live in the `dev` and `build` optional groups in `pyproject.toml` (`uv sync --extra dev`).
+Dev deps live in the `dev` dependency group and build deps in the `build` extra in `pyproject.toml` (`uv sync --group dev`, `uv sync --extra build`).
 
 ## Document conversion
 

@@ -32,13 +32,13 @@
 ## Cài đặt
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 ```
 
 Kèm hỗ trợ Remote API:
 
 ```bash
-uv sync --extra api --extra dev
+uv sync --extra api --group dev
 ```
 
 ## Chạy nhanh
@@ -98,7 +98,7 @@ Chiều phụ thuộc: `ui -> app -> domain`, `infrastructure -> domain`, `utils
 ## Phát triển và kiểm thử
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 uv run python main.py
 uv run pytest --cov=. --cov-report=term-missing
 ```
@@ -114,7 +114,7 @@ Bản release được build tự động trong CI (`.github/workflows/build.yml
 Build cục bộ (Python 3.13):
 
 ```bash
-uv sync --extra build --extra dev
+uv sync --extra build --group dev
 # Windows: dist\OmniDL\OmniDL.exe
 # macOS:   dist/OmniDL/OmniDL
 ```
@@ -135,7 +135,7 @@ Phân phối cả thư mục `dist/OmniDL/`, không chỉ file thực thi.
 
 - Đã cài Tailscale trên cả máy tính và iPhone — [tailscale.com](https://tailscale.com)
 - Cả hai thiết bị đăng nhập cùng tài khoản Tailscale (cùng tailnet)
-- Đã cài extra Remote API: `uv sync --extra api --extra dev`
+- Đã cài extra Remote API: `uv sync --extra api --group dev`
 
 ### 1. Kết nối hai thiết bị bằng Tailscale
 
@@ -229,7 +229,7 @@ Tạo shortcut trỏ đến `OmniDL.exe`, bấm `Win + R`, gõ `shell:startup`, 
 | fastapi | >=0.111.0 | ASGI web framework for the remote-control API |
 | uvicorn[standard] | >=0.29.0 | ASGI server — runs as a daemon thread alongside the Qt event loop |
 
-Dependency cho dev/build nằm trong nhóm `dev` và `build` của `pyproject.toml` (`uv sync --extra dev`).
+Dependency cho dev nằm trong dependency group `dev`, cho build nằm trong extra `build` của `pyproject.toml` (`uv sync --group dev`, `uv sync --extra build`).
 
 ## Chuyển đổi tài liệu
 

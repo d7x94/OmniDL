@@ -46,7 +46,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libpulse0
 
       - name: Install dependencies
-        run: uv sync --extra api --extra dev
+        run: uv sync --extra api --group dev
 
       - name: Lint with ruff
         run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
