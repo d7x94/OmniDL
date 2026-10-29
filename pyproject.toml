@@ -44,6 +44,7 @@ dev = [
 
 [tool.ruff]
 line-length = 110
+extend-exclude = ["tests", "build", "venv_build"]
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "I"]
@@ -51,10 +52,6 @@ select = ["E", "F", "B", "I"]
 [tool.ruff.lint.per-file-ignores]
 # UI files contain long CSS/QSS strings that cannot be meaningfully wrapped
 "ui/*" = ["E501"]
-# Test files contain long yt-dlp format selector strings used as assert literals
-"tests/test_yt_dlp_engine.py" = ["E501"]
-"tests/test_yt_dlp_engine_extra.py" = ["E501"]
-"tests/test_coverage_boost.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["api", "app", "domain", "infrastructure", "ui", "utils"]

@@ -48,7 +48,7 @@ jobs:
         run: uv sync --locked --extra api --group dev
 
       - name: Ruff lint
-        run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+        run: uv run ruff check .
 
       - name: Mypy type check
         run: |
