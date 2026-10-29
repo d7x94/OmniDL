@@ -46,10 +46,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libpulse0
 
       - name: Install dependencies
-        run: uv sync --extra api --extra dev
+        run: uv sync --extra api --group dev
 
       - name: Lint with ruff
-        run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+        run: uv run ruff check .
 
       - name: Type check with mypy
         run: |
@@ -473,14 +473,14 @@ jobs:
 
           echo "Downloading ffmpeg ..."
           curl -fsSL --retry 3 --retry-delay 5 \
-            "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" \
+            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" \
             -o /tmp/ffmpeg.zip
           unzip -jo /tmp/ffmpeg.zip -d resources/ffmpeg
           rm /tmp/ffmpeg.zip
 
           echo "Downloading ffprobe ..."
           curl -fsSL --retry 3 --retry-delay 5 \
-            "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" \
+            "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" \
             -o /tmp/ffprobe.zip
           unzip -jo /tmp/ffprobe.zip -d resources/ffmpeg
           rm /tmp/ffprobe.zip

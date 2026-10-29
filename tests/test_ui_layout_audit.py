@@ -21,7 +21,7 @@ _SCRIPT = r"""
 import json, sys, tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 app = QApplication([])
 from infrastructure.config.config_manager import ConfigManager
 from ui.main_window import MainWindow
@@ -29,7 +29,10 @@ from ui.theme_qt import apply_theme
 from ui.themes.tokens import T
 from utils import i18n
 T.set_mode("dark"); apply_theme()
-w = MainWindow(service=MagicMock(), config=ConfigManager(Path(tempfile.mkdtemp()) / "config.json"))
+svc = MagicMock()
+svc.get_history.return_value = [{"id": "a", "url": "https://x/1", "filename": "a.mp4", "output_dir": "/tmp",
+    "status": "COMPLETED", "platform": "TikTok", "downloaded_bytes": 1, "finished_at": 1}]
+w = MainWindow(service=svc, config=ConfigManager(Path(tempfile.mkdtemp()) / "config.json"))
 w.show(); app.processEvents()
 out = {}
 for lang in ("en", "vi", "zh-CN"):
@@ -43,6 +46,18 @@ for lang in ("en", "vi", "zh-CN"):
         "min_w": w.MIN_W,
         "panel_w": ed._controls_panel.width(),
         "viewport_w": ed._right_scroll.viewport().width(),
+    }
+    hist = w._tabs["history"]
+    hist.refresh(); app.processEvents()
+    conv, home = w._tabs["convert"], w._tabs["home"]
+    def fixed(btns):
+        return [b.text() for b in btns if b.minimumWidth() == b.maximumWidth()]
+    out[lang]["fixed"] = {
+        "history_row": fixed(hist._scroll_content.findChildren(QPushButton)),
+        "convert_clear": fixed([conv._clear_btn]),
+        "convert_subs": fixed([conv._subs_btn]),
+        "home_browse": fixed([home._browse_btn]),
+        "theme": fixed([w._theme_btn]),
     }
 print("RESULT" + json.dumps(out))
 sys.stdout.flush()
@@ -70,3 +85,11 @@ def test_top_bar_fits_min_window_width(measured, lang):
 def test_editor_controls_fit_side_panel(measured, lang):
     m = measured[lang]
     assert m["panel_w"] <= m["viewport_w"]
+
+
+# Text buttons must not get a fixed width: QSS clips the label to the content
+# rect, and Segoe UI on Windows is wider than the CI fallback font.
+@pytest.mark.parametrize("lang", LANGS)
+@pytest.mark.parametrize("scope", ["history_row", "convert_clear", "convert_subs", "home_browse", "theme"])
+def test_text_buttons_have_no_fixed_width(measured, lang, scope):
+    assert measured[lang]["fixed"][scope] == []

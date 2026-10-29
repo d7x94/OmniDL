@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
@@ -45,10 +45,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libpulse0
 
       - name: Install dependencies
-        run: uv sync --locked --extra api --extra dev
+        run: uv sync --locked --extra api --group dev
 
       - name: Ruff lint
-        run: uv run ruff check . --select=E,F,B,I --exclude=tests/,build/,venv_build/
+        run: uv run ruff check .
 
       - name: Mypy type check
         run: |
