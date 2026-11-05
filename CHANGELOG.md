@@ -15,6 +15,14 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.27 - 2026-11-05
+
+### Changed
+
+- CI: the test run now includes `tests/test_e2e.py` and `tests/test_logger_and_manager_extra.py`, which were skipped before. Download manager tests now gate every push
+
+---
+
 ## v20.3.26 - 2026-10-20
 
 ### Changed
