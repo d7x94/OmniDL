@@ -61,8 +61,6 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           uv run pytest \
-            --ignore=tests/test_e2e.py \
-            --ignore=tests/test_logger_and_manager_extra.py \
             --tb=short \
             -q \
             --cov=. \
