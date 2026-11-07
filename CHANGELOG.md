@@ -15,6 +15,14 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.28 - 2026-11-07
+
+### Fixed
+
+- Web UI: the Batch tab no longer loses its links and analysis results when the page reloads (for example after switching to another app on a phone). The list and the text box are restored; rows that were still analysing go back to pending
+
+---
+
 ## v20.3.27 - 2026-11-05
 
 ### Changed
