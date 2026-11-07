@@ -253,3 +253,15 @@ def test_language_switch_rerenders_the_batch_rows():
     body = html[html.index("function applyI18n()") : html.index("function buildLangSelects()")]
     assert "renderBatchList" in body
     assert "renderBatchControls" in body
+
+
+def test_batch_state_survives_a_page_reload():
+    """Mobile browsers discard the page on app switch; in-memory rows were lost."""
+    html = _INDEX_HTML.read_text(encoding="utf-8")
+    start = html.index("function renderBatchList()")
+    assert "_batchSave();" in html[start : start + 120]
+    assert "function _batchRestore()" in html
+    assert "localStorage.setItem(_BATCH_KEY" in html
+    restore = html[html.index("function _batchRestore()") :][:700]
+    assert "'analysing'" in restore and "'pending'" in restore
+    assert "\n_batchRestore();\n</script>" in html

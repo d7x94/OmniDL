@@ -2932,6 +2932,7 @@ function parseBatchText() {
 }
 
 function onBatchTextChange() {
+  _batchSave();
   const urls = parseBatchText();
   const lbl  = document.getElementById('batch-count');
   if (!urls.length)                    lbl.textContent = '';
@@ -3048,7 +3049,30 @@ const _BATCH_STATE_ICON = {
   queued:    '⬇',
 };
 
+const _BATCH_KEY = 'omnidl_batch';
+
+function _batchSave() {
+  try {
+    const text = document.getElementById('batch-input').value;
+    if (!text && !_batchItems.length) { localStorage.removeItem(_BATCH_KEY); return; }
+    localStorage.setItem(_BATCH_KEY, JSON.stringify({ text, items: _batchItems }));
+  } catch {}
+}
+
+function _batchRestore() {
+  try {
+    const d = JSON.parse(localStorage.getItem(_BATCH_KEY) || 'null');
+    if (!d) return;
+    document.getElementById('batch-input').value = d.text || '';
+    _batchItems = (d.items || []).map(i => (i.state === 'analysing' ? { ...i, state: 'pending' } : i));
+    onBatchTextChange();
+    renderBatchList();
+    renderBatchControls();
+  } catch {}
+}
+
 function renderBatchList() {
+  _batchSave();
   const list = document.getElementById('batch-list');
   const opts = document.getElementById('batch-opts');
   if (!list) return;
@@ -5262,6 +5286,7 @@ document.getElementById('url-input').addEventListener('input', e => {
   document.getElementById('format-row').style.display    = '';
   document.getElementById('live-banner').style.display   = 'none';
 });
+_batchRestore();
 </script>
 </body>
 </html>
