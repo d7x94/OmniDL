@@ -15,6 +15,14 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.29 - 2026-11-07
+
+### Fixed
+
+- Taildrop: a file whose name started with a dot (empty uploader and title give ". - date - ...") reached the iPhone as a hidden file, so it looked like nothing arrived. The name sent to the phone now has leading dots, spaces and hyphens removed
+
+---
+
 ## v20.3.28 - 2026-11-07
 
 ### Fixed
