@@ -15,6 +15,30 @@ No unreleased changes yet.
 
 ---
 
+## v20.3.29 - 2026-11-07
+
+### Fixed
+
+- Taildrop: a file whose name started with a dot (empty uploader and title give ". - date - ...") reached the iPhone as a hidden file, so it looked like nothing arrived. The name sent to the phone now has leading dots, spaces and hyphens removed
+
+---
+
+## v20.3.28 - 2026-11-07
+
+### Fixed
+
+- Web UI: the Batch tab no longer loses its links and analysis results when the page reloads (for example after switching to another app on a phone). The list and the text box are restored; rows that were still analysing go back to pending
+
+---
+
+## v20.3.27 - 2026-11-05
+
+### Changed
+
+- CI: the test run now includes `tests/test_e2e.py` and `tests/test_logger_and_manager_extra.py`, which were skipped before. Download manager tests now gate every push
+
+---
+
 ## v20.3.26 - 2026-10-20
 
 ### Changed

@@ -703,7 +703,9 @@ class TaildropService:
             # Now the full Unicode name is attempted first and the transliterated
             # ASCII name is used only as a retry, so a modern receiver keeps the
             # complete name and an old one still gets a readable fallback.
-            safe_name = sanitise_for_filesystem(display_name)
+            # BUG-TD-HIDDEN: empty uploader/title yields ". - date - ...mp4"; iOS
+            # saves a leading-dot name as a hidden file, so the user never sees it.
+            safe_name = sanitise_for_filesystem(display_name).lstrip(" .-") or "file"
             ascii_name = to_ascii_filename(safe_name)
 
             # Candidate names in preference order. ``None`` = no --name flag, the

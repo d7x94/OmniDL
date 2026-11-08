@@ -1201,6 +1201,8 @@
           <option value="name-desc" data-i18n="fb.sort.name_desc">Tên Z-A</option>
           <option value="date-desc" data-i18n="fb.sort.date_desc">Mới nhất</option>
           <option value="date-asc" data-i18n="fb.sort.date_asc">Cũ nhất</option>
+          <option value="size-desc" data-i18n="fb.sort.size_desc">Lớn nhất</option>
+          <option value="size-asc" data-i18n="fb.sort.size_asc">Nhỏ nhất</option>
         </select>
         <button class="btn btn-secondary btn-sm" id="fb-selmode-btn"
                 onclick="toggleFbSelectMode()" data-i18n="fb.select_mode">☑ Chọn nhiều</button>
@@ -1609,6 +1611,8 @@ const I18N = {
     'fb.sort.name_desc': 'Tên Z-A',
     'fb.sort.date_desc': 'Mới nhất',
     'fb.sort.date_asc': 'Cũ nhất',
+    'fb.sort.size_desc': 'Lớn nhất',
+    'fb.sort.size_asc': 'Nhỏ nhất',
     'cv.title': '🎬 Convert to MP4',
     'cv.quality': 'Chất lượng',
     'cv.q.standard': 'Chuẩn',
@@ -1872,6 +1876,8 @@ const I18N = {
     'fb.sort.name_desc': 'Name Z-A',
     'fb.sort.date_desc': 'Newest',
     'fb.sort.date_asc': 'Oldest',
+    'fb.sort.size_desc': 'Largest',
+    'fb.sort.size_asc': 'Smallest',
     'cv.title': '🎬 Convert to MP4',
     'cv.quality': 'Quality',
     'cv.q.standard': 'Standard',
@@ -2135,6 +2141,8 @@ const I18N = {
     'fb.sort.name_desc': '名称 Z-A',
     'fb.sort.date_desc': '最新',
     'fb.sort.date_asc': '最旧',
+    'fb.sort.size_desc': '最大',
+    'fb.sort.size_asc': '最小',
     'cv.title': '🎬 转换为 MP4',
     'cv.quality': '画质',
     'cv.q.standard': '标准',
@@ -2932,6 +2940,7 @@ function parseBatchText() {
 }
 
 function onBatchTextChange() {
+  _batchSave();
   const urls = parseBatchText();
   const lbl  = document.getElementById('batch-count');
   if (!urls.length)                    lbl.textContent = '';
@@ -3048,7 +3057,30 @@ const _BATCH_STATE_ICON = {
   queued:    '⬇',
 };
 
+const _BATCH_KEY = 'omnidl_batch';
+
+function _batchSave() {
+  try {
+    const text = document.getElementById('batch-input').value;
+    if (!text && !_batchItems.length) { localStorage.removeItem(_BATCH_KEY); return; }
+    localStorage.setItem(_BATCH_KEY, JSON.stringify({ text, items: _batchItems }));
+  } catch {}
+}
+
+function _batchRestore() {
+  try {
+    const d = JSON.parse(localStorage.getItem(_BATCH_KEY) || 'null');
+    if (!d) return;
+    document.getElementById('batch-input').value = d.text || '';
+    _batchItems = (d.items || []).map(i => (i.state === 'analysing' ? { ...i, state: 'pending' } : i));
+    onBatchTextChange();
+    renderBatchList();
+    renderBatchControls();
+  } catch {}
+}
+
 function renderBatchList() {
+  _batchSave();
   const list = document.getElementById('batch-list');
   const opts = document.getElementById('batch-opts');
   if (!list) return;
@@ -4617,8 +4649,13 @@ function renderFileBrowser() {
     'name-desc': (a, b) => b.name.toLowerCase().localeCompare(a.name.toLowerCase()),
     'date-desc': (a, b) => (b.modified_at || 0) - (a.modified_at || 0),
     'date-asc':  (a, b) => (a.modified_at || 0) - (b.modified_at || 0),
+    'size-desc': (a, b) => (b.size || 0) - (a.size || 0),
+    'size-asc':  (a, b) => (a.size || 0) - (b.size || 0),
   }[sortVal];
-  dirs.sort(sortFn);
+  // Dirs have size=null: size sorts fall back to name A-Z for them.
+  dirs.sort(sortVal.startsWith('size-')
+    ? (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+    : sortFn);
   files.sort(sortFn);
 
   const items = [...dirs, ...files];
@@ -5262,6 +5299,7 @@ document.getElementById('url-input').addEventListener('input', e => {
   document.getElementById('format-row').style.display    = '';
   document.getElementById('live-banner').style.display   = 'none';
 });
+_batchRestore();
 </script>
 </body>
 </html>

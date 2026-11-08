@@ -165,6 +165,26 @@ class TestSendFileNameFlag:
         assert r.sent_name == raw_name
         svc.close()
 
+    def test_leading_dot_name_sent_without_dot(self, tmp_path):
+        """BUG-TD-HIDDEN: empty uploader/title gives ". - date - ..." which iOS hides."""
+        f = tmp_path / ". - 2026-11-07 - . - clip [123].mp4"
+        f.write_bytes(b"data")
+        svc = _make_svc(enabled=True, node="iphone")
+
+        ok = MagicMock()
+        ok.returncode = 0
+        with (
+            patch("shutil.which", return_value="/usr/bin/tailscale"),
+            patch("subprocess.run", return_value=ok) as mock_run,
+        ):
+            r = svc.send_file(f, "iphone")
+
+        assert r.success
+        cmd = mock_run.call_args[0][0]
+        assert cmd[cmd.index("--name") + 1] == "2026-11-07 - . - clip [123].mp4"
+        assert r.sent_name == "2026-11-07 - . - clip [123].mp4"
+        svc.close()
+
     def test_non_ascii_falls_back_to_ascii_name_on_rejection(self, tmp_path):
         """When the peer rejects the Unicode name, retry with a readable ASCII one."""
         raw_name = "1965dreamfootball - 2026-08-27 - YUSUKI cậu ấy thật đáng yêu [7678718864875719954].mp4"
