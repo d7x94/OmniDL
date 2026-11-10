@@ -15,6 +15,103 @@ Chưa có thay đổi nào chưa phát hành.
 
 ---
 
+## v20.3.29 - 2026-11-07
+
+### Đã sửa
+
+- Taildrop: file có tên bắt đầu bằng dấu chấm (uploader và tiêu đề rỗng cho ra ". - date - ...") đến iPhone dưới dạng file ẩn, nên trông như không có gì được gửi tới. Tên gửi sang điện thoại giờ đã bỏ các dấu chấm, khoảng trắng và gạch nối ở đầu
+
+---
+
+## v20.3.28 - 2026-11-07
+
+### Đã sửa
+
+- Web UI: tab Batch không còn mất các liên kết và kết quả phân tích khi trang tải lại (ví dụ sau khi chuyển sang app khác trên điện thoại). Danh sách và ô nhập văn bản được khôi phục; các dòng đang phân tích dở quay về trạng thái chờ
+
+---
+
+## v20.3.27 - 2026-11-05
+
+### Đã thay đổi
+
+- CI: lượt chạy test giờ gồm `tests/test_e2e.py` và `tests/test_logger_and_manager_extra.py`, trước đây bị bỏ qua. Test của download manager giờ chặn mọi lần push
+
+---
+
+## v20.3.26 - 2026-10-20
+
+### Đã thay đổi
+
+- Instagram Live: khi FFmpeg lỗi "Unable to read to manifest" trên luồng DASH trực tiếp, log debug giờ ghi lại cách CDN của Instagram trả lời một lần tải manifest (trạng thái, kích thước, transfer encoding, có đầy đủ hay không), để tìm nguyên nhân của lỗi này
+
+---
+
+## v20.3.25 - 2026-10-19
+
+### Đã sửa
+
+- History: các nút Re-download, Copy URL, Open folder, Rename và Delete không còn bị cắt mất nhãn
+- Convert: các nút Clear và Subtitles không còn bị cắt mất nhãn
+- Home: nút Browse không còn bị cắt mất nhãn
+- Nút theme trên thanh trên cùng không còn bị cắt mất nhãn
+
+---
+
+## v20.3.24 - 2026-10-15
+
+### Đã sửa
+
+- History: Clear all giờ xóa lịch sử thay vì lỗi âm thầm sau khi xác nhận
+- History: các tác vụ tải được lưu một phần hiện huy hiệu "Partial" đã dịch và có thể lọc
+- History: xóa hoặc dọn các mục vẫn giữ chúng trong danh sách khi không ghi được file lịch sử, thay vì để chúng quay lại sau khi khởi động lại
+- Live Monitor: kiểm tra một profile Facebook đang theo dõi không còn để nó kẹt ở trạng thái đang kiểm tra
+
+---
+
+## v20.3.23 - 2026-10-14
+
+### Đã sửa
+
+- Instagram: kiểm tra live của profile xóa cookie đã giải mã tạm thời trước khi báo kết quả
+- CI: bộ test không còn làm interpreter crash khi thoát (exit code 139) sau khi mọi test đã qua
+- CI: một test không còn thay các module UI bằng stub trong phần còn lại của lượt chạy, điều đã làm hỏng một test tab Convert chạy sau đó
+- CI: các test của TikTok live checker qua khi chạy riêng
+
+---
+
+## v20.3.22 - 2026-10-13
+
+### Đã sửa
+
+- Batch: số đếm trên nút Retry cập nhật khi xóa dòng, khi một lần gửi thất bại và khi bắt đầu một lần phân tích mới
+- Batch: dòng thành công khi thử lại hiện lại ô chọn được đánh dấu, khớp với những gì Queue All gửi đi
+- Batch: lượt Queue All tuần tự mà mọi mục đều thất bại giờ hiện toast và trạng thái lỗi thay vì "done"
+- Batch: Retry và Analyse bị khóa trong lượt chạy tuần tự, và Queue All vẫn bị khóa cho đến khi mục cuối cùng xong
+- Batch: xóa dòng cuối cùng khi nó đang phân tích đưa tab về trạng thái chờ
+- Batch: đổi ngôn ngữ làm mới tooltip xóa dòng và số lượng URL
+- Remote API: `POST /api/download/batch` không còn chặn event loop khi xếp hàng một batch lớn
+
+---
+
+## v20.3.21 - 2026-10-09
+
+### Đã sửa
+
+- History: các thẻ và nút Clear giờ đổi kiểu khi theme thay đổi thay vì giữ màu cũ
+- History: việc kiểm tra nút Rename phân giải tên file tương đối theo thư mục tải về, nên các dòng thư mục (gallery-dl) không còn hiện Rename
+
+---
+
+## v20.3.20 - 2026-10-08
+
+### Đã sửa
+
+- Cửa sổ chính: chiều rộng tối thiểu giờ là 1290, nên các tab trên thanh trên cùng không còn chồng lên nhau khi dùng tiếng Việt ở kích thước cửa sổ nhỏ nhất
+- Editor: các dòng của panel bên (tùy chọn lớp phủ văn bản, thanh trượt màu và hiệu ứng) xuống dòng để không điều khiển nào bị cắt trong panel 380 px
+
+---
+
 ## v20.3.19 - 2026-10-06
 
 ### Đã sửa
